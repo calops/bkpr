@@ -6,19 +6,19 @@ const _: () = ::planus::check_version_compatibility("planus-1.3.0");
 /// The root namespace
 /// 
 /// Generated from these locations:
-/// * File `scene.fbs`
+/// * File `crates/bkpr-protocol/src/scene_wire/scene.fbs`
 #[no_implicit_prelude]
 #[allow(clippy::needless_lifetimes)]
 mod root {
 /// The namespace `scene`
 /// 
 /// Generated from these locations:
-/// * File `scene.fbs`
+/// * File `crates/bkpr-protocol/src/scene_wire/scene.fbs`
 pub mod scene {
 /// The enum `ColorKind` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Enum `ColorKind` in the file `scene.fbs:6`
+/// * Enum `ColorKind` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:6`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum ColorKind {
     
         /// The variant `Default` in the enum `ColorKind`
@@ -165,7 +165,7 @@ unsafe impl ::planus::VectorWrite<ColorKind> for ColorKind {
 /// The enum `CursorShape` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Enum `CursorShape` in the file `scene.fbs:7`
+/// * Enum `CursorShape` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:7`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum CursorShape {
     
         /// The variant `Bar` in the enum `CursorShape`
@@ -316,7 +316,7 @@ unsafe impl ::planus::VectorWrite<CursorShape> for CursorShape {
 /// The enum `PixelFormat` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Enum `PixelFormat` in the file `scene.fbs:8`
+/// * Enum `PixelFormat` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:8`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum PixelFormat {
     
         /// The variant `Rgb` in the enum `PixelFormat`
@@ -467,7 +467,7 @@ unsafe impl ::planus::VectorWrite<PixelFormat> for PixelFormat {
 /// The enum `ImageLayer` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Enum `ImageLayer` in the file `scene.fbs:9`
+/// * Enum `ImageLayer` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:9`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum ImageLayer {
     
         /// The variant `BelowBackground` in the enum `ImageLayer`
@@ -614,7 +614,7 @@ unsafe impl ::planus::VectorWrite<ImageLayer> for ImageLayer {
 /// The struct `Size` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Struct `Size` in the file `scene.fbs:11`
+/// * Struct `Size` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:11`
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 Default, 
@@ -856,7 +856,7 @@ unsafe impl ::planus::VectorWrite<Size> for Size {
 /// The struct `Style` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Struct `Style` in the file `scene.fbs:19`
+/// * Struct `Style` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:19`
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 
@@ -1172,7 +1172,7 @@ unsafe impl ::planus::VectorWrite<Style> for Style {
 /// The struct `Layout` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Struct `Layout` in the file `scene.fbs:33`
+/// * Struct `Layout` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:33`
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 Default, 
@@ -1397,7 +1397,7 @@ unsafe impl ::planus::VectorWrite<Layout> for Layout {
 /// The struct `Placement` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Struct `Placement` in the file `scene.fbs:39`
+/// * Struct `Placement` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:39`
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 
@@ -1761,7 +1761,7 @@ unsafe impl ::planus::VectorWrite<Placement> for Placement {
 /// The table `Cursor` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `Cursor` in the file `scene.fbs:57`
+/// * Table `Cursor` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:57`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -2839,7 +2839,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CursorRef<'a> {
 /// The table `Image` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `Image` in the file `scene.fbs:67`
+/// * Table `Image` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:67`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -3736,10 +3736,931 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageRef<'a> {
 }
 
     
+/// The table `ImageDescriptor` in the namespace `scene`
+/// 
+/// Generated from these locations:
+/// * Table `ImageDescriptor` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:76`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ImageDescriptor{
+    
+        /// The field `id` in the table `ImageDescriptor`
+        pub id: u32,
+        /// The field `generation` in the table `ImageDescriptor`
+        pub generation: u64,
+        /// The field `width` in the table `ImageDescriptor`
+        pub width: u32,
+        /// The field `height` in the table `ImageDescriptor`
+        pub height: u32,
+        /// The field `format` in the table `ImageDescriptor`
+        pub format: self::PixelFormat,
+        /// The field `decoded_len` in the table `ImageDescriptor`
+        pub decoded_len: u64,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ImageDescriptor {
+    fn default() -> Self {
+        Self {
+        id: 0,
+        generation: 0,
+        width: 0,
+        height: 0,
+        format: self::PixelFormat::Rgb,
+        decoded_len: 0,
+        
+        }
+    }
+}
+
+
+impl ImageDescriptor {
+    /// Creates a [ImageDescriptorBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ImageDescriptorBuilder<()> {
+        ImageDescriptorBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_id: impl ::planus::WriteAsDefault<u32, u32>,
+        field_generation: impl ::planus::WriteAsDefault<u64, u64>,
+        field_width: impl ::planus::WriteAsDefault<u32, u32>,
+        field_height: impl ::planus::WriteAsDefault<u32, u32>,
+        field_format: impl ::planus::WriteAsDefault<self::PixelFormat, self::PixelFormat>,
+        field_decoded_len: impl ::planus::WriteAsDefault<u64, u64>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_id = field_id.prepare(builder, &0);let prepared_generation = field_generation.prepare(builder, &0);let prepared_width = field_width.prepare(builder, &0);let prepared_height = field_height.prepare(builder, &0);let prepared_format = field_format.prepare(builder, &self::PixelFormat::Rgb);let prepared_decoded_len = field_decoded_len.prepare(builder, &0);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<16> = ::core::default::Default::default();
+        if prepared_generation.is_some() {table_writer.write_entry::<u64>(1);}if prepared_decoded_len.is_some() {table_writer.write_entry::<u64>(5);}if prepared_id.is_some() {table_writer.write_entry::<u32>(0);}if prepared_width.is_some() {table_writer.write_entry::<u32>(2);}if prepared_height.is_some() {table_writer.write_entry::<u32>(3);}if prepared_format.is_some() {table_writer.write_entry::<self::PixelFormat>(4);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_generation) = prepared_generation {object_writer.write::<_, _, 8>(&prepared_generation);}if let ::core::option::Option::Some(prepared_decoded_len) = prepared_decoded_len {object_writer.write::<_, _, 8>(&prepared_decoded_len);}if let ::core::option::Option::Some(prepared_id) = prepared_id {object_writer.write::<_, _, 4>(&prepared_id);}if let ::core::option::Option::Some(prepared_width) = prepared_width {object_writer.write::<_, _, 4>(&prepared_width);}if let ::core::option::Option::Some(prepared_height) = prepared_height {object_writer.write::<_, _, 4>(&prepared_height);}if let ::core::option::Option::Some(prepared_format) = prepared_format {object_writer.write::<_, _, 1>(&prepared_format);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ImageDescriptor>> for ImageDescriptor {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageDescriptor> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ImageDescriptor>> for ImageDescriptor {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ImageDescriptor>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ImageDescriptor> for ImageDescriptor {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageDescriptor> {
+        ImageDescriptor::create(
+            builder,
+        
+            
+            self.id,
+            
+        
+            
+            self.generation,
+            
+        
+            
+            self.width,
+            
+        
+            
+            self.height,
+            
+        
+            
+            self.format,
+            
+        
+            
+            self.decoded_len,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ImageDescriptor] type.
+///
+/// Can be created using the [ImageDescriptor::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ImageDescriptorBuilder<State>(State);
+
+impl<
+    
+> ImageDescriptorBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`id` field](ImageDescriptor#structfield.id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn id<T0>(self, value: T0) -> ImageDescriptorBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsDefault<u32, u32>
+    {
+        ImageDescriptorBuilder((
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`id` field](ImageDescriptor#structfield.id) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn id_as_default(self) -> ImageDescriptorBuilder<(
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.id(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> ImageDescriptorBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`generation` field](ImageDescriptor#structfield.generation).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn generation<T1>(self, value: T1) -> ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;ImageDescriptorBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`generation` field](ImageDescriptor#structfield.generation) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn generation_as_default(self) -> ImageDescriptorBuilder<(
+        
+            T0,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.generation(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ImageDescriptorBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`width` field](ImageDescriptor#structfield.width).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn width<T2>(self, value: T2) -> ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsDefault<u32, u32>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;ImageDescriptorBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`width` field](ImageDescriptor#structfield.width) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn width_as_default(self) -> ImageDescriptorBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.width(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> ImageDescriptorBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )
+>
+{
+    /// Setter for the [`height` field](ImageDescriptor#structfield.height).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn height<T3>(self, value: T3) -> ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )>
+    where T3: ::planus::WriteAsDefault<u32, u32>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = self.0;ImageDescriptorBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`height` field](ImageDescriptor#structfield.height) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn height_as_default(self) -> ImageDescriptorBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.height(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+> ImageDescriptorBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )
+>
+{
+    /// Setter for the [`format` field](ImageDescriptor#structfield.format).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn format<T4>(self, value: T4) -> ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+    )>
+    where T4: ::planus::WriteAsDefault<self::PixelFormat, self::PixelFormat>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+        ) = self.0;ImageDescriptorBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`format` field](ImageDescriptor#structfield.format) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn format_as_default(self) -> ImageDescriptorBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.format(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+> ImageDescriptorBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+    )
+>
+{
+    /// Setter for the [`decoded_len` field](ImageDescriptor#structfield.decoded_len).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn decoded_len<T5>(self, value: T5) -> ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+    )>
+    where T5: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+        ) = self.0;ImageDescriptorBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`decoded_len` field](ImageDescriptor#structfield.decoded_len) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn decoded_len_as_default(self) -> ImageDescriptorBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.decoded_len(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+> ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ImageDescriptor].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageDescriptor>
+        where Self: ::planus::WriteAsOffset<ImageDescriptor>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u32, u32>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+        T2: ::planus::WriteAsDefault<u32, u32>,
+    
+        T3: ::planus::WriteAsDefault<u32, u32>,
+    
+        T4: ::planus::WriteAsDefault<self::PixelFormat, self::PixelFormat>,
+    
+        T5: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAs<::planus::Offset<ImageDescriptor>> for ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+)> {
+    type Prepared = ::planus::Offset<ImageDescriptor>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageDescriptor> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u32, u32>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+        T2: ::planus::WriteAsDefault<u32, u32>,
+    
+        T3: ::planus::WriteAsDefault<u32, u32>,
+    
+        T4: ::planus::WriteAsDefault<self::PixelFormat, self::PixelFormat>,
+    
+        T5: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ImageDescriptor>> for ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+)> {
+    type Prepared = ::planus::Offset<ImageDescriptor>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ImageDescriptor>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u32, u32>,
+    
+        T1: ::planus::WriteAsDefault<u64, u64>,
+    
+        T2: ::planus::WriteAsDefault<u32, u32>,
+    
+        T3: ::planus::WriteAsDefault<u32, u32>,
+    
+        T4: ::planus::WriteAsDefault<self::PixelFormat, self::PixelFormat>,
+    
+        T5: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOffset<ImageDescriptor> for ImageDescriptorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ImageDescriptor> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+        ) = &self.0;ImageDescriptor::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ImageDescriptor].
+#[derive(Copy, Clone)]
+pub struct ImageDescriptorRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ImageDescriptorRef<'a> {
+    
+        /// Getter for the [`id` field](ImageDescriptor#structfield.id).
+        #[inline]
+        pub fn id(&self) -> ::planus::Result<u32> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(0, "ImageDescriptor", "id")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`generation` field](ImageDescriptor#structfield.generation).
+        #[inline]
+        pub fn generation(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(1, "ImageDescriptor", "generation")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`width` field](ImageDescriptor#structfield.width).
+        #[inline]
+        pub fn width(&self) -> ::planus::Result<u32> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(2, "ImageDescriptor", "width")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`height` field](ImageDescriptor#structfield.height).
+        #[inline]
+        pub fn height(&self) -> ::planus::Result<u32> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(3, "ImageDescriptor", "height")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`format` field](ImageDescriptor#structfield.format).
+        #[inline]
+        pub fn format(&self) -> ::planus::Result<self::PixelFormat> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(4, "ImageDescriptor", "format")
+              
+            
+            ?.unwrap_or(self::PixelFormat::Rgb))
+            
+        }
+    
+        /// Getter for the [`decoded_len` field](ImageDescriptor#structfield.decoded_len).
+        #[inline]
+        pub fn decoded_len(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(5, "ImageDescriptor", "decoded_len")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ImageDescriptorRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ImageDescriptorRef");
+        f.field("id", &self.id());f.field("generation", &self.generation());f.field("width", &self.width());f.field("height", &self.height());f.field("format", &self.format());f.field("decoded_len", &self.decoded_len());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ImageDescriptorRef<'a>> for ImageDescriptor {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ImageDescriptorRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            id: ::core::convert::TryInto::try_into(value.id()?)?,generation: ::core::convert::TryInto::try_into(value.generation()?)?,width: ::core::convert::TryInto::try_into(value.width()?)?,height: ::core::convert::TryInto::try_into(value.height()?)?,format: ::core::convert::TryInto::try_into(value.format()?)?,decoded_len: ::core::convert::TryInto::try_into(value.decoded_len()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ImageDescriptorRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ImageDescriptorRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ImageDescriptorRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ImageDescriptor>> for ImageDescriptor {
+    type Value = ::planus::Offset<ImageDescriptor>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ImageDescriptor>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ImageDescriptorRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ImageDescriptorRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
 /// The table `Frame` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `Frame` in the file `scene.fbs:76`
+/// * Table `Frame` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:85`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -5478,7 +6399,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for FrameRef<'a> {
 /// The table `Run` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `Run` in the file `scene.fbs:90`
+/// * Table `Run` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:99`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -6218,7 +7139,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RunRef<'a> {
 /// The table `Row` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `Row` in the file `scene.fbs:98`
+/// * Table `Row` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:107`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -6618,7 +7539,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RowRef<'a> {
 /// The table `Scene` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `Scene` in the file `scene.fbs:103`
+/// * Table `Scene` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:112`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -6640,7 +7561,9 @@ pub struct Scene{
         /// The field `hyperlinks` in the table `Scene`
         pub hyperlinks: ::planus::alloc::vec::Vec<::planus::alloc::string::String>,
         /// The field `rows` in the table `Scene`
-        pub rows: ::planus::alloc::vec::Vec<self::Row>,}
+        pub rows: ::planus::alloc::vec::Vec<self::Row>,
+        /// The field `image_descriptors` in the table `Scene`
+        pub image_descriptors: ::core::option::Option<::planus::alloc::vec::Vec<self::ImageDescriptor>>,}
 
 
 #[allow(clippy::derivable_impls)]
@@ -6655,6 +7578,7 @@ impl ::core::default::Default for Scene {
         styles: ::core::default::Default::default(),
         hyperlinks: ::core::default::Default::default(),
         rows: ::core::default::Default::default(),
+        image_descriptors: ::core::default::Default::default(),
         
         }
     }
@@ -6679,14 +7603,15 @@ impl Scene {
         field_styles: impl ::planus::WriteAs<::planus::Offset<[self::Style]>>,
         field_hyperlinks: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
         field_rows: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::Row>]>>,
+        field_image_descriptors: impl ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ImageDescriptor>]>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_version = field_version.prepare(builder, &0);let prepared_revision = field_revision.prepare(builder, &0);let prepared_has_base_revision = field_has_base_revision.prepare(builder, &false);let prepared_base_revision = field_base_revision.prepare(builder, &0);let prepared_frame = field_frame.prepare(builder);let prepared_styles = field_styles.prepare(builder);let prepared_hyperlinks = field_hyperlinks.prepare(builder);let prepared_rows = field_rows.prepare(builder);
+    ) -> ::planus::Offset<Self> {let prepared_version = field_version.prepare(builder, &0);let prepared_revision = field_revision.prepare(builder, &0);let prepared_has_base_revision = field_has_base_revision.prepare(builder, &false);let prepared_base_revision = field_base_revision.prepare(builder, &0);let prepared_frame = field_frame.prepare(builder);let prepared_styles = field_styles.prepare(builder);let prepared_hyperlinks = field_hyperlinks.prepare(builder);let prepared_rows = field_rows.prepare(builder);let prepared_image_descriptors = field_image_descriptors.prepare(builder);
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<20> = ::core::default::Default::default();
-        if prepared_revision.is_some() {table_writer.write_entry::<u64>(1);}if prepared_base_revision.is_some() {table_writer.write_entry::<u64>(3);}table_writer.write_entry::<::planus::Offset<self::Frame>>(4);table_writer.write_entry::<::planus::Offset<[self::Style]>>(5);table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(6);table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::Row>]>>(7);if prepared_version.is_some() {table_writer.write_entry::<u8>(0);}if prepared_has_base_revision.is_some() {table_writer.write_entry::<bool>(2);}
+        let mut table_writer: ::planus::table_writer::TableWriter::<22> = ::core::default::Default::default();
+        if prepared_revision.is_some() {table_writer.write_entry::<u64>(1);}if prepared_base_revision.is_some() {table_writer.write_entry::<u64>(3);}table_writer.write_entry::<::planus::Offset<self::Frame>>(4);table_writer.write_entry::<::planus::Offset<[self::Style]>>(5);table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(6);table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::Row>]>>(7);if prepared_image_descriptors.is_some() {table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::ImageDescriptor>]>>(8);}if prepared_version.is_some() {table_writer.write_entry::<u8>(0);}if prepared_has_base_revision.is_some() {table_writer.write_entry::<bool>(2);}
 
         unsafe {
-            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_revision) = prepared_revision {object_writer.write::<_, _, 8>(&prepared_revision);}if let ::core::option::Option::Some(prepared_base_revision) = prepared_base_revision {object_writer.write::<_, _, 8>(&prepared_base_revision);}object_writer.write::<_, _, 4>(&prepared_frame);object_writer.write::<_, _, 4>(&prepared_styles);object_writer.write::<_, _, 4>(&prepared_hyperlinks);object_writer.write::<_, _, 4>(&prepared_rows);if let ::core::option::Option::Some(prepared_version) = prepared_version {object_writer.write::<_, _, 1>(&prepared_version);}if let ::core::option::Option::Some(prepared_has_base_revision) = prepared_has_base_revision {object_writer.write::<_, _, 1>(&prepared_has_base_revision);}
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_revision) = prepared_revision {object_writer.write::<_, _, 8>(&prepared_revision);}if let ::core::option::Option::Some(prepared_base_revision) = prepared_base_revision {object_writer.write::<_, _, 8>(&prepared_base_revision);}object_writer.write::<_, _, 4>(&prepared_frame);object_writer.write::<_, _, 4>(&prepared_styles);object_writer.write::<_, _, 4>(&prepared_hyperlinks);object_writer.write::<_, _, 4>(&prepared_rows);if let ::core::option::Option::Some(prepared_image_descriptors) = prepared_image_descriptors {object_writer.write::<_, _, 4>(&prepared_image_descriptors);}if let ::core::option::Option::Some(prepared_version) = prepared_version {object_writer.write::<_, _, 1>(&prepared_version);}if let ::core::option::Option::Some(prepared_has_base_revision) = prepared_has_base_revision {object_writer.write::<_, _, 1>(&prepared_has_base_revision);}
                 
             });
         }builder.current_offset()
@@ -6747,6 +7672,10 @@ impl ::planus::WriteAsOffset<Scene> for Scene {
         
             
             &self.rows,
+            
+        
+            
+            &self.image_descriptors,
             
         
         )
@@ -7357,6 +8286,146 @@ impl<
     
 }
 
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+> SceneBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+    )
+>
+{
+    /// Setter for the [`image_descriptors` field](Scene#structfield.image_descriptors).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn image_descriptors<T8>(self, value: T8) -> SceneBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+    )>
+    where T8: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ImageDescriptor>]>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+        ) = self.0;SceneBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`image_descriptors` field](Scene#structfield.image_descriptors) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn image_descriptors_as_null(self) -> SceneBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+            T5,
+        
+            T6,
+        
+            T7,
+        
+        (),
+    )>
+    {
+        self.image_descriptors(())
+    }
+    
+}
+
 
 
 impl<
@@ -7377,6 +8446,8 @@ impl<
     
         T7,
     
+        T8,
+    
 > SceneBuilder<(
     
         T0,
@@ -7394,6 +8465,8 @@ impl<
         T6,
     
         T7,
+    
+        T8,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [Scene].
@@ -7423,6 +8496,8 @@ impl<
     
         T7: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::Row>]>>,
     
+        T8: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ImageDescriptor>]>>,
+    
 > ::planus::WriteAs<::planus::Offset<Scene>> for SceneBuilder<(
     
         T0,
@@ -7440,6 +8515,8 @@ impl<
         T6,
     
         T7,
+    
+        T8,
     
 )> {
     type Prepared = ::planus::Offset<Scene>;
@@ -7468,6 +8545,8 @@ impl<
     
         T7: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::Row>]>>,
     
+        T8: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ImageDescriptor>]>>,
+    
 > ::planus::WriteAsOptional<::planus::Offset<Scene>> for SceneBuilder<(
     
         T0,
@@ -7485,6 +8564,8 @@ impl<
         T6,
     
         T7,
+    
+        T8,
     
 )> {
     type Prepared = ::planus::Offset<Scene>;
@@ -7513,6 +8594,8 @@ impl<
     
         T7: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::Row>]>>,
     
+        T8: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ImageDescriptor>]>>,
+    
 > ::planus::WriteAsOffset<Scene> for SceneBuilder<(
     
         T0,
@@ -7530,6 +8613,8 @@ impl<
         T6,
     
         T7,
+    
+        T8,
     
 )> {
     #[inline]
@@ -7553,6 +8638,8 @@ impl<
             
                 v7,
             
+                v8,
+            
         ) = &self.0;Scene::create(
             builder,
             
@@ -7571,6 +8658,8 @@ impl<
                 v6,
             
                 v7,
+            
+                v8,
             
         )
     }
@@ -7689,12 +8778,27 @@ impl<'a> SceneRef<'a> {
             
         }
     
+        /// Getter for the [`image_descriptors` field](Scene#structfield.image_descriptors).
+        #[inline]
+        pub fn image_descriptors(&self) -> ::planus::Result<::core::option::Option<::planus::Vector<'a, ::planus::Result<self::ImageDescriptorRef<'a>>>>> {
+            
+            
+              
+              self.0.access(8, "Scene", "image_descriptors")
+              
+            
+            
+            
+        }
+    
 }
 
 impl<'a> ::core::fmt::Debug for SceneRef<'a> {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         let mut f = f.debug_struct("SceneRef");
-        f.field("version", &self.version());f.field("revision", &self.revision());f.field("has_base_revision", &self.has_base_revision());f.field("base_revision", &self.base_revision());f.field("frame", &self.frame());f.field("styles", &self.styles());f.field("hyperlinks", &self.hyperlinks());f.field("rows", &self.rows());
+        f.field("version", &self.version());f.field("revision", &self.revision());f.field("has_base_revision", &self.has_base_revision());f.field("base_revision", &self.base_revision());f.field("frame", &self.frame());f.field("styles", &self.styles());f.field("hyperlinks", &self.hyperlinks());f.field("rows", &self.rows());if let ::core::option::Option::Some(field_image_descriptors) = self.image_descriptors().transpose() {
+                f.field("image_descriptors", &field_image_descriptors);
+            }
         f.finish()
     }
 }
@@ -7707,7 +8811,13 @@ impl<'a> ::core::convert::TryFrom<SceneRef<'a>> for Scene {
     fn try_from(value: SceneRef<'a>) -> ::planus::Result<Self> {
 
         ::core::result::Result::Ok(Self {
-            version: ::core::convert::TryInto::try_into(value.version()?)?,revision: ::core::convert::TryInto::try_into(value.revision()?)?,has_base_revision: ::core::convert::TryInto::try_into(value.has_base_revision()?)?,base_revision: ::core::convert::TryInto::try_into(value.base_revision()?)?,frame: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.frame()?)?),styles: value.styles()?.to_vec()?,hyperlinks: value.hyperlinks()?.to_vec_result()?,rows: value.rows()?.to_vec_result()?,
+            version: ::core::convert::TryInto::try_into(value.version()?)?,revision: ::core::convert::TryInto::try_into(value.revision()?)?,has_base_revision: ::core::convert::TryInto::try_into(value.has_base_revision()?)?,base_revision: ::core::convert::TryInto::try_into(value.base_revision()?)?,frame: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.frame()?)?),styles: value.styles()?.to_vec()?,hyperlinks: value.hyperlinks()?.to_vec_result()?,rows: value.rows()?.to_vec_result()?,image_descriptors: 
+                            if let ::core::option::Option::Some(image_descriptors) = value.image_descriptors()? {
+                                ::core::option::Option::Some(image_descriptors.to_vec_result()?)
+                            } else {
+                                ::core::option::Option::None
+                            }
+                        ,
         })
     }
 }

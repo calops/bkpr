@@ -9,7 +9,10 @@ use std::{io::Write, os::unix::net::UnixStream, path::Path, time::Duration};
 
 #[path = "client_lifetime.rs"]
 pub(crate) mod client_lifetime;
-pub use client_lifetime::{Endpoint, Lifecycle, RegisteredClient, detached_before_dispatch};
+pub use client_lifetime::{
+    Endpoint, ImageResourcePhase, ImageResourceProgress, Lifecycle, RegisteredClient,
+    detached_before_dispatch,
+};
 
 /// Run on an admission worker, never the terminal thread. Cancellation drops
 /// only this request's socket and cannot replay a dispatched operation.

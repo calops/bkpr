@@ -127,12 +127,18 @@ fn raised_material(
     ready
 }
 
+#[path = "diagnostics.rs"]
+mod diagnostics;
 #[path = "jobs.rs"]
 mod jobs;
 #[path = "management.rs"]
 mod management;
 #[path = "resizing.rs"]
 mod resizing;
+#[path = "resource_scene.rs"]
+mod resource_scene;
+#[path = "resource_ui.rs"]
+mod resource_ui;
 #[path = "scrollback.rs"]
 mod scrollback;
 #[path = "search.rs"]
@@ -224,6 +230,11 @@ impl Default for Options {
     }
 }
 
+struct ViewFailure {
+    summary: String,
+    diagnostic: diagnostics::DiagnosticId,
+}
+
 struct Attached {
     view: String,
     spec: ViewSpec,
@@ -234,6 +245,8 @@ struct Attached {
     history: bool,
     revision: u64,
     images: HashMap<ImageKey, Arc<Image>>,
+    progressive: bool,
+    image_manifest: Option<ImageManifest>,
     seeded: u64,
     retirement_requested: bool,
     retirement_policy: RetirementPolicy,
@@ -306,59 +319,6 @@ impl Attached {
             .retire(pane, &self.view, self.retirement_focus_out)
             .map(Some)
     }
-    fn scene(&mut self, update: scene_wire::DecodedScene) -> Result<()> {
-        let retained = self
-            .metadata
-            .image_refs
-            .iter()
-            .copied()
-            .collect::<HashSet<_>>();
-        let incoming = update.image_keys().collect::<HashSet<_>>();
-        anyhow::ensure!(
-            retained
-                .iter()
-                .all(|key| self.images.contains_key(key) || incoming.contains(key)),
-            "missing normalized image generation"
-        );
-        update.apply(&mut self.revision, &mut self.frame)?;
-        let frame = self
-            .frame
-            .as_mut()
-            .expect("a decoded scene supplies a frame");
-        if frame.alternate_screen || frame.scrollback_offset == 0 {
-            self.history = false;
-        }
-        for image in frame.images.drain(..) {
-            self.images.insert(image.key(), image);
-        }
-        let resources = &self.metadata.image_refs;
-        self.images.retain(|key, _| retained.contains(key));
-        frame.images = resources
-            .iter()
-            .map(|key| {
-                self.images
-                    .get(key)
-                    .cloned()
-                    .expect("resource preflight succeeded")
-            })
-            .collect();
-        Ok(())
-    }
-    fn apply(&mut self, snapshot: Snapshot) -> Result<()> {
-        let previous_metadata = std::mem::replace(&mut self.metadata, snapshot.metadata);
-        if let Some(scene) = snapshot.scene
-            && let Err(error) = self.scene(scene)
-        {
-            self.metadata = previous_metadata;
-            return Err(error);
-        }
-        self.clipboard_id = self
-            .metadata
-            .clipboard
-            .as_ref()
-            .map(|p| p.request_id.clone());
-        Ok(())
-    }
 }
 struct DeviceConsent {
     pane: String,
@@ -402,6 +362,7 @@ struct AppRuntime {
     input: Option<InputPump>,
     tree: Arc<Mutex<Tree>>,
     toasts: Arc<Mutex<toast::ToastStack>>,
+    diagnostics: Arc<Mutex<diagnostics::Store>>,
 }
 struct HeldKey {
     pane: String,
@@ -535,6 +496,9 @@ struct App {
     state: Controller,
     views: HashMap<String, Attached>,
     retiring: Vec<RetiringView>,
+    resources: crate::resources::Resources,
+    image_feedback: HashMap<String, resource_ui::Feedback>,
+    image_runtime_failed: bool,
     retiring_candidates: Vec<RetiringCandidate>,
     jobs: jobs::Scope<Background>,
     management: HashMap<String, ManagementIntent>,
@@ -544,7 +508,7 @@ struct App {
     key_events_report_releases: bool,
     input: InputPump,
     input_failures: HashMap<String, [Option<updates::InputFailure>; 3]>,
-    view_failures: HashMap<String, String>,
+    view_failures: HashMap<String, ViewFailure>,
     consent: Option<DeviceConsent>,
     answered: HashMap<String, String>,
     deferred: RefCell<VecDeque<updates::ReservedInput>>,
@@ -567,6 +531,8 @@ struct App {
     popover: crate::popover::Popover,
     overlays: OverlayStack<OverlayFocus>,
     toasts: Arc<Mutex<toast::ToastStack>>,
+    diagnostics: Arc<Mutex<diagnostics::Store>>,
+    diagnostic_view: Option<diagnostics::Viewer>,
     guide: GuideCache,
     chrome_graphics_enabled: bool,
     notified_focus: Option<(String, String)>,
@@ -588,6 +554,122 @@ impl App {
             .lock()
             .unwrap()
             .push(&message, Instant::now(), Duration::from_secs(5));
+    }
+
+    fn report_failure(&self, summary: &str, error: &anyhow::Error) -> diagnostics::DiagnosticId {
+        let outcome = if transport::outcome_unknown(error) {
+            diagnostics::Outcome::Unknown
+        } else if transport::shutdown_not_dispatched(error) {
+            diagnostics::Outcome::NotDispatched
+        } else {
+            diagnostics::Outcome::NotApplicable
+        };
+        self.report_details(
+            summary,
+            &diagnostics::technical(format_args!("{error:#}")),
+            outcome,
+        )
+    }
+
+    fn report_details(
+        &self,
+        summary: &str,
+        details: &str,
+        outcome: diagnostics::Outcome,
+    ) -> diagnostics::DiagnosticId {
+        let mut summary = match self
+            .notification_source
+            .as_deref()
+            .filter(|_| self.backgrounded)
+        {
+            Some(source) => format!("{source}: {summary}"),
+            None => summary.to_owned(),
+        };
+        if outcome == diagnostics::Outcome::Unknown {
+            summary.push_str(" Its result couldn't be confirmed. Don't repeat it yet.");
+        }
+        let (id, message) = {
+            let mut store = self.diagnostics.lock().unwrap();
+            let id = store.record(&summary, details, outcome);
+            (
+                id,
+                store
+                    .get(id)
+                    .expect("new diagnostic is retained")
+                    .summary
+                    .clone(),
+            )
+        };
+        let toast = self.toasts.lock().unwrap().push_with_action(
+            &message,
+            "Details",
+            Instant::now(),
+            Duration::from_secs(5),
+        );
+        self.diagnostics.lock().unwrap().bind_toast(id, toast);
+        id
+    }
+
+    fn fail_view(&mut self, pane: String, summary: &str, error: &anyhow::Error) {
+        let diagnostic = self.report_failure(summary, error);
+        self.retire_image_resources(&pane);
+        self.view_failures.insert(
+            pane,
+            ViewFailure {
+                summary: summary.to_owned(),
+                diagnostic,
+            },
+        );
+    }
+
+    fn latest_diagnostic(&self) -> Option<diagnostics::DiagnosticId> {
+        let preferred = self.state.focused.as_ref().and_then(|pane| {
+            self.view_failures
+                .get(pane)
+                .map(|failure| failure.diagnostic)
+                .or_else(|| {
+                    self.image_feedback
+                        .get(pane)
+                        .and_then(|feedback| feedback.diagnostic)
+                })
+        });
+        let store = self.diagnostics.lock().unwrap();
+        preferred
+            .filter(|id| store.get(*id).is_some())
+            .or_else(|| store.latest())
+    }
+
+    fn diagnostic_active(&self) -> bool {
+        self.diagnostic_view.is_some() && self.overlays.keyboard_owner() == Some("ui:diagnostics")
+    }
+
+    fn diagnostic_geometry(size: Size) -> OverlayPlacement {
+        OverlayPlacement::centered(
+            size,
+            (size.cols.saturating_mul(3) / 4).clamp(24, 100),
+            (size.rows.saturating_mul(3) / 4).max(6),
+        )
+    }
+
+    fn open_diagnostic(&mut self, id: diagnostics::DiagnosticId) -> Result<()> {
+        self.state.prefix = false;
+        self.diagnostic_view = Some(diagnostics::Viewer::new(id));
+        self.overlays.present(
+            "ui:diagnostics",
+            OverlayPlacement {
+                outer: Rect::default(),
+                content: Rect::default(),
+            },
+            OverlayPolicy::MODAL,
+            None,
+        );
+        self.notify_focus()
+    }
+
+    fn close_diagnostic(&mut self) -> Result<()> {
+        self.diagnostic_view = None;
+        self.overlays.remove("ui:diagnostics");
+        self.notify_focus()
     }
 
     fn toast_timeout(&self, timeout: i32, now: Instant) -> i32 {
@@ -831,6 +913,12 @@ impl App {
 
     fn supports_action(&self, action: crate::keyguide::Action) -> bool {
         use crate::keyguide::Action;
+        if action == Action::ShowDiagnostics {
+            return self.latest_diagnostic().is_some();
+        }
+        if self.diagnostic_active() {
+            return matches!(action, Action::Navigate(_) | Action::Cancel);
+        }
         let backend_available = if self.state.sidebar.active {
             self.sidebar_backend_available
         } else {
@@ -935,7 +1023,9 @@ impl App {
     }
     fn guide_context(&self) -> crate::keyguide::Context {
         use crate::keyguide::{Context, ContextState, ModalContext};
-        let modal = if self
+        let modal = if self.diagnostic_active() {
+            Some(ModalContext::Details)
+        } else if self
             .consent
             .as_ref()
             .is_some_and(|consent| !consent.state.allowed && !consent.state.sent)
@@ -1004,7 +1094,8 @@ impl App {
             | (u16::from(self.sidebar_backend_available) << 9)
             | (u16::from(self.sidebar_has_workspace) << 10)
             | (u16::from(self.spawn_defaults.is_some() && !self.socket.is_revoked()) << 11)
-            | (u16::from(self.supports_action(crate::keyguide::Action::RefreshCi)) << 12);
+            | (u16::from(self.supports_action(crate::keyguide::Action::RefreshCi)) << 12)
+            | (u16::from(self.latest_diagnostic().is_some()) << 13);
         let sidebar_columns = self.screen_geometry(size).0.width;
         let key = GuideKey {
             context,
@@ -1441,9 +1532,7 @@ impl App {
                     let known = !result.as_ref().is_err_and(transport::outcome_unknown);
                     self.popover.refresh_receipt(owner, &target, known);
                     if let Err(error) = result {
-                        self.notify(format!(
-                            "CI refresh failed: {error:#}; no replay was attempted"
-                        ));
+                        self.report_failure("Couldn't refresh CI status.", &error);
                     }
                 }
                 Ok(Background::Management(result)) => {
@@ -1477,22 +1566,31 @@ impl App {
                     }
                 }
                 Err(error) => {
-                    let unknown = if transport::outcome_unknown(&error) {
-                        "; outcome unknown; not replayed"
+                    let error = error.context(format!("background job {}", completion.key));
+                    let summary = if completion.key.starts_with("attach:") {
+                        "Couldn't load this pane."
                     } else {
-                        "; not replayed"
+                        "Couldn't complete the operation."
                     };
-                    let message = format!("{} failed{unknown}: {error:#}", completion.key);
+                    let diagnostic = self.report_failure(summary, &error);
                     if form_pending && let Some(form) = &mut self.state.form {
                         form.pending = None;
                         form.ambiguous = transport::outcome_unknown(&error);
-                        form.error = Some(message.clone());
+                        form.error = Some(if form.ambiguous {
+                            "The operation's result couldn't be confirmed. Open diagnostics before trying again.".into()
+                        } else {
+                            summary.into()
+                        });
                     }
                     if let Some(pane) = completion.key.strip_prefix("attach:") {
-                        self.view_failures.insert(pane.to_owned(), message.clone());
-                    }
-                    if !form_pending || self.backgrounded {
-                        self.notify(message);
+                        self.retire_image_resources(pane);
+                        self.view_failures.insert(
+                            pane.to_owned(),
+                            ViewFailure {
+                                summary: summary.into(),
+                                diagnostic,
+                            },
+                        );
                     }
                 }
             }
@@ -1500,11 +1598,37 @@ impl App {
         Ok(())
     }
     fn record_input_failure(&mut self, failure: updates::InputFailure) {
-        self.notify(failure.to_string());
+        let lane = failure.lane.index();
+        if let Some(previous) = self
+            .input_failures
+            .get_mut(&failure.pane_id)
+            .and_then(|lanes| lanes[lane].as_mut())
+            && previous.id == failure.id
+        {
+            *previous = failure;
+            return;
+        }
+        let outcome = if failure.unknown_outcome {
+            diagnostics::Outcome::Unknown
+        } else if !failure.stopped {
+            diagnostics::Outcome::NotDispatched
+        } else {
+            diagnostics::Outcome::NotApplicable
+        };
+        let summary = match failure.lane {
+            updates::InputLane::Clipboard => "Clipboard access stopped for this pane.",
+            _ if failure.stopped => "Input stopped for this pane.",
+            _ => "This input wasn't accepted.",
+        };
+        self.report_details(
+            summary,
+            &diagnostics::technical(format_args!("{failure}")),
+            outcome,
+        );
         let slot = &mut self
             .input_failures
             .entry(failure.pane_id.clone())
-            .or_default()[failure.lane.index()];
+            .or_default()[lane];
         if slot.as_ref().is_none_or(|previous| {
             !previous.stopped
                 || (failure.stopped
@@ -1563,14 +1687,14 @@ impl App {
                 Ok(())
             });
             if let Err(error) = result {
-                failed.push((pane.clone(), view.view.clone(), format!("{error:#}")));
+                failed.push((pane.clone(), view.view.clone(), error));
                 view.frame = None;
                 view.images.clear();
             }
         }
         for (pane, view, error) in failed {
-            self.notify(format!("pane {pane} view {view} poll failed: {error}"));
-            self.view_failures.insert(pane, error);
+            let error = error.context(format!("pane {pane} view {view} poll failed"));
+            self.fail_view(pane, "The pane's display connection stopped.", &error);
         }
     }
     fn barrier_target(&self) -> Option<(&str, &str)> {
@@ -1932,14 +2056,18 @@ impl App {
     }
     fn placeholder(&self, pane: &str) -> String {
         if let Some(error) = self.view_failures.get(pane) {
-            return error.clone();
+            return format!("{} Ctrl-b ! opens diagnostics.", error.summary);
         }
         if let Some(failure) = self
             .input_failures
             .get(pane)
             .and_then(|failures| failures.iter().flatten().find(|failure| failure.stopped))
         {
-            return failure.to_string();
+            return if failure.lane == updates::InputLane::Clipboard {
+                "Clipboard access stopped. Ctrl-b ! opens diagnostics.".into()
+            } else {
+                "Input stopped for this pane. Ctrl-b ! opens diagnostics.".into()
+            };
         }
         match self
             .registry
@@ -2035,25 +2163,31 @@ impl App {
             match self.responses[index].receipt.try_recv() {
                 Ok(result) => {
                     let response = self.responses.swap_remove(index);
-                    if let Err(error) = result {
-                        self.notify(format!(
-                            "pane {} view {} clipboard response failed: {error}",
-                            response.pane, response.view
+                    if let Err(error) = result
+                        && let Err(error) = self.scope_input_result(Err(error))
+                    {
+                        let error = error.context(format!(
+                            "pane {} view {} clipboard response",
+                            response.pane, response.view,
                         ));
+                        self.report_failure("Couldn't complete the clipboard transfer.", &error);
                     }
                 }
                 Err(mpsc::TryRecvError::Empty) => index += 1,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     let response = self.responses.swap_remove(index);
-                    self.notify(format!(
-                        "pane {} view {} clipboard completion disconnected; outcome unknown; not replayed",
-                        response.pane, response.view
+                    let error = transport::mark_outcome_unknown(anyhow::anyhow!(
+                        "pane {} view {} clipboard completion disconnected",
+                        response.pane,
+                        response.view
                     ));
+                    self.report_failure("The clipboard transfer couldn't be confirmed.", &error);
                 }
             }
         }
     }
     fn retire_view(&mut self, pane: &str, wait_policy: bool) -> Result<()> {
+        self.retire_image_resources(pane);
         let Some(attached) = self.views.get(pane) else {
             return Ok(());
         };
@@ -2102,7 +2236,7 @@ impl App {
             }
         };
         if !had_retirement_error && let Some(error) = &self.views[pane].retirement_error {
-            self.notify(format!("{error:#}"));
+            self.report_failure("Couldn't finish detaching this pane.", error);
         }
         let Some(receipt) = receipt else {
             return cancellation;
@@ -2125,12 +2259,15 @@ impl App {
                     let retired = self.retiring.swap_remove(index);
                     if let Err(error) = result {
                         let pane = retired.attached.metadata.pane_id.clone();
-                        let message = format!(
-                            "pane {pane} view {} detach failed: {error}; retirement not confirmed",
-                            retired.attached.view
+                        let error = error.context(format!(
+                            "pane {pane} view {} detach failed; retirement not confirmed",
+                            retired.attached.view,
+                        ));
+                        self.fail_view(
+                            pane,
+                            "Couldn't confirm that the pane view detached.",
+                            &error,
                         );
-                        self.view_failures.insert(pane, message.clone());
-                        self.notify(message);
                     }
                     drop(retired);
                 }
@@ -2140,12 +2277,15 @@ impl App {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     let retired = self.retiring.swap_remove(index);
                     let pane = retired.attached.metadata.pane_id.clone();
-                    let message = format!(
-                        "pane {pane} view {} retirement completion unknown",
-                        retired.attached.view
+                    let error = transport::mark_outcome_unknown(anyhow::anyhow!(
+                        "pane {pane} view {} retirement completion disconnected",
+                        retired.attached.view,
+                    ));
+                    self.fail_view(
+                        pane,
+                        "Couldn't confirm that the pane view detached.",
+                        &error,
                     );
-                    self.view_failures.insert(pane, message.clone());
-                    self.notify(message);
                     drop(retired);
                 }
             }
@@ -2158,6 +2298,7 @@ impl App {
             .filter(|(_, r)| content(*r).height > 0)
             .map(|(id, _)| id.clone())
             .collect::<HashSet<_>>();
+        self.image_feedback.retain(|pane, _| visible.contains(pane));
         let removed = self
             .views
             .keys()
@@ -2288,15 +2429,18 @@ impl App {
                 if !self.jobs.contains(&key) && !self.jobs.is_full() && !self.pane_retiring(id) {
                     let socket = self.socket.to_owned();
                     let pane = id.clone();
+                    let receipts = self.resources.receipts();
                     if let Err(error) = self.jobs.submit(key, move || {
-                        attach(&socket, &pane, spec).map(|attached| Background::Attached {
-                            pane,
-                            attached: Box::new(attached),
+                        attach(&socket, &pane, spec, receipts).map(|attached| {
+                            Background::Attached {
+                                pane,
+                                attached: Box::new(attached),
+                            }
                         })
                     }) {
-                        let message = format!("pane {id} attach not admitted: {error:#}");
-                        self.view_failures.insert(id.clone(), message.clone());
-                        self.notify(message);
+                        self.fail_view(id.clone(), "Couldn't start loading this pane.", &error);
+                    } else {
+                        self.begin_image_attach(id, local);
                     }
                 }
             }
@@ -2308,6 +2452,7 @@ impl App {
             && self.state.form.is_none()
             && !self.picker_open()
             && self.image_viewer.is_none()
+            && self.diagnostic_view.is_none()
             && !self.state.sidebar.active
             && !self.search_open()
             && !self
@@ -2542,6 +2687,7 @@ impl App {
         let unknown_outcome = prior.is_some_and(|rejected| rejected.0.unknown_outcome);
         let stopped = not_dispatched > 0 || prior.is_some_and(|rejected| rejected.0.stopped);
         updates::InputRejected(updates::InputFailure {
+            id: prior.map_or_else(updates::InputFailure::new_id, |rejected| rejected.0.id),
             pane_id: pane.into(),
             view_id: Some(view.into()),
             operation: "paste_contents",
@@ -2736,10 +2882,14 @@ impl App {
             let view = attached.view.clone();
             let pending = attached.metadata.clipboard.take().unwrap();
             if pending.view_id != view {
-                let error =
-                    format!("pane {pane} clipboard grant does not belong to attached view {view}");
-                self.view_failures.insert(pane, error.clone());
-                self.notify(error);
+                let error = anyhow::anyhow!(
+                    "pane {pane} clipboard grant does not belong to attached view {view}",
+                );
+                self.fail_view(
+                    pane,
+                    "Clipboard access is no longer valid for this pane.",
+                    &error,
+                );
                 continue;
             }
             let id = &pending.request_id;
@@ -3464,6 +3614,7 @@ impl App {
         let local = self.state.prefix
             || self.state.form.is_some()
             || self.picker_open()
+            || self.diagnostic_view.is_some()
             || self.state.sidebar.active
             || self.focused_history()
             || self.resize_capturing()
@@ -3474,7 +3625,7 @@ impl App {
                 Ok(false)
             }
             Err(error) if local => {
-                self.notify(format!("{error:#}"));
+                self.report_failure("Couldn't complete this action.", &error);
                 Ok(false)
             }
             result => result,
@@ -3516,6 +3667,26 @@ impl App {
                 held.pending = true;
             }
             self.flush_key_releases()?;
+            return Ok(false);
+        }
+        if self.diagnostic_active() {
+            use crate::keyguide::{self, Action, Context};
+            self.state.suppressed.insert(event.key.clone());
+            match keyguide::lookup(Context::Details, &event) {
+                Some(Action::Cancel) => self.close_diagnostic()?,
+                Some(Action::Navigate(navigation)) => {
+                    let page = Self::diagnostic_geometry(size)
+                        .content
+                        .height
+                        .saturating_sub(2)
+                        .max(1);
+                    self.diagnostic_view
+                        .as_mut()
+                        .unwrap()
+                        .navigate(navigation, usize::from(page));
+                }
+                _ => {}
+            }
             return Ok(false);
         }
         if self.image_viewer.is_some() {
@@ -3575,6 +3746,20 @@ impl App {
                 }
                 return Ok(false);
             }
+        }
+        // Other prefix commands consume their key lifecycle before checking permissions.
+        if self.state.prefix
+            && crate::keyguide::lookup(crate::keyguide::Context::CommandPrefix, &event)
+                == Some(crate::keyguide::Action::ShowDiagnostics)
+        {
+            self.state.prefix = false;
+            self.state.suppressed.insert(event.key);
+            if let Some(id) = self.latest_diagnostic() {
+                self.open_diagnostic(id)?;
+            } else {
+                self.notify("No diagnostics to show".into());
+            }
+            return Ok(false);
         }
         self.validate_sidebar_resize(size);
         if matches!(
@@ -3650,9 +3835,15 @@ impl App {
                     self.state.form.as_mut().unwrap().confirmed = true;
                 }
                 if let Err(error) = self.apply_form(size) {
-                    let message = format!("{error:#}");
+                    let ambiguous = transport::outcome_unknown(&error);
+                    self.report_failure("Couldn't complete this action.", &error);
                     if let Some(form) = &mut self.state.form {
-                        form.error = Some(message);
+                        form.ambiguous |= ambiguous;
+                        form.error = Some(if ambiguous {
+                            "The result couldn't be confirmed. Don't repeat this action.".into()
+                        } else {
+                            "Couldn't complete this action. Ctrl-b ! opens diagnostics.".into()
+                        });
                     }
                 }
                 return Ok(false);
@@ -3885,22 +4076,6 @@ impl App {
                 if let Some((key, target)) = held {
                     self.held.insert(key, target);
                 }
-            } else if let Some(pane) = &self.state.focused {
-                self.notify(
-                    self.view_failures
-                        .get(pane)
-                        .cloned()
-                        .or_else(|| {
-                            self.input_failures.get(pane).and_then(|failures| {
-                                failures
-                                    .iter()
-                                    .flatten()
-                                    .find(|failure| failure.stopped)
-                                    .map(ToString::to_string)
-                            })
-                        })
-                        .unwrap_or_else(|| self.placeholder(pane)),
-                );
             }
         }
         Ok(false)
@@ -3961,7 +4136,7 @@ impl App {
             };
             (event_button, action)
         });
-        if self.image_viewer.is_some() {
+        if self.image_viewer.is_some() && !self.diagnostic_active() {
             self.last_button = button;
             if action == MouseAction::Release {
                 self.pointer_capture = None;
@@ -3998,6 +4173,13 @@ impl App {
             }
         };
         if !matches!(toast_route, toast::PointerRoute::Pass) {
+            if let toast::PointerRoute::Activated(toast) = toast_route {
+                let diagnostic = self.diagnostics.lock().unwrap().for_toast(toast);
+                self.toasts.lock().unwrap().dismiss(toast);
+                if let Some(id) = diagnostic {
+                    self.open_diagnostic(id)?;
+                }
+            }
             if !wheel {
                 self.last_button = button;
             }
@@ -4108,6 +4290,27 @@ impl App {
                 self.clear_tree_pointer();
             }
             match route {
+                PointerRoute::Dismiss("ui:diagnostics") => {
+                    self.close_diagnostic()?;
+                    return Ok(());
+                }
+                PointerRoute::Target {
+                    id: "ui:diagnostics",
+                    ..
+                } => {
+                    let navigation = match button {
+                        MouseButton::WheelUp => Some(crate::keyguide::Navigation::Previous),
+                        MouseButton::WheelDown => Some(crate::keyguide::Navigation::Next),
+                        _ => None,
+                    };
+                    if let Some(navigation) = navigation {
+                        self.diagnostic_view
+                            .as_mut()
+                            .unwrap()
+                            .navigate(navigation, 1);
+                    }
+                    return Ok(());
+                }
                 PointerRoute::Dismiss("ui:modal") => {
                     self.cancel_modal();
                     return Ok(());
@@ -4293,14 +4496,28 @@ impl App {
             && mouse.modifiers == Modifiers::ALT
         {
             let area = content(*rect);
-            if area.contains(mouse.x, mouse.y)
-                && let Some(frame) = self.views.get(pane).and_then(|view| view.frame.as_ref())
-                && let Some(image) = image_viewer::hit_test(
-                    frame,
-                    f32::from(mouse.x - area.x) + 0.5,
-                    f32::from(mouse.y - area.y) + 0.5,
-                )
-            {
+            let hit =
+                area.contains(mouse.x, mouse.y)
+                    .then(|| {
+                        let view = self.views.get(pane)?;
+                        let frame = view.frame.as_ref()?;
+                        let x = f32::from(mouse.x - area.x) + 0.5;
+                        let y = f32::from(mouse.y - area.y) + 0.5;
+                        match &view.image_manifest {
+                            Some(manifest) => {
+                                image_viewer::hit_test_with_manifest(frame, manifest, x, y)
+                            }
+                            None => image_viewer::hit_test(frame, x, y)
+                                .map(image_viewer::ImageHit::Ready),
+                        }
+                    })
+                    .flatten();
+            if let Some(hit) = hit {
+                self.last_button = button;
+                self.pointer_capture = Some(PointerCapture::Ui);
+                let image_viewer::ImageHit::Ready(image) = hit else {
+                    return Ok(());
+                };
                 if !self.colors.graphics.supported() {
                     self.notify("Image viewing requires Kitty graphics support".into());
                     return Ok(());
@@ -4320,7 +4537,6 @@ impl App {
         }
         self.notify_focus()?;
         if !(self.input_enabled(pane) || origin.is_some() && action == MouseAction::Release) {
-            self.notify(self.placeholder(pane));
             return Ok(());
         }
         let rect = content(*rect);
@@ -4528,7 +4744,12 @@ impl App {
 
 // Runs exclusively on the bounded background pool. Attach starts ineligible:
 // a stale or slow initial poll must never acquire hidden size/device authority.
-fn attach(socket: &Endpoint, pane: &str, mut spec: ViewSpec) -> Result<Attached> {
+fn attach(
+    socket: &Endpoint,
+    pane: &str,
+    mut spec: ViewSpec,
+    receipts: crate::resources::Receipts,
+) -> Result<Attached> {
     spec.visible = false;
     spec.interactive = false;
     spec.clipboard = false;
@@ -4539,7 +4760,7 @@ fn attach(socket: &Endpoint, pane: &str, mut spec: ViewSpec) -> Result<Attached>
     let result: AttachResult = serde_json::from_value(payload)
         .map_err(|error| transport::mark_outcome_unknown(error.into()))?;
     let view = result.view_id;
-    let mut pump = match updates::pane(socket, pane, &view) {
+    let mut pump = match updates::pane(socket, pane, &view, receipts) {
         Ok(pump) => pump,
         Err(error) => return Err(detach_failed_attach(socket, pane, &view, error)),
     };
@@ -4566,6 +4787,8 @@ fn attach(socket: &Endpoint, pane: &str, mut spec: ViewSpec) -> Result<Attached>
         history: false,
         revision: 0,
         images: HashMap::new(),
+        progressive: true,
+        image_manifest: None,
         seeded: 0,
         retirement_requested: false,
         retirement_policy: RetirementPolicy::Visible,
@@ -4628,12 +4851,14 @@ impl App {
             input,
             tree,
             toasts,
+            diagnostics,
         } = runtime;
         let state = Controller::new(&registry);
         let input = match input {
             Some(input) => input,
             None => InputPump::new(&socket)?,
         };
+        let resources = crate::resources::Resources::new(socket.clone())?;
         Ok(Self {
             socket,
             options,
@@ -4650,6 +4875,9 @@ impl App {
             registry,
             state,
             views: HashMap::new(),
+            resources,
+            image_feedback: HashMap::new(),
+            image_runtime_failed: false,
             retiring: Vec::new(),
             retiring_candidates: Vec::new(),
             jobs,
@@ -4683,6 +4911,8 @@ impl App {
             popover: crate::popover::Popover::new(initial_size),
             overlays: OverlayStack::default(),
             toasts,
+            diagnostics,
+            diagnostic_view: None,
             guide: GuideCache::default(),
             chrome_graphics_enabled: true,
             notified_focus: None,
@@ -4762,6 +4992,12 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             rows: 1,
             ..initial_size
         });
+        let mut diagnostic_surface = UiSurface::new(Size {
+            cols: 1,
+            rows: 1,
+            ..initial_size
+        });
+        let mut diagnostic_effects = graphics_frame(initial_size);
         let mut window_surface = UiSurface::new(Size {
             cols: 1,
             rows: 1,
@@ -4823,6 +5059,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 &mut window_effects,
                 &mut popover_effects,
                 &mut image_effects,
+                &mut diagnostic_effects,
                 &mut guide_effects,
                 &mut artwork_effects,
                 &mut toast_effects,
@@ -4853,6 +5090,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             }
             app.sync_views(size, &rects)?;
             app.poll_views();
+            app.sync_image_resources(size, &rects);
             let search = app.flush_search();
             app.scope_input_result(search)?;
             let tick = app.selection_tick();
@@ -5125,11 +5363,10 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     app.views.get(pane).map(|view| &view.metadata)
                 });
             }
-            let popup = consent_open
-                || app.state.form.is_some()
-                || app.picker_open()
-                || app.image_viewer.is_some();
-            let mut placement = (popup && app.image_viewer.is_none()).then(|| {
+            let regular_modal = consent_open || app.state.form.is_some() || app.picker_open();
+            let popup =
+                regular_modal || app.image_viewer.is_some() || app.diagnostic_view.is_some();
+            let mut placement = (regular_modal && app.image_viewer.is_none()).then(|| {
                 if consent_open {
                     let placement = OverlayPlacement::centered(
                         size,
@@ -5317,6 +5554,32 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         1,
                     );
                 }
+            }
+            if let Some(viewer) = &mut app.diagnostic_view {
+                let placement = App::diagnostic_geometry(size);
+                let local = placement.outer.size(size);
+                if diagnostic_surface.frame.size != local {
+                    diagnostic_surface = UiSurface::new(local);
+                }
+                {
+                    let store = app.diagnostics.lock().unwrap();
+                    viewer.paint(&mut diagnostic_surface, &theme, store.get(viewer.id));
+                }
+                let body = window::content(local);
+                diagnostic_surface.frame.cursor.x = body.x;
+                diagnostic_surface.frame.cursor.y = body.y;
+                diagnostic_surface.frame.cursor.visible = false;
+                raised_material(
+                    &graphics,
+                    &mut diagnostic_surface.frame,
+                    &mut diagnostic_effects,
+                    placement.outer,
+                    1,
+                );
+                app.overlays
+                    .present("ui:diagnostics", placement, OverlayPolicy::MODAL, None);
+            } else {
+                app.overlays.remove("ui:diagnostics");
             }
             let anchor = tooltip_target.and_then(|target| {
                 workspace_hits
@@ -5695,6 +5958,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 None
             };
             terminal.set_background(&mut out, background)?;
+            app.paint_image_feedback(size, &rects, &theme);
             fds.clear();
             fds.extend([
                 libc::pollfd {
@@ -5724,6 +5988,13 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 },
             ]);
             fds.extend_from_slice(&session_fds);
+            if !app.image_runtime_failed {
+                fds.push(libc::pollfd {
+                    fd: app.resources.wake().as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                });
+            }
             for (pane, view) in &app.views {
                 if view.retirement_requested || app.view_failures.contains_key(pane) {
                     continue;
@@ -5741,6 +6012,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 escape.as_millis().max(1) as i32
             };
             let timeout = app.selection_timeout(timeout);
+            let timeout = app.image_timeout(timeout, Instant::now());
             let timeout = if incoming.is_empty() {
                 app.toast_timeout(timeout.min(session_timeout), Instant::now())
             } else {
@@ -5779,6 +6051,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             let hits = loop {
                 title_animation.apply(&mut chrome_surface.frame);
                 let mut surfaces = vec![Surface {
+                    image_manifest: None,
                     palette: None,
                     id: "ui:chrome",
                     content: SurfaceContent::Cells,
@@ -5806,6 +6079,10 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         .or_else(|| placeholders.get(id).map(|surface| &surface.frame))
                     {
                         surfaces.push(Surface {
+                            image_manifest: app
+                                .views
+                                .get(id)
+                                .and_then(|view| view.image_manifest.as_ref()),
                             palette: pane_palette,
                             id,
                             content: SurfaceContent::All,
@@ -5827,8 +6104,30 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                                     .any(|p| p.id == *id && p.status == PaneStatus::Running),
                         });
                     }
+                    if let Some(feedback) = app.image_feedback.get(id)
+                        && let Some(rect) = feedback.rect
+                    {
+                        surfaces.push(Surface {
+                            id: "ui:images:feedback",
+                            rect,
+                            frame: &feedback.surface.frame,
+                            image_manifest: None,
+                            palette: pane_palette,
+                            content: SurfaceContent::Annotation(Rect {
+                                x: 0,
+                                y: 0,
+                                width: rect.width,
+                                height: rect.height,
+                            }),
+                            selection: &[],
+                            search: &[],
+                            focused: false,
+                            faint: faint_background,
+                        });
+                    }
                 }
                 surfaces.push(Surface {
+                    image_manifest: None,
                     palette: None,
                     id: "ui:chrome:graphics",
                     content: SurfaceContent::Graphics,
@@ -5846,6 +6145,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 });
                 for segment in &resize_feedback_regions {
                     surfaces.push(Surface {
+                        image_manifest: None,
                         palette: None,
                         id: "ui:resize:edges",
                         content: SurfaceContent::CellsWithUnderlay(*segment),
@@ -5865,6 +6165,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 // Artwork may extend into the joined item's framing column. Keep
                 // it above passive materials, but below modal contents and effects.
                 let mut artwork_surface = Some(Surface {
+                    image_manifest: None,
                     palette: None,
                     id: "ui:sidebar:artwork",
                     content: SurfaceContent::Graphics,
@@ -5886,8 +6187,41 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     {
                         surfaces.push(artwork);
                     }
+                    if layer.id == "ui:diagnostics" {
+                        surfaces.push(Surface {
+                            image_manifest: None,
+                            palette: None,
+                            id: "ui:diagnostics",
+                            content: SurfaceContent::All,
+                            rect: layer.placement.outer,
+                            frame: &diagnostic_surface.frame,
+                            selection: &[],
+                            search: &[],
+                            focused: app.overlays.keyboard_owner() == Some(layer.id),
+                            faint: false,
+                        });
+                        surfaces.push(Surface {
+                            image_manifest: None,
+                            palette: None,
+                            id: "ui:diagnostics:graphics",
+                            content: SurfaceContent::Graphics,
+                            rect: Rect {
+                                x: 0,
+                                y: 0,
+                                width: size.cols,
+                                height: size.rows,
+                            },
+                            frame: &diagnostic_effects,
+                            selection: &[],
+                            search: &[],
+                            focused: false,
+                            faint: false,
+                        });
+                        continue;
+                    }
                     if layer.id == "ui:image-viewer" {
                         surfaces.push(Surface {
+                            image_manifest: None,
                             palette: None,
                             id: "ui:image-viewer",
                             content: SurfaceContent::All,
@@ -5899,6 +6233,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             faint: false,
                         });
                         surfaces.push(Surface {
+                            image_manifest: None,
                             palette: None,
                             id: "ui:image-viewer:graphics",
                             content: SurfaceContent::Graphics,
@@ -5916,6 +6251,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     {
                         for (index, (_, body)) in regions.into_iter().enumerate() {
                             surfaces.push(Surface {
+                                image_manifest: None,
                                 palette: None,
                                 id: ["ui:modal:input", "ui:modal:results", "ui:modal:preview"]
                                     [index],
@@ -5967,6 +6303,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                                     continue;
                                 }
                                 surfaces.push(Surface {
+                                    image_manifest: None,
                                     palette: None,
                                     id: layer.id,
                                     content: SurfaceContent::CellsClipped(clip),
@@ -5994,6 +6331,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             "ui:modal" => {
                                 if !modal_graphical {
                                     surfaces.push(Surface {
+                                        image_manifest: None,
                                         palette: None,
                                         id: "ui:window",
                                         content: SurfaceContent::All,
@@ -6014,6 +6352,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             _ => continue,
                         };
                         surfaces.push(Surface {
+                            image_manifest: None,
                             palette: None,
                             id: layer.id,
                             content,
@@ -6032,6 +6371,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         _ => continue,
                     };
                     surfaces.push(Surface {
+                        image_manifest: None,
                         palette: None,
                         id: effects_id,
                         content: SurfaceContent::Graphics,
@@ -6053,6 +6393,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 }
                 if searching && !popup {
                     surfaces.push(Surface {
+                        image_manifest: None,
                         palette: None,
                         id: "ui:search",
                         content: SurfaceContent::All,
@@ -6069,6 +6410,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         .as_ref()
                         .expect("visible toast presentation");
                     surfaces.push(Surface {
+                        image_manifest: None,
                         palette: None,
                         id: "ui:toast",
                         content: if card.graphical {
@@ -6091,6 +6433,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 }
                 if !toast_effects.placements.is_empty() {
                     surfaces.push(Surface {
+                        image_manifest: None,
                         palette: None,
                         id: "ui:toast:graphics",
                         content: SurfaceContent::Graphics,
@@ -6512,15 +6855,13 @@ pub(super) mod tests {
         };
         let state = Controller::new(&registry);
         let (input, received) = InputPump::capture();
+        static ENDPOINT: std::sync::LazyLock<Endpoint> =
+            std::sync::LazyLock::new(|| Endpoint::unmanaged(Path::new("/unused-ui-test-endpoint")));
+        let socket = ENDPOINT.clone();
+        let resources = crate::resources::Resources::new(socket.clone()).unwrap();
         (
             App {
-                socket: {
-                    static ENDPOINT: std::sync::LazyLock<Endpoint> =
-                        std::sync::LazyLock::new(|| {
-                            Endpoint::unmanaged(Path::new("/unused-ui-test-endpoint"))
-                        });
-                    ENDPOINT.clone()
-                },
+                socket,
                 options: Options {
                     read_only: false,
                     detach_others: false,
@@ -6544,6 +6885,9 @@ pub(super) mod tests {
                 registry,
                 state,
                 views: HashMap::new(),
+                resources,
+                image_feedback: HashMap::new(),
+                image_runtime_failed: false,
                 retiring: Vec::new(),
                 retiring_candidates: Vec::new(),
                 jobs: jobs::Scope::new(8).unwrap(),
@@ -6577,6 +6921,8 @@ pub(super) mod tests {
                 popover: crate::popover::Popover::new(size()),
                 overlays: OverlayStack::default(),
                 toasts: Arc::new(Mutex::new(toast::ToastStack::default())),
+                diagnostics: Arc::new(Mutex::new(diagnostics::Store::default())),
+                diagnostic_view: None,
                 guide: GuideCache::default(),
                 chrome_graphics_enabled: true,
                 notified_focus: None,
@@ -6936,6 +7282,7 @@ pub(super) mod tests {
         let hits = Scene {
             size,
             surfaces: vec![Surface {
+                image_manifest: None,
                 id: "ui:chrome",
                 rect: Rect {
                     x: 0,
@@ -7731,7 +8078,7 @@ pub(super) mod tests {
     fn removed_prefix_management_commands_do_not_mutate_or_open_sidebar_forms() {
         let (mut app, received) = fixture();
         attach_fixture(&mut app);
-        for command in ["b", "S", "c", "N", "r", "p", "!", "X"] {
+        for command in ["b", "S", "c", "N", "r", "p", "X"] {
             physical_keys(&mut app, format!("\x02{command}").as_bytes()).unwrap();
             assert!(app.state.form.is_none(), "{command}");
             assert!(!app.state.sidebar.active, "{command}");
@@ -7814,6 +8161,8 @@ pub(super) mod tests {
                 history: false,
                 revision: 1,
                 images: HashMap::new(),
+                progressive: false,
+                image_manifest: None,
                 seeded: 0,
                 retirement_requested: false,
                 retirement_policy: RetirementPolicy::Visible,
@@ -8082,6 +8431,7 @@ pub(super) mod tests {
         let scene = Scene {
             size,
             surfaces: vec![Surface {
+                image_manifest: None,
                 palette: None,
                 id: "ui:chrome",
                 content: SurfaceContent::All,
@@ -8176,6 +8526,7 @@ pub(super) mod tests {
                 vec![("focused-pane".into(), first), ("beta".into(), second)];
             let frame = blank(size);
             let mut surfaces = vec![Surface {
+                image_manifest: None,
                 palette: None,
                 id: "ui:chrome",
                 content: SurfaceContent::All,
@@ -8193,6 +8544,7 @@ pub(super) mod tests {
             }];
             for (pane, rect) in &rects {
                 surfaces.push(Surface {
+                    image_manifest: None,
                     palette: None,
                     id: pane,
                     content: SurfaceContent::All,
@@ -8538,6 +8890,7 @@ pub(super) mod tests {
         hidden.notification_source = Some("session 1".into());
         hidden.tree = Arc::clone(&visible.tree);
         hidden.toasts = Arc::clone(&visible.toasts);
+        hidden.diagnostics = Arc::clone(&visible.diagnostics);
         let visible_owner = visible.tree_owner();
         hidden.tree.lock().unwrap().reconcile(
             vec![
@@ -8575,7 +8928,11 @@ pub(super) mod tests {
                 .map(|cell| cell.text.as_str())
                 .collect::<String>();
             assert!(text.contains("session 1"));
-            assert!(text.contains("hidden-job"));
+            assert!(toasts.cards().next().unwrap().action.is_some());
+            let store = visible.diagnostics.lock().unwrap();
+            let incident = store.get(store.latest().unwrap()).unwrap();
+            assert!(incident.details.contains("hidden-job"));
+            assert!(incident.details.contains("background failure"));
             toasts.next_deadline().unwrap()
         };
         hidden.complete_background().unwrap();
@@ -11283,6 +11640,7 @@ pub(super) mod tests {
         assert_eq!(app.state.focused, focused);
         assert_eq!(app.views.len(), views);
     }
+    include!("diagnostic_tests.rs");
     include!("attach_shutdown_tests.rs");
     include!("search_tests.rs");
 }

@@ -13,6 +13,7 @@ pub(crate) use control_lease::ControlLease;
 mod environment;
 mod harness;
 mod harness_process;
+mod image_resources;
 pub mod registry;
 mod search;
 mod selection;
@@ -326,6 +327,7 @@ struct Shared {
     command_gate: Mutex<()>,
     view_policy: Mutex<()>,
     pane_id: String,
+    image_incarnation: Uuid,
     writer: Mutex<Option<Arc<writer::Queue>>>,
     paste: Mutex<PasteGrants>,
     changes: Arc<SnapshotChanges>,
@@ -361,6 +363,11 @@ impl Shared {
         if let Some(wake) = &self.status_wake {
             let _ = wake.try_send(());
         }
+    }
+}
+impl Drop for Shared {
+    fn drop(&mut self) {
+        image_resources::retire(self.image_incarnation);
     }
 }
 /// Cloneable handle to one backend-owned PTY execution and its independent views.
@@ -446,6 +453,7 @@ impl Pane {
             command_gate: Mutex::new(()),
             view_policy: Mutex::new(()),
             pane_id,
+            image_incarnation: Uuid::new_v4(),
             writer: Mutex::new(None),
             paste: Mutex::new(PasteGrants::default()),
             changes: Arc::new(SnapshotChanges::default()),
@@ -647,6 +655,7 @@ impl Pane {
             Request::Update { view_id, .. }
             | Request::Detach { view_id }
             | Request::Poll { view_id, .. }
+            | Request::ImageResource { view_id, .. }
             | Request::Pin { view_id, .. }
             | Request::Input { view_id, .. }
             | Request::Paste { view_id, .. }
@@ -756,6 +765,9 @@ impl Pane {
         }
         match &request {
             Request::Inspect => return self.snapshot(&request, client.as_ref()),
+            Request::ImageResource { .. } => {
+                bail!("image resources require a streamed managed client request")
+            }
             Request::Poll {
                 view_id,
                 resources,
@@ -764,10 +776,9 @@ impl Pane {
                 scene_encoding,
                 ..
             } => {
-                if scene_encoding
-                    .as_deref()
-                    .is_some_and(|encoding| encoding != "planus_v1")
-                {
+                if scene_encoding.as_deref().is_some_and(|encoding| {
+                    encoding != "planus_v1" && encoding != bkpr_protocol::PROGRESSIVE_SCENE_ENCODING
+                }) {
                     bail!("unsupported scene encoding");
                 }
                 if resources.len() > 1024 {
@@ -865,7 +876,9 @@ impl Pane {
             control.ensure_active()?;
         }
         match request {
-            Request::Inspect | Request::Poll { .. } => unreachable!(),
+            Request::Inspect | Request::Poll { .. } | Request::ImageResource { .. } => {
+                unreachable!()
+            }
             Request::Attach { spec } => {
                 let id = self
                     .shared
@@ -1249,7 +1262,19 @@ impl Pane {
         let changed_frame = frame.as_deref().filter(|_| frame_after != revision);
         let scene = changed_frame
             .map(|frame| {
-                scene_wire::encode(frame, revision, baseline.as_ref(), frame_after, resources)
+                if matches!(request, Request::Poll { scene_encoding: Some(encoding), .. }
+                    if encoding == bkpr_protocol::PROGRESSIVE_SCENE_ENCODING)
+                {
+                    scene_wire::encode_progressive(
+                        frame,
+                        revision,
+                        baseline.as_ref(),
+                        frame_after,
+                        resources,
+                    )
+                } else {
+                    scene_wire::encode(frame, revision, baseline.as_ref(), frame_after, resources)
+                }
             })
             .transpose()?
             .map(Into::into);
@@ -1284,7 +1309,7 @@ impl Pane {
                 view_timeout_ms: 10000,
                 poll_wait_max_ms: 1000,
                 row_deltas: true,
-                scene_encodings: ["planus_v1"],
+                scene_encodings: ["planus_v1", bkpr_protocol::PROGRESSIVE_SCENE_ENCODING],
             },
         })?;
         Ok(Payload::Pane(PanePayload { metadata, scene }))
@@ -2437,6 +2462,7 @@ mod snapshot_tests {
                 command_gate: Mutex::new(()),
                 view_policy: Mutex::new(()),
                 pane_id: "test-pane".into(),
+                image_incarnation: Uuid::new_v4(),
                 writer: Mutex::new(None),
                 paste: Mutex::new(PasteGrants::default()),
                 changes: Arc::new(SnapshotChanges::default()),

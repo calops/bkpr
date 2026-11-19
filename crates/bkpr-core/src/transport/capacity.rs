@@ -368,7 +368,7 @@ mod tests {
             let stage = encoding.enter();
             let _ = entered.send(());
             let result =
-                write_buffered_response(&mut writer, &vec![7; 1024 * 1024], &output, stage);
+                write_buffered_response(&mut writer, &vec![7; 1024 * 1024], &output, stage, None);
             let _ = completed.send(result);
         });
         waiting.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -387,6 +387,7 @@ mod tests {
             codec.encode_response(&reply).unwrap(),
             &buffers,
             stage,
+            None,
         )
         .unwrap();
         let bytes = wire::read_frame(&mut control_reader, Kind::Response, MAX_RESPONSE).unwrap();

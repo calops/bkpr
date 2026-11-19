@@ -1,7 +1,7 @@
 //! Binary full scenes and complete-row deltas with response-local style and hyperlink tables.
 //! Cell text boundaries and widths are preserved without Unicode re-segmentation.
 //! Consumers retain image generations separately; JSON conversion is diagnostic only.
-use crate::{Cell, Frame, Image, ImageKey, Row, Size};
+use crate::{Cell, Frame, Image, ImageDescriptor, ImageKey, Row, Size};
 use anyhow::{Context, Result, ensure};
 use planus::{Builder, ReadAsRoot};
 use serde_json::Value;
@@ -71,6 +71,29 @@ pub fn encode(
     frame_after: u64,
     resources: &[ImageKey],
 ) -> Result<Vec<u8>> {
+    encode_inner(frame, revision, baseline, frame_after, resources, false)
+}
+
+/// Encode text and a complete validated descriptor manifest without image pixel bodies.
+/// The explicit progressive representation requires separate checked resource completion.
+pub fn encode_progressive(
+    frame: &Frame,
+    revision: u64,
+    baseline: Option<&(u64, Arc<Frame>)>,
+    frame_after: u64,
+    resources: &[ImageKey],
+) -> Result<Vec<u8>> {
+    encode_inner(frame, revision, baseline, frame_after, resources, true)
+}
+
+fn encode_inner(
+    frame: &Frame,
+    revision: u64,
+    baseline: Option<&(u64, Arc<Frame>)>,
+    frame_after: u64,
+    resources: &[ImageKey],
+    progressive: bool,
+) -> Result<Vec<u8>> {
     crate::valid_size(frame.size)?;
     let cols = usize::from(frame.size.cols);
     let height = usize::from(frame.size.rows);
@@ -108,14 +131,26 @@ pub fn encode(
             ensure!(expanded_text <= MAX_TEXT_BYTES, "scene expanded text limit");
         }
     }
-    let known: HashSet<_> = resources.iter().copied().collect();
+    let descriptors = if progressive {
+        let descriptors = frame
+            .images
+            .iter()
+            .map(|image| ImageDescriptor::from_image(image))
+            .collect::<Result<Vec<_>>>()?;
+        validate_manifest(&descriptors, &frame.placements)?;
+        descriptors
+    } else {
+        Vec::new()
+    };
+    let known: HashSet<_> = if progressive {
+        HashSet::new()
+    } else {
+        resources.iter().copied().collect()
+    };
+    let include = |image: &&Arc<Image>| !progressive && !known.contains(&image.key());
     let mut image_count = 0usize;
     let mut image_bytes = 0usize;
-    for image in frame
-        .images
-        .iter()
-        .filter(|image| !known.contains(&image.key()))
-    {
+    for image in frame.images.iter().filter(include) {
         image_count += 1;
         image_bytes = image_bytes.saturating_add(image.pixels.len());
         ensure!(
@@ -187,11 +222,7 @@ pub fn encode(
     let placements: Vec<_> = frame.placements.iter().map(write_placement).collect();
     let placements = builder.create_vector(placements.as_slice());
     let mut images = Vec::with_capacity(image_count);
-    for image in frame
-        .images
-        .iter()
-        .filter(|image| !known.contains(&image.key()))
-    {
+    for image in frame.images.iter().filter(include) {
         let pixels = builder.create_vector(image.pixels.as_slice());
         images.push(g::Image::create(
             &mut builder,
@@ -235,9 +266,28 @@ pub fn encode(
         frame.scrollback_total,
         frame.scrollback_offset,
     );
+    let descriptors = if progressive {
+        let offsets = descriptors
+            .iter()
+            .map(|descriptor| {
+                g::ImageDescriptor::create(
+                    &mut builder,
+                    descriptor.key.id,
+                    descriptor.key.generation,
+                    descriptor.width,
+                    descriptor.height,
+                    write_format(descriptor.format),
+                    descriptor.decoded_len,
+                )
+            })
+            .collect::<Vec<_>>();
+        Some(builder.create_vector(offsets.as_slice()))
+    } else {
+        None
+    };
     let root = g::Scene::create(
         &mut builder,
-        VERSION,
+        if progressive { 2 } else { VERSION },
         revision,
         baseline.is_some(),
         baseline.map_or(0, |(base, _)| *base),
@@ -245,6 +295,7 @@ pub fn encode(
         styles,
         hyperlinks,
         rows,
+        descriptors,
     );
     // Planus 1.3 exposes only a borrowed finished slice, not owned extraction.
     // The API's owned output requires this final copy; source image pixels were
@@ -258,10 +309,25 @@ pub struct DecodedScene {
     pub revision: u64,
     /// Required baseline revision for a delta, or `None` for a full replacement.
     pub base_revision: Option<u64>,
+    descriptors: Vec<ImageDescriptor>,
+    progressive: bool,
     frame: Frame,
     rows: Vec<(usize, Row)>,
 }
 impl DecodedScene {
+    /// Complete manifest of a progressive update; descriptors are not resource receipts.
+    pub fn image_descriptors(&self) -> &[ImageDescriptor] {
+        &self.descriptors
+    }
+    /// Transfer the validated descriptor sidecar without cloning; leaves an empty borrowed manifest.
+    /// Scene representation and row-apply semantics are unchanged.
+    pub fn take_image_descriptors(&mut self) -> Vec<ImageDescriptor> {
+        std::mem::take(&mut self.descriptors)
+    }
+    /// Whether the scene explicitly uses descriptor-only resources, even with an empty/taken manifest.
+    pub fn is_progressive(&self) -> bool {
+        self.progressive
+    }
     /// Iterate image generations supplied by this update, excluding previously known resources.
     pub fn image_keys(&self) -> impl Iterator<Item = ImageKey> + '_ {
         self.frame.images.iter().map(|image| image.key())
@@ -303,6 +369,70 @@ fn check_image(width: u32, height: u32, format: crate::PixelFormat, length: usiz
     Ok(())
 }
 
+fn validate_manifest(
+    descriptors: &[ImageDescriptor],
+    placements: &[crate::Placement],
+) -> Result<()> {
+    ensure!(
+        descriptors.len() <= MAX_IMAGES,
+        "scene descriptor count limit"
+    );
+    let mut keys = HashMap::with_capacity(descriptors.len());
+    let mut decoded = 0u64;
+    for descriptor in descriptors {
+        descriptor.validate()?;
+        decoded = decoded.saturating_add(descriptor.decoded_len);
+        ensure!(
+            decoded <= MAX_IMAGE_BYTES as u64,
+            "scene decoded image byte limit"
+        );
+        ensure!(
+            keys.insert(descriptor.key, descriptor).is_none(),
+            "duplicate scene image descriptor"
+        );
+    }
+    for placement in placements {
+        let descriptor = keys
+            .get(&ImageKey {
+                id: placement.image_id,
+                generation: placement.generation,
+            })
+            .context("scene placement references unknown image generation")?;
+        descriptor.validate_placement(placement)?;
+    }
+    Ok(())
+}
+
+fn read_descriptors(scene: g::SceneRef<'_>) -> Result<Vec<ImageDescriptor>> {
+    let Some(descriptors) = scene.image_descriptors()? else {
+        ensure!(
+            scene.version()? != 2,
+            "progressive scene missing descriptor manifest"
+        );
+        return Ok(Vec::new());
+    };
+    ensure!(
+        descriptors.len() <= MAX_IMAGES,
+        "scene descriptor count limit"
+    );
+    descriptors
+        .iter()
+        .map(|descriptor| {
+            let descriptor = descriptor?;
+            Ok(ImageDescriptor {
+                key: ImageKey {
+                    id: descriptor.id()?,
+                    generation: descriptor.generation()?,
+                },
+                width: descriptor.width()?,
+                height: descriptor.height()?,
+                format: read_format(descriptor.format()?),
+                decoded_len: descriptor.decoded_len()?,
+            })
+        })
+        .collect()
+}
+
 fn read_size(frame: g::FrameRef<'_>) -> Result<Size> {
     let size = frame.size()?;
     Ok(Size {
@@ -340,7 +470,7 @@ fn validate(bytes: &[u8]) -> Result<g::SceneRef<'_>> {
     );
     let scene = g::SceneRef::read_as_root(bytes)?;
     ensure!(
-        scene.version()? == VERSION,
+        matches!(scene.version()?, VERSION | 2),
         "unsupported Planus scene version"
     );
     let revision = scene.revision()?;
@@ -366,6 +496,23 @@ fn validate(bytes: &[u8]) -> Result<g::SceneRef<'_>> {
     let palette = frame.palette()?;
     let images = frame.images()?;
     let placements = frame.placements()?;
+    let descriptors = read_descriptors(scene)?;
+    if scene.version()? == 2 {
+        ensure!(
+            images.is_empty(),
+            "progressive scene contains inline image bodies"
+        );
+        let placements = placements
+            .iter()
+            .map(read_placement)
+            .collect::<Result<Vec<_>>>()?;
+        validate_manifest(&descriptors, &placements)?;
+    } else {
+        ensure!(
+            descriptors.is_empty(),
+            "inline scene contains progressive descriptors"
+        );
+    }
     let styles = scene.styles()?;
     let links = scene.hyperlinks()?;
     let rows = scene.rows()?;
@@ -578,6 +725,8 @@ fn decode_validated(scene: g::SceneRef<'_>) -> Result<DecodedScene> {
     Ok(DecodedScene {
         revision: scene.revision()?,
         base_revision: base_revision(scene)?,
+        descriptors: read_descriptors(scene)?,
+        progressive: scene.version()? == 2,
         frame,
         rows,
     })
@@ -591,9 +740,11 @@ pub fn to_json(bytes: &[u8]) -> Result<Value> {
         let mut revision = 0;
         let mut frame = None;
         decode_validated(scene)?.apply(&mut revision, &mut frame)?;
-        return Ok(serde_json::to_value(
-            frame.context("scene missing full frame")?,
-        )?);
+        let mut value = serde_json::to_value(frame.context("scene missing full frame")?)?;
+        if scene.version()? == 2 {
+            value["image_descriptors"] = serde_json::to_value(read_descriptors(scene)?)?;
+        }
+        return Ok(value);
     }
     let frame = read_metadata(scene.frame()?)?;
     let styles = scene
@@ -624,6 +775,7 @@ pub fn to_json(bytes: &[u8]) -> Result<Value> {
         "version": scene.version()?, "revision": scene.revision()?,
         "base_revision": base_revision(scene)?, "frame": frame,
         "styles": styles, "hyperlinks": links, "rows": rows,
+        "image_descriptors": read_descriptors(scene)?,
     }))
 }
 

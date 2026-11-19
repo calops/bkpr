@@ -536,7 +536,7 @@ fn draw(
     host: &ColorProbe,
     graphics: &mut GraphicsState,
 ) -> Result<()> {
-    let prepared = geometry::prepare(frame, viewport)?;
+    let prepared = geometry::prepare_with_manifest(frame, viewport, None)?;
     draw_prepared(
         out,
         frame,
@@ -1945,6 +1945,24 @@ impl GraphicsProbe {
     pub fn supported(&self) -> bool {
         self.supported
     }
+    /// Whether a query has completed, negatively or positively, including expiry.
+    pub fn resolved(&self) -> bool {
+        self.issued_id.is_some() && self.pending.is_none()
+    }
+    /// Deadline for unresolved capability evidence, absent once resolved.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.pending
+            .map(|(_, started)| started + std::time::Duration::from_secs(2))
+    }
+    /// Expire an unanswered query without allowing a late reply to grant support.
+    pub fn expire(&mut self, now: Instant) -> bool {
+        if self.next_deadline().is_some_and(|deadline| now >= deadline) {
+            self.pending = None;
+            true
+        } else {
+            false
+        }
+    }
     /// Consume only this probe's tagged query response. False means the caller
     /// must preserve its ordinary graphics acknowledgement/error dispatch.
     /// Late, duplicate and invalid responses for our query id are consumed but
@@ -1959,7 +1977,7 @@ impl GraphicsProbe {
         let Some((_, started)) = self.pending else {
             return true;
         };
-        if started.elapsed() > std::time::Duration::from_secs(2) {
+        if started.elapsed() >= std::time::Duration::from_secs(2) {
             self.pending = None;
             return true;
         }
@@ -2650,6 +2668,7 @@ mod material_cache_tests {
         let mut scene = Scene {
             size: frame.size,
             surfaces: vec![Surface {
+                image_manifest: None,
                 id: "material",
                 rect: Rect {
                     x: 0,
@@ -2668,6 +2687,7 @@ mod material_cache_tests {
         };
         if let Some(rect) = cover {
             scene.surfaces.push(Surface {
+                image_manifest: None,
                 id: "cover",
                 rect,
                 frame: &popup,
@@ -3011,5 +3031,25 @@ mod notification_host_tests {
         }
         assert_eq!(guard.observe_focus_reply(b"focus;in;extra"), None);
         assert_eq!(guard.observed_focus(), Some(false));
+    }
+}
+
+#[cfg(test)]
+mod graphics_query_lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn unanswered_graphics_queries_resolve_without_an_idle_deadline() {
+        let mut probe = GraphicsProbe::default();
+        assert!(!probe.resolved());
+        drop(probe.begin());
+        let deadline = probe.next_deadline().unwrap();
+        assert!(!probe.expire(deadline - std::time::Duration::from_nanos(1)));
+        assert!(!probe.resolved());
+        assert!(probe.expire(deadline));
+        assert!(probe.resolved());
+        assert!(!probe.supported());
+        assert_eq!(probe.next_deadline(), None);
+        assert!(!probe.expire(deadline + std::time::Duration::from_secs(1)));
     }
 }

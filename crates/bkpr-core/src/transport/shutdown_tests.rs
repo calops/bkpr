@@ -341,7 +341,7 @@ fn review_regression_response_deadline_bounds_continuing_partial_progress() {
         }
     });
     let payload = vec![b'x'; 4 * 1024 * 1024];
-    let result = write_response(&mut writer, &payload, Duration::from_millis(500));
+    let result = write_response(&mut writer, &payload, Duration::from_millis(500), None);
     drop(writer);
     consumer.join().unwrap();
     let error = result.expect_err("partial progress reset the complete response deadline");

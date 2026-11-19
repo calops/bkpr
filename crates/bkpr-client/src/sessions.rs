@@ -236,6 +236,7 @@ pub(super) struct Coordinator {
     started: bool,
     pub(super) tree: Arc<Mutex<crate::tree::Tree>>,
     pub(super) toasts: Arc<Mutex<toast::ToastStack>>,
+    diagnostics: Arc<Mutex<diagnostics::Store>>,
     tree_owner: Option<crate::tree::Owner>,
     release_owners: HashMap<String, (usize, u64)>,
     offer_origins: VecDeque<(String, usize, u64)>,
@@ -527,6 +528,7 @@ impl Coordinator {
         let retirement_jobs = jobs::Jobs::with_workers(retirement_limit, 2)?;
         let tree = Arc::new(Mutex::new(crate::tree::Tree::new()));
         let toasts = Arc::new(Mutex::new(toast::ToastStack::default()));
+        let diagnostics = Arc::new(Mutex::new(diagnostics::Store::default()));
         let offline = App::new(
             Endpoint::unavailable(),
             options.clone(),
@@ -538,6 +540,7 @@ impl Coordinator {
                 input: None,
                 tree: Arc::clone(&tree),
                 toasts: Arc::clone(&toasts),
+                diagnostics: Arc::clone(&diagnostics),
             },
         )?;
         let sessions = targets
@@ -555,6 +558,7 @@ impl Coordinator {
             started: false,
             tree,
             toasts,
+            diagnostics,
             tree_owner: None,
             release_owners: HashMap::new(),
             offer_origins: VecDeque::new(),
@@ -1137,6 +1141,7 @@ impl Coordinator {
                                     input: Some(input),
                                     tree: Arc::clone(&self.tree),
                                     toasts: Arc::clone(&self.toasts),
+                                    diagnostics: Arc::clone(&self.diagnostics),
                                 },
                             )
                         });

@@ -3647,3 +3647,221 @@ The [notification reference](../reference.md#notification-records-and-subscripti
 documents the API and the [design](../notifications.md) distinguishes implemented
 records/subscriptions from later desktop, UnifiedPush and hosted-relay adapters.
 No desktop/push delivery, OS display, user read or activation is claimed.
+
+## Progressive image delivery (2026-11-19)
+
+Status: implemented and accepted against isolated native/SSH and actual Kitty
+surfaces in light/dark, fancy/plain modes. The old-path measurements establish a
+failure mechanism, not proof of the user's transient incident.
+
+The user approved independent image delivery while text, cursor and input become
+usable. Missing images require an honest centered colored loading indicator,
+delayed to avoid a flash on fast transfers. Failures need one concise message per
+episode with technical details available separately; repeated typing must not
+produce duplicate toasts. An incomplete image scene is not complete physical
+presentation.
+
+### Reproduced inline-image failure
+
+`target/smoke/progressive-images/attach-evidence/summary.json` and
+`actual-5/evidence.json` retain an isolated UID-1000 native backend workload:
+two full-resolution RGBA images totaling 32 MiB, placements and styled text.
+Canonical image descriptors and final text fences establish complete content
+before measurement. The existing incremental-debug executable pair was preserved;
+no live sessions, credentials, profiles or model services were used.
+
+| Scenario | Declared payload bytes | Received payload bytes | Response time |
+| --- | ---: | ---: | ---: |
+| Cold, fast consumer | 33,561,893 | 33,561,893 | 109 ms |
+| Cold, 4 MiB/s consumer | 33,561,893 | 12,680,768 | 3,096 ms |
+| Cold, 4 MiB/s with CPU contention | 33,561,893 | 12,680,768 | 3,104 ms |
+| Warm image generations | 7,357 | 7,357 | 0.55 ms |
+
+Backpressured responses ended early with the production CLI's
+`failed to fill whole buffer`. Unrelated control requests completed in 2–3.1 ms.
+CPU contention alone completed the full fast response in 210 ms. These are
+native/proxy observations, not real-SSH or displayed-pixel timings. Both owned
+cleanup lists were empty. Earlier invalid fixture attempts remain labeled; use
+`actual-5` for the complete-content comparison.
+
+The old writer imposes a three-second deadline on the entire response, including
+periods of continuing progress. Raw uncached image bytes share that response with
+the scene. The response byte pool is `FRAME_WORKERS * MAX_RESPONSE`; the 64-MiB
+request budget is not the response budget.
+
+### Lossless codec decision
+
+`target/smoke/progressive-images/codec-evidence/final-summary.json` records 120
+optimized measurements over 15 resources, three warm samples each, plus cold
+context costs. The corpus includes retained synthetic terminal fixtures, two
+photographs and deterministic noise/alpha cases through 64 MiB. The standalone
+benchmark used release mode for this performance comparison; ordinary product
+verification remains incremental debug.
+
+Select maintained [`zstd` 0.14.4](https://github.com/gyscos/zstd-rs), default
+features disabled, level one, with Raw fallback when compression expands data.
+Use its established bundled-C backend, not the experimental Rust backend.
+`zstd`/`zstd-safe` use BSD-3-Clause; `zstd-sys` declares BSD-3-Clause AND
+BSD-2-Clause. Bundled Zstd's BSD notices apply. This adds the safe/sys binding
+pair and C compilation, not bindgen, dictionary training, multithreaded compression
+or a custom codec.
+
+Terminal screenshots of 3.52–5.57 MB compressed to 26.8–39.9 KB in 0.45–0.51 ms
+median warm encoding. Safe LZ4 decoded faster but used roughly two to three times
+the wire bytes. Existing PNG was also evaluated, including an explicit adaptive
+filter control. All measured round trips preserved exact RGB/RGBA bytes,
+including RGB hidden beneath zero alpha; malformed/truncated/oversized input
+checks passed.
+
+This is not a universal compression winner. Structured 64-MiB RGBA compressed to
+88 KB with balanced PNG versus 61 MB with Zstd level one. PNG also reduced some
+photographs further, but balanced PNG took over a second to encode 64-MiB noise.
+The chosen default favors predictable off-path CPU cost and good terminal-image
+compression without a speculative content-classification or race-all-codecs
+framework. Revisit that tradeoff against actual resource-path workloads.
+
+### Cutover contract
+
+Normal clients explicitly select `planus_progressive_v1`; the existing
+`planus_v1` remains an explicit inline API. Native family 11 and remote control 2
+remain unchanged. New semantics must be explicitly understood or rejected,
+not made globally mandatory by adding a bit to every frame header.
+
+Scenes carry validated image descriptors and placements separately from pixels.
+An authenticated pane/view-scoped resource request streams bounded binary
+preparation/start/data/end responses over the existing native/Yamux connection.
+No per-chunk round trip, second multiplexer, terminal parser or renderer is added.
+Image-generation receipts acknowledge only complete validated retained resources,
+independently of scene revisions.
+
+Compression and preparation are demand-driven, off the input/render path and
+outside registry locks. Shared immutable results, bounded queues/caches,
+generation/runtime scoping, separate bulk admission and cancellation must keep a
+slow image from blocking control or unrelated panes. Stall and total-lifetime
+bounds remain distinct; a trickling peer cannot hold resources forever. New
+diagnostics record stages, byte counts, elapsed time and error categories without
+pixel contents, prompts or credentials. Ordinary control keeps its existing
+three-second writer deadline; image streams have their own progress and lifetime
+bounds.
+
+### Native and real-SSH acceptance
+
+`target/smoke/progressive-images/resource-acceptance/actual-9/evidence.json`
+records complete acceptance against the frozen incremental-debug pair identified
+in `target/smoke/progressive-images/verified-pair-3.json`. Both workloads preserve
+independently computed original RGBA hashes, not hashes of a candidate-derived
+reference. Readers are individually paced at 4 MiB/s: two concurrent resource
+readers permit 8 MiB/s aggregate, unlike the old single-response 4-MiB/s case.
+These completion times are not physical presentation latency.
+
+| Workload | Decoded image bytes | Initial response incl. header | Encoded image bytes | Resource completion |
+| --- | ---: | ---: | ---: | ---: |
+| Original two-image workload | 33,554,432 | 7,581 | 3,290,377 | 396 ms |
+| Deterministic RGBA noise | 33,554,432 | 7,581 | 33,554,432 | 4,009 ms |
+
+The initial scene itself is 4,108 bytes and contains the complete descriptor
+manifest, styled text and placements, with no inline pixels. Explicit input
+reached each workload while resources were pending in 0.50–0.51 ms; that is a
+pane-process receipt, not proof of displayed pixels. CPU-contended readers,
+completed-only receipts, view switches and same-runtime registered reconnects
+also pass.
+
+Admission permits two active host-wide streams and four queued streams, at most
+two outstanding per registered client. The actual matrix rejects the client
+third/host seventh, preserves a coalesced reader after another cancels, and
+checks unrelated control/input. Generation replacement, view revocation,
+cross-session denial and explicit cancellation cannot install or receipt partial
+or stale pixels. A stopped reader retires under the five-second byte-stall
+bound; a continuously trickling reader cannot evade the 120-second total
+lifetime. Observed EOF includes already buffered bytes and is not an exact
+daemon retirement timestamp.
+
+Preparation uses two off-path workers, four queued jobs and at most 128 MiB of
+retained input pixel capacities. Shared encoded reuse is capped at 128 MiB and
+64 entries; capacities, not just body lengths, are charged. Queued observations
+retain weak images. Thirty-second preparation starts after active admission,
+separate from the total stream lifetime. Native resource frames are bounded
+before allocation to a 64-KiB data chunk plus a 4-KiB envelope; resource bytes
+remain capped at 64 MiB. Private gated unit regressions prove preparation
+coalescing and capacity limits; warm wire timing alone does not prove cache hits.
+
+Real loopback OpenSSH exercises production `RemoteSession`, existing Yamux and
+`Endpoint::image_resource`, including actual pane input and exact original
+pixel hashes for both workloads. Four malformed-resource proxy scenarios and
+sixteen direct decoder boundary cases cover checksum/truncation/concatenation,
+offsets/generations, decoded/encoded quotas, poisoning, expansion and hidden RGB
+under zero alpha. The preserved old native-11 daemon still serves the explicit
+inline API and rejects progressive encoding with `unsupported scene encoding`.
+No globally required capability or wire-family bump was introduced.
+
+Formatting, strict all-target workspace Clippy, doctests, warnings-denied API
+documentation and the complete actual-UID-1000 workspace test set pass:
+1,468 passed, 19 ignored. Evidence:
+`target/smoke/harness-integrations/build/checks-792780284945869/result.json`.
+Public debug/release executables retain their original hashes and inodes.
+Native/SSH owned-process survivors are empty, the private root is removed and
+the fixture host shuts down normally. No live session, user profile, credential,
+approval or model/provider service was used.
+
+Earlier `resource-acceptance/actual-1` through `actual-6` are incomplete fixture
+attempts, not complete acceptance. Fixes were confined to nested mount selection,
+typed attach-result mapping, readiness-marker presence after real echoed input
+and a shorter legacy private socket namespace. `actual-7` and `actual-8` are
+complete runs on earlier UI builds; `actual-9` validates the current final pair.
+Physical presentation is verified separately below.
+
+### Actual terminal presentation
+
+`target/smoke/progressive-images/ui-acceptance/run.wBBW8C/actual-11/acceptance.json`
+and each of its four case receipts pass against the same `576dfe7a…` /
+`c0639ff2…` pair. The parent's independent
+`target/smoke/progressive-images/joined-checks.tpaVjj/physical-evidence-receipt.json`
+checks case completion, exact executable hashes and empty per-case/namespace
+cleanup lists. The parent directly inspected final loading, complete-image,
+full-image-viewer, failure and Details captures.
+
+Both original 2048×2048 resources retain exact canonical pixels. Every complete
+270×216 on-screen image rectangle, including both magnified one-pixel fast-path
+resources, matches its independently rendered direct-Kitty reference exactly in
+all four modes. No image mask or pixel tolerance was used. Original placements
+sit wholly inside unoccluded pane content; earlier edge captures retain the
+existing recessed contour's expected shading separately. References match the
+full terminal grid, framebuffer and absolute placement coordinates, not just
+their cropped rectangles. This matters for host GPU resampling precision.
+
+The full-resolution viewer retains all four source corners and immutable
+2048×2048 identity. Pending whole Alt-click gestures never reach the application;
+ordinary SGR mouse input and explicit keyboard input still do. Native cursor
+position, visibility and shape, physical cursor footprint and dominant colors
+are preserved. Complete-image cursor captures match exactly in every mode.
+Pending cursor-only comparisons separately record the measured host text-raster
+edge precision, at most one channel unit; this is not an image-content tolerance.
+
+Loading is one centered passive annotation after 200 ms, not an opaque pane-wide
+plate. Styled underlays preserve their ink/background; blank cells select only
+among confirmed normal foreground/background colors using maintained Palette
+contrast math. Unknown RGB, explicit spinner ink and inverse encoding retain
+their existing contracts.
+
+| UI / application background | Styled caption contrast | Blank caption contrast |
+| --- | ---: | ---: |
+| Light UI / dark application | 13.02:1 | 15.88:1 |
+| Dark UI / light application | 10.42:1 | 15.27:1 |
+
+Shrink/redraw/restore, hidden-workspace interaction and modal coverage pass.
+Hidden or covered feedback produces no continuing output; fast completion
+contains no spinner bytes. Same-revision image arrival preserves canonical text
+and cursor facts. A malformed resource stops animation, keeps text/input usable,
+and produces one concise notification with a Details action. The report opens
+from the toast and `Ctrl-b !`, including after the toast expires. Repeated
+typing does not manufacture new incidents or discard typed unknown mutation
+outcomes.
+
+The source/controller archive is
+`run.wBBW8C/controller-sources-actual-11.tar.gz`, SHA-256
+`bc0e2da2b6451d02822c193f5457ef433d3526530204098327717cb8f00b710d`.
+Earlier UI attempts remain labeled rather than claimed as complete acceptance.
+They exposed the corrected annotation-color/blank-ink defects and independent
+fixture geometry, readiness, resize-redraw and reference-alignment issues.
+No user terminal, clipboard, approval, profile or provider/model service was
+used; owned processes and private roots are gone.

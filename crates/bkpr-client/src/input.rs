@@ -7,7 +7,7 @@ use std::{
     os::unix::net::UnixStream,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -19,6 +19,8 @@ const MAX_DEVICE_RESPONSES: usize = 2;
 const MAX_DEVICE_PAYLOAD_BYTES: usize = 2 * MAX_INPUT_BYTES;
 const MAX_POLICY_REQUESTS: usize = 8;
 const MAX_POLICY_PAYLOAD_BYTES: usize = 64 * 1024;
+
+static NEXT_FAILURE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InputLane {
@@ -187,6 +189,8 @@ fn payload_bytes(pane: &str, request: &PaneRequest) -> usize {
 
 #[derive(Clone, Debug)]
 pub(crate) struct InputFailure {
+    /// Nonzero failure identity, retained by clones of the same incident.
+    pub id: u64,
     pub pane_id: String,
     pub view_id: Option<String>,
     pub operation: &'static str,
@@ -197,6 +201,12 @@ pub(crate) struct InputFailure {
     pub error: String,
 }
 impl InputFailure {
+    /// Allocate an identity only when a new failure is emitted.
+    pub(crate) fn new_id() -> u64 {
+        NEXT_FAILURE_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .expect("input failure identities exhausted")
+    }
     fn context(operation: &Operation) -> Self {
         let Operation::Pane { pane_id, request } = operation else {
             unreachable!();
@@ -207,6 +217,7 @@ impl InputFailure {
             PaneRequest::Update { view_id, .. } => ("update", Some(view_id)),
             PaneRequest::Detach { view_id } => ("detach", Some(view_id)),
             PaneRequest::Poll { view_id, .. } => ("poll", Some(view_id)),
+            PaneRequest::ImageResource { view_id, .. } => ("image_resource", Some(view_id)),
             PaneRequest::Pin { view_id, .. } => ("pin", Some(view_id)),
             PaneRequest::Input { view_id, .. } => ("input", Some(view_id)),
             PaneRequest::Paste { view_id, .. } => ("paste", Some(view_id)),
@@ -224,6 +235,7 @@ impl InputFailure {
             PaneRequest::Shutdown => ("shutdown", None),
         };
         Self {
+            id: 0,
             pane_id: pane_id.clone(),
             view_id: view.cloned(),
             operation: name,
@@ -236,6 +248,7 @@ impl InputFailure {
     }
     pub(crate) fn admission(operation: &Operation, error: impl std::fmt::Display) -> InputRejected {
         let mut failure = Self::context(operation);
+        failure.id = Self::new_id();
         failure.error = error.to_string();
         InputRejected(failure)
     }
@@ -437,8 +450,10 @@ impl InputPump {
                     let select = matches!(&operation, Operation::Pane { request: PaneRequest::Select { .. }, .. });
                     let search = matches!(&operation, Operation::Pane { request: PaneRequest::Search { .. }, .. });
                     let mut context = InputFailure::context(&operation);
-                    let result = socket.checked(operation);
+                    let mut result = socket.checked(operation);
                     if let Err(error) = &result {
+                        context.id = InputFailure::new_id();
+                        let mut reported = None;
                         let shutdown_rejected = transport::shutdown_not_dispatched(error);
                         let expected_owner_rejection = colors && !transport::outcome_unknown(error)
                             && error.root_cause().to_string() == "only current size owner may seed terminal colors";
@@ -446,6 +461,7 @@ impl InputPump {
                         if expected_inspection_rejection {
                             if select || search {
                                 context.error = format!("{error:#}");
+                                reported = Some(context.clone());
                                 *noticed.lock().unwrap() = Some(context);
                                 notify(&wake);
                             }
@@ -457,11 +473,16 @@ impl InputPump {
                             if state.is_none() { *state = Some(LaneFailure { failure: context, reported: false }); }
                             else if cleanup {
                                 let previous = state.as_mut().unwrap();
+                                previous.failure.id = context.id;
                                 previous.failure.error.push_str(&format!("; cleanup also failed: {context}"));
                                 previous.failure.unknown_outcome |= context.unknown_outcome;
                                 previous.reported = false;
                             }
+                            reported = state.as_ref().map(|state| state.failure.clone());
                             notify(&wake);
+                        }
+                        if let Some(failure) = reported {
+                            result = result.map_err(|error| error.context(InputRejected(failure)));
                         }
                     }
                     completed = result;
@@ -590,6 +611,7 @@ impl InputPump {
             .send(QueuedInput { reserved, done })
             .map_err(|_| {
                 let mut failure = context;
+                failure.id = InputFailure::new_id();
                 failure.error = "pane input worker disconnected".into();
                 InputRejected(failure)
             })?;

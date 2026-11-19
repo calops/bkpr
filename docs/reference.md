@@ -1116,8 +1116,39 @@ The viewer shows the full decoded image rather than the placement's crop and
 pins that immutable generation until dismissal. It follows terminal resizing,
 works in input-read-only views, and blocks typing and paste from reaching the
 pane while open. It requires confirmed Kitty graphics support, independently
-of fancy chrome. No backend image-fetch API, image archive, original-file metadata,
-or persistent settings are added.
+of fancy chrome. The viewer uses complete client-retained resources; it does not
+read original files or create an image archive or persistent settings.
+
+Pane scenes and image delivery have separate lifecycles. Progressive scenes
+carry text, cursor, placements and validated image descriptors without waiting
+for pixel bodies. Images arrive losslessly on bounded resource streams over the
+existing local or SSH connection. Input remains usable while images load.
+
+If visible images remain pending for 200 ms, one colored loading indicator
+appears in the center of that pane. Fast loads do not flash an indicator.
+Loading decoration owns no cursor, focus or pointer input. A terminal image
+failure stops loading feedback without discarding usable text; one concise
+notification represents that failure episode. Details retain the technical cause
+and outcome instead of repeating a wall of text on every keypress.
+A slow initial attach uses the same delay with a generic `Loading pane…` label
+until image demand is known. Click Details on an error notification, or press
+`Ctrl-b !`, to open the diagnostic report.
+
+Only complete validated resources enter the image cache or become receipt keys.
+Caches are bounded and scoped to the owning runtime, pane and exact image
+generation. Old or canceled transfers cannot install new pixels. Pending images
+cannot open a full-image viewer; their modified click is not forwarded into the
+application. Unsupported graphics still get an honest unsupported-content
+indication rather than endless loading.
+
+Native clients opt in with `planus_progressive_v1`; `planus_v1` remains the
+explicit inline API. A pane/view-authorized `ImageResource` request receives a
+binary preparation/start/data/end stream, not one round trip per chunk or pixel
+bytes embedded in JSON. Scene revisions and fully retained image receipts are
+independent. New progressive clients require a supporting daemon; native family
+11 and remote control 2 remain unchanged, and normal execution never replaces a
+running daemon automatically. Transfer failures distinguish stalls, total
+lifetime and cancellation; no unknown mutation or keyboard input is replayed.
 
 Normal-sized panes share a one-cell separator in both orientations and presentation
 modes, rather than reserving two borders plus another divider. PTY size, pointer

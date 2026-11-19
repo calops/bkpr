@@ -482,7 +482,11 @@ table PaneRequestTerminate {
 table PaneRequestShutdown {
 
 }
-union PaneRequest { PaneRequestInspect, PaneRequestAttach, PaneRequestUpdate, PaneRequestDetach, PaneRequestPoll, PaneRequestPin, PaneRequestInput, PaneRequestPaste, PaneRequestPasteContents, PaneRequestKey, PaneRequestMouse, PaneRequestFocus, PaneRequestScroll, PaneRequestSelect, PaneRequestCopySelection, PaneRequestSearch, PaneRequestClipboard, PaneRequestColors, PaneRequestTerminate, PaneRequestShutdown }
+table PaneRequestImageResource {
+  view_id:string (required);
+  key:ImageKey (required);
+}
+union PaneRequest { PaneRequestInspect, PaneRequestAttach, PaneRequestUpdate, PaneRequestDetach, PaneRequestPoll, PaneRequestPin, PaneRequestInput, PaneRequestPaste, PaneRequestPasteContents, PaneRequestKey, PaneRequestMouse, PaneRequestFocus, PaneRequestScroll, PaneRequestSelect, PaneRequestCopySelection, PaneRequestSearch, PaneRequestClipboard, PaneRequestColors, PaneRequestTerminate, PaneRequestShutdown, PaneRequestImageResource }
 table SearchActionQuery {
   text:string (required);
 }
@@ -672,7 +676,26 @@ union ValueBody { NullValue, BoolValue, SignedValue, UnsignedValue, FloatValue, 
 table Value { body:ValueBody (required); }
 table ControlPayload { value:Value (required); }
 table PanePayload { metadata:Value (required); scene:[ubyte]; }
-union Payload { ControlPayload, PanePayload }
+enum ImagePixelFormat : ubyte { Rgb, Rgba, GrayAlpha, Gray }
+enum ImageEncoding : ubyte { Raw, Zstd }
+table ImageDescriptor {
+  key:ImageKey (required);
+  width:uint;
+  height:uint;
+  format:ImagePixelFormat;
+  decoded_len:ulong;
+}
+table ImagePreparing { descriptor:ImageDescriptor (required); }
+table ImageStart {
+  descriptor:ImageDescriptor (required);
+  encoding:ImageEncoding;
+  encoded_len:ulong;
+}
+table ImageData { key:ImageKey (required); offset:ulong; data:[ubyte] (required); }
+table ImageEnd { key:ImageKey (required); encoded_len:ulong; }
+union ImageResource { ImagePreparing, ImageStart, ImageData, ImageEnd }
+table ImageResourcePayload { value:ImageResource (required); }
+union Payload { ControlPayload, PanePayload, ImageResourcePayload }
 table Request { version:uint; operation:Operation (required); }
 table OptionalPayload { value:Payload (required); }
 table OptionalFailure { value:RequestFailure (required); }

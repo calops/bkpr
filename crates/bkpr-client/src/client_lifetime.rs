@@ -4,7 +4,8 @@ use super::{
 };
 use anyhow::{Context, Result, bail, ensure};
 use bkpr_protocol::{
-    ClientAuthority, Operation, PaneSnapshot, Payload, Request, SessionInfo, scene_wire,
+    ClientAuthority, IMAGE_RESOURCE_MAX_FRAME, Image, ImageDescriptor, ImageResource,
+    ImageTransfer, Operation, PaneRequest, PaneSnapshot, Payload, Request, SessionInfo, scene_wire,
     wire::{self, Codec, Kind},
 };
 use serde::Deserialize;
@@ -25,6 +26,28 @@ use std::{
 };
 
 const MAX_LIFETIME_PAYLOAD: usize = 64 * 1024;
+
+/// Current body-free phase of a request-scoped immutable image transfer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageResourcePhase {
+    /// Waiting for backend preparation of the accepted descriptor.
+    Preparing,
+    /// Receiving a declared lossless body.
+    Receiving,
+    /// End arrived; validation and bounded decoding are in progress.
+    Decoding,
+}
+
+/// Latest encoded-byte progress; this is neither a receipt nor pixel presentation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageResourceProgress {
+    /// Preparation, reception or decoding phase.
+    pub phase: ImageResourcePhase,
+    /// Validated encoded bytes received.
+    pub received: u64,
+    /// Exact announced body length, unknown until Start.
+    pub total: Option<u64>,
+}
 const LIFECYCLE_READ_BUDGET: usize = 16 * 1024;
 
 #[derive(Debug)]
@@ -80,7 +103,8 @@ fn observational(operation: &Operation) -> bool {
             }
             | Operation::Pane {
                 request: bkpr_protocol::PaneRequest::Inspect
-                    | bkpr_protocol::PaneRequest::Poll { .. },
+                    | bkpr_protocol::PaneRequest::Poll { .. }
+                    | bkpr_protocol::PaneRequest::ImageResource { .. },
                 ..
             }
     )
@@ -115,6 +139,8 @@ pub(crate) enum ConnectionPurpose {
     Lifetime,
     Control,
     Observation,
+    /// Bulk reception cannot consume observation, control or lifetime admission.
+    Bulk,
 }
 
 /// Opens worker-owned streams without retaining attachment lifetime ownership.
@@ -197,6 +223,7 @@ impl Connector for LocalConnector {
 pub struct Endpoint {
     connector: Arc<dyn Connector>,
     lease: Arc<Lease>,
+    bulk: Arc<tokio::sync::Semaphore>,
 }
 
 impl Endpoint {
@@ -207,6 +234,7 @@ impl Endpoint {
     fn from_connector(connector: Arc<dyn Connector>, authority: Option<ClientAuthority>) -> Self {
         Self {
             connector,
+            bulk: Arc::new(tokio::sync::Semaphore::new(2)),
             lease: Arc::new(Lease {
                 authority,
                 cancellation: tokio_util::sync::CancellationToken::new(),
@@ -336,6 +364,101 @@ impl Endpoint {
                 }?;
                 checked_response(response)
             } => response,
+        };
+        result.map_err(super::observation_error)
+    }
+
+    /// Fetch one immutable image on a dedicated worker. The original authority,
+    /// bulk permit and in-flight cancellation guard survive until validated End.
+    /// Cancellation, revocation and rejection terminate without replay.
+    pub async fn image_resource(
+        &self,
+        pane: &str,
+        view: &str,
+        descriptor: &ImageDescriptor,
+        cancellation: &tokio_util::sync::CancellationToken,
+        mut progress: impl FnMut(ImageResourceProgress) + Send,
+    ) -> Result<Image> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        self.ensure_live()?;
+        let mut transfer = ImageTransfer::new(*descriptor)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        let mut latest = ImageResourceProgress {
+            phase: ImageResourcePhase::Preparing,
+            received: 0,
+            total: None,
+        };
+        let result = tokio::select! {
+            biased;
+            _ = self.wait_revoked() => bail!("image resource authority revoked"),
+            _ = cancellation.cancelled() => bail!("image resource cancelled"),
+            result = tokio::time::timeout(Duration::from_secs(120), async {
+                let _permit = self.bulk.acquire().await.context("image bulk admission closed")?;
+                let stream = self.connector.connect_async(ConnectionPurpose::Bulk, cancellation).await?;
+                let _inflight = self.track_request(&stream, true)?;
+                stream.set_nonblocking(true)?;
+                let mut stream = tokio::net::UnixStream::from_std(stream)?;
+                let operation = Operation::Pane {
+                    pane_id: pane.to_owned(),
+                    request: PaneRequest::ImageResource { view_id: view.to_owned(), key: descriptor.key },
+                };
+                let mut codec = Codec::new();
+                let payload = match &self.lease.authority {
+                    Some(authority) => codec.encode_client_request(authority, &operation)?,
+                    None => codec.encode_request(&Request::new(operation))?,
+                };
+                let frame = wire::encode_frame(Kind::Request, payload)?;
+                self.ensure_live()?;
+                tokio::time::timeout(Duration::from_secs(5), stream.write_all(&frame))
+                    .await.context("image request write deadline")??;
+                loop {
+                    let response = tokio::time::timeout(Duration::from_secs(5), async {
+                        let mut header = [0; wire::HEADER_LEN];
+                        stream.read_exact(&mut header).await?;
+                        let length = wire::frame_payload_len(
+                            &header, Kind::Response, IMAGE_RESOURCE_MAX_FRAME,
+                        )?;
+                        let mut body = vec![0; length];
+                        stream.read_exact(&mut body).await?;
+                        validate_response(wire::decode_response_owned(body)?)
+                    }).await.context("image resource stalled")??;
+                    let Payload::ImageResource(resource) = checked_payload_response(response)? else {
+                        bail!("image resource response omitted stream payload");
+                    };
+                    self.ensure_live()?;
+                    ensure!(!cancellation.is_cancelled(), "image resource cancelled");
+                    let end = matches!(resource, ImageResource::End { .. });
+                    if end {
+                        latest.phase = ImageResourcePhase::Decoding;
+                        progress(latest);
+                    }
+                    let update = match &resource {
+                        ImageResource::Preparing { .. } => ImageResourceProgress {
+                            phase: ImageResourcePhase::Preparing, ..latest
+                        },
+                        ImageResource::Start { encoded_len, .. } => ImageResourceProgress {
+                            phase: ImageResourcePhase::Receiving, received: 0, total: Some(*encoded_len),
+                        },
+                        ImageResource::Data { offset, data, .. } => ImageResourceProgress {
+                            received: offset + data.len() as u64, ..latest
+                        },
+                        ImageResource::End { .. } => latest,
+                    };
+                    let image = transfer.accept(resource, || {
+                        cancellation.is_cancelled() || self.lease.cancellation.is_cancelled()
+                            || std::time::Instant::now() >= deadline
+                    })?;
+                    if !end {
+                        latest = update;
+                        progress(latest);
+                    }
+                    if let Some(image) = image {
+                        self.ensure_live()?;
+                        ensure!(!cancellation.is_cancelled(), "image resource cancelled");
+                        return Ok(image);
+                    }
+                }
+            }) => result.context("image resource total deadline")?,
         };
         result.map_err(super::observation_error)
     }
@@ -869,6 +992,219 @@ mod tests {
     use super::*;
     use bkpr_protocol::{ClientEvent, PROTOCOL_VERSION, Response};
     use std::{io::Write, os::unix::net::UnixListener, sync::mpsc, thread};
+
+    #[test]
+    fn resource_frame_limit_rejects_oversized_header_without_waiting_for_body() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("resource.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            super::super::test_wire::read_request(&mut stream).unwrap();
+            let frame =
+                wire::encode_frame(Kind::Response, &[0; IMAGE_RESOURCE_MAX_FRAME + 1]).unwrap();
+            stream.write_all(&frame[..wire::HEADER_LEN]).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+        });
+        let endpoint = Endpoint::unmanaged(&socket);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert!(
+            runtime
+                .block_on(endpoint.image_resource(
+                    "pane",
+                    "view",
+                    &resource_descriptor(),
+                    &tokio_util::sync::CancellationToken::new(),
+                    |_| {},
+                ))
+                .is_err()
+        );
+        server.join().unwrap();
+    }
+
+    fn resource_descriptor() -> ImageDescriptor {
+        ImageDescriptor {
+            key: bkpr_protocol::ImageKey {
+                id: 9,
+                generation: 3,
+            },
+            width: 1,
+            height: 1,
+            format: bkpr_protocol::PixelFormat::Rgb,
+            decoded_len: 3,
+        }
+    }
+
+    fn resource_frame(resource: ImageResource) -> Vec<u8> {
+        reply(Response {
+            version: PROTOCOL_VERSION,
+            ok: true,
+            result: Some(Payload::ImageResource(resource)),
+            error: None,
+            failure: None,
+        })
+    }
+
+    #[test]
+    fn authenticated_resource_stream_keeps_one_request_and_inflight_guard_through_end() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("resource.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let descriptor = resource_descriptor();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = super::super::test_wire::read_request(&mut stream).unwrap();
+            let Operation::Client { authority, request } = request.operation else {
+                panic!("missing authority");
+            };
+            assert_eq!(authority.client_id, "client");
+            assert_eq!(authority.token, "fixture-token");
+            assert!(matches!(*request, Operation::Pane {
+                pane_id, request: PaneRequest::ImageResource { view_id, key },
+            } if pane_id == "pane" && view_id == "view" && key == descriptor.key));
+            let frames = [
+                ImageResource::Preparing { descriptor },
+                ImageResource::Start {
+                    descriptor,
+                    encoding: bkpr_protocol::ImageEncoding::Raw,
+                    encoded_len: 3,
+                },
+                ImageResource::Data {
+                    key: descriptor.key,
+                    offset: 0,
+                    data: vec![1, 2, 3].into(),
+                },
+                ImageResource::End {
+                    key: descriptor.key,
+                    encoded_len: 3,
+                },
+            ]
+            .into_iter()
+            .flat_map(resource_frame)
+            .collect::<Vec<_>>();
+            stream.write_all(&frames).unwrap();
+        });
+        let endpoint = Endpoint::new(
+            &socket,
+            Some(ClientAuthority {
+                client_id: "client".into(),
+                token: "fixture-token".into(),
+            }),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut phases = Vec::new();
+        let image = runtime
+            .block_on(endpoint.image_resource(
+                "pane",
+                "view",
+                &descriptor,
+                &tokio_util::sync::CancellationToken::new(),
+                |progress| {
+                    assert_eq!(endpoint.lease.state.lock().unwrap().requests.len(), 1);
+                    assert_eq!(endpoint.bulk.available_permits(), 1);
+                    phases.push(progress);
+                },
+            ))
+            .unwrap();
+        assert_eq!(image.pixels, [1, 2, 3]);
+        assert_eq!(phases.last().unwrap().phase, ImageResourcePhase::Decoding);
+        assert_eq!(phases.last().unwrap().received, 3);
+        assert!(endpoint.lease.state.lock().unwrap().requests.is_empty());
+        assert_eq!(endpoint.bulk.available_permits(), 2);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn cancelling_or_revoking_resource_stream_closes_original_connection_and_releases_admission() {
+        for revoke in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("resource.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let descriptor = resource_descriptor();
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                super::super::test_wire::read_request(&mut stream).unwrap();
+                stream
+                    .write_all(&resource_frame(ImageResource::Preparing { descriptor }))
+                    .unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+            });
+            let endpoint = Endpoint::unmanaged(&socket);
+            let cancellation = tokio_util::sync::CancellationToken::new();
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let result = runtime.block_on(endpoint.image_resource(
+                "pane",
+                "view",
+                &descriptor,
+                &cancellation,
+                |_| {
+                    if revoke {
+                        endpoint.lease.revoke();
+                    } else {
+                        cancellation.cancel();
+                    }
+                },
+            ));
+            assert!(result.is_err());
+            assert!(endpoint.lease.state.lock().unwrap().requests.is_empty());
+            assert_eq!(endpoint.bulk.available_permits(), 2);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn typed_resource_rejection_preserves_not_dispatched_outcome() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("resource.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            super::super::test_wire::read_request(&mut stream).unwrap();
+            stream
+                .write_all(&reply(Response {
+                    version: PROTOCOL_VERSION,
+                    ok: false,
+                    result: None,
+                    error: Some("session closing".into()),
+                    failure: Some(bkpr_protocol::RequestFailure::SessionClosing {
+                        outcome: bkpr_protocol::RequestOutcome::NotDispatched,
+                    }),
+                }))
+                .unwrap();
+        });
+        let endpoint = Endpoint::unmanaged(&socket);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let error = runtime
+            .block_on(endpoint.image_resource(
+                "pane",
+                "view",
+                &resource_descriptor(),
+                &tokio_util::sync::CancellationToken::new(),
+                |_| {},
+            ))
+            .unwrap_err();
+        assert!(super::super::shutdown_not_dispatched(&error));
+        assert!(!super::super::outcome_unknown(&error));
+        server.join().unwrap();
+    }
 
     #[test]
     fn source_capture_resolves_relative_raw_paths_and_preserves_intentional_absence() {
