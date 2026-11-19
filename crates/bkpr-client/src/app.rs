@@ -432,7 +432,7 @@ impl SidebarTitleAnimation {
                 },
                 effect: bkpr_tui_framework::animation::TextSweep {
                     highlight: color.bright(),
-                    half_width_cells: 8.0,
+                    half_width_cells: 10.0,
                     cells_per_second: 32.0,
                 },
             });
@@ -459,11 +459,11 @@ impl SidebarTitleAnimation {
     fn apply(&self, frame: &mut bkpr_protocol::Frame) {
         self.restore(frame);
         for span in &self.spans {
-            span.effect.apply_repeated(
+            span.effect.apply_periodic(
                 frame,
                 span.rect,
                 self.clock.elapsed(),
-                std::num::NonZeroU16::new(2).unwrap(),
+                f64::from(span.rect.width) * 0.5 + 8.0,
             );
         }
     }
@@ -4993,7 +4993,17 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
     );
     let terminal = TerminalGuard::enter()?;
     let initial_size = dimensions()?;
-    let mut graphics = crate::chrome_graphics::ChromeGraphics::new()?;
+    let cache_root = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .map(|path| path.join(".cache"))
+        })
+        .map(|path| path.join("bkpr/chrome"));
+    let mut graphics = crate::chrome_graphics::ChromeGraphics::new(cache_root)?;
     let (mut resize_read, resize_write) = std::os::unix::net::UnixStream::pair()?;
     resize_read.set_nonblocking(true)?;
     resize_write.set_nonblocking(true)?;
@@ -6512,6 +6522,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     });
                 }
                 let scene = Scene { size, surfaces };
+                graphics.register_uploads(&mut terminal);
                 renderer.render(&mut out, &scene, &app.colors, &mut terminal)?;
                 let ready = unsafe {
                     libc::poll(

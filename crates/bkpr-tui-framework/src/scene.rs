@@ -3365,6 +3365,7 @@ mod scene_tests {
         let [width, height] = atlas_size(style, cell).unwrap();
         let decoration = PreparedDecoration {
             style,
+            png: None,
             cell,
             image: Arc::new(Image {
                 id: 11,
