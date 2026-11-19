@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="3.75 1.25 100 100" width="512" height="512" role="img" aria-labelledby="title">
+  <title id="title">bkpr</title>
+  <path d="M31.48 14.5 V75 L54 88 L76.52 75 V49 L54 36 L31.48 49" fill="none" stroke="#F1ECE0" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M43 55 l7 7 l-7 7" fill="none" stroke="#F1ECE0" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M54 69 H65" stroke="#F2A516" stroke-width="4.5" stroke-linecap="round"/>
+</svg>

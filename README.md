@@ -1,4 +1,9 @@
-# Bkpr
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/bkpr-banner-dark.svg">
+    <img src="assets/logo/bkpr-banner-light.svg" alt="Bkpr" width="360">
+  </picture>
+</h1>
 
 Bkpr is a native terminal multiplexer for working across projects, machines and
 coding agents. Keep shells and native agent UIs in split panes, organize them

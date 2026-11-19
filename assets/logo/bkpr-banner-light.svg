@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="6 -26 274 162" width="548" height="324" role="img" aria-labelledby="title">
+  <title id="title">bkpr</title>
+  <path d="M31.48 14.5 V75 L54 88 L76.52 75 V49 L54 36 L31.48 49" fill="none" stroke="#1A1E26" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M43 55 l7 7 l-7 7" fill="none" stroke="#1A1E26" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M54 69 H65" stroke="#E8990B" stroke-width="4.5" stroke-linecap="round"/>
+  <g fill="none" stroke="#1A1E26" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M100.5 14.5 V83.5 M154.5 49 V109.5 M223.5 49 V83.5" stroke-width="9"/>
+    <path d="M100.5 70 L128.5 44 M112.5 59 L130.5 83.5" stroke-width="9"/>
+    <polygon points="177,36 199.52,49 199.52,75 177,88 154.48,75 154.48,49" stroke-width="9"/>
+    <path d="M223.5 49 L246.02 36 L255.5 41.47" stroke-width="9"/>
+  </g>
+  <path d="M68.8 36.5 C76 18 92 -8 142 -6 S208 -2 226 8" fill="none" stroke="#1A1E26" stroke-width="2.2" stroke-dasharray="3.5 4" stroke-linecap="round"/>
+  <g transform="translate(240 10) rotate(20) scale(1.7)">
+    <g fill="none" stroke="#1A1E26" stroke-width="1.8">
+      <ellipse cx="-3" cy="-5" rx="3.2" ry="5" transform="rotate(-25 -3 -5)"/>
+      <ellipse cx="3" cy="-5" rx="3.2" ry="5" transform="rotate(25 3 -5)"/>
+    </g>
+    <ellipse cx="0" cy="1" rx="5.5" ry="4.2" fill="#E8990B"/>
+    <rect x="-1.1" y="-3" width="2.2" height="8" fill="#1A1E26"/>
+  </g>
+</svg>
