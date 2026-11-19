@@ -1,3 +1,4 @@
+pub use crate::prepared_png::PreparedPng;
 use anyhow::{Context, Result, bail};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use bkpr_protocol::*;
@@ -41,6 +42,8 @@ struct TextState {
 
 const MAX_CACHED_PROJECTIONS: usize = 512;
 const MAX_CACHED_PROJECTION_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PREPARED_PNGS: usize = 64;
+const MAX_PREPARED_PNG_BYTES: usize = 16 * 1024 * 1024;
 
 struct ProjectionResource {
     id: u32,
@@ -53,6 +56,8 @@ struct GraphicsState {
     image_ids: HashMap<ImageKey, u32>,
     derived_ids: hashlink::LinkedHashMap<geometry::DerivedKey, ProjectionResource>,
     derived_bytes: usize,
+    prepared_pngs: hashlink::LinkedHashMap<usize, PreparedPng>,
+    prepared_png_bytes: usize,
     text: TextState,
     projections: Vec<geometry::Projection>,
 }
@@ -63,6 +68,8 @@ impl GraphicsState {
             image_ids: HashMap::new(),
             derived_ids: hashlink::LinkedHashMap::new(),
             derived_bytes: 0,
+            prepared_pngs: hashlink::LinkedHashMap::new(),
+            prepared_png_bytes: 0,
             text: TextState::default(),
             projections: Vec::new(),
         }
@@ -78,6 +85,47 @@ impl GraphicsState {
         self.image_ids
             .values()
             .chain(self.derived_ids.values().map(|resource| &resource.id))
+    }
+
+    fn purge_expired_pngs(&mut self) {
+        let bytes = &mut self.prepared_png_bytes;
+        self.prepared_pngs.retain(|_, source| {
+            if source.is_live() {
+                true
+            } else {
+                *bytes -= source.byte_len();
+                false
+            }
+        });
+    }
+
+    fn register_prepared_pngs<'a>(&mut self, sources: impl IntoIterator<Item = &'a PreparedPng>) {
+        self.purge_expired_pngs();
+        for source in sources {
+            let bytes = source.byte_len();
+            if !source.is_live() || bytes > MAX_PREPARED_PNG_BYTES {
+                continue;
+            }
+            let key = source.source_id();
+            if self.prepared_pngs.to_back(&key).is_some() {
+                continue;
+            }
+            while self.prepared_pngs.len() >= MAX_PREPARED_PNGS
+                || self.prepared_png_bytes + bytes > MAX_PREPARED_PNG_BYTES
+            {
+                let (_, evicted) = self.prepared_pngs.pop_front().unwrap();
+                self.prepared_png_bytes -= evicted.byte_len();
+            }
+            self.prepared_pngs.insert(key, source.clone());
+            self.prepared_png_bytes += bytes;
+        }
+    }
+
+    fn prepared_png(&self, image: &Image) -> Option<&[u8]> {
+        self.prepared_pngs
+            .get(&(std::ptr::from_ref(image) as usize))
+            .filter(|source| source.matches(image))
+            .map(PreparedPng::bytes)
     }
 
     fn prepare_projection_cache(
@@ -154,6 +202,15 @@ pub struct TerminalGuard {
     observed_focus: Option<bool>,
 }
 impl TerminalGuard {
+    /// Retain bounded worker-verified PNG transports for exact source allocations.
+    /// Expired sources are purged; registration performs no codec or disk work.
+    pub fn register_prepared_pngs<'a>(
+        &mut self,
+        sources: impl IntoIterator<Item = &'a PreparedPng>,
+    ) {
+        self.graphics.register_prepared_pngs(sources);
+    }
+
     /// Positively correlated physical-terminal features, or unknown.
     pub fn notification_capabilities(&self) -> Option<crate::notification::Capabilities> {
         self.notification_probe.capabilities()
@@ -497,6 +554,17 @@ fn transmit_image(
             (100, Cow::Owned(encoded))
         }
     };
+    transmit_image_payload(out, id, width, height, format, &pixels)
+}
+
+fn transmit_image_payload(
+    out: &mut impl Write,
+    id: u32,
+    width: u32,
+    height: u32,
+    format: u8,
+    pixels: &[u8],
+) -> Result<()> {
     // Encode one protocol chunk at a time rather than allocating a second
     // image-sized base64 string alongside canonical/derived raster buffers.
     let mut encoded = [0u8; 4096];
@@ -609,6 +677,7 @@ fn draw_prepared(
         graphics,
         background: physical_background,
     } = target;
+    graphics.purge_expired_pngs();
     // Scene strings are never interpreted as terminal programs. Only renderer-owned
     // escapes and validated normalized colors/positions reach the physical terminal.
     if frame.rows.len() > frame.size.rows as usize
@@ -764,14 +833,18 @@ fn draw_prepared(
         }
         let id = graphics.allocate()?;
         graphics.image_ids.insert(*key, id);
-        transmit_image(
-            out,
-            id,
-            image.width,
-            image.height,
-            image.format,
-            &image.pixels,
-        )?;
+        if let Some(png) = graphics.prepared_png(image) {
+            transmit_image_payload(out, id, image.width, image.height, 100, png)?;
+        } else {
+            transmit_image(
+                out,
+                id,
+                image.width,
+                image.height,
+                image.format,
+                &image.pixels,
+            )?;
+        }
     }
     for p in prepared.placements.iter().filter(|_| placements_changed) {
         let id = if let Some(key) = p.derived {
@@ -3051,5 +3124,246 @@ mod graphics_query_lifecycle_tests {
         assert!(!probe.supported());
         assert_eq!(probe.next_deadline(), None);
         assert!(!probe.expire(deadline + std::time::Duration::from_secs(1)));
+    }
+}
+
+#[cfg(test)]
+mod prepared_png_tests {
+    use super::*;
+    use crate::prepared_png::{decode, encode};
+
+    #[derive(Debug)]
+    struct Upload {
+        format: u8,
+        id: u32,
+        width: u32,
+        height: u32,
+        payload: Vec<u8>,
+    }
+
+    fn uploads(mut output: &[u8]) -> Vec<Upload> {
+        let mut uploads: Vec<Upload> = Vec::new();
+        while let Some(start) = output.windows(3).position(|bytes| bytes == b"\x1b_G") {
+            output = &output[start + 3..];
+            let end = output
+                .windows(2)
+                .position(|bytes| bytes == b"\x1b\\")
+                .unwrap();
+            let packet = std::str::from_utf8(&output[..end]).unwrap();
+            output = &output[end + 2..];
+            let Some((header, payload)) = packet.split_once(';') else {
+                continue;
+            };
+            let fields: HashMap<_, _> = header
+                .split(',')
+                .map(|field| field.split_once('=').unwrap())
+                .collect();
+            if fields.get("a") == Some(&"t") {
+                uploads.push(Upload {
+                    format: fields["f"].parse().unwrap(),
+                    id: fields["i"].parse().unwrap(),
+                    width: fields["s"].parse().unwrap(),
+                    height: fields["v"].parse().unwrap(),
+                    payload: Vec::new(),
+                });
+            } else {
+                assert_eq!(fields.len(), 1);
+                assert!(fields.contains_key("m"));
+            }
+            uploads
+                .last_mut()
+                .unwrap()
+                .payload
+                .extend(BASE64.decode(payload).unwrap());
+        }
+        uploads
+    }
+
+    fn image(width: u32, height: u32, format: PixelFormat) -> Arc<Image> {
+        let mut random = 1u32;
+        let pixels = (0..width as usize * height as usize * format.bytes_per_pixel())
+            .map(|_| {
+                random ^= random << 13;
+                random ^= random >> 17;
+                random ^= random << 5;
+                random as u8
+            })
+            .collect();
+        Arc::new(Image {
+            id: 7,
+            generation: 3,
+            width,
+            height,
+            format,
+            pixels,
+        })
+    }
+
+    fn terminal() -> std::mem::ManuallyDrop<TerminalGuard> {
+        std::mem::ManuallyDrop::new(TerminalGuard {
+            graphics: GraphicsState::new(1000),
+            kitty_keyboard: false,
+            clipboard_mode: None,
+            requested_clipboard_mode: None,
+            theme_mode: None,
+            background: background::Background::default(),
+            notification_probe: crate::notification::Probe::default(),
+            notifications: VecDeque::new(),
+            observed_focus: None,
+        })
+    }
+
+    fn paint(terminal: &mut TerminalGuard, image: Arc<Image>) -> Vec<Upload> {
+        let size = Size {
+            cols: image.width as u16,
+            rows: image.height as u16,
+            cell_width: 1,
+            cell_height: 1,
+        };
+        let mut frame = graphics_frame(size);
+        frame.placements.push(Placement {
+            image_id: image.id,
+            generation: image.generation,
+            placement_id: 1,
+            col: 0,
+            row: 0,
+            offset_x: 0,
+            offset_y: 0,
+            width: image.width,
+            height: image.height,
+            source_x: 0,
+            source_y: 0,
+            source_width: image.width,
+            source_height: image.height,
+            layer: ImageLayer::AboveText,
+            z: 0,
+        });
+        frame.images.push(image);
+        let mut output = Vec::new();
+        draw(
+            &mut output,
+            &frame,
+            size,
+            "",
+            &ColorProbe::default(),
+            &mut terminal.graphics,
+        )
+        .unwrap();
+        uploads(&output)
+    }
+
+    #[test]
+    fn exact_registered_source_uploads_original_png_bytes_in_chunks() {
+        let image = image(64, 32, PixelFormat::Rgba);
+        let encoded = encode(image.width, image.height, image.format, &image.pixels).unwrap();
+        assert!(encoded.len() > 3072);
+        let prepared = PreparedPng::from_verified(&image, encoded.clone());
+        let mut terminal = terminal();
+        terminal.register_prepared_pngs([&prepared]);
+        let uploads = paint(&mut terminal, image);
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(uploads[0].format, 100);
+        assert_eq!(uploads[0].id, 1001);
+        assert_eq!((uploads[0].width, uploads[0].height), (64, 32));
+        assert_eq!(uploads[0].payload, encoded.as_ref());
+    }
+
+    #[test]
+    fn same_native_ids_and_pixels_do_not_grant_another_allocation_png_transport() {
+        let original = image(4, 2, PixelFormat::Rgba);
+        let encoded = encode(4, 2, original.format, &original.pixels).unwrap();
+        let prepared = PreparedPng::from_verified(&original, encoded);
+        for change_pixels in [false, true] {
+            let mut other = original.as_ref().clone();
+            if change_pixels {
+                other.pixels[0] ^= 255;
+            }
+            let other = Arc::new(other);
+            let mut terminal = terminal();
+            terminal.register_prepared_pngs([&prepared]);
+            let uploads = paint(&mut terminal, other.clone());
+            assert_eq!(uploads.len(), 1);
+            assert_eq!(uploads[0].format, 32);
+            assert_eq!(uploads[0].id, 1001);
+            assert_eq!(uploads[0].payload, other.pixels);
+        }
+    }
+
+    #[test]
+    fn unregistered_channel_formats_keep_exact_existing_transport() {
+        for (format, wire_format) in [
+            (PixelFormat::Rgb, 24),
+            (PixelFormat::Rgba, 32),
+            (PixelFormat::Gray, 100),
+            (PixelFormat::GrayAlpha, 100),
+        ] {
+            let source = image(4, 2, format);
+            let uploads = paint(&mut terminal(), source.clone());
+            assert_eq!(uploads.len(), 1);
+            assert_eq!(uploads[0].format, wire_format);
+            if wire_format == 100 {
+                assert_eq!(
+                    decode(&uploads[0].payload, 4, 2, format).unwrap(),
+                    source.pixels
+                );
+            } else {
+                assert_eq!(uploads[0].payload, source.pixels);
+            }
+        }
+    }
+
+    #[test]
+    fn registration_bounds_resources_and_releases_expired_sources() {
+        let source = image(1, 1, PixelFormat::Rgba);
+        let encoded = encode(1, 1, source.format, &source.pixels).unwrap();
+        let images: Vec<_> = (0..MAX_PREPARED_PNGS + 1)
+            .map(|_| Arc::new(source.as_ref().clone()))
+            .collect();
+        let prepared: Vec<_> = images
+            .iter()
+            .map(|image| PreparedPng::from_verified(image, encoded.clone()))
+            .collect();
+        let mut terminal = terminal();
+        terminal.register_prepared_pngs(&prepared);
+        assert_eq!(terminal.graphics.prepared_pngs.len(), MAX_PREPARED_PNGS);
+        assert_eq!(
+            terminal.graphics.prepared_png_bytes,
+            MAX_PREPARED_PNGS * encoded.len()
+        );
+        assert!(terminal.graphics.prepared_png(&images[0]).is_none());
+        assert!(
+            terminal
+                .graphics
+                .prepared_png(images.last().unwrap())
+                .is_some()
+        );
+        drop(images);
+        terminal.register_prepared_pngs(std::iter::empty::<&PreparedPng>());
+        assert!(terminal.graphics.prepared_pngs.is_empty());
+        assert_eq!(terminal.graphics.prepared_png_bytes, 0);
+    }
+
+    #[test]
+    fn registration_charges_encoded_bytes_before_admission() {
+        let source = image(512, 256, PixelFormat::Rgba);
+        let encoded = encode(source.width, source.height, source.format, &source.pixels).unwrap();
+        let capacity = MAX_PREPARED_PNG_BYTES / encoded.len();
+        assert!(capacity < MAX_PREPARED_PNGS);
+        let images: Vec<_> = (0..capacity + 1)
+            .map(|_| Arc::new(source.as_ref().clone()))
+            .collect();
+        let prepared: Vec<_> = images
+            .iter()
+            .map(|image| PreparedPng::from_verified(image, encoded.clone()))
+            .collect();
+        let mut terminal = terminal();
+        terminal.register_prepared_pngs(&prepared);
+        assert_eq!(terminal.graphics.prepared_pngs.len(), capacity);
+        assert_eq!(
+            terminal.graphics.prepared_png_bytes,
+            capacity * encoded.len()
+        );
+        assert!(terminal.graphics.prepared_png_bytes <= MAX_PREPARED_PNG_BYTES);
+        assert!(terminal.graphics.prepared_png(&images[0]).is_none());
     }
 }

@@ -94,20 +94,33 @@ impl TextSweep {
     /// Invalid half-width or velocity leaves the frame unchanged.
     /// Weights use smoothstep falloff; RGB channels are interpolated and rounded.
     pub fn apply(&self, frame: &mut Frame, rect: Rect, elapsed: Duration) -> bool {
-        self.apply_repeated(frame, rect, elapsed, std::num::NonZeroU16::MIN)
+        self.apply_bands(frame, rect, elapsed, None)
     }
 
-    /// Apply evenly spaced bands over the rectangle's traversal cycle.
+    /// Apply bands at an explicit positive, finite terminal-cell spacing.
     ///
-    /// Each band retains the configured width and terminal-cell speed. Where
-    /// bands overlap, the strongest weight is applied once rather than added.
-    /// Work remains constant per cell, independent of the positive wave count.
-    pub fn apply_repeated(
+    /// Spacing and velocity determine repetition frequency independently of band
+    /// width. Overlapping bands apply their strongest weight once. Invalid
+    /// spacing leaves the frame unchanged; other constraints match [`Self::apply`].
+    pub fn apply_periodic(
         &self,
         frame: &mut Frame,
         rect: Rect,
         elapsed: Duration,
-        waves: std::num::NonZeroU16,
+        spacing_cells: f64,
+    ) -> bool {
+        if !spacing_cells.is_finite() || spacing_cells <= 0.0 {
+            return false;
+        }
+        self.apply_bands(frame, rect, elapsed, Some(spacing_cells))
+    }
+
+    fn apply_bands(
+        &self,
+        frame: &mut Frame,
+        rect: Rect,
+        elapsed: Duration,
+        spacing: Option<f64>,
     ) -> bool {
         if rect.width == 0
             || rect.height == 0
@@ -122,7 +135,7 @@ impl TextSweep {
         let right = usize::from(rect.x.saturating_add(rect.width).min(frame.size.cols));
         let bottom = usize::from(rect.y.saturating_add(rect.height).min(frame.size.rows));
         let seconds = elapsed.as_secs_f64();
-        let period = f64::from(rect.width) + 2.0 * self.half_width_cells;
+        let period = spacing.unwrap_or(f64::from(rect.width) + 2.0 * self.half_width_cells);
         let center = if period.is_finite() {
             let distance = seconds * self.cells_per_second;
             let progress = if distance.is_finite() {
@@ -136,12 +149,6 @@ impl TextSweep {
             let period = f64::from(rect.width) / self.half_width_cells + 2.0;
             let distance = seconds * (self.cells_per_second / self.half_width_cells);
             (distance % period - 1.0) * self.half_width_cells
-        };
-        let count = f64::from(waves.get());
-        let spacing = if period.is_finite() {
-            period / count
-        } else {
-            f64::from(rect.width) / count + (self.half_width_cells / count) * 2.0
         };
         let mut changed = false;
         for row in frame.rows.iter_mut().take(bottom).skip(usize::from(rect.y)) {
@@ -168,11 +175,11 @@ impl TextSweep {
                     continue;
                 }
                 let position = (x - left) as f64 + width as f64 * 0.5;
-                let distance = if waves.get() == 1 {
-                    (position - center).abs()
-                } else {
+                let distance = if let Some(spacing) = spacing {
                     let offset = (position - center).rem_euclid(spacing);
                     offset.min(spacing - offset)
+                } else {
+                    (position - center).abs()
                 } / self.half_width_cells;
                 if distance < 1.0 {
                     let t = 1.0 - distance;
@@ -351,10 +358,9 @@ mod tests {
             width: 28,
             height: 1,
         };
-        let waves = std::num::NonZeroU16::new(2).unwrap();
         for (millis, peaks) in [(625, [0, 16]), (1125, [2, 18])] {
             let mut frame = ink_line(rect.width);
-            sweep.apply_repeated(&mut frame, rect, Duration::from_millis(millis), waves);
+            sweep.apply_periodic(&mut frame, rect, Duration::from_millis(millis), 16.0);
             for x in peaks {
                 assert_eq!(frame.rows[0].cells[x].style.foreground, [255; 3]);
                 assert_eq!(frame.rows[0].cells[x + 1].style.foreground, [128; 3]);
@@ -367,9 +373,44 @@ mod tests {
             ..sweep
         };
         let rect = Rect { width: 4, ..rect };
-        sweep.apply_repeated(&mut overlap, rect, Duration::from_millis(2125), waves);
+        sweep.apply_periodic(&mut overlap, rect, Duration::from_millis(2125), 10.0);
         assert_eq!(overlap.rows[0].cells[0].style.foreground, [255; 3]);
         assert_eq!(overlap.rows[0].cells[3].style.foreground, [174; 3]);
+    }
+
+    #[test]
+    fn wider_bands_keep_the_same_repetition_period_and_color_more_cells() {
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 1,
+        };
+        let mut colored = Vec::new();
+        for half_width in [2.0, 6.0] {
+            let sweep = TextSweep {
+                highlight: [255; 3],
+                half_width_cells: half_width,
+                cells_per_second: 4.0,
+            };
+            let elapsed = Duration::from_secs_f64((half_width + 0.5) / 4.0);
+            let mut first = ink_line(rect.width);
+            sweep.apply_periodic(&mut first, rect, elapsed, 16.0);
+            let mut next = ink_line(rect.width);
+            sweep.apply_periodic(&mut next, rect, elapsed + Duration::from_secs(4), 16.0);
+            assert_eq!(first.rows, next.rows);
+            for column in [0, 16] {
+                assert_eq!(first.rows[0].cells[column].style.foreground, [255; 3]);
+            }
+            colored.push(
+                first.rows[0]
+                    .cells
+                    .iter()
+                    .filter(|cell| cell.style.foreground != [0; 3])
+                    .count(),
+            );
+        }
+        assert!(colored[1] > colored[0]);
     }
 
     #[test]

@@ -117,10 +117,13 @@ pub(crate) struct ChromeGraphics(
     PaneGeometry,
 );
 impl ChromeGraphics {
-    pub(crate) fn new() -> io::Result<Self> {
+    pub(crate) fn new(cache_root: Option<std::path::PathBuf>) -> io::Result<Self> {
         std::hint::black_box(NOTICES);
-        SvgGraphics::new(ASSETS, 2, 1)
+        SvgGraphics::new_with_cache(ASSETS, 2, 1, cache_root)
             .map(|graphics| Self(graphics, None, None, PaneGeometry::default()))
+    }
+    pub(crate) fn register_uploads(&mut self, terminal: &mut bkpr_tui_framework::TerminalGuard) {
+        self.0.register_uploads(terminal);
     }
     pub(crate) fn wake_fd(&self) -> RawFd {
         self.0.wake_fd()
@@ -508,7 +511,7 @@ mod tests {
                 cell_width,
                 cell_height: 20,
             };
-            let mut chrome = ChromeGraphics::new().unwrap();
+            let mut chrome = ChromeGraphics::new(None).unwrap();
             chrome.prepare(&host, size, &[]);
             let mut poll = libc::pollfd {
                 fd: chrome.wake_fd(),
@@ -578,7 +581,7 @@ mod tests {
 
     #[test]
     fn artwork_rejects_out_of_bounds_mismatched_and_semantic_markers() {
-        let chrome = ChromeGraphics::new().unwrap();
+        let chrome = ChromeGraphics::new(None).unwrap();
         let size = Size {
             cols: 8,
             rows: 2,
@@ -656,7 +659,7 @@ mod tests {
             width: 36,
             height: 10,
         };
-        let mut chrome = ChromeGraphics::new().unwrap();
+        let mut chrome = ChromeGraphics::new(None).unwrap();
         let prepared = |chrome: &mut ChromeGraphics| {
             let mut poll = libc::pollfd {
                 fd: chrome.wake_fd(),
@@ -878,7 +881,7 @@ mod tests {
 
     #[test]
     fn unready_artwork_preserves_marker_label_and_cursor() {
-        let chrome = ChromeGraphics::new().unwrap();
+        let chrome = ChromeGraphics::new(None).unwrap();
         let mut frame = bkpr_tui_framework::blank(Size {
             cols: 8,
             rows: 2,
@@ -908,7 +911,7 @@ mod tests {
     }
     #[test]
     fn hierarchy_gutters_preserve_text_markers_until_artwork_is_ready() {
-        let chrome = ChromeGraphics::new().unwrap();
+        let chrome = ChromeGraphics::new(None).unwrap();
         let mut frame = bkpr_tui_framework::blank(Size {
             cols: 28,
             rows: 3,

@@ -7,8 +7,12 @@
 use crate::Rect;
 use crate::decoration::{DecorationKind, DecorationStyle};
 use crate::joined_contour::{Contour, Feature, Point, Rect as PixelRect, distance};
+use crate::{
+    prepared_png::PreparedPng,
+    raster_cache::{Raster, RasterCache},
+};
 use bkpr_protocol::{Frame, Image, ImageLayer, PixelFormat, Placement};
-use std::{collections::VecDeque, sync::Arc};
+use std::{collections::VecDeque, path::PathBuf, sync::Arc};
 
 const MAX_PATCH_BYTES: usize = 8 * 1024 * 1024;
 const MAX_LAYOUT_BYTES: usize = 4 * 1024 * 1024;
@@ -47,7 +51,7 @@ enum Geometry {
     },
     Tile(Vec<Feature>),
 }
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct PatchKey {
     style: DecorationStyle,
     cell: [u32; 2],
@@ -60,10 +64,15 @@ struct Patch {
     shadow: Arc<Image>,
     body_visible: bool,
     shadow_visible: bool,
+    body_png: Option<PreparedPng>,
+    shadow_png: Option<PreparedPng>,
 }
 impl Patch {
     fn bytes(&self) -> usize {
-        self.body.pixels.len() + self.shadow.pixels.len()
+        self.body.pixels.len()
+            + self.shadow.pixels.len()
+            + self.body_png.as_ref().map_or(0, PreparedPng::byte_len)
+            + self.shadow_png.as_ref().map_or(0, PreparedPng::byte_len)
     }
 }
 #[derive(Clone)]
@@ -89,6 +98,12 @@ pub(crate) struct PreparedJoined {
     pub spans: Vec<OpaqueSpan>,
 }
 impl PreparedJoined {
+    pub(crate) fn png_uploads(&self) -> impl Iterator<Item = &PreparedPng> {
+        self.patches
+            .iter()
+            .flat_map(|patch| patch.body_png.iter().chain(patch.shadow_png.iter()))
+    }
+
     fn bytes(&self) -> usize {
         self.patches.iter().map(Patch::bytes).sum::<usize>()
             + self.parts.len() * std::mem::size_of::<Part>()
@@ -249,14 +264,22 @@ pub(crate) struct JoinedCache {
     layouts: VecDeque<Arc<PreparedJoined>>,
     patch_bytes: usize,
     layout_bytes: usize,
+    persistent: RasterCache,
 }
 impl JoinedCache {
+    pub(crate) fn with_cache(root: Option<PathBuf>) -> Self {
+        Self {
+            persistent: RasterCache::new(root),
+            ..Self::default()
+        }
+    }
+
     fn patch(&mut self, key: PatchKey, generation: u64, next_id: &mut u32) -> Option<&Patch> {
         if let Some(index) = self.patches.iter().position(|patch| patch.key == key) {
             let patch = self.patches.remove(index)?;
             self.patches.push_back(patch);
         } else {
-            let patch = rasterize(key, generation, next_id)?;
+            let patch = rasterize(key, generation, next_id, &mut self.persistent)?;
             if patch.bytes() > MAX_PATCH_BYTES {
                 return None;
             }
@@ -624,7 +647,12 @@ fn bevel(style: DecorationStyle, d: f64, nx: f64, ny: f64) -> [f64; 3] {
     })
 }
 
-fn rasterize(key: PatchKey, generation: u64, next_id: &mut u32) -> Option<Patch> {
+fn rasterize(
+    key: PatchKey,
+    generation: u64,
+    next_id: &mut u32,
+    cache: &mut RasterCache,
+) -> Option<Patch> {
     let pad = reach(key.style)? as usize;
     let [cw, ch] = key.cell.map(|side| side as usize);
     let (width, height, features) = match &key.geometry {
@@ -672,10 +700,29 @@ fn rasterize(key: PatchKey, generation: u64, next_id: &mut u32) -> Option<Patch>
             }
         }
     };
+    // A terminal may linearly filter beyond a one-texel texture edge. Crop
+    // the middle of three identical texels instead of fading into that border.
+    // Rasterize the constant axis once; only duplicate its final RGBA bytes.
+    let (repeat_x, repeat_y) = match key.geometry {
+        Geometry::Line {
+            horizontal: true, ..
+        } => (3, 1),
+        Geometry::Line {
+            horizontal: false, ..
+        } => (1, 3),
+        Geometry::Tile(_) => (1, 1),
+    };
     let pw = width + 2 * pad;
     let ph = height + 2 * pad;
     if pw.checked_mul(ph)? > 1_048_576 {
         return None;
+    }
+    let size = [(width * repeat_x) as u32, (height * repeat_y) as u32];
+    if let (Some(body), Some(shadow)) = (
+        cache.load(&("joined-body", &key), size, PixelFormat::Rgba),
+        cache.load(&("joined-shadow", &key), size, PixelFormat::Rgba),
+    ) {
+        return finish_patch(key, generation, next_id, size, body, shadow);
     }
     let columns = width.div_ceil(cw);
     let rows = height.div_ceil(ch);
@@ -787,23 +834,9 @@ fn rasterize(key: PatchKey, generation: u64, next_id: &mut u32) -> Option<Patch>
     } else {
         None
     };
-    // A terminal may linearly filter beyond a one-texel texture edge. Crop
-    // the middle of three identical texels instead of fading into that border.
-    // Rasterize the constant axis once; only duplicate its final RGBA bytes.
-    let (repeat_x, repeat_y) = match key.geometry {
-        Geometry::Line {
-            horizontal: true, ..
-        } => (3, 1),
-        Geometry::Line {
-            horizontal: false, ..
-        } => (1, 3),
-        Geometry::Tile(_) => (1, 1),
-    };
     let bytes = width * height * 4;
     let mut body = Vec::with_capacity(bytes * repeat_x * repeat_y);
     let mut shadow = Vec::with_capacity(bytes * repeat_x * repeat_y);
-    let mut body_visible = false;
-    let mut shadow_visible = false;
     for y in 0..height {
         for x in 0..width {
             let partial = partial_cells[(y / ch) * columns + x / cw];
@@ -834,7 +867,6 @@ fn rasterize(key: PatchKey, generation: u64, next_id: &mut u32) -> Option<Patch>
             } else {
                 [0; 4]
             };
-            body_visible |= pixel[3] != 0;
             for _ in 0..repeat_x {
                 body.extend_from_slice(&pixel);
             }
@@ -860,7 +892,6 @@ fn rasterize(key: PatchKey, generation: u64, next_id: &mut u32) -> Option<Patch>
             } else {
                 0
             };
-            shadow_visible |= alpha != 0;
             for _ in 0..repeat_x {
                 shadow.extend_from_slice(&[0, 0, 0, alpha]);
             }
@@ -870,22 +901,59 @@ fn rasterize(key: PatchKey, generation: u64, next_id: &mut u32) -> Option<Patch>
         body.extend_from_within(..bytes);
         shadow.extend_from_within(..bytes);
     }
+    if !body
+        .chunks_exact(4)
+        .chain(shadow.chunks_exact(4))
+        .any(|pixel| pixel[3] != 0)
+    {
+        return finish_patch(
+            key,
+            generation,
+            next_id,
+            size,
+            Raster::unencoded(body),
+            Raster::unencoded(shadow),
+        );
+    }
+    let body = cache.store(&("joined-body", &key), size, PixelFormat::Rgba, body);
+    let shadow = cache.store(&("joined-shadow", &key), size, PixelFormat::Rgba, shadow);
+    finish_patch(key, generation, next_id, size, body, shadow)
+}
+
+fn finish_patch(
+    key: PatchKey,
+    generation: u64,
+    next_id: &mut u32,
+    size: [u32; 2],
+    body: Raster,
+    shadow: Raster,
+) -> Option<Patch> {
     let id = *next_id;
     *next_id = next_id.checked_add(2)?;
+    let body_visible = body.pixels.chunks_exact(4).any(|pixel| pixel[3] != 0);
+    let shadow_visible = shadow.pixels.chunks_exact(4).any(|pixel| pixel[3] != 0);
     let image = |id, pixels| {
         Arc::new(Image {
             id,
             generation,
-            width: (width * repeat_x) as u32,
-            height: (height * repeat_y) as u32,
+            width: size[0],
+            height: size[1],
             format: PixelFormat::Rgba,
             pixels,
         })
     };
+    let body_image = image(id, body.pixels);
+    let shadow_image = image(id + 1, shadow.pixels);
     Some(Patch {
         key,
-        body: image(id, body),
-        shadow: image(id + 1, shadow),
+        body_png: body
+            .png
+            .map(|png| PreparedPng::from_verified(&body_image, png)),
+        shadow_png: shadow
+            .png
+            .map(|png| PreparedPng::from_verified(&shadow_image, png)),
+        body: body_image,
+        shadow: shadow_image,
         body_visible,
         shadow_visible,
     })
@@ -915,6 +983,46 @@ mod tests {
                 lip_shade_milli: 240,
             },
         }
+    }
+
+    #[test]
+    fn invisible_patches_do_not_evict_reusable_visible_materials() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().canonicalize().unwrap().join("cache");
+        let mut cache = RasterCache::new(Some(directory));
+        let useful = vec![12, 34, 56, 255];
+        cache
+            .prepare(&"visible", [1, 1], PixelFormat::Rgba, || {
+                Some(useful.clone())
+            })
+            .unwrap();
+        let mut next_id = 1;
+        for offset in 0..140 {
+            let key = PatchKey {
+                style: request().style,
+                cell: [8, 16],
+                geometry: Geometry::Tile(vec![Feature::Edge {
+                    from: Point {
+                        x: -1000,
+                        y: 1000 + offset,
+                    },
+                    to: Point {
+                        x: 1000,
+                        y: 1000 + offset,
+                    },
+                    nx: 0,
+                    ny: 1,
+                }]),
+            };
+            let patch = rasterize(key, 1, &mut next_id, &mut cache).unwrap();
+            assert!(!patch.body_visible && !patch.shadow_visible);
+        }
+        let retained = cache
+            .prepare(&"visible", [1, 1], PixelFormat::Rgba, || {
+                panic!("invisible geometry evicted reusable material")
+            })
+            .unwrap();
+        assert_eq!(retained.pixels, useful);
     }
 
     #[test]
@@ -979,6 +1087,7 @@ mod tests {
                             },
                             1,
                             &mut next_id,
+                            &mut RasterCache::default(),
                         )
                         .unwrap();
                         let feature = if horizontal {
@@ -1016,6 +1125,7 @@ mod tests {
                             },
                             1,
                             &mut next_id,
+                            &mut RasterCache::default(),
                         )
                         .unwrap();
                         for (line, tile) in [(&line.body, &tile.body), (&line.shadow, &tile.shadow)]

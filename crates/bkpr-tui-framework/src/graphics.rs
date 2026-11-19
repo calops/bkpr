@@ -3,6 +3,7 @@
 use crate::ColorProbe;
 use crate::decoration::{self, DecorationGeometry, DecorationStyle, PreparedDecoration};
 use crate::joined::{JoinedCache, JoinedSurface, OpaqueSpan, PreparedJoined};
+use crate::{TerminalGuard, prepared_png::PreparedPng, raster_cache::RasterCache};
 use bkpr_protocol::{ColorSource, Frame, Image, ImageLayer, PixelFormat, Placement, Size};
 use resvg::{tiny_skia, usvg};
 use std::{
@@ -12,6 +13,7 @@ use std::{
         fd::{AsRawFd, RawFd},
         unix::net::UnixStream,
     },
+    path::PathBuf,
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -79,8 +81,13 @@ struct Entry {
     asset_id: u32,
     rgb: [u8; 3],
     image: Arc<Image>,
+    png: Option<PreparedPng>,
 }
 impl Entry {
+    fn bytes(&self) -> usize {
+        self.image.pixels.len() + self.png.as_ref().map_or(0, PreparedPng::byte_len)
+    }
+
     fn matches(&self, asset_id: u32, config: &Config, rgb: [u8; 3]) -> bool {
         self.asset_id == asset_id
             && self.rgb == rgb
@@ -137,12 +144,28 @@ pub struct SvgGraphics {
     foreground: Option<[u8; 3]>,
     palette: HashMap<usize, [u8; 3]>,
     color_revision: Option<u64>,
+    uploads_dirty: bool,
 }
 impl SvgGraphics {
     /// Start a worker for one to eight uniquely identified assets and a nonzero
     /// cell span. Reject sources over 64 KiB; SVG parse failures leave that asset
     /// unavailable. Socket or worker creation failures return I/O errors.
     pub fn new(assets: &'static [SvgAsset], columns: u16, rows: u16) -> io::Result<Self> {
+        Self::new_with_cache(assets, columns, rows, None)
+    }
+
+    /// Start a preparer with an optional shared, bounded persistent raster cache.
+    ///
+    /// The caller owns the cache path. All filesystem and codec work runs on the
+    /// worker; unavailable or corrupt entries regenerate normally. Only reusable
+    /// artwork/material patches persist, never pane contents or complete layouts.
+    /// Asset validation and creation errors match [`Self::new`].
+    pub fn new_with_cache(
+        assets: &'static [SvgAsset],
+        columns: u16,
+        rows: u16,
+        cache_root: Option<PathBuf>,
+    ) -> io::Result<Self> {
         if assets.is_empty()
             || assets.len() > MAX_ASSETS
             || columns == 0
@@ -173,7 +196,7 @@ impl SvgGraphics {
         let resource_generation = RESOURCE_GENERATION.fetch_add(1, Ordering::Relaxed);
         let worker = thread::Builder::new()
             .name("bkpr-svg".into())
-            .spawn(move || run(target, notify, assets, resource_generation))?;
+            .spawn(move || run(target, notify, assets, resource_generation, cache_root))?;
         Ok(Self {
             enabled: true,
             span: [columns, rows],
@@ -190,7 +213,28 @@ impl SvgGraphics {
             foreground: None,
             palette: HashMap::new(),
             color_revision: None,
+            uploads_dirty: false,
         })
+    }
+
+    /// Register newly published preencoded PNGs with the existing terminal writer.
+    /// This performs no I/O or codec work and does nothing without a new publication.
+    pub fn register_uploads(&mut self, terminal: &mut TerminalGuard) {
+        if !self.uploads_dirty {
+            return;
+        }
+        terminal.register_prepared_pngs(
+            self.ready
+                .iter()
+                .filter_map(|entry| entry.png.as_ref())
+                .chain(
+                    self.decorations
+                        .iter()
+                        .filter_map(|entry| entry.png.as_ref()),
+                )
+                .chain(self.joined.iter().flat_map(|joined| joined.png_uploads())),
+        );
+        self.uploads_dirty = false;
     }
     /// Borrow the nonblocking publication-notification descriptor for polling.
     pub fn wake_fd(&self) -> RawFd {
@@ -379,6 +423,7 @@ impl SvgGraphics {
     }
 
     fn publish(&mut self, publication: Publication) {
+        self.uploads_dirty = true;
         self.ready = publication.entries;
         self.decorations = publication.decorations;
         self.core_ready = true;
@@ -619,18 +664,17 @@ fn run(
     mut notify: UnixStream,
     assets: &'static [SvgAsset],
     resource_generation: u64,
+    cache_root: Option<PathBuf>,
 ) {
-    let trees: Vec<_> = assets
-        .iter()
-        .map(|asset| usvg::Tree::from_str(asset.svg, &usvg::Options::default()).ok())
-        .collect();
+    let mut trees: Vec<Option<Option<usvg::Tree>>> = (0..assets.len()).map(|_| None).collect();
     let mut cache: VecDeque<Entry> = VecDeque::new();
     let mut cache_bytes = 0;
     let mut next_id = 1u32;
     let mut masks: Option<Masks> = None;
     let mut decoration_cache: VecDeque<PreparedDecoration> = VecDeque::new();
     let mut decoration_bytes = 0;
-    let mut joined_cache = JoinedCache::default();
+    let mut persistent = RasterCache::new(cache_root.clone());
+    let mut joined_cache = JoinedCache::with_cache(cache_root);
     loop {
         let (generation, config) = {
             let mut state = shared.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -680,7 +724,25 @@ fn run(
                     }
                     let prepared = &mut masks.as_mut().unwrap().alpha[index];
                     if prepared.is_none() {
-                        *prepared = trees[index].as_ref().and_then(|tree| mask(tree, &config));
+                        *prepared = persistent
+                            .prepare(
+                                &("svg-mask", asset.svg),
+                                [config.width, config.height],
+                                PixelFormat::Gray,
+                                || {
+                                    trees[index]
+                                        .get_or_insert_with(|| {
+                                            usvg::Tree::from_str(
+                                                asset.svg,
+                                                &usvg::Options::default(),
+                                            )
+                                            .ok()
+                                        })
+                                        .as_ref()
+                                        .and_then(|tree| mask(tree, &config))
+                                },
+                            )
+                            .map(|raster| raster.pixels);
                     }
                     let Some(alpha) = prepared.as_ref() else {
                         continue;
@@ -700,25 +762,37 @@ fn run(
                     let Some(following) = next_id.checked_add(1) else {
                         return;
                     };
+                    let png = crate::prepared_png::encode(
+                        config.width,
+                        config.height,
+                        PixelFormat::Rgba,
+                        &pixels,
+                    );
+                    let image = Arc::new(Image {
+                        id: next_id,
+                        generation: resource_generation,
+                        width: config.width,
+                        height: config.height,
+                        format: PixelFormat::Rgba,
+                        pixels,
+                    });
                     let entry = Entry {
                         asset_id: asset.id,
                         rgb,
-                        image: Arc::new(Image {
-                            id: next_id,
-                            generation: resource_generation,
-                            width: config.width,
-                            height: config.height,
-                            format: PixelFormat::Rgba,
-                            pixels,
-                        }),
+                        png: png.map(|png| PreparedPng::from_verified(&image, png)),
+                        image,
                     };
                     next_id = following;
-                    while cache.len() >= MAX_IMAGES || cache_bytes + image_bytes > MAX_BYTES {
-                        let Some(old) = cache.pop_front() else { break };
-                        cache_bytes -= old.image.pixels.len();
+                    let retained_bytes = entry.bytes();
+                    if retained_bytes <= MAX_BYTES {
+                        while cache.len() >= MAX_IMAGES || cache_bytes + retained_bytes > MAX_BYTES
+                        {
+                            let Some(old) = cache.pop_front() else { break };
+                            cache_bytes -= old.bytes();
+                        }
+                        cache_bytes += retained_bytes;
+                        cache.push_back(entry.clone());
                     }
-                    cache_bytes += image_bytes;
-                    cache.push_back(entry.clone());
                     entry
                 };
                 bytes += image_bytes;
@@ -762,11 +836,16 @@ fn run(
                 }
                 entry
             } else {
-                let Some(pixels) = decoration::rasterize(style, config.cell) else {
+                let Some(raster) = persistent.prepare(
+                    &("decoration", style, config.cell),
+                    [width, height],
+                    PixelFormat::Rgba,
+                    || decoration::rasterize(style, config.cell),
+                ) else {
                     continue;
                 };
                 #[cfg(test)]
-                {
+                if raster.rendered {
                     shared
                         .state
                         .lock()
@@ -780,29 +859,38 @@ fn run(
                 let Some(following) = next_id.checked_add(1) else {
                     return;
                 };
+                let image = Arc::new(Image {
+                    id: next_id,
+                    generation: resource_generation,
+                    width,
+                    height,
+                    format: PixelFormat::Rgba,
+                    pixels: raster.pixels,
+                });
                 let entry = PreparedDecoration {
                     style,
                     cell: config.cell,
-                    image: Arc::new(Image {
-                        id: next_id,
-                        generation: resource_generation,
-                        width,
-                        height,
-                        format: PixelFormat::Rgba,
-                        pixels,
-                    }),
+                    png: raster
+                        .png
+                        .map(|png| PreparedPng::from_verified(&image, png)),
+                    image,
                 };
                 next_id = following;
-                while decoration_cache.len() >= MAX_DECORATION_CACHE
-                    || decoration_bytes + image_bytes > MAX_DECORATION_BYTES
-                {
-                    let Some(old) = decoration_cache.pop_front() else {
-                        break;
-                    };
-                    decoration_bytes -= old.image.pixels.len();
+                let retained_bytes =
+                    entry.image.pixels.len() + entry.png.as_ref().map_or(0, PreparedPng::byte_len);
+                if retained_bytes <= MAX_DECORATION_BYTES {
+                    while decoration_cache.len() >= MAX_DECORATION_CACHE
+                        || decoration_bytes + retained_bytes > MAX_DECORATION_BYTES
+                    {
+                        let Some(old) = decoration_cache.pop_front() else {
+                            break;
+                        };
+                        decoration_bytes -= old.image.pixels.len()
+                            + old.png.as_ref().map_or(0, PreparedPng::byte_len);
+                    }
+                    decoration_bytes += retained_bytes;
+                    decoration_cache.push_back(entry.clone());
                 }
-                decoration_bytes += image_bytes;
-                decoration_cache.push_back(entry.clone());
                 entry
             };
             published_bytes += image_bytes;

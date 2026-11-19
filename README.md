@@ -207,6 +207,15 @@ Mouse users can activate sidebar items, drag dividers and select terminal text.
 Mouse-aware applications retain their own gestures; host terminals may reserve
 selection shortcuts. See [copy and selection](docs/reference.md#selection-and-copy).
 
+### Decorative graphics cache
+
+Reusable chrome artwork, popup materials and hover-popup corner/shadow patches
+are cached as lossless PNGs under `$XDG_CACHE_HOME/bkpr/chrome` (or
+`~/.cache/bkpr/chrome`). All versions share a 128 MiB / 256-entry limit;
+least-recently-used entries are evicted when needed. Resize-specific layouts stay
+in memory. The cache never contains pane images, terminal text or scrollback.
+It is safe to remove; unavailable or corrupt entries regenerate automatically.
+
 ## Current limits
 
 - Pre-1.0: native protocol and storage aren't compatibility promises. Upgrades

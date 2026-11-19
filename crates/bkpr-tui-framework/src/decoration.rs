@@ -91,6 +91,8 @@ pub(crate) struct PreparedDecoration {
     pub cell: [u32; 2],
     /// Shared RGBA atlas with a generation-scoped image identity.
     pub image: Arc<Image>,
+    /// Verified encoded transport for the immutable atlas.
+    pub(crate) png: Option<crate::PreparedPng>,
 }
 impl PreparedDecoration {
     /// Append the perimeter in cell coordinates, reserving 64 IDs from `base`.
@@ -693,7 +695,12 @@ mod tests {
                 format: PixelFormat::Rgba,
                 pixels: rasterize(style, cell).unwrap(),
             });
-            let decoration = PreparedDecoration { style, cell, image };
+            let decoration = PreparedDecoration {
+                style,
+                cell,
+                image,
+                png: None,
+            };
             let mut frame = crate::graphics_frame(Size {
                 cols: 120,
                 rows: 60,
@@ -743,6 +750,7 @@ mod tests {
         PreparedDecoration {
             style,
             cell,
+            png: None,
             image: Arc::new(Image {
                 id: 1,
                 generation: 1,
@@ -994,7 +1002,12 @@ mod tests {
         assert_eq!(shadow[..3], [0; 3]);
         assert!(shadow[3] > 0 && shadow[3] < 255);
         assert_eq!(pixel(3 * tw - 1, th)[3], 0);
-        let decoration = PreparedDecoration { style, cell, image };
+        let decoration = PreparedDecoration {
+            style,
+            cell,
+            image,
+            png: None,
+        };
         let mut frame = crate::blank(Size {
             cols: 80,
             rows: 24,
@@ -1088,6 +1101,7 @@ mod tests {
         let decoration = PreparedDecoration {
             style,
             cell: [10, 20],
+            png: None,
             image: Arc::new(Image {
                 id: 2,
                 generation: 1,
@@ -1208,6 +1222,7 @@ mod tests {
             let decoration = PreparedDecoration {
                 style,
                 cell,
+                png: None,
                 image: Arc::new(Image {
                     id: 7,
                     generation: 1,
