@@ -58,6 +58,34 @@ function logoBee(t, { cx = 54, cy = 62, r = 26 } = {}) {
     + bee(t, r2(mx + 14), r2(my - 23), -25, 1);
 }
 
+// Banner flight path: a quadratic arc from the b's cell to the bee, with a prolate-cycloid
+// loop-the-loop over the gap between k and p. Sampled, then smoothed with Catmull-Rom cubics.
+function loopTrail() {
+  const S = [68.8, 36.5], C = [110, -40], E = [226, 8];
+  const loop = { from: 0.5, to: 0.61, radius: 14 };
+  const at = (t) => {
+    const u = 1 - t;
+    let x = u * u * S[0] + 2 * t * u * C[0] + t * t * E[0];
+    let y = u * u * S[1] + 2 * t * u * C[1] + t * t * E[1];
+    if (t > loop.from && t < loop.to) {
+      const phi = (2 * Math.PI * (t - loop.from)) / (loop.to - loop.from);
+      x += loop.radius * Math.sin(phi);
+      y -= loop.radius * (1 - Math.cos(phi));
+    }
+    return [x, y];
+  };
+  const n = 120;
+  const pts = Array.from({ length: n + 1 }, (_, i) => at(i / n));
+  let d = `M${r2(pts[0][0])} ${r2(pts[0][1])}`;
+  for (let i = 0; i < n; i++) {
+    const p0 = pts[Math.max(i - 1, 0)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(i + 2, n)];
+    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6];
+    const c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6];
+    d += ` C${r2(c1[0])} ${r2(c1[1])} ${r2(c2[0])} ${r2(c2[1])} ${r2(p2[0])} ${r2(p2[1])}`;
+  }
+  return d;
+}
+
 // Wordmark: the hex b logo followed by "kpr" drawn on the same grid; the bee flies over the word.
 function banner(t) {
   const k = 100.5, p = 154.5, pr = 177, rr = 223.5;
@@ -68,7 +96,7 @@ function banner(t) {
     <polygon points="${hexPoints(pr, 62, 26)}" stroke-width="9"/>
     <path d="M${rr} 49 L246.02 36 L255.5 41.47" stroke-width="9"/>
   </g>
-  ${trail(t, "M68.8 36.5 C76 18 92 -8 142 -6 S208 -2 226 8", 2.2, "3.5 4")}
+  ${trail(t, loopTrail(), 2.2, "3.5 4")}
   ${bee(t, 240, 10, 20, 1.7)}`;
 }
 
@@ -84,7 +112,7 @@ for (const [name, t] of Object.entries(THEMES)) {
     [`bkpr-logo-${name}.svg`]: doc("7 0 100 100", 512, 512, hexB(t) + "\n  " + logoBee(t)),
     [`bkpr-icon-${name}.svg`]: doc("3.75 1.25 100 100", 512, 512, hexB(t)),
     [`bkpr-favicon-${name}.svg`]: doc("9.75 7.25 88 88", 16, 16, hexB(t, { prompt: "underscore" })),
-    [`bkpr-banner-${name}.svg`]: doc("6 -26 274 162", 548, 324, banner(t)),
+    [`bkpr-banner-${name}.svg`]: doc("6 -48 274 184", 548, 368, banner(t)),
   };
   for (const [file, svg] of Object.entries(files)) writeFileSync(join(outDir, file), svg);
 }
