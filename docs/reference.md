@@ -377,7 +377,7 @@ their programs. Identity-only `inspect` does not select an agent source or
 disturb clients.
 
 Agent forwarding is off even if SSH config enables it. Explicit
-`--forward-agent` on the TUI, `connect` or `request` uses OpenSSH forwarding and
+`-A` / `--forward-agent` on the TUI, `connect` or `request` uses OpenSSH forwarding and
 the remote forwarded socket, never a local pathname. Grant it only to trusted
 hosts. Launch credentials and pane-context variables are removed from the SSH
 child's environment.

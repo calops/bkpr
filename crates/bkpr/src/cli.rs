@@ -81,6 +81,7 @@ pub fn command() -> Command {
         .arg(
             Arg::new("forward-agent")
                 .long("forward-agent")
+                .short('A')
                 .global(true)
                 .action(ArgAction::SetTrue)
                 .help("Explicitly forward the SSH agent using OpenSSH"),

@@ -379,7 +379,7 @@ mod tests {
             helper.clone().into_os_string(),
             "--ssh-config".into(),
             "relative ssh/config".into(),
-            "--forward-agent".into(),
+            "-A".into(),
             "-d".into(),
         ])
         .unwrap();
