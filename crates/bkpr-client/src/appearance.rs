@@ -411,7 +411,7 @@ fn luminance(color: [u8; 3]) -> f64 {
 pub(crate) fn project_color_tones(background: [u8; 3]) -> ColorTones {
     let light = luminance(background) > 0.4;
     ColorTones {
-        bright: Tone::new(if light { 0.47 } else { 0.78 }, 0.90),
+        bright: Tone::new(if light { 0.47 } else { 0.78 }, 1.0),
         muted: Tone::new(if light { 0.62 } else { 0.56 }, 0.18),
     }
 }
