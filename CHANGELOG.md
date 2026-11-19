@@ -1,3 +1,27 @@
+## [0.8.0](https://github.com/calops/bkpr/compare/v0.7.1...v0.8.0) (2026-11-19)
+
+### ⚠ BREAKING CHANGES
+
+* **tui:** replace `TextSweep::apply_repeated` with `apply_periodic` and explicit terminal-cell spacing. Native wire family 11 and remote control 2 stay unchanged.
+* **terminal:** Rust Surface literals must provide image_manifest, and exhaustive surface, toast and protocol matches must handle the new variants. Native family 11 and remote control 2 remain unchanged; progressive clients require a daemon supporting the new scene and resource operations.
+* **tui:** The framework animation API replaces cycle/phase inputs with elapsed durations. AnimationClock::new takes only the sampling interval after now, and elapsed() replaces phase(). TextSweep takes half_width_cells and cells_per_second; apply() takes a Duration. Native wire protocol and CLI are unchanged.
+
+### Features
+
+* **cli:** accept -A for SSH agent forwarding ([a7762db](https://github.com/calops/bkpr/commit/a7762dbd6f7966d5b33a59cd7b4b746914cb14f0))
+* **client:** add a second working title wave ([4f32198](https://github.com/calops/bkpr/commit/4f32198870caec76c9ad61caa91c491416d7a747))
+* **client:** stop sessions from the sidebar with recovery retained ([a9caff0](https://github.com/calops/bkpr/commit/a9caff08e7558ffd711aa2ef88121426a64871b3))
+* **notifications:** publish encrypted UnifiedPush alerts ([f4c9901](https://github.com/calops/bkpr/commit/f4c9901971748e462fe192ae95517642dd764739))
+* **terminal:** stream images independently of pane scenes ([5cf11ec](https://github.com/calops/bkpr/commit/5cf11ec937cb61c659aeb3f29ebfb5721a3cb33a))
+* **tui:** cache reusable chrome PNGs across clients ([be49e42](https://github.com/calops/bkpr/commit/be49e420c7dbb5fcd2f6b0e7ace570de0e413416))
+* **tui:** normalize project title sweeps ([9db5d4b](https://github.com/calops/bkpr/commit/9db5d4b228da0b8f4844dd59793d015476d4c9c2))
+
+### Bug Fixes
+
+* **client:** normalize working wave chroma across hues ([6ac0070](https://github.com/calops/bkpr/commit/6ac0070ff84914d3c84ce7b7a728653d6621b764))
+* **client:** saturate working title waves ([7db13db](https://github.com/calops/bkpr/commit/7db13db972f58e236f579c03a42a683d97d70547))
+* **client:** widen working title gradient ([fc0dffe](https://github.com/calops/bkpr/commit/fc0dffe99c8bd4a19619f81abcc23dc5565e8a06))
+
 ## Unreleased
 
 ### Features
