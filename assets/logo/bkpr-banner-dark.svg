@@ -15,7 +15,8 @@
       <ellipse cx="-3" cy="-5" rx="3.2" ry="5" transform="rotate(-25 -3 -5)"/>
       <ellipse cx="3" cy="-5" rx="3.2" ry="5" transform="rotate(25 3 -5)"/>
     </g>
+    <clipPath id="bee-body"><ellipse cx="0" cy="1" rx="5.5" ry="4.2"/></clipPath>
     <ellipse cx="0" cy="1" rx="5.5" ry="4.2" fill="#F2A516"/>
-    <rect x="-1.1" y="-3" width="2.2" height="8" fill="#1A1E26"/>
+    <rect x="-1.1" y="-4" width="2.2" height="10" fill="#1A1E26" clip-path="url(#bee-body)"/>
   </g>
 </svg>
