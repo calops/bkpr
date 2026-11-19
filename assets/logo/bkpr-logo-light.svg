@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="7 0 100 100" width="512" height="512" role="img" aria-labelledby="title">
+  <title id="title">bkpr</title>
+  <path d="M31.48 14.5 V75 L54 88 L76.52 75 V49 L54 36 L31.48 49" fill="none" stroke="#1A1E26" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M43 55 l7 7 l-7 7" fill="none" stroke="#1A1E26" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M54 69 H65" stroke="#E8990B" stroke-width="4.5" stroke-linecap="round"/>
+  <path d="M68.76 36.5 C74.26 33.5 77.76 30.5 77.26 26.5" fill="none" stroke="#1A1E26" stroke-width="2" stroke-dasharray="3 3.5" stroke-linecap="round"/><g transform="translate(79.26 19.5) rotate(-25) scale(1)">
+    <g fill="none" stroke="#1A1E26" stroke-width="1.8">
+      <ellipse cx="-3" cy="-5" rx="3.2" ry="5" transform="rotate(-25 -3 -5)"/>
+      <ellipse cx="3" cy="-5" rx="3.2" ry="5" transform="rotate(25 3 -5)"/>
+    </g>
+    <ellipse cx="0" cy="1" rx="5.5" ry="4.2" fill="#E8990B"/>
+    <rect x="-1.1" y="-3" width="2.2" height="8" fill="#1A1E26"/>
+  </g>
+</svg>
