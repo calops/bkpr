@@ -132,6 +132,7 @@
               pkgs.coreutils
               pkgs.findutils
               pkgs.imagemagick
+              pkgs.planus
               (pkgs.python3.withPackages (ps: [ ps.pyte ]))
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.xdotool ];
