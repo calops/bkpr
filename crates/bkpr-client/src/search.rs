@@ -62,7 +62,7 @@ impl App {
         }
         let view = attached.view.clone();
         self.close_search();
-        self.retire_resize("search opened");
+        self.retire_resize();
         self.selection_focus_lost();
         self.search.epoch = self.search.epoch.wrapping_add(1);
         self.search.editor = Some(Editor {

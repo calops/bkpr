@@ -68,6 +68,9 @@ impl FormFields {
         pending: bool,
     ) {
         let width = size.cols;
+        let message = error.or(self.primary.error()).or(self.directory.error());
+        let status = message.or(pending.then_some("Submitting; waiting for backend receipt"));
+        let status_rows = u16::from(status.is_some());
         let mut lines = Vec::new();
         let mut row = |y: u16, text: String, selected: bool| {
             if y < size.rows {
@@ -83,11 +86,11 @@ impl FormFields {
                 ));
             }
         };
-        let tiny = size.rows < 4;
+        let tiny = size.rows < 3 + status_rows;
         if !tiny {
             row(0, title.into(), false);
         }
-        let compact = creation && size.rows < 7;
+        let compact = creation && size.rows < 6 + status_rows;
         let showing_directory = creation && compact && self.active_directory;
         let field_y = if tiny {
             0
@@ -141,21 +144,10 @@ impl FormFields {
                 column = directory_column;
             }
         }
-        let message = error.or(self.primary.error()).or(self.directory.error());
-        if size.rows > 1 {
-            row(
-                size.rows - 1,
-                if let Some(message) = message {
-                    message.into()
-                } else if pending {
-                    "Submitting; waiting for backend receipt".into()
-                } else if creation {
-                    "Tab changes field · Enter creates · Esc cancels".into()
-                } else {
-                    "Enter saves · Esc cancels".into()
-                },
-                false,
-            );
+        if size.rows > 1
+            && let Some(status) = status
+        {
+            row(size.rows - 1, status.into(), false);
         }
         surface.paint(
             size,
@@ -182,8 +174,10 @@ impl FormFields {
         pending: bool,
     ) {
         let size = surface.frame.size;
-        let tiny = size.rows < 4;
-        let compact = creation && size.rows < 7;
+        let message = error.or(self.primary.error()).or(self.directory.error());
+        let status_rows = u16::from(message.is_some() || pending);
+        let tiny = size.rows < 3 + status_rows;
+        let compact = creation && size.rows < 6 + status_rows;
         let mut spans = Vec::with_capacity(7);
         let mut row = |y: u16, role| {
             if y < size.rows {
@@ -211,14 +205,10 @@ impl FormFields {
             row(4, if pending { Role::Muted } else { Role::Panel });
             row(5, Role::Muted);
         }
-        if size.rows > 1 {
+        if size.rows > 1 && status_rows != 0 {
             row(
                 size.rows - 1,
-                if error
-                    .or(self.primary.error())
-                    .or(self.directory.error())
-                    .is_some()
-                {
+                if message.is_some() {
                     Role::Error
                 } else {
                     Role::Muted
@@ -260,6 +250,30 @@ mod tests {
             true,
         );
         assert_eq!(fields.directory(), PathBuf::from("/inherited"));
+    }
+    #[test]
+    fn six_rows_show_both_fields_unless_real_status_needs_the_last_row() {
+        let mut fields = FormFields::new("workspace".into(), "/inherited".into());
+        fields.active_directory = true;
+        let size = Size {
+            cols: 60,
+            rows: 6,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        let mut surface = UiSurface::new(size);
+        fields.paint(&mut surface, size, "Create workspace", true, None, false);
+        assert_eq!(surface.frame.cursor.y, 4);
+        fields.paint(
+            &mut surface,
+            size,
+            "Create workspace",
+            true,
+            Some("Directory unavailable"),
+            false,
+        );
+        assert_eq!(surface.frame.cursor.y, 2);
+        assert!(surface.frame.cursor.visible);
     }
     #[cfg(unix)]
     #[test]

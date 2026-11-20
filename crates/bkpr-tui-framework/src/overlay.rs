@@ -16,6 +16,8 @@ pub struct Policy {
     pub dismiss_on_escape: bool,
     /// Allows an outside press to request dismissal of a modal layer.
     pub dismiss_on_outside: bool,
+    /// Paint above ordinary modal layers without changing keyboard ownership.
+    pub above_modal: bool,
 }
 impl Policy {
     /// Pointer-targetable layer without keyboard ownership or dismissal.
@@ -24,6 +26,7 @@ impl Policy {
         pointer: true,
         dismiss_on_escape: false,
         dismiss_on_outside: false,
+        above_modal: false,
     };
     /// Modal layer dismissible by Escape or an outside press.
     pub const MODAL: Self = Self {
@@ -31,7 +34,21 @@ impl Policy {
         pointer: true,
         dismiss_on_escape: true,
         dismiss_on_outside: true,
+        above_modal: false,
     };
+    /// Passive companion drawn above modals while keeping their keyboard ownership.
+    pub const COMPANION: Self = Self {
+        above_modal: true,
+        ..Self::PASSIVE
+    };
+
+    fn rank(self) -> u8 {
+        if self.above_modal {
+            2
+        } else {
+            u8::from(self.modal)
+        }
+    }
 }
 
 /// Screen-coordinate outer bounds and content hit region.
@@ -155,7 +172,7 @@ impl<F> Default for OverlayStack<F> {
 }
 impl<F> OverlayStack<F> {
     /// Inserts a layer or updates its geometry and policy without replacing
-    /// its focus token. Passive layers remain below modal layers after policy changes.
+    /// its focus token. Paint priority is independent of keyboard ownership.
     pub fn present(
         &mut self,
         id: &'static str,
@@ -169,10 +186,10 @@ impl<F> OverlayStack<F> {
         };
         let layer = if let Some(index) = self.layers.iter().position(|layer| layer.id == id) {
             let layer = &mut self.layers[index];
-            let modal_changed = layer.policy.modal != policy.modal;
+            let order_changed = layer.policy.rank() != policy.rank();
             layer.placement = placement;
             layer.policy = policy;
-            if !modal_changed {
+            if !order_changed {
                 return;
             }
             self.layers.remove(index)
@@ -184,14 +201,11 @@ impl<F> OverlayStack<F> {
                 return_focus: focus,
             }
         };
-        let index = if policy.modal {
-            self.layers.len()
-        } else {
-            self.layers
-                .iter()
-                .position(|layer| layer.policy.modal)
-                .unwrap_or(self.layers.len())
-        };
+        let index = self
+            .layers
+            .iter()
+            .position(|layer| layer.policy.rank() > policy.rank())
+            .unwrap_or(self.layers.len());
         self.layers.insert(index, layer);
     }
     /// Removes a layer and returns its cancellation focus token, if any.
@@ -308,6 +322,29 @@ mod tests {
         assert_eq!(stack.layers().last().unwrap().id, "form");
         assert_eq!(stack.keyboard_owner(), Some("form"));
         assert_eq!(stack.remove("form"), Some("terminal"));
+        assert_eq!(stack.keyboard_owner(), None);
+    }
+
+    #[test]
+    fn foreground_companion_remains_visible_without_claiming_modal_keys() {
+        let mut stack = OverlayStack::default();
+        stack.present("guide", placement(), Policy::COMPANION, None);
+        stack.present("form", placement(), Policy::MODAL, Some("pane"));
+        assert_eq!(stack.layers().last().unwrap().id, "guide");
+        assert_eq!(stack.keyboard_owner(), Some("form"));
+        assert_eq!(stack.escape_target(), Some("form"));
+        assert_eq!(
+            stack.route_pointer(3, 3, PointerPhase::Wheel),
+            PointerRoute::Target {
+                id: "guide",
+                content: true
+            }
+        );
+        stack.present("guide", placement(), Policy::PASSIVE, None);
+        assert_eq!(stack.layers().last().unwrap().id, "form");
+        stack.present("guide", placement(), Policy::COMPANION, None);
+        assert_eq!(stack.layers().last().unwrap().id, "guide");
+        assert_eq!(stack.remove("form"), Some("pane"));
         assert_eq!(stack.keyboard_owner(), None);
     }
     #[test]

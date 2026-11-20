@@ -210,8 +210,9 @@ See [recovery](docs/reference.md#explicit-harness-recovery).
 | `Ctrl-b Ctrl-b` | Send literal Ctrl-b to the live application |
 
 Mouse users can activate sidebar items, drag dividers and select terminal text.
-Mouse-aware applications retain their own gestures; host terminals may reserve
-selection shortcuts. See [copy and selection](docs/reference.md#selection-and-copy).
+Double-click a divider to balance its two sides. Mouse-aware applications retain
+their own gestures; host terminals may reserve selection shortcuts.
+See [copy and selection](docs/reference.md#selection-and-copy).
 
 ### Decorative graphics cache
 

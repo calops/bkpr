@@ -347,6 +347,7 @@ impl Picker {
         );
         list.set_mouse_activation(MouseActivation::Select);
         list.set_select_on_hover(false);
+        list.set_layout(bkpr_tui_framework::search_list::ListLayout::Cards { details: true });
         Self {
             list,
             listing,

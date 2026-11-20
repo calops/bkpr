@@ -34,18 +34,21 @@
 * **client:** share a bounded persistent PNG cache for reusable chrome, including popup and hover corner/shadow materials; reuse preencoded PNGs for terminal uploads without persisting terminal content or resize-specific layouts.
 * **client:** widen working-title waves without changing their spacing or speed.
 * **client:** add `Ctrl-b r` native conversation recovery with fuzzy search, live/recoverable/unavailable reasons, read-only inspection and exact local/SSH owner routing. Resume uses current native configuration and distinguishes process start from authenticated binding without replaying unknown outcomes.
+* **client:** double-click pane dividers to balance their two sides, including both axes at a corner, while preserving nested minimum sizes and unrelated layout ratios.
 
 ### Bug Fixes
 
 * **client:** deduplicate transfer-failure notifications and keep technical diagnostics behind Details instead of repeating protocol errors.
 * **client:** keep working-title waves vivid across project hues by maximizing in-gamut chroma at a shared sidebar contrast target instead of fixing every hue to the same lightness.
 * **agents:** resolve message recipients by launch or uniquely matching live conversation ID within scope, pin retries to their original launch, and distinguish copyable launch/conversation identities in the TUI.
+* **client:** unify Finder, recovery and theme picker cards with tinted input, separated floating sections and complete rounded Unicode fallback borders. Keep contextual shortcut popups above modals, update them from effective bindings, group editor keys, and remove duplicate inline shortcut footers.
+* **client:** stop showing routine resize-completion and cancellation toasts; retain rejected and unknown-outcome layout errors.
 
 ### Breaking Rust API Changes
 
 * **tui-framework:** `Surface` accepts an explicit optional image manifest; `SurfaceContent` and toast pointer routing add passive-annotation and activation variants. Protocol request/payload enums add image-resource variants. Exhaustive Rust matches must be updated; native wire family 11 and remote control 2 are unchanged.
 * **tui-framework:** replace `TextSweep::apply_repeated` with `apply_periodic`, taking explicit cell spacing independently of band width.
-* **tui-framework:** `SearchList::new` takes `Option<&T>` for initial selection, and `SearchList::apply_theme` takes explicit foreground annotations. Callers migrate directly; native wire family 11 and remote control 2 are unchanged.
+* **tui-framework:** `SearchList::new` takes `Option<&T>` for initial selection, and `SearchList::apply_theme` takes explicit foreground/background annotations. Overlay `Policy` adds `above_modal` for independent paint priority. Callers migrate directly; native wire family 11 and remote control 2 are unchanged.
 
 ### Security
 

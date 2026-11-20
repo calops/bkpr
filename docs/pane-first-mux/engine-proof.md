@@ -915,6 +915,45 @@ screenshots and manifests remain under `target/smoke/recovery-picker/`.
 Native and remote wire families are unchanged. This adds frontend acceptance
 for genuine Pi on Linux, not new genuine Claude/Antigravity or macOS acceptance.
 
+### Shared picker presentation and divider gestures
+
+Finder, recovery and theme selection now use framework-owned picker geometry,
+card clipping and rounded Unicode decoration. Bkpr selects the tinted input and
+raised body materials. Rich material readiness cannot move the sections. The
+bottom-left companion guide remains above modal cards without taking their keys;
+effective bindings drive both its contents and cache invalidation. Inline shortcut
+footers are removed without removing action buttons or refusal/status information.
+
+`target/smoke/picker-design/verification-summary.json` and `actual-7/acceptance.json`
+record the authoritative isolated Kitty/Xvfb acceptance: rich/plain cards,
+dark/light live theme preview, compact 48×22 connected Finder borders, creation
+guides, unavailable-submit hints and genuine Pi 1.5.2 recovery over local and
+private OpenSSH attachments. The final run retains 50 uniquely named physical
+screenshots. Only two initial prompts reach the loopback text provider; no real
+provider, consent seed, approval change or live user session participates.
+
+Actual pointer double-clicks balance deliberately unequal horizontal and vertical
+splits to ratio 500, including both axes at a corner, with physical pane extents
+within one cell. An unrelated ratio-350 subtree remains unchanged. Keyboard and
+drag resizing, focus retirement, stale/foreign/read-only rejection and exact
+native input also pass without routine resize toasts. Rejected or ambiguous
+layout mutations retain their errors and are never replayed.
+
+The checked incremental debug pair is frozen under
+`target/smoke/harness-integrations/build/compiled-865181713335662/executables/`:
+client SHA-256 `8b59af711f740e81a9ef9a80202d7db8d0c9c3b1fd80d0795c23cc7d3c2def32`,
+server `b82165d6f4def61d8535320cc5b2e80ad562257dc25f0aed6df3bd2d5415f11d`.
+Host-UID workspace checks in `checks-865269311630996/result.json` pass 1,546
+top-level tests with 20 ignored, plus two isolated subprocess executions.
+Strict all-target Clippy, formatting and doctests pass; public live executable
+hashes and inodes are preserved. Native and remote wire families are unchanged.
+
+The exact executed controllers are archived in `actual-7/controller.zip`.
+Device-input logs retain their original bytes, including genuine graphics
+replies; outbound bulk-image logs use bounded linear summarization. Both owned
+cleanup survivor lists are empty. Earlier actual-5/6 runs remain classified as
+postprocessing timeouts, not successful acceptance or complete device evidence.
+
 ## Native pane context
 
 The prior native executable reproduced both gaps in

@@ -24,6 +24,10 @@ pub enum Context {
     Theme,
     /// Exact native recovery selection, with local list/details navigation.
     Recovery,
+    /// Recovery metadata owns navigation rather than the query field.
+    RecoveryDetails,
+    /// Full-resource image viewing; only dismissal is a keyboard action.
+    ImageViewer,
     Chooser,
     Details,
     ClipboardConsent,
@@ -41,6 +45,10 @@ pub enum ModalContext {
     Theme,
     /// Owner-scoped native recovery without replaying saved commands.
     Recovery,
+    /// Read-only metadata scrolling within the recovery picker.
+    RecoveryDetails,
+    /// Caller-owned full-resource image viewing.
+    ImageViewer,
     Chooser,
     Details,
     ClipboardConsent,
@@ -69,6 +77,8 @@ impl ContextState {
                 ModalContext::Finder => Context::Finder,
                 ModalContext::Theme => Context::Theme,
                 ModalContext::Recovery => Context::Recovery,
+                ModalContext::RecoveryDetails => Context::RecoveryDetails,
+                ModalContext::ImageViewer => Context::ImageViewer,
                 ModalContext::Chooser => Context::Chooser,
                 ModalContext::Details => Context::Details,
                 ModalContext::ClipboardConsent => Context::ClipboardConsent,
@@ -203,6 +213,16 @@ impl Action {
             Self::StopSession => "stop session, keep recovery",
             Self::RefreshCi => "refresh checks",
             Self::LeaveSidebar => "return to app",
+            Self::Navigate(Navigation::Previous)
+                if matches!(context, Context::Details | Context::RecoveryDetails) =>
+            {
+                "scroll up"
+            }
+            Self::Navigate(Navigation::Next)
+                if matches!(context, Context::Details | Context::RecoveryDetails) =>
+            {
+                "scroll down"
+            }
             Self::Navigate(Navigation::Previous) => "select previous",
             Self::Navigate(Navigation::Next) => "select next",
             Self::Navigate(Navigation::First) => "first item",
@@ -215,7 +235,9 @@ impl Action {
             }
             Self::Navigate(Navigation::PagePrevious) => "previous page",
             Self::Navigate(Navigation::PageNext) => "next page",
-            Self::CycleView if context == Context::Recovery => "list / details",
+            Self::CycleView if matches!(context, Context::Recovery | Context::RecoveryDetails) => {
+                "list / details"
+            }
             Self::CycleView => "cycle input / list / preview",
             Self::CycleField => "next field",
             Self::FoldSidebar => "fold workspace",
@@ -236,13 +258,19 @@ impl Action {
                 Context::Edit => "save",
                 Context::Recovery => "resume",
                 Context::Finder => "open",
+                Context::Theme => "choose theme",
+                Context::Chooser => "open new shell",
+                Context::RecoveryDetails => "resume",
                 _ => "confirm",
             },
-            Self::Cancel if context == Context::Recovery => "close picker",
+            Self::Cancel if matches!(context, Context::Recovery | Context::RecoveryDetails) => {
+                "close picker"
+            }
             Self::Cancel => match context {
                 Context::Finder => "close finder",
                 Context::Search => "close search",
                 Context::Details => "close inspector",
+                Context::ImageViewer => "close image",
                 _ => "cancel",
             },
             Self::AllowClipboard => "allow clipboard access",
@@ -251,6 +279,10 @@ impl Action {
             Self::Edit(EditAction::Right) => "cursor right",
             Self::Edit(EditAction::Home) if context == Context::Finder => "start of query",
             Self::Edit(EditAction::End) if context == Context::Finder => "end of query",
+            Self::Edit(EditAction::Home) if context == Context::RecoveryDetails => {
+                "scroll to start"
+            }
+            Self::Edit(EditAction::End) if context == Context::RecoveryDetails => "scroll to end",
             Self::Edit(EditAction::Home) if context == Context::Recovery => "jump to start",
             Self::Edit(EditAction::End) if context == Context::Recovery => "jump to end",
             Self::Edit(EditAction::Home) => "start of field",
@@ -303,22 +335,23 @@ impl Action {
     }
 }
 
-const APPLICATION: u16 = 1;
-const PREFIX: u16 = 1 << 1;
-const SIDEBAR: u16 = 1 << 2;
-const CREATE: u16 = 1 << 3;
-const EDIT: u16 = 1 << 4;
-const CONFIRM: u16 = 1 << 5;
-const FINDER: u16 = 1 << 6;
-const HISTORY: u16 = 1 << 7;
-const SEARCH: u16 = 1 << 8;
-const RESIZE: u16 = 1 << 9;
-const CHOOSER: u16 = 1 << 10;
-const DETAILS: u16 = 1 << 11;
-const CLIPBOARD_CONSENT: u16 = 1 << 12;
-const THEME: u16 = 1 << 13;
-const SESSIONS: u16 = 1 << 14;
-const RECOVERY: u16 = 1 << 15;
+const APPLICATION: u32 = 1;
+const PREFIX: u32 = 1 << 1;
+const SIDEBAR: u32 = 1 << 2;
+const CREATE: u32 = 1 << 3;
+const EDIT: u32 = 1 << 4;
+const CONFIRM: u32 = 1 << 5;
+const FINDER: u32 = 1 << 6;
+const HISTORY: u32 = 1 << 7;
+const SEARCH: u32 = 1 << 8;
+const RESIZE: u32 = 1 << 9;
+const CHOOSER: u32 = 1 << 10;
+const DETAILS: u32 = 1 << 11;
+const CLIPBOARD_CONSENT: u32 = 1 << 12;
+const THEME: u32 = 1 << 13;
+const SESSIONS: u32 = 1 << 14;
+const RECOVERY: u32 = 1 << 15;
+const IMAGE_VIEWER: u32 = 1 << 16;
 const SHIFT: u16 = 1;
 const CTRL: u16 = 2;
 const LOCKS: u16 = 16 | 32;
@@ -346,7 +379,7 @@ const MODIFIER_LABELS: [&[&str]; 16] = [
 ];
 
 impl Context {
-    fn mask(self) -> u16 {
+    fn mask(self) -> u32 {
         match self {
             Self::Application => APPLICATION,
             Self::CommandPrefix => PREFIX,
@@ -358,6 +391,8 @@ impl Context {
             Self::Finder => FINDER,
             Self::Theme => THEME,
             Self::Recovery => RECOVERY,
+            Self::RecoveryDetails => RECOVERY,
+            Self::ImageViewer => IMAGE_VIEWER,
             Self::History => HISTORY,
             Self::Search => SEARCH,
             Self::Resize => RESIZE,
@@ -379,6 +414,8 @@ impl Context {
             Self::Finder => "Find panes",
             Self::Theme => "Choose theme",
             Self::Recovery => "Resume conversations",
+            Self::RecoveryDetails => "Conversation details",
+            Self::ImageViewer => "Image",
             Self::History => "History",
             Self::Search => "Search",
             Self::Resize => "Resize",
@@ -399,7 +436,7 @@ enum Key {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Binding {
-    contexts: u16,
+    contexts: u32,
     key: Key,
     selected: bool,
     repeat: bool,
@@ -412,6 +449,11 @@ pub struct Binding {
 impl Binding {
     fn available(self, context: Context) -> bool {
         self.contexts & context.mask() != 0
+            && !(context == Context::RecoveryDetails
+                && matches!(
+                    self.action,
+                    Action::Edit(E::Left | E::Right | E::Backspace | E::Delete | E::Clear)
+                ))
             && (!self.selected
                 || matches!(
                     context,
@@ -432,7 +474,7 @@ impl Binding {
 }
 
 const fn physical(
-    contexts: u16,
+    contexts: u32,
     key: &'static str,
     modifiers: u16,
     keycap: &'static str,
@@ -456,7 +498,7 @@ const fn physical(
     }
 }
 
-const fn text(contexts: u16, key: &'static str, action: Action, priority: u8) -> Binding {
+const fn text(contexts: u32, key: &'static str, action: Action, priority: u8) -> Binding {
     Binding {
         contexts,
         key: Key::Text(key),
@@ -712,7 +754,16 @@ static BINDINGS: &[Binding] = &[
         false,
     )),
     physical(
-        CREATE | EDIT | CONFIRM | FINDER | SEARCH | CHOOSER | DETAILS | THEME | RECOVERY,
+        CREATE
+            | EDIT
+            | CONFIRM
+            | FINDER
+            | SEARCH
+            | CHOOSER
+            | DETAILS
+            | THEME
+            | RECOVERY
+            | IMAGE_VIEWER,
         "Escape",
         0,
         "Esc",
@@ -974,6 +1025,34 @@ static BINDINGS: &[Binding] = &[
     ),
 ];
 
+/// An exact stack-only snapshot of effective bindings for one local context.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Availability {
+    bits: [u64; BINDINGS.len().div_ceil(64)],
+}
+
+impl Availability {
+    /// Sample the same capability policy used by dispatch without allocating.
+    pub fn new(context: Context, supported: impl Fn(Action) -> bool) -> Self {
+        let mut result = Self {
+            bits: [0; BINDINGS.len().div_ceil(64)],
+        };
+        for (index, binding) in BINDINGS.iter().enumerate() {
+            if binding.available(context) && supported(binding.action) {
+                result.bits[index / 64] |= 1 << (index % 64);
+            }
+        }
+        result
+    }
+
+    /// Whether any effective binding in this snapshot executes the action.
+    pub fn contains(&self, action: Action) -> bool {
+        BINDINGS.iter().enumerate().any(|(index, binding)| {
+            binding.action == action && self.bits[index / 64] & (1 << (index % 64)) != 0
+        })
+    }
+}
+
 fn supported_by_default(_action: Action) -> bool {
     true
 }
@@ -1028,7 +1107,7 @@ pub struct Hint {
 }
 
 struct PresentationGroup {
-    contexts: u16,
+    contexts: u32,
     actions: &'static [Action],
     description: &'static str,
     priority: u8,
@@ -1037,6 +1116,24 @@ struct PresentationGroup {
 // Membership, order and row priority are product policy, not label heuristics.
 // Descriptions remain truthful when capability filtering leaves a partial group.
 static PRESENTATION_GROUPS: &[PresentationGroup] = &[
+    PresentationGroup {
+        contexts: CREATE | EDIT | FINDER | THEME | RECOVERY,
+        actions: &[A::Edit(EditAction::Left), A::Edit(EditAction::Right)],
+        description: "move cursor",
+        priority: 20,
+    },
+    PresentationGroup {
+        contexts: CREATE | EDIT | FINDER | THEME | RECOVERY,
+        actions: &[A::Edit(EditAction::Home), A::Edit(EditAction::End)],
+        description: "jump to start/end",
+        priority: 21,
+    },
+    PresentationGroup {
+        contexts: CREATE | EDIT | FINDER | THEME | RECOVERY,
+        actions: &[A::Edit(EditAction::Backspace), A::Edit(EditAction::Delete)],
+        description: "erase",
+        priority: 22,
+    },
     PresentationGroup {
         contexts: SIDEBAR,
         actions: &[A::LeaveSidebar, A::ToggleSidebar],
@@ -1120,13 +1217,19 @@ static PRESENTATION_GROUPS: &[PresentationGroup] = &[
     PresentationGroup {
         contexts: RECOVERY,
         actions: &[A::Navigate(N::Previous), A::Navigate(N::Next)],
-        description: "navigate list / details",
+        description: "select conversation",
         priority: 10,
     },
     PresentationGroup {
-        contexts: SIDEBAR | SESSIONS | FINDER | CHOOSER | DETAILS | THEME,
+        contexts: SIDEBAR | SESSIONS | FINDER | CHOOSER | THEME,
         actions: &[A::Navigate(N::Previous), A::Navigate(N::Next)],
         description: "select item",
+        priority: 10,
+    },
+    PresentationGroup {
+        contexts: DETAILS,
+        actions: &[A::Navigate(N::Previous), A::Navigate(N::Next)],
+        description: "scroll details",
         priority: 10,
     },
     PresentationGroup {
@@ -1208,7 +1311,14 @@ pub fn hints_with(context: Context, supported: impl Fn(Action) -> bool) -> Vec<H
                 (binding.action.description(context), binding.priority),
                 |index| {
                     let group = &PRESENTATION_GROUPS[index];
-                    (group.description, group.priority)
+                    let description = if context == Context::RecoveryDetails
+                        && group.actions == [A::Navigate(N::Previous), A::Navigate(N::Next)]
+                    {
+                        "scroll details"
+                    } else {
+                        group.description
+                    };
+                    (description, group.priority)
                 },
             );
             hints.push(Hint {
@@ -2175,6 +2285,87 @@ mod tests {
                 &event("KeyS", "s", 0, KeyAction::Press)
             ),
             Some(A::StartHistory)
+        );
+    }
+
+    #[test]
+    fn availability_snapshot_tracks_policy_changes_and_renders_only_sampled_actions() {
+        let ready = Availability::new(Context::Recovery, |_| true);
+        let pending = Availability::new(Context::Recovery, |action| {
+            !matches!(action, A::Submit | A::RefreshRecovery)
+        });
+        assert_ne!(ready, pending);
+        assert!(ready.contains(A::Submit));
+        assert!(!pending.contains(A::Submit));
+        assert!(pending.contains(A::Cancel));
+        let actions: Vec<_> = hints_with(Context::Recovery, |action| pending.contains(action))
+            .into_iter()
+            .flat_map(|hint| hint.members.into_iter().map(|member| member.action))
+            .collect();
+        assert!(!actions.contains(&A::Submit));
+        assert!(!actions.contains(&A::RefreshRecovery));
+        assert!(actions.contains(&A::Cancel));
+        assert_eq!(
+            lookup_with(
+                Context::Recovery,
+                &event("Enter", "", 0, KeyAction::Press),
+                |action| pending.contains(action),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn image_viewer_advertises_only_its_typed_dismissal() {
+        assert_eq!(
+            advertised(Context::ImageViewer).collect::<Vec<_>>(),
+            [A::Cancel]
+        );
+        assert_eq!(
+            lookup(
+                Context::ImageViewer,
+                &event("Escape", "", 0, KeyAction::Press)
+            ),
+            Some(A::Cancel)
+        );
+        for key in ["Enter", "ArrowUp", "Home"] {
+            assert_eq!(
+                lookup(Context::ImageViewer, &event(key, "", 0, KeyAction::Press)),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_details_advertise_scrolling_not_query_edits_or_selection() {
+        let hints = hints(Context::RecoveryDetails);
+        assert!(
+            hints
+                .iter()
+                .any(|hint| hint.description == "scroll details")
+        );
+        assert!(
+            !hints
+                .iter()
+                .any(|hint| hint.description == "select conversation")
+        );
+        for action in [E::Left, E::Right, E::Backspace, E::Delete, E::Clear] {
+            assert!(!advertised(Context::RecoveryDetails).any(|item| item == A::Edit(action)));
+        }
+        assert_eq!(
+            lookup(
+                Context::RecoveryDetails,
+                &event("Home", "", 0, KeyAction::Press)
+            ),
+            Some(A::Edit(E::Home))
+        );
+        assert_eq!(
+            A::Edit(E::Home).description(Context::RecoveryDetails),
+            "scroll to start"
+        );
+        assert_ne!(
+            Availability::new(Context::Recovery, |_| true),
+            Availability::new(Context::RecoveryDetails, |_| true)
         );
     }
 

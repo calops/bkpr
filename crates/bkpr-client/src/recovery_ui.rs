@@ -66,10 +66,9 @@ struct View {
 #[derive(Clone, Copy, PartialEq)]
 struct DetailsPaint {
     size: Size,
-    origin: u16,
+    origin: Rect,
     revision: u64,
     scroll: usize,
-    focused: bool,
     enabled: bool,
     busy: bool,
 }
@@ -133,10 +132,18 @@ impl State {
         self.view.as_ref().is_none_or(|view| !view.detail_focus)
     }
     /// Paint child surfaces without copying terminal scenes or writing host bytes.
-    pub(super) fn paint(&mut self, list: &mut UiSurface, size: Size, theme: &Theme) {
+    pub(super) fn paint(
+        &mut self,
+        list: &mut UiSurface,
+        size: Size,
+        theme: &Theme,
+        host: &ColorProbe,
+    ) {
+        use bkpr_tui_framework::picker::PickerLayout;
         let enabled = self.can_resume();
         let busy = self.mutation.is_some();
         let Some(view) = &mut self.view else { return };
+        let sections = PickerLayout::new(size, true);
         let list_height = if size.rows <= 4 {
             size.rows.min(2)
         } else {
@@ -146,15 +153,21 @@ impl State {
             x: 0,
             y: 0,
             width: size.cols,
-            height: list_height,
+            height: sections.as_ref().map_or(list_height, |_| size.rows),
         };
-        view.detail_rect = Rect {
-            x: 0,
-            y: list_height,
-            width: size.cols,
-            height: size.rows.saturating_sub(list_height),
-        };
+        view.detail_rect = sections.as_ref().map_or(
+            Rect {
+                x: 0,
+                y: list_height,
+                width: size.cols,
+                height: size.rows.saturating_sub(list_height),
+            },
+            |layout| layout.details,
+        );
         let local = view.list_rect.size(size);
+        let backgrounds = sections
+            .as_ref()
+            .map(|layout| crate::appearance::picker_backgrounds(host, layout, false));
         if let Some(picker) = &mut view.picker {
             picker.list.set_title(&view.owner_label);
             picker.list.paint(list, local);
@@ -166,33 +179,37 @@ impl State {
                         .visible_items(local)
                         .map(|(rect, key)| ForegroundSpan {
                             rect,
-                            foreground: ColorSource::Rgb(
-                                theme.style(picker.row_status(key)).foreground,
-                            ),
+                            foreground: theme.ink(picker.row_status(key), false),
                         }),
                 );
-            picker.list.apply_theme(list, theme, &view.foregrounds);
+            let compact_background = [BackgroundSpan {
+                rect: picker.list.content_layout(local).input,
+                background: crate::appearance::region_background(host, Some(6))
+                    .map_or(ColorSource::Default, ColorSource::Rgb),
+            }];
+            picker.list.apply_theme(
+                list,
+                theme,
+                &view.foregrounds,
+                backgrounds
+                    .as_ref()
+                    .map_or(&compact_background[..], |spans| &spans[..]),
+            );
         } else {
+            let row = |y| Rect {
+                x: 0,
+                y,
+                width: local.cols,
+                height: 1,
+            };
+            let title = sections.as_ref().map_or(row(0), |layout| layout.title);
+            let message = sections.as_ref().map_or(row(1), |layout| layout.results);
             list.paint(
                 local,
                 vec![
+                    (title, view.owner_label.clone(), false),
                     (
-                        Rect {
-                            x: 0,
-                            y: 0,
-                            width: size.cols,
-                            height: 1,
-                        },
-                        view.owner_label.clone(),
-                        false,
-                    ),
-                    (
-                        Rect {
-                            x: 0,
-                            y: 1,
-                            width: size.cols,
-                            height: 1,
-                        },
+                        message,
                         if view.loading {
                             "Loading saved conversations…"
                         } else {
@@ -204,7 +221,13 @@ impl State {
                 ],
                 None,
             );
-            list.apply_theme(theme, Role::Panel, &[]);
+            list.apply_theme_with_colors(
+                theme,
+                Role::Panel,
+                &[],
+                &[],
+                backgrounds.as_ref().map_or(&[], |spans| &spans[..]),
+            );
         }
         if view.detail_focus {
             list.frame.cursor.visible = false;
@@ -214,30 +237,45 @@ impl State {
             .as_ref()
             .and_then(|picker| picker.list.selected())
             != view.selected.as_ref();
-        if selected_changed || view.width != size.cols || view.dirty {
+        let width = view.detail_rect.width;
+        if selected_changed
+            || view.width != width
+            || view.dirty
+            || view.painted.is_some_and(|painted| painted.busy != busy)
+        {
             view.selected = view
                 .picker
                 .as_ref()
                 .and_then(|picker| picker.list.selected())
                 .cloned();
-            view.width = size.cols;
+            view.width = width;
             view.lines.clear();
             if let Some(error) = &view.error {
                 crate::metadata::wrap(
                     &[crate::metadata::Paragraph::new(error, Role::Error)],
-                    size.cols,
+                    width,
+                    &mut view.lines,
+                );
+            }
+            if busy {
+                crate::metadata::wrap(
+                    &[crate::metadata::Paragraph::new(
+                        "Resume request in progress. Closing the picker doesn't undo an accepted start.",
+                        Role::Warning,
+                    )],
+                    width,
                     &mut view.lines,
                 );
             }
             if let Some(picker) = &mut view.picker {
-                crate::metadata::wrap(picker.details(), size.cols, &mut view.lines);
+                crate::metadata::wrap(picker.details(), width, &mut view.lines);
             } else {
                 crate::metadata::wrap(
                     &[crate::metadata::Paragraph::new(
-                        "Uses current native configuration and permissions. Native state/provider availability is not preflighted; starting a process is not verified binding.",
+                        "Uses current native configuration and permissions. Native state/provider availability isn't preflighted; starting a process isn't verified binding.",
                         Role::Muted,
                     )],
-                    size.cols,
+                    width,
                     &mut view.lines,
                 );
             }
@@ -248,47 +286,40 @@ impl State {
             view.line_revision = view.line_revision.wrapping_add(1);
         }
         let local = view.detail_rect.size(size);
-        let capacity = usize::from(local.rows.saturating_sub(2));
+        let capacity = usize::from(local.rows.saturating_sub(1));
         view.scroll = view.scroll.min(view.lines.len().saturating_sub(capacity));
+        let detail_background = [BackgroundSpan {
+            rect: Rect {
+                x: 0,
+                y: 0,
+                width: local.cols,
+                height: local.rows,
+            },
+            background: crate::appearance::region_background(host, None)
+                .map_or(ColorSource::Default, ColorSource::Rgb),
+        }];
         let painted = DetailsPaint {
             size: local,
-            origin: view.detail_rect.y,
+            origin: view.detail_rect,
             revision: view.line_revision,
             scroll: view.scroll,
-            focused: view.detail_focus,
             enabled,
             busy,
         };
         if view.painted == Some(painted) {
-            view.details
-                .apply_theme(theme, Role::Panel, &view.detail_roles);
+            view.details.apply_theme_with_colors(
+                theme,
+                Role::Panel,
+                &view.detail_roles,
+                &[],
+                &detail_background,
+            );
             return;
         }
         view.painted = Some(painted);
         let mut rows = Vec::with_capacity(usize::from(local.rows));
         let roles = &mut view.detail_roles;
         roles.clear();
-        if local.rows > 0 {
-            rows.push((
-                Rect {
-                    x: 0,
-                    y: 0,
-                    width: local.cols,
-                    height: 1,
-                },
-                "─".repeat(usize::from(local.cols)),
-                false,
-            ));
-            roles.push(RoleSpan {
-                rect: Rect {
-                    x: 0,
-                    y: 0,
-                    width: local.cols,
-                    height: 1,
-                },
-                role: Role::Muted,
-            });
-        }
         for (index, line) in view
             .lines
             .iter()
@@ -298,7 +329,7 @@ impl State {
         {
             let rect = Rect {
                 x: 0,
-                y: index as u16 + 1,
+                y: index as u16,
                 width: local.cols,
                 height: 1,
             };
@@ -309,7 +340,7 @@ impl State {
             });
         }
         view.button = None;
-        if local.rows > 1 {
+        if local.rows > 0 && local.cols > 0 {
             let label = if busy {
                 "[ Starting… ]"
             } else if enabled {
@@ -324,22 +355,6 @@ impl State {
                 width,
                 height: 1,
             };
-            let help = if busy {
-                "Esc hide · start may already be accepted"
-            } else if view.detail_focus {
-                "Tab list · PgUp/PgDn scroll · Esc close"
-            } else {
-                "Tab details · Ctrl-r refresh · Esc close"
-            };
-            rows.push((
-                Rect {
-                    x: 0,
-                    width: rect.x.saturating_sub(1),
-                    ..rect
-                },
-                help.into(),
-                false,
-            ));
             rows.push((rect, label.into(), false));
             roles.push(RoleSpan {
                 rect,
@@ -347,6 +362,7 @@ impl State {
             });
             if enabled {
                 view.button = Some(Rect {
+                    x: view.detail_rect.x + rect.x,
                     y: view.detail_rect.y + rect.y,
                     ..rect
                 });
@@ -357,14 +373,15 @@ impl State {
             rows,
             Some(Cursor {
                 x: 0,
-                y: u16::from(local.rows > 1),
+                y: 0,
                 visible: false,
                 blinking: false,
                 shape: CursorShape::Block,
                 color: None,
             }),
         );
-        view.details.apply_theme(theme, Role::Panel, roles);
+        view.details
+            .apply_theme_with_colors(theme, Role::Panel, roles, &[], &detail_background);
     }
 }
 
@@ -374,7 +391,7 @@ impl App {
         self.begin_modal();
         self.finder = None;
         self.state.cancel();
-        self.retire_resize("recovery picker opened");
+        self.retire_resize();
         self.selection_focus_lost();
         self.close_search();
         self.popover.hide();
@@ -510,8 +527,8 @@ impl App {
         if event.action == KeyAction::Release {
             return;
         }
-        use crate::keyguide::{self, Action, Context, Navigation};
-        let action = keyguide::lookup_with(Context::Recovery, event, |action| {
+        use crate::keyguide::{self, Action, Navigation};
+        let action = keyguide::lookup_with(self.guide_context(), event, |action| {
             self.supports_action(action)
         });
         match action {
@@ -537,7 +554,7 @@ impl App {
             return;
         }
         if view.detail_focus {
-            let page = usize::from(view.detail_rect.height.saturating_sub(2).max(1));
+            let page = usize::from(view.detail_rect.height.saturating_sub(1).max(1));
             match action {
                 Some(Action::Navigate(Navigation::Previous)) => {
                     view.scroll = view.scroll.saturating_sub(1)
