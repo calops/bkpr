@@ -86,20 +86,31 @@ fn send(
     text: &str,
     scope: AgentScope,
 ) -> Result<Value> {
+    send_to(agents, contexts, "b", key, text, scope)
+}
+
+fn send_to(
+    agents: &Agents,
+    contexts: &BTreeMap<String, ContextFact>,
+    to: &str,
+    key: &str,
+    text: &str,
+    scope: AgentScope,
+) -> Result<Value> {
     agents.transaction(|store| {
         messages::send(
             store,
-            "a",
             &contexts["a"],
             contexts,
             SendInput {
-                to: "b".into(),
+                to: to.into(),
                 text: text.into(),
                 idempotency_key: key.into(),
                 scope,
-                receiver_ready: false,
             },
             &"a".repeat(64),
+            |_, _| Ok(()),
+            |_| false,
         )
     })
 }
@@ -191,7 +202,6 @@ fn exact_retry_survives_recipient_exit_and_membership_change_but_conflicts_fail(
     let changed_to = service.transaction(|store| {
         messages::send(
             store,
-            "a",
             &contexts["a"],
             &contexts,
             SendInput {
@@ -199,9 +209,10 @@ fn exact_retry_survives_recipient_exit_and_membership_change_but_conflicts_fail(
                 text: "hello".into(),
                 idempotency_key: "same".into(),
                 scope: AgentScope::Workspace,
-                receiver_ready: false,
             },
             &"a".repeat(64),
+            |_, _| Ok(()),
+            |_| false,
         )
     });
     assert!(changed_to.is_err());
@@ -850,7 +861,6 @@ fn committed_send_pushes_pointer_without_reading_and_disconnect_retires_readines
         .transaction(|store| {
             messages::send(
                 store,
-                "b",
                 &contexts["b"],
                 &contexts,
                 SendInput {
@@ -858,9 +868,10 @@ fn committed_send_pushes_pointer_without_reading_and_disconnect_retires_readines
                     text: "private peer body".into(),
                     idempotency_key: "push".into(),
                     scope: AgentScope::Workspace,
-                    receiver_ready: true,
                 },
                 &"a".repeat(64),
+                |_, _| Ok(()),
+                |_| true,
             )
         })
         .unwrap();
@@ -1017,7 +1028,6 @@ fn native_rebind_does_not_replay_old_ambiguity_but_new_messages_get_new_generati
         registry.inner.agents.transaction(|store| {
             messages::send(
                 store,
-                "b",
                 &contexts["b"],
                 &contexts,
                 SendInput {
@@ -1025,9 +1035,10 @@ fn native_rebind_does_not_replay_old_ambiguity_but_new_messages_get_new_generati
                     text: key.into(),
                     idempotency_key: key.into(),
                     scope: AgentScope::Workspace,
-                    receiver_ready: true,
                 },
                 &"a".repeat(64),
+                |_, _| Ok(()),
+                |_| true,
             )
         })
     };
@@ -1096,7 +1107,6 @@ fn receiver_mode_replacement_retires_old_claim_without_replaying_it() {
         registry.inner.agents.transaction(|store| {
             messages::send(
                 store,
-                "b",
                 &contexts["b"],
                 &contexts,
                 SendInput {
@@ -1104,9 +1114,10 @@ fn receiver_mode_replacement_retires_old_claim_without_replaying_it() {
                     text: key.into(),
                     idempotency_key: key.into(),
                     scope: AgentScope::Workspace,
-                    receiver_ready: true,
                 },
                 &"a".repeat(64),
+                |_, _| Ok(()),
+                |_| true,
             )
         })
     };
@@ -1512,7 +1523,6 @@ fn every_direct_message_requests_a_wake_and_joins_the_current_claim() {
         registry.inner.agents.transaction(|store| {
             messages::send(
                 store,
-                "b",
                 &contexts["b"],
                 &contexts,
                 SendInput {
@@ -1520,9 +1530,10 @@ fn every_direct_message_requests_a_wake_and_joins_the_current_claim() {
                     text: "body-free wake test body".into(),
                     idempotency_key: key.into(),
                     scope: AgentScope::Workspace,
-                    receiver_ready: false,
                 },
                 &"a".repeat(64),
+                |_, _| Ok(()),
+                |_| false,
             )
         })
     };
@@ -1978,4 +1989,443 @@ fn discovery_project_context_requires_matching_live_foreground_cache() {
     assert!(discovery_project(Some(&project), Some(Path::new("/repo")), false).is_none());
     project.state = ProjectState::Loading;
     assert!(discovery_project(Some(&project), Some(Path::new("/repo")), true).is_none());
+}
+
+#[test]
+fn conversation_selector_persists_exact_launch_and_original_fingerprint() {
+    let (dir, service, contexts) = fixture();
+    let sent = service
+        .transaction(|store| {
+            messages::send(
+                store,
+                &contexts["a"],
+                &contexts,
+                SendInput {
+                    to: "native-b".into(),
+                    text: "conversation body".into(),
+                    idempotency_key: "conversation".into(),
+                    scope: AgentScope::Workspace,
+                },
+                &"a".repeat(64),
+                |_, selector| {
+                    assert_eq!(selector, "native-b");
+                    Ok(())
+                },
+                |recipient| {
+                    assert_eq!(recipient, "b");
+                    true
+                },
+            )
+        })
+        .unwrap();
+    assert_eq!(sent["wake"]["state"], "pending");
+    let saved = Agents::load(&dir.path().join("agents")).unwrap();
+    let message = &saved.messages[sent["message_id"].as_str().unwrap()];
+    assert_eq!(message.to, "b");
+    assert_eq!(
+        message.digest,
+        payload("native-b", "conversation body", AgentScope::Workspace)
+    );
+    let claimed = claim(&service, now());
+    assert_eq!(claimed.message_count, 1);
+    let inbox = service
+        .transaction_maybe(|store| messages::read(store, "b", None, None, &[], false, now()))
+        .unwrap();
+    assert_eq!(inbox["messages"][0]["id"], sent["message_id"]);
+    assert_eq!(inbox["messages"][0]["text"], "conversation body");
+}
+
+#[test]
+fn conversation_selector_requires_foreground_bound_live_recipient_and_rejects_self() {
+    let (_dir, service, mut contexts) = fixture();
+    for selector in ["missing", "native-a"] {
+        assert!(
+            send_to(
+                &service,
+                &contexts,
+                selector,
+                selector,
+                "body",
+                AgentScope::All,
+            )
+            .is_err()
+        );
+    }
+    contexts.get_mut("b").unwrap().active = false;
+    assert!(
+        send_to(
+            &service,
+            &contexts,
+            "native-b",
+            "background-alias",
+            "body",
+            AgentScope::All,
+        )
+        .is_err()
+    );
+    assert!(
+        send(
+            &service,
+            &contexts,
+            "background-exact",
+            "body",
+            AgentScope::All
+        )
+        .is_ok()
+    );
+    contexts.get_mut("b").unwrap().active = true;
+    contexts.get_mut("b").unwrap().conversation = None;
+    assert!(
+        send_to(
+            &service,
+            &contexts,
+            "native-b",
+            "unbound",
+            "body",
+            AgentScope::All,
+        )
+        .is_err()
+    );
+    contexts.get_mut("b").unwrap().conversation = Some(NativeConversation {
+        id: "native-b".into(),
+        source: ConversationSource::OmpExtension,
+        generation: 0,
+    });
+    assert!(
+        send_to(
+            &service,
+            &contexts,
+            "native-b",
+            "unverified",
+            "body",
+            AgentScope::All,
+        )
+        .is_err()
+    );
+}
+
+fn ambiguity(error: anyhow::Error) -> Value {
+    let error = error.to_string();
+    let encoded = error
+        .strip_prefix("ambiguous recipient; ")
+        .unwrap()
+        .split_once("; address an exact launch_id;")
+        .unwrap()
+        .0;
+    serde_json::from_str(encoded).unwrap()
+}
+
+#[test]
+fn duplicate_conversations_are_scoped_across_harnesses_before_ambiguity() {
+    let (_dir, service, mut contexts) = fixture();
+    let mut third = launch("c");
+    third.grant.kind = HarnessKind::Claude;
+    service.register(&third).unwrap();
+    let mut duplicate = context("c", Some("other"));
+    duplicate.conversation = Some(NativeConversation {
+        id: "native-b".into(),
+        source: ConversationSource::ClaudeHook,
+        generation: 3,
+    });
+    contexts.insert("c".into(), duplicate);
+    let sent = send_to(
+        &service,
+        &contexts,
+        "native-b",
+        "scoped",
+        "body",
+        AgentScope::Workspace,
+    )
+    .unwrap();
+    assert_eq!(
+        service.state.lock().unwrap().store.messages[sent["message_id"].as_str().unwrap()].to,
+        "b"
+    );
+    let error = send_to(
+        &service,
+        &contexts,
+        "native-b",
+        "session-ambiguous",
+        "body",
+        AgentScope::Session,
+    )
+    .unwrap_err();
+    assert_eq!(
+        ambiguity(error),
+        json!({"candidates":[{"launch_id":"b","pane_id":"pane-b"},{"launch_id":"c","pane_id":"pane-c"}],"has_more":false,"truncated":false})
+    );
+    contexts.get_mut("c").unwrap().pane.workspace_id = Some("one".into());
+    assert_eq!(
+        ambiguity(
+            send_to(
+                &service,
+                &contexts,
+                "native-b",
+                "workspace-ambiguous",
+                "body",
+                AgentScope::Workspace,
+            )
+            .unwrap_err()
+        )["candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn ambiguity_is_bounded_without_foreign_scope_metadata_or_counts() {
+    let (_dir, service, mut contexts) = fixture();
+    for index in 0..15 {
+        let id = format!("candidate-{index:02}");
+        service.register(&launch(&id)).unwrap();
+        let mut candidate = context(&id, Some("one"));
+        candidate.conversation.as_mut().unwrap().id = "native-b".into();
+        candidate.pane.title = "private-rich-title".into();
+        contexts.insert(id, candidate);
+    }
+    service.register(&launch("private-foreign")).unwrap();
+    let mut foreign = context("private-foreign", Some("other"));
+    foreign.conversation.as_mut().unwrap().id = "native-b".into();
+    contexts.insert("private-foreign".into(), foreign);
+    let encoded = ambiguity(
+        send_to(
+            &service,
+            &contexts,
+            "native-b",
+            "bounded",
+            "body",
+            AgentScope::Workspace,
+        )
+        .unwrap_err(),
+    );
+    assert_eq!(encoded["candidates"].as_array().unwrap().len(), 10);
+    assert_eq!(encoded["has_more"], true);
+    assert_eq!(encoded["truncated"], true);
+    for candidate in encoded["candidates"].as_array().unwrap() {
+        assert_eq!(candidate.as_object().unwrap().len(), 2);
+    }
+    assert!(!encoded.to_string().contains("private"));
+    assert!(service.state.lock().unwrap().store.messages.is_empty());
+}
+
+#[test]
+fn launch_conversation_namespace_collision_fails_closed_and_retirement_never_forwards() {
+    let (_dir, service, mut contexts) = fixture();
+    contexts
+        .get_mut("b")
+        .unwrap()
+        .conversation
+        .as_mut()
+        .unwrap()
+        .id = "b".into();
+    assert!(
+        send(
+            &service,
+            &contexts,
+            "same-launch",
+            "body",
+            AgentScope::Workspace
+        )
+        .is_ok()
+    );
+    service.register(&launch("c")).unwrap();
+    let mut collision = context("c", Some("one"));
+    collision.conversation.as_mut().unwrap().id = "b".into();
+    contexts.insert("c".into(), collision);
+    assert_eq!(
+        ambiguity(
+            send(
+                &service,
+                &contexts,
+                "collision",
+                "body",
+                AgentScope::Workspace
+            )
+            .unwrap_err()
+        )["candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    contexts.get_mut("c").unwrap().pane.workspace_id = Some("other".into());
+    assert!(
+        send(
+            &service,
+            &contexts,
+            "scoped-exact",
+            "body",
+            AgentScope::Workspace
+        )
+        .is_ok()
+    );
+    contexts.get_mut("b").unwrap().pane.workspace_id = Some("other".into());
+    contexts.get_mut("c").unwrap().pane.workspace_id = Some("one".into());
+    let outside = send(
+        &service,
+        &contexts,
+        "outside",
+        "body",
+        AgentScope::Workspace,
+    )
+    .unwrap_err();
+    assert!(outside.to_string().contains("outside selected live scope"));
+    service.retire(&["b".into()], now()).unwrap();
+    contexts.remove("b");
+    let retired = send(
+        &service,
+        &contexts,
+        "retired",
+        "body",
+        AgentScope::Workspace,
+    )
+    .unwrap_err();
+    assert!(retired.to_string().contains("recipient launch is retired"));
+    assert_eq!(service.state.lock().unwrap().store.messages.len(), 2);
+}
+
+#[test]
+fn conversation_retry_survives_rebinding_replacement_ambiguity_and_body_expiry() {
+    let (dir, service, mut contexts) = fixture();
+    let sent = send_to(
+        &service,
+        &contexts,
+        "native-b",
+        "stable",
+        "original body",
+        AgentScope::Workspace,
+    )
+    .unwrap();
+    assert!(
+        send_to(
+            &service,
+            &contexts,
+            "b",
+            "stable",
+            "original body",
+            AgentScope::Workspace,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("idempotency key conflicts")
+    );
+    contexts
+        .get_mut("b")
+        .unwrap()
+        .conversation
+        .as_mut()
+        .unwrap()
+        .id = "replacement".into();
+    for id in ["replacement", "competitor"] {
+        service.register(&launch(id)).unwrap();
+        let mut candidate = context(id, Some("one"));
+        candidate.conversation.as_mut().unwrap().id = "native-b".into();
+        contexts.insert(id.into(), candidate);
+    }
+    let exited_at = now();
+    service.retire(&["b".into()], exited_at).unwrap();
+    service.maintain(exited_at + RETENTION_MS).unwrap();
+    let retried = send_to(
+        &service,
+        &contexts,
+        "native-b",
+        "stable",
+        "original body",
+        AgentScope::Workspace,
+    )
+    .unwrap();
+    assert_eq!(retried["message_id"], sent["message_id"]);
+    assert_eq!(retried["duplicate"], true);
+    for (text, scope) in [
+        ("changed body", AgentScope::Workspace),
+        ("original body", AgentScope::All),
+    ] {
+        assert!(
+            send_to(&service, &contexts, "native-b", "stable", text, scope)
+                .unwrap_err()
+                .to_string()
+                .contains("idempotency key conflicts")
+        );
+    }
+    let persisted = Agents::load(&dir.path().join("agents")).unwrap();
+    assert_eq!(persisted.messages.len(), 1);
+    let message = &persisted.messages[sent["message_id"].as_str().unwrap()];
+    assert_eq!(message.to, "b");
+    assert!(message.text.is_none());
+    assert_eq!(message.expired_at, Some(exited_at + RETENTION_MS));
+    assert_eq!(
+        message.digest,
+        payload("native-b", "original body", AgentScope::Workspace)
+    );
+}
+
+#[test]
+fn conversation_commit_uncertainty_never_returns_durable_success_or_redirects() {
+    let (dir, service, contexts) = fixture();
+    service.fail_next_commit();
+    let failure = send_to(
+        &service,
+        &contexts,
+        "native-b",
+        "uncertain-alias",
+        "body",
+        AgentScope::Workspace,
+    )
+    .unwrap_err();
+    assert!(failure.to_string().contains("outcome unknown"));
+    let persisted = Agents::load(&dir.path().join("agents")).unwrap();
+    let message = persisted.messages.values().next().unwrap();
+    assert_eq!(message.to, "b");
+    assert_eq!(
+        message.digest,
+        payload("native-b", "body", AgentScope::Workspace)
+    );
+    assert!(
+        send_to(
+            &service,
+            &contexts,
+            "native-b",
+            "uncertain-alias",
+            "body",
+            AgentScope::Workspace,
+        )
+        .is_err()
+    );
+    assert!(service.state.lock().unwrap().store.messages.is_empty());
+}
+
+#[test]
+fn self_conversation_and_launch_namespace_collisions_never_choose_a_peer() {
+    let (_dir, service, mut contexts) = fixture();
+    contexts
+        .get_mut("b")
+        .unwrap()
+        .conversation
+        .as_mut()
+        .unwrap()
+        .id = "a".into();
+    let error = send_to(
+        &service,
+        &contexts,
+        "a",
+        "self-collision",
+        "body",
+        AgentScope::Workspace,
+    )
+    .unwrap_err();
+    assert_eq!(ambiguity(error)["candidates"].as_array().unwrap().len(), 2);
+    contexts.get_mut("b").unwrap().active = false;
+    let error = send_to(
+        &service,
+        &contexts,
+        "a",
+        "self-only",
+        "body",
+        AgentScope::All,
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), "cannot message self");
+    assert!(service.state.lock().unwrap().store.messages.is_empty());
 }

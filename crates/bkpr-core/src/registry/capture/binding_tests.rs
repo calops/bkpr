@@ -1202,3 +1202,426 @@ fn whoami_revision_and_conversation_share_the_fresh_context_snapshot() {
         assert_eq!(identity["conversation"], json!(current.conversation));
     }
 }
+
+fn conversation_send(to: &str, key: &str) -> AgentRequest {
+    AgentRequest::SendMessage {
+        to: to.into(),
+        text: format!("body-{key}"),
+        idempotency_key: key.into(),
+        scope: AgentScope::Workspace,
+    }
+}
+
+fn join_recipient_workspace(f: &ControlFixture, pane_id: &str) {
+    let window_id = Uuid::new_v4().to_string();
+    f.fixture
+        .registry
+        .mutate(|snapshot| {
+            let pane = snapshot
+                .panes
+                .iter_mut()
+                .find(|pane| pane.id == pane_id)
+                .unwrap();
+            assert!(pane.workspace_id.is_none());
+            pane.workspace_id = Some(f.workspace.clone());
+            pane.window_id = Some(window_id.clone());
+            snapshot
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.id == f.workspace)
+                .unwrap()
+                .windows
+                .push(Window {
+                    id: window_id,
+                    name: "recipient-peer".into(),
+                    revision: 1,
+                    layout: Some(LayoutNode::Leaf {
+                        pane_id: pane_id.into(),
+                    }),
+                });
+            Ok(())
+        })
+        .unwrap();
+}
+
+fn competing_recipient(f: &ControlFixture, conversation: &str) -> (CaptureGrant, Peer) {
+    let (_, grant, peer) = seed_launch_command(
+        &f.fixture,
+        HarnessKind::Claude,
+        "printf ready > competing-recipient-ready; while IFS= read -r line; do :; done",
+    );
+    await_file(&f.fixture.home.join("competing-recipient-ready"));
+    let launch =
+        f.fixture.registry.inner.captures.lock().unwrap().launches[&grant.launch_id].clone();
+    f.fixture
+        .registry
+        .agent_register(&launch, &f.fixture.home)
+        .unwrap();
+    join_recipient_workspace(f, &grant.pane_id);
+    bind_native(&f.fixture.registry, &grant, &peer, conversation).unwrap();
+    (grant, peer)
+}
+
+#[test]
+fn conversation_send_routes_real_capture_inbox_and_native_wake_to_resolved_launch() {
+    let f = ControlFixture::new();
+    bind(&f, "recipient-conversation");
+    let (sender, sender_peer) = other(&f);
+    join_recipient_workspace(&f, &sender.pane_id);
+    let registered = own_call(
+        &f,
+        AgentRequest::ReceiverRegister {
+            session_id: "recipient-conversation".into(),
+            mode: AgentReceiverMode::ActiveTurn,
+            pid: f.peer.pid as u32,
+        },
+    )
+    .unwrap();
+    let receiver_id = registered["receiver_id"].as_str().unwrap().to_owned();
+    let worker_registry = f.fixture.registry.clone();
+    let worker_grant = f.grant.clone();
+    let worker_guard = guard(&f);
+    let worker_peer = Peer {
+        pid: f.peer.pid,
+        uid: f.peer.uid,
+        birth: f.peer.birth.clone(),
+    };
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let subscriber = thread::spawn(move || {
+        let first = std::cell::Cell::new(true);
+        worker_registry
+            .request_authenticated_cancellable(
+                Request::new(Operation::Agent {
+                    launch_id: worker_grant.launch_id,
+                    token: worker_grant.token,
+                    guard: Some(worker_guard),
+                    request: AgentRequest::ReceiverSubscribe {
+                        receiver_id,
+                        wait_ms: 5000,
+                    },
+                }),
+                &worker_peer,
+                &|| {
+                    if first.replace(false) {
+                        ready_tx.send(()).unwrap();
+                    }
+                    true
+                },
+            )?
+            .into_json()
+    });
+    ready_rx.recv_timeout(Duration::from_secs(8)).unwrap();
+    let sent = call(
+        &f.fixture.registry,
+        &sender,
+        &sender_peer,
+        None,
+        conversation_send("recipient-conversation", "actual-alias"),
+    )
+    .unwrap();
+    let wake = subscriber.join().unwrap().unwrap();
+    assert_eq!(sent["durable"], true);
+    assert_eq!(sent["wake"]["state"], "pending");
+    assert_eq!(wake["notification"]["session_id"], "recipient-conversation");
+    assert_eq!(wake["notification"]["message_count"], 1);
+    assert_eq!(wake["notification"]["notification_id"], sent["message_id"]);
+    let message_id = sent["message_id"].as_str().unwrap();
+    let before_read = outbox(&f, &sender, &sender_peer, message_id);
+    assert_eq!(before_read["to"], f.grant.launch_id);
+    assert!(before_read["read_at"].is_null());
+    assert!(before_read["acknowledged_at"].is_null());
+    let inbox = own_call(&f, inbox()).unwrap();
+    assert_eq!(inbox["messages"][0]["id"], message_id);
+    assert_eq!(inbox["messages"][0]["text"], "body-actual-alias");
+    assert!(
+        call(
+            &f.fixture.registry,
+            &sender,
+            &sender_peer,
+            None,
+            self::inbox()
+        )
+        .unwrap()["messages"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    own_call(
+        &f,
+        AgentRequest::AckMessage {
+            ids: vec![message_id.into()],
+        },
+    )
+    .unwrap();
+    assert!(!outbox(&f, &sender, &sender_peer, message_id)["acknowledged_at"].is_null());
+}
+
+#[test]
+fn recipient_binding_candidate_set_and_ownership_races_fail_before_admission() {
+    for transition in [
+        "bind",
+        "unbind",
+        "aba",
+        "retire",
+        "competitor",
+        "ownership",
+        "ambiguity-ownership",
+    ] {
+        let f = ControlFixture::new();
+        bind(&f, "root-A");
+        let (sender, sender_peer) = other(&f);
+        join_recipient_workspace(&f, &sender.pane_id);
+        let competitor = matches!(transition, "competitor" | "ambiguity-ownership").then(|| {
+            competing_recipient(
+                &f,
+                if transition == "ambiguity-ownership" {
+                    "root-A"
+                } else {
+                    "not-root-A"
+                },
+            )
+        });
+        let (pause, entered, resume) = barrier();
+        f.fixture.registry.inner.agents.pause_request(true, pause);
+        let registry = f.fixture.registry.clone();
+        let grant = sender.clone();
+        let peer = Peer {
+            pid: sender_peer.pid,
+            uid: sender_peer.uid,
+            birth: sender_peer.birth.clone(),
+        };
+        let worker = thread::spawn(move || {
+            call(
+                &registry,
+                &grant,
+                &peer,
+                None,
+                conversation_send("root-A", "recipient-race"),
+            )
+        });
+        let blocked = entered.recv_timeout(Duration::from_secs(8));
+        if blocked.is_ok() {
+            match transition {
+                "bind" | "unbind" | "aba" => change(&f, transition),
+                "retire" => {
+                    event(&f, CaptureEvent::End).unwrap();
+                }
+                "competitor" => {
+                    let (grant, peer) = competitor.as_ref().unwrap();
+                    bind_native(&f.fixture.registry, grant, peer, "root-A").unwrap();
+                }
+                "ownership" | "ambiguity-ownership" => {
+                    let changed_pane = if transition == "ownership" {
+                        &sender.pane_id
+                    } else {
+                        &competitor.as_ref().unwrap().0.pane_id
+                    };
+                    f.fixture
+                        .registry
+                        .mutate(|snapshot| {
+                            let pane = snapshot
+                                .panes
+                                .iter_mut()
+                                .find(|pane| &pane.id == changed_pane)
+                                .unwrap();
+                            let window = pane.window_id.take().unwrap();
+                            pane.workspace_id = None;
+                            snapshot
+                                .workspaces
+                                .iter_mut()
+                                .find(|workspace| workspace.id == f.workspace)
+                                .unwrap()
+                                .windows
+                                .retain(|candidate| candidate.id != window);
+                            Ok(())
+                        })
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+        }
+        let _ = resume.send(());
+        let result = worker.join().unwrap();
+        blocked.expect("send did not reach its sampled-context barrier");
+        let error = result.expect_err("recipient transition unexpectedly sent");
+        if let Some((competitor, _)) = &competitor {
+            assert!(!error.to_string().contains(&competitor.launch_id));
+            assert!(!error.to_string().contains(&competitor.pane_id));
+        }
+        let outbox = call(
+            &f.fixture.registry,
+            &sender,
+            &sender_peer,
+            None,
+            AgentRequest::InspectOutbox {
+                message_id: None,
+                after: None,
+                limit: None,
+            },
+        )
+        .unwrap();
+        assert!(outbox["messages"].as_array().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn concurrent_alias_retry_returns_committed_receipt_before_stale_candidate_validation() {
+    let f = ControlFixture::new();
+    bind(&f, "root-A");
+    let (sender, sender_peer) = other(&f);
+    join_recipient_workspace(&f, &sender.pane_id);
+    let (competitor, competitor_peer) = competing_recipient(&f, "not-root-A");
+    let (pause, entered, resume) = barrier();
+    f.fixture.registry.inner.agents.pause_request(true, pause);
+    let registry = f.fixture.registry.clone();
+    let grant = sender.clone();
+    let peer = Peer {
+        pid: sender_peer.pid,
+        uid: sender_peer.uid,
+        birth: sender_peer.birth.clone(),
+    };
+    let worker = thread::spawn(move || {
+        call(
+            &registry,
+            &grant,
+            &peer,
+            None,
+            conversation_send("root-A", "same-alias"),
+        )
+    });
+    let blocked = entered.recv_timeout(Duration::from_secs(8));
+    let accepted = if blocked.is_ok() {
+        let accepted = call(
+            &f.fixture.registry,
+            &sender,
+            &sender_peer,
+            None,
+            conversation_send("root-A", "same-alias"),
+        )
+        .unwrap();
+        bind_native(&f.fixture.registry, &competitor, &competitor_peer, "root-A").unwrap();
+        Some(accepted)
+    } else {
+        None
+    };
+    let _ = resume.send(());
+    let retried = worker.join().unwrap();
+    blocked.expect("send did not reach its pre-admission retry barrier");
+    let accepted = accepted.unwrap();
+    let retried = retried.unwrap();
+    assert_eq!(retried["duplicate"], true);
+    assert_eq!(retried["message_id"], accepted["message_id"]);
+    assert_eq!(
+        outbox(
+            &f,
+            &sender,
+            &sender_peer,
+            accepted["message_id"].as_str().unwrap()
+        )["to"],
+        f.grant.launch_id
+    );
+    event(&f, CaptureEvent::End).unwrap();
+    let replacement = call(
+        &f.fixture.registry,
+        &sender,
+        &sender_peer,
+        None,
+        conversation_send("root-A", "same-alias"),
+    )
+    .unwrap();
+    assert_eq!(replacement["message_id"], accepted["message_id"]);
+    assert_eq!(replacement["duplicate"], true);
+}
+
+#[test]
+fn conversation_aliases_use_only_current_authenticated_roots_not_child_or_published_history() {
+    let f = ControlFixture::new();
+    bind(&f, "authenticated-root");
+    let (sender, sender_peer) = other(&f);
+    join_recipient_workspace(&f, &sender.pane_id);
+    event(
+        &f,
+        CaptureEvent::NativeContext {
+            conversation: binding(&f),
+            context_id: "attested-child-only".into(),
+        },
+    )
+    .unwrap();
+    f.fixture
+        .registry
+        .mutate(|snapshot| {
+            let pane = snapshot
+                .panes
+                .iter_mut()
+                .find(|pane| pane.id == f.pane)
+                .unwrap();
+            pane.harness
+                .as_mut()
+                .unwrap()
+                .managed
+                .as_mut()
+                .unwrap()
+                .conversation = Some(NativeConversation {
+                id: "published-history-only".into(),
+                source: ConversationSource::ClaudeHook,
+                generation: 99,
+            });
+            Ok(())
+        })
+        .unwrap();
+    for selector in ["attested-child-only", "published-history-only"] {
+        let error = call(
+            &f.fixture.registry,
+            &sender,
+            &sender_peer,
+            None,
+            conversation_send(selector, selector),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "recipient is not a live agent");
+    }
+    let sent = call(
+        &f.fixture.registry,
+        &sender,
+        &sender_peer,
+        None,
+        conversation_send("authenticated-root", "authenticated-only"),
+    )
+    .unwrap();
+    assert_eq!(
+        outbox(
+            &f,
+            &sender,
+            &sender_peer,
+            sent["message_id"].as_str().unwrap()
+        )["to"],
+        f.grant.launch_id
+    );
+    event(
+        &f,
+        CaptureEvent::Unbind {
+            conversation: Some(binding(&f)),
+            expected_revision: binding(&f).generation,
+        },
+    )
+    .unwrap();
+    let error = call(
+        &f.fixture.registry,
+        &sender,
+        &sender_peer,
+        None,
+        conversation_send("authenticated-root", "historical-root"),
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), "recipient is not a live agent");
+    let retry = call(
+        &f.fixture.registry,
+        &sender,
+        &sender_peer,
+        None,
+        conversation_send("authenticated-root", "authenticated-only"),
+    )
+    .unwrap();
+    assert_eq!(retry["duplicate"], true);
+    assert_eq!(retry["message_id"], sent["message_id"]);
+}

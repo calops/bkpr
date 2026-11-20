@@ -22,6 +22,71 @@ pub(crate) struct ProjectSpan {
     pub slot: Option<u32>,
 }
 
+/// Which independent managed identity an explicit clipboard action exports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IdentityKind {
+    Conversation,
+    Launch,
+}
+
+/// Identity bytes and the exact observed foreground binding that supplied them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IdentityCopy {
+    pane: String,
+    process: bkpr_protocol::ProcessIdentity,
+    launch: String,
+    conversation: Option<bkpr_protocol::NativeConversation>,
+    kind: IdentityKind,
+}
+
+impl IdentityCopy {
+    fn new(pane: &PaneInfo, harness: &bkpr_protocol::HarnessInfo, kind: IdentityKind) -> Self {
+        let managed = harness.managed.as_ref().expect("managed identity");
+        Self {
+            pane: pane.id.clone(),
+            process: bkpr_protocol::ProcessIdentity {
+                pid: harness.pid,
+                birth: harness.birth.clone(),
+            },
+            launch: managed.launch_id.clone(),
+            conversation: managed.conversation.clone(),
+            kind,
+        }
+    }
+    /// Owning native pane, independent of the attachment currently in focus.
+    pub(crate) fn pane(&self) -> &str {
+        &self.pane
+    }
+    /// Human label distinguishing conversation identity from launch identity.
+    pub(crate) fn label(&self) -> &'static str {
+        match self.kind {
+            IdentityKind::Conversation => "Conversation ID",
+            IdentityKind::Launch => "Launch ID",
+        }
+    }
+    /// Original protocol bytes, independent of display cleaning or truncation.
+    pub(crate) fn value(&self) -> &str {
+        match self.kind {
+            IdentityKind::Conversation => &self.conversation.as_ref().expect("bound identity").id,
+            IdentityKind::Launch => &self.launch,
+        }
+    }
+    /// Reject retired, rebound, background or process-reused observations.
+    pub(crate) fn matches(&self, pane: &PaneInfo, snapshot: Option<&PaneSnapshot>) -> bool {
+        pane.id == self.pane
+            && crate::controller::recognized_harness(pane, snapshot).is_some_and(|harness| {
+                harness.pid == self.process.pid
+                    && harness.birth == self.process.birth
+                    && harness.managed.as_ref().is_some_and(|managed| {
+                        managed.launch_id == self.launch
+                            && managed.conversation == self.conversation
+                    })
+            })
+    }
+}
+
+const COPY_IDENTITY: &str = "[copy]";
+
 pub(crate) struct Paragraph {
     pub text: String,
     pub role: Role,
@@ -30,6 +95,7 @@ pub(crate) struct Paragraph {
     suffix: Vec<(String, Role)>,
     link: Option<String>,
     pub(crate) refresh: Option<bkpr_protocol::CiRefreshTarget>,
+    copy: Option<IdentityCopy>,
     truncate: bool,
 }
 pub(crate) struct PreviewLine {
@@ -39,6 +105,7 @@ pub(crate) struct PreviewLine {
     pub projects: Vec<ProjectSpan>,
     pub link: Option<(u16, String)>,
     pub refresh: Option<(Rect, bkpr_protocol::CiRefreshTarget)>,
+    pub copy: Option<(Rect, IdentityCopy)>,
 }
 
 impl Paragraph {
@@ -51,6 +118,7 @@ impl Paragraph {
             suffix: Vec::new(),
             link: None,
             refresh: None,
+            copy: None,
             truncate: false,
         }
     }
@@ -81,6 +149,26 @@ impl Paragraph {
     pub(crate) fn single_line(mut self) -> Self {
         self.truncate = true;
         self
+    }
+    /// Full text extent including trailing action buttons and semantic suffixes.
+    pub(crate) fn preferred_width(&self) -> usize {
+        width(&self.text)
+            + self
+                .right
+                .iter()
+                .chain(&self.suffix)
+                .map(|(text, _)| width(text))
+                .sum::<usize>()
+            + usize::from(!self.right.is_empty())
+    }
+    fn identity(target: IdentityCopy) -> Self {
+        let mut row = Self::new(
+            format!("{}: {}", target.label(), target.value()),
+            Role::Muted,
+        );
+        row.right(COPY_IDENTITY, Role::Accent);
+        row.copy = Some(target);
+        row
     }
 }
 
@@ -195,15 +283,23 @@ pub(crate) fn content(
         ),
         Role::Muted,
     );
-    if let Some(conversation) = harness
-        .and_then(|h| h.managed.as_ref())
-        .and_then(|managed| managed.conversation.as_ref())
-    {
-        push(
-            &mut rows,
-            format!("\u{f0efe} Agent ID: {}", conversation.id),
-            Role::Muted,
-        );
+    if let Some(harness) = harness.filter(|h| h.managed.is_some()) {
+        if harness
+            .managed
+            .as_ref()
+            .is_some_and(|managed| managed.conversation.is_some())
+        {
+            rows.push(Paragraph::identity(IdentityCopy::new(
+                pane,
+                harness,
+                IdentityKind::Conversation,
+            )));
+        }
+        rows.push(Paragraph::identity(IdentityCopy::new(
+            pane,
+            harness,
+            IdentityKind::Launch,
+        )));
     }
     if let Some(activity) = activity {
         heading(&mut rows, "Activity");
@@ -465,6 +561,7 @@ fn body_line(paragraph: &Paragraph, range: Range<usize>) -> PreviewLine {
             .as_ref()
             .map(|url| (width(text) as u16, url.clone())),
         refresh: None,
+        copy: None,
     };
     for (span, ink) in &paragraph.spans {
         let start = span.start.max(range.start);
@@ -539,6 +636,20 @@ fn truncate(paragraph: &Paragraph, columns: usize) -> PreviewLine {
                 target.clone(),
             ));
         }
+        if let Some(target) = &paragraph.copy
+            && right == width(COPY_IDENTITY)
+            && paragraph.right.len() == 1
+        {
+            line.copy = Some((
+                Rect {
+                    x: (columns - right) as u16,
+                    y: 0,
+                    width: right as u16,
+                    height: 1,
+                },
+                target.clone(),
+            ));
+        }
     }
     line
 }
@@ -579,6 +690,7 @@ pub(crate) fn wrap(paragraphs: &[Paragraph], columns: u16, lines: &mut Vec<Previ
                         projects: Vec::new(),
                         link: None,
                         refresh: None,
+                        copy: None,
                     });
                     byte += glyph.len();
                 } else {
