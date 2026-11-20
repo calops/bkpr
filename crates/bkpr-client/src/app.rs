@@ -5771,7 +5771,13 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 if let Some((body, item)) = app.popover.body_rect().zip(item_band) {
                     let glyphs = Rect {
                         x: item.x.saturating_add(1),
-                        width: item.width.saturating_sub(2),
+                        width: item.width.saturating_sub(
+                            if crate::controller::sidebar_scrollbar(&tree, available).is_some() {
+                                1
+                            } else {
+                                2
+                            },
+                        ),
                         ..item
                     };
                     popover_graphical = graphics.joined_ready()

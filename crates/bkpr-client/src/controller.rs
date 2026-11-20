@@ -1015,7 +1015,11 @@ pub(crate) fn sidebar_content_rows(sidebar: Rect, guide_rows: u16) -> usize {
     usize::from(sidebar.height.saturating_sub(guide_rows).saturating_sub(2))
 }
 
-fn sidebar_scrollbar(tree: &crate::tree::Tree, visible: usize) -> Option<std::ops::Range<u16>> {
+/// Thumb within the sidebar's display rows, excluding the heading and guide.
+pub(crate) fn sidebar_scrollbar(
+    tree: &crate::tree::Tree,
+    visible: usize,
+) -> Option<std::ops::Range<u16>> {
     bkpr_tui_framework::scrollbar_thumb(visible as u16, tree.rows.len(), visible, tree.scroll)
 }
 
@@ -1210,10 +1214,12 @@ pub(crate) fn tree_artwork_rows(
     ),
 > + '_ {
     let sidebar = screen_geometry(size, tree.preferred_columns).0;
+    let available = sidebar_content_rows(sidebar, guide_rows);
+    let row_width = sidebar.width - u16::from(sidebar_scrollbar(tree, available).is_some());
     tree.rows
         .iter()
         .skip(tree.scroll)
-        .take(sidebar_content_rows(sidebar, guide_rows))
+        .take(available)
         .enumerate()
         .filter_map(move |(index, row)| {
             let artwork = match row.kind {
@@ -1230,7 +1236,7 @@ pub(crate) fn tree_artwork_rows(
                 _ => return None,
             };
             let column = row.icon_column();
-            (column + 2 <= sidebar.width.saturating_sub(1)).then_some((
+            (column + 2 <= row_width.saturating_sub(1)).then_some((
                 row.owner,
                 artwork,
                 column,
@@ -1307,6 +1313,7 @@ fn render_chrome<'a>(
     }
     let available = sidebar_content_rows(sidebar, guide_rows);
     let scrollbar = sidebar_scrollbar(tree, available);
+    let row_width = sidebar.width - u16::from(scrollbar.is_some());
     for (index, entry) in tree
         .rows
         .iter()
@@ -1328,7 +1335,7 @@ fn render_chrome<'a>(
                 session_caption(
                     &session.group,
                     state.session_spinner,
-                    sidebar.width.saturating_sub(1),
+                    row_width.saturating_sub(1),
                 ),
                 1,
             ),
@@ -1346,7 +1353,7 @@ fn render_chrome<'a>(
                         projects: tree.project_slots(entry.owner),
                         entry,
                         known,
-                        width: sidebar.width,
+                        width: row_width,
                         row,
                         highlighted,
                     },
@@ -1356,7 +1363,7 @@ fn render_chrome<'a>(
             }
         };
         if selected
-            && marker_x < sidebar.width
+            && marker_x < row_width
             && matches!(
                 entry.kind,
                 crate::tree::Kind::Session
@@ -1375,25 +1382,24 @@ fn render_chrome<'a>(
             let columns = unicode_width::UnicodeWidthStr::width(label.as_str());
             label.extend(std::iter::repeat_n(
                 ' ',
-                usize::from(sidebar.width.saturating_sub(1)).saturating_sub(columns),
+                usize::from(row_width.saturating_sub(1)).saturating_sub(columns),
             ));
         }
-        let x = if let Some(thumb) = &scrollbar {
-            // Both glyphs stay at the outer edge of the existing padding cell,
-            // clear of the joined sidebar-item material's inset left edge.
-            label.insert(
-                0,
-                if thumb.contains(&(index as u16)) {
-                    '▎'
-                } else {
-                    '▏'
-                },
-            );
-            0
-        } else {
-            1
-        };
-        lines.push(line(x, row, sidebar.width - x, label, row_selected));
+        lines.push(line(
+            1,
+            row,
+            row_width.saturating_sub(1),
+            label,
+            row_selected,
+        ));
+        if let Some(thumb) = &scrollbar {
+            let glyph = if thumb.contains(&(index as u16)) {
+                "▎"
+            } else {
+                "▏"
+            };
+            lines.push(line(row_width, row, 1, glyph, false));
+        }
         if let Some(target) = &entry.target {
             hit(target.node.clone(), target.owner, row);
         }
@@ -1579,11 +1585,13 @@ fn render_theme_chrome<'a>(
         });
     }
     let available = sidebar_content_rows(sidebar, guide_rows);
-    if let Some(thumb) = sidebar_scrollbar(tree, available) {
+    let scrollbar = sidebar_scrollbar(tree, available);
+    let row_width = sidebar.width - u16::from(scrollbar.is_some());
+    if let Some(thumb) = scrollbar {
         spans.extend([
             RoleSpan {
                 rect: Rect {
-                    x: 0,
+                    x: row_width,
                     y: 2,
                     width: 1,
                     height: available as u16,
@@ -1592,7 +1600,7 @@ fn render_theme_chrome<'a>(
             },
             RoleSpan {
                 rect: Rect {
-                    x: 0,
+                    x: row_width,
                     y: 2 + thumb.start,
                     width: 1,
                     height: thumb.end - thumb.start,
@@ -1603,6 +1611,11 @@ fn render_theme_chrome<'a>(
     }
     let focus_edges = tree.focus_edges();
     let inactive_guide_ink = crate::appearance::inactive_tree_guide_ink(theme);
+    let outer_sidebar = sidebar;
+    let sidebar = Rect {
+        width: row_width,
+        ..outer_sidebar
+    };
     for index in 0..available {
         let row = index as u16 + 2;
         let Some(entry) = tree.rows.get(tree.scroll + index) else {
@@ -1618,6 +1631,21 @@ fn render_theme_chrome<'a>(
                 (entry.target.is_some() && entry.target == tree.hover)
                     .then(|| theme.background(Role::Hover, false))
             });
+        if row_width < outer_sidebar.width
+            && let Some((target, background @ ColorSource::Rgb(_))) = tree_popup
+            && entry.target.as_ref() == Some(target)
+        {
+            // The joined contour leaves this cell to the text renderer.
+            backgrounds.push(BackgroundSpan {
+                rect: Rect {
+                    x: row_width,
+                    y: row,
+                    width: 1,
+                    height: 1,
+                },
+                background,
+            });
+        }
         if matches!(entry.kind, crate::tree::Kind::Session) {
             let rect = Rect {
                 x: 1,
@@ -1878,6 +1906,7 @@ fn render_theme_chrome<'a>(
             }
         }
     }
+    let sidebar = outer_sidebar;
     for (id, rect) in rects {
         if pane_graphics.contains(rect) {
             // Main's decorate_characters fills rich frame cells with the
