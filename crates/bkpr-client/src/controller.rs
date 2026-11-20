@@ -1394,9 +1394,9 @@ fn render_chrome<'a>(
         ));
         if let Some(thumb) = &scrollbar {
             let glyph = if thumb.contains(&(index as u16)) {
-                "▍"
+                "┃"
             } else {
-                "▎"
+                "│"
             };
             lines.push(line(row_width, row, 1, glyph, false));
         }
