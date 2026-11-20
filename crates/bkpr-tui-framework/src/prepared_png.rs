@@ -1,4 +1,4 @@
-//! Worker-only lossless PNG preparation and immutable image identity.
+//! Worker-only lossless transport preparation (PNG or zlib) and immutable image identity.
 
 use bkpr_protocol::{Image, PixelFormat};
 use std::{
@@ -12,27 +12,75 @@ const MAX_PIXEL_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PNG_BYTES: usize = 128 * 1024 * 1024;
 const DECODER_WORKING_BYTES: usize = 8 * 1024 * 1024;
 
-/// Worker-verified PNG bytes bound to one immutable image allocation.
+/// Lossless Kitty payload form of one image's exact pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransportEncoding {
+    /// A complete PNG file, transmitted with `f=100`.
+    Png,
+    /// The image's packed RGB or RGBA pixels as one zlib stream, transmitted with `o=z`.
+    Zlib,
+}
+
+/// Worker-prepared Kitty payload bound to one immutable image allocation.
 ///
 /// Cloning retains encoded bytes, but never keeps the source image alive. Native
 /// IDs and generations are deliberately not sufficient transport identities.
 #[derive(Clone, Debug)]
-pub struct PreparedPng {
+pub struct PreparedTransport {
     image: Weak<Image>,
-    png: Arc<[u8]>,
+    encoding: TransportEncoding,
+    bytes: Arc<[u8]>,
 }
 
-impl PreparedPng {
+impl PreparedTransport {
     /// Bind PNG bytes on a graphics worker, after encoding or verified decoding.
     ///
     /// The caller must establish that PNG dimensions, eight-bit channel format
     /// and decoded pixels match this exact immutable image, including alpha.
     /// Rendering relies on this invariant and performs no codec/content checks.
-    pub(crate) fn from_verified(image: &Arc<Image>, png: Arc<[u8]>) -> Self {
+    pub fn from_verified(image: &Arc<Image>, png: Arc<[u8]>) -> Self {
         Self {
             image: Arc::downgrade(image),
-            png,
+            encoding: TransportEncoding::Png,
+            bytes: png,
         }
+    }
+
+    /// Bind a zlib stream of this image's exact RGB/RGBA pixels, verified by the caller.
+    ///
+    /// The invariant of [`Self::from_verified`] applies: inflating the stream must
+    /// yield exactly `image.pixels`. Gray formats have no Kitty raw form; `None`.
+    pub fn from_verified_zlib(image: &Arc<Image>, zlib: Arc<[u8]>) -> Option<Self> {
+        matches!(image.format, PixelFormat::Rgb | PixelFormat::Rgba).then(|| Self {
+            image: Arc::downgrade(image),
+            encoding: TransportEncoding::Zlib,
+            bytes: zlib,
+        })
+    }
+
+    /// Compress RGB/RGBA pixels on a worker thread, never while rendering.
+    ///
+    /// `None` for gray formats, or when compression would not shrink the payload
+    /// and raw transmission is already the cheaper form.
+    pub fn compress(image: &Arc<Image>) -> Option<Self> {
+        if !matches!(image.format, PixelFormat::Rgb | PixelFormat::Rgba) {
+            return None;
+        }
+        let mut encoder = flate2::write::ZlibEncoder::new(
+            Vec::with_capacity(image.pixels.len() / 2),
+            flate2::Compression::fast(),
+        );
+        std::io::Write::write_all(&mut encoder, &image.pixels).ok()?;
+        let compressed = encoder.finish().ok()?;
+        if compressed.len() >= image.pixels.len() {
+            return None;
+        }
+        Self::from_verified_zlib(image, compressed.into())
+    }
+
+    /// Kitty payload form of [`Self::bytes`].
+    pub(crate) fn encoding(&self) -> TransportEncoding {
+        self.encoding
     }
 
     /// Allocation identity; retaining the weak pointer prevents address reuse.
@@ -52,12 +100,12 @@ impl PreparedPng {
 
     /// Encoded residency charged by worker and terminal transport cache budgets.
     pub(crate) fn byte_len(&self) -> usize {
-        self.png.len()
+        self.bytes.len()
     }
 
     /// Borrow worker-verified transport bytes without copying them.
     pub(crate) fn bytes(&self) -> &[u8] {
-        &self.png
+        &self.bytes
     }
 }
 
@@ -371,9 +419,10 @@ mod tests {
             height: 1,
             format: PixelFormat::Rgba,
             pixels: vec![1, 2, 3, 4],
+            source: None,
         });
         let encoded = encode(1, 1, image.format, &image.pixels).unwrap();
-        let prepared = PreparedPng::from_verified(&image, encoded);
+        let prepared = PreparedTransport::from_verified(&image, encoded);
         assert!(prepared.matches(&image));
         assert!(!prepared.matches(&image.as_ref().clone()));
         drop(image);

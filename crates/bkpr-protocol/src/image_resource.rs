@@ -1,5 +1,7 @@
 //! Lossless image delivery independent of scene and input responses.
-use crate::{IMAGE_MAX_BYTES, Image, ImageKey, PixelFormat, Placement};
+use crate::{
+    IMAGE_MAX_BYTES, Image, ImageKey, ImageSource, ImageSourceEncoding, PixelFormat, Placement,
+};
 use anyhow::{Context, Result, ensure};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -97,6 +99,10 @@ pub enum ImageEncoding {
     Raw,
     /// A single zstd frame with its exact decoded content size.
     Zstd,
+    /// The program's original PNG file; only for requesters that opted in.
+    Png,
+    /// The program's original zlib stream of exact pixels; only for requesters that opted in.
+    Zlib,
 }
 
 /// One response in a request-scoped resource stream; only End completes reception.
@@ -193,6 +199,18 @@ impl std::fmt::Debug for ImageResource {
                 .finish(),
         }
     }
+}
+
+/// Forward the program's original payload without re-encoding, when the requester
+/// accepts it and it is no larger than the pixels; otherwise `None`.
+pub fn original_body(image: &Image) -> Option<(ImageEncoding, &[u8])> {
+    let source = image.source.as_deref()?;
+    let encoding = match source.encoding {
+        crate::ImageSourceEncoding::Png => ImageEncoding::Png,
+        crate::ImageSourceEncoding::Zlib => ImageEncoding::Zlib,
+    };
+    (!source.bytes.is_empty() && source.bytes.len() <= image.pixels.len())
+        .then_some((encoding, source.bytes.as_slice()))
 }
 
 /// Encode canonical pixels once off-path; never returns a body larger than the pixels.
@@ -322,6 +340,7 @@ impl ImageTransfer {
                     encoded_len == length && self.body.len() as u64 == length,
                     "incomplete image body"
                 );
+                let mut source = None;
                 let pixels = match encoding {
                     ImageEncoding::Raw => std::mem::take(&mut self.body),
                     ImageEncoding::Zstd => {
@@ -358,6 +377,20 @@ impl ImageTransfer {
                         );
                         pixels
                     }
+                    ImageEncoding::Zlib => {
+                        let pixels = inflate_exact(
+                            &self.body,
+                            self.descriptor.decoded_len as usize,
+                            cancelled,
+                        )?;
+                        source = Some(ImageSourceEncoding::Zlib);
+                        pixels
+                    }
+                    ImageEncoding::Png => {
+                        let pixels = decode_png_rgba(&self.body, &self.descriptor)?;
+                        source = Some(ImageSourceEncoding::Png);
+                        pixels
+                    }
                 };
                 ensure!(
                     pixels.len() as u64 == self.descriptor.decoded_len,
@@ -365,7 +398,7 @@ impl ImageTransfer {
                 );
                 ensure!(!cancelled(), "image transfer cancelled");
                 self.ended = true;
-                self.body = Vec::new();
+                let body = std::mem::take(&mut self.body);
                 return Ok(Some(Image {
                     id: self.descriptor.key.id,
                     generation: self.descriptor.key.generation,
@@ -373,11 +406,82 @@ impl ImageTransfer {
                     height: self.descriptor.height,
                     format: self.descriptor.format,
                     pixels,
+                    // Keep the original payload so the client can forward it unchanged.
+                    source: source.map(|encoding| {
+                        std::sync::Arc::new(ImageSource {
+                            encoding,
+                            bytes: body,
+                        })
+                    }),
                 }));
             }
         }
         Ok(None)
     }
+}
+
+/// Inflate one zlib stream to exactly `expected` bytes in bounded turns, rejecting trailing data.
+fn inflate_exact(body: &[u8], expected: usize, cancelled: &dyn Fn() -> bool) -> Result<Vec<u8>> {
+    let mut decoder = flate2::read::ZlibDecoder::new(body);
+    let mut pixels = Vec::new();
+    pixels.try_reserve_exact(expected)?;
+    let mut chunk = [0; IMAGE_CHUNK_BYTES];
+    while pixels.len() < expected {
+        ensure!(!cancelled(), "image transfer cancelled");
+        let remaining = expected - pixels.len();
+        let count = decoder.read(&mut chunk[..remaining.min(IMAGE_CHUNK_BYTES)])?;
+        ensure!(count > 0, "image zlib body truncated");
+        pixels.extend_from_slice(&chunk[..count]);
+    }
+    ensure!(
+        decoder.read(&mut [0; 1])? == 0,
+        "image zlib body exceeds descriptor"
+    );
+    ensure!(
+        decoder.total_in() as usize == body.len(),
+        "image zlib trailing data"
+    );
+    Ok(pixels)
+}
+
+/// Decode a PNG to the descriptor's 8-bit RGBA pixels, as the terminal engine stores it.
+/// Dimensions and the decoded size are checked before pixel allocation.
+fn decode_png_rgba(body: &[u8], descriptor: &ImageDescriptor) -> Result<Vec<u8>> {
+    ensure!(
+        descriptor.format == PixelFormat::Rgba,
+        "PNG image descriptor must be RGBA"
+    );
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(body));
+    decoder.set_transformations(
+        png::Transformations::EXPAND | png::Transformations::STRIP_16 | png::Transformations::ALPHA,
+    );
+    decoder.set_limits(png::Limits {
+        bytes: descriptor.decoded_len as usize + 1024 * 1024,
+    });
+    let mut reader = decoder.read_info()?;
+    let info = reader.info();
+    ensure!(
+        info.width == descriptor.width && info.height == descriptor.height && !info.is_animated(),
+        "PNG dimensions differ from descriptor"
+    );
+    let (color, depth) = reader.output_color_type();
+    ensure!(depth == png::BitDepth::Eight, "PNG output depth");
+    let mut buffer = vec![0; reader.output_buffer_size().context("PNG output size")?];
+    let frame = reader.next_frame(&mut buffer)?;
+    buffer.truncate(frame.buffer_size());
+    let pixels = match color {
+        png::ColorType::Rgba => buffer,
+        png::ColorType::GrayscaleAlpha => buffer
+            .chunks_exact(2)
+            .flat_map(|ga| [ga[0], ga[0], ga[0], ga[1]])
+            .collect(),
+        _ => anyhow::bail!("unexpected PNG output color type"),
+    };
+    ensure!(
+        pixels.len() as u64 == descriptor.decoded_len,
+        "PNG decoded length mismatch"
+    );
+    Ok(pixels)
 }
 
 #[cfg(test)]

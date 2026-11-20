@@ -548,6 +548,7 @@ mod constant_axis_tests {
             pixels: (0..32)
                 .flat_map(|y| (0..32).flat_map(move |x| [x as u8, y as u8, 100, 255]))
                 .collect(),
+            source: None,
         };
         for (source, width, height, visible) in [
             (

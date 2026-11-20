@@ -161,6 +161,7 @@ fn virtual_image_rows_get_unique_physical_placement_ids_and_resources_are_cached
         height: 8,
         format: PixelFormat::Rgba,
         pixels: [255, 0, 255, 255].repeat(4 * 8),
+        source: None,
     }));
     for row in 0..4 {
         frame.placements.push(Placement {

@@ -33,8 +33,17 @@ fn main() {
         .expect("native prerequisite profile missing; rerun scripts/prepare-ghostty-vt.sh");
     assert_eq!(
         profile.trim(),
-        "ReleaseSafe-simd-libc-baseline-offer-v1",
-        "invalid native prerequisite: require libc and validated paste-offer correlation"
+        "ReleaseSafe-simd-libc-baseline-offer-source-v1",
+        "invalid native prerequisite: require libc, paste-offer correlation and image sources"
+    );
+    let source_patch_path = dir.join("bkpr-source-image-patch-sha256");
+    println!("cargo:rerun-if-changed={}", source_patch_path.display());
+    let source_patch_sha = fs::read_to_string(source_patch_path)
+        .expect("missing native image-source patch provenance");
+    assert_eq!(
+        source_patch_sha.trim(),
+        "847d2d2ea94d65ebc66a1578de3dfc170b15c031ef0083898b44d957b9075e8c",
+        "wrong native image-source patch"
     );
     let patch_path = dir.join("bkpr-source-patch-sha256");
     println!("cargo:rerun-if-changed={}", patch_path.display());

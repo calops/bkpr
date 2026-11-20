@@ -11,6 +11,7 @@ fn image() -> Image {
         pixels: (0..128 * 64)
             .flat_map(|index| [index as u8, (index / 11) as u8, 73, 0])
             .collect(),
+        source: None,
     }
 }
 fn receive(image: &Image, encoding: ImageEncoding, bytes: &[u8]) -> Result<Image> {
@@ -297,6 +298,7 @@ fn resource_request_round_trips_structural_view_and_exact_generation() {
                 id: 9,
                 generation: u64::MAX,
             },
+            original_encodings: true,
         },
     });
     let encoded = wire::Codec::new()
@@ -305,7 +307,80 @@ fn resource_request_round_trips_structural_view_and_exact_generation() {
         .to_vec();
     let decoded = wire::decode_request(&encoded).unwrap();
     assert!(
-        matches!(decoded.operation, crate::Operation::Pane { pane_id, request: crate::PaneRequest::ImageResource { view_id, key } }
-        if pane_id == "pane" && view_id == "view" && key.id == 9 && key.generation == u64::MAX)
+        matches!(decoded.operation, crate::Operation::Pane { pane_id, request: crate::PaneRequest::ImageResource { view_id, key, original_encodings } }
+        if pane_id == "pane" && view_id == "view" && key.id == 9 && key.generation == u64::MAX && original_encodings)
     );
+}
+
+fn zlib(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
+#[test]
+fn original_zlib_payload_is_forwarded_decoded_and_retained_for_the_terminal() {
+    let mut image = image();
+    let payload = zlib(&image.pixels);
+    image.source = Some(std::sync::Arc::new(ImageSource {
+        encoding: ImageSourceEncoding::Zlib,
+        bytes: payload.clone(),
+    }));
+    let (encoding, body) = original_body(&image).unwrap();
+    assert_eq!((encoding, body), (ImageEncoding::Zlib, payload.as_slice()));
+    let received = receive(&image, encoding, body).unwrap();
+    assert_eq!(received.pixels, image.pixels);
+    assert_eq!(received.source, image.source);
+    // Trailing bytes after the zlib stream are rejected, not ignored.
+    let mut trailing = payload.clone();
+    trailing.push(0);
+    assert!(receive(&image, ImageEncoding::Zlib, &trailing).is_err());
+}
+
+#[test]
+fn original_png_payload_decodes_to_the_engines_rgba_pixels() {
+    // An RGB PNG decodes to opaque RGBA, matching the terminal engine's stored form.
+    let (width, height) = (16u32, 8u32);
+    let rgb: Vec<u8> = (0..width * height * 3)
+        .map(|index| (index * 7) as u8)
+        .collect();
+    let mut png_bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png_bytes, width, height);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&rgb).unwrap();
+    }
+    let image = Image {
+        id: 3,
+        generation: 4,
+        width,
+        height,
+        format: PixelFormat::Rgba,
+        pixels: rgb
+            .chunks_exact(3)
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+        source: Some(std::sync::Arc::new(ImageSource {
+            encoding: ImageSourceEncoding::Png,
+            bytes: png_bytes.clone(),
+        })),
+    };
+    let (encoding, body) = original_body(&image).unwrap();
+    assert_eq!(encoding, ImageEncoding::Png);
+    let received = receive(&image, encoding, body).unwrap();
+    assert_eq!(received.pixels, image.pixels);
+    assert_eq!(received.source.unwrap().bytes, png_bytes);
+    // A PNG whose dimensions differ from the descriptor is rejected.
+    let mut wrong = image.clone();
+    wrong.width = 8;
+    wrong.pixels.truncate(8 * 8 * 4);
+    assert!(receive(&wrong, ImageEncoding::Png, &png_bytes).is_err());
+}
+
+#[test]
+fn images_without_an_original_payload_have_no_original_body() {
+    assert!(original_body(&image()).is_none());
 }

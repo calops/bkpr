@@ -4,6 +4,8 @@ set -euo pipefail
 revision=93967b7f9478e94dcbb42125c8a90f34feb40d75
 source_sha=af551aa496cf54ff734e11563d45fe2c49739ee754d1740d1ac984a67a42dc70
 patch_sha=196b39997c6552d9158f763555a72784aae2dbf4fa61aa500554bfd07e28d32c
+source_patch_sha=847d2d2ea94d65ebc66a1578de3dfc170b15c031ef0083898b44d957b9075e8c
+profile=ReleaseSafe-simd-libc-baseline-offer-source-v1
 repo=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
 root=${CARGO_TARGET_DIR:-"$repo/target"}
 root=$(realpath "$root")
@@ -24,7 +26,8 @@ if [[ ${1:-} == --reuse && $# == 1 ]]; then
   [[ $(< "$prefix/bkpr-source-revision") == "$revision" ]]
   [[ $(< "$prefix/bkpr-source-sha256") == "$source_sha" ]]
   [[ $(< "$prefix/bkpr-source-patch-sha256") == "$patch_sha" ]]
-  [[ $(< "$prefix/bkpr-build-profile") == ReleaseSafe-simd-libc-baseline-offer-v1 ]]
+  [[ $(< "$prefix/bkpr-source-image-patch-sha256") == "$source_patch_sha" ]]
+  [[ $(< "$prefix/bkpr-build-profile") == "$profile" ]]
   found_library=false
   found_header=false
   while IFS= read -r line; do
@@ -67,6 +70,9 @@ tar -xJf "$root/zig-0.17.0-$platform.tar.xz" -C "$root"
 patch_path=$(realpath "$(dirname "${BASH_SOURCE[0]}")/../vendor/libghostty-rs/crates/libghostty-vt-sys/native/clipboard-offer.patch")
 printf '%s  %s\n' "$patch_sha" "$patch_path" | sha256sum --check --status
 patch --batch --fuzz=0 --forward -p1 -d "$source_dir" -i "$patch_path"
+source_patch_path="$(dirname "$patch_path")/kitty-image-source.patch"
+printf '%s  %s\n' "$source_patch_sha" "$source_patch_path" | sha256sum --check --status
+patch --batch --fuzz=0 --forward -p1 -d "$source_dir" -i "$source_patch_path"
 # The official SIMD build links libc. The no-libc build includes Wuffs' weak
 # calloc/free stubs, which can preempt Rust's libc allocation calls when linked
 # statically. Bundled SIMD dependencies use no-libcxx; baseline CPU avoids
@@ -75,8 +81,9 @@ patch --batch --fuzz=0 --forward -p1 -d "$source_dir" -i "$patch_path"
 printf '%s\n' "$revision" > "$prefix/bkpr-source-revision"
 printf '%s\n' "$revision" > "$prefix/ghostty-source-revision"
 printf '%s\n' "$source_sha" > "$prefix/bkpr-source-sha256"
-printf '%s\n' 'ReleaseSafe-simd-libc-baseline-offer-v1' > "$prefix/bkpr-build-profile"
+printf '%s\n' "$profile" > "$prefix/bkpr-build-profile"
 printf '%s\n' "$patch_sha" > "$prefix/bkpr-source-patch-sha256"
+printf '%s\n' "$source_patch_sha" > "$prefix/bkpr-source-image-patch-sha256"
 (cd "$prefix" && find include -type f -print0 | sort -z | xargs -0 sha256sum; cd "$prefix" && sha256sum lib/libghostty-vt.a) > "$prefix/bkpr-files.sha256"
 printf 'export BKPR_GHOSTTY_VT_DIR=%q\n' "$prefix"
 printf 'export GHOSTTY_INSTALL_DIR=%q\n' "$prefix"

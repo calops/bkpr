@@ -202,6 +202,21 @@ fn build_vendored(link_mode: LinkMode, target: &str) {
             .current_dir(&ghostty_dir);
         run(apply, "native paste-offer contribution");
     }
+    // Retained Kitty image sources, also a separately reviewable contribution.
+    let source_patch = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
+        .join("native/kitty-image-source.patch");
+    println!("cargo:rerun-if-changed={}", source_patch.display());
+    let terminal_header =
+        std::fs::read_to_string(ghostty_dir.join("include/ghostty/vt/terminal.h"))
+            .expect("reading pinned terminal ABI");
+    if !terminal_header.contains("GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_RETAIN_SOURCE") {
+        let mut apply = Command::new("patch");
+        apply
+            .args(["--batch", "--fuzz=0", "--forward", "-p1", "-i"])
+            .arg(&source_patch)
+            .current_dir(&ghostty_dir);
+        run(apply, "native image-source contribution");
+    }
 
     // Build libghostty-vt via zig.
     let install_prefix = out_dir.join("ghostty-install");

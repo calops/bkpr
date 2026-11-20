@@ -111,6 +111,8 @@ impl Terminal {
         native.set_kitty_image_from_file_allowed(false)?;
         native.set_kitty_image_from_shared_mem_allowed(false)?;
         native.set_kitty_image_temp_file_dir(None)?;
+        // Keep PNG/zlib payloads so clients can forward them without re-encoding.
+        native.set_kitty_image_retain_source(true)?;
         let callbacks = Rc::new(RefCell::new(CallbackState {
             effects: Vec::new(),
             effect_bytes: 0,

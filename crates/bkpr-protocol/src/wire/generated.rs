@@ -48795,7 +48795,9 @@ pub struct PaneRequestImageResource{
         /// The field `view_id` in the table `PaneRequestImageResource`
         pub view_id: ::planus::alloc::string::String,
         /// The field `key` in the table `PaneRequestImageResource`
-        pub key: ::planus::alloc::boxed::Box<self::ImageKey>,}
+        pub key: ::planus::alloc::boxed::Box<self::ImageKey>,
+        /// The field `original_encodings` in the table `PaneRequestImageResource`
+        pub original_encodings: bool,}
 
 
 #[allow(clippy::derivable_impls)]
@@ -48804,6 +48806,7 @@ impl ::core::default::Default for PaneRequestImageResource {
         Self {
         view_id: ::core::default::Default::default(),
         key: ::core::default::Default::default(),
+        original_encodings: false,
         
         }
     }
@@ -48822,14 +48825,15 @@ impl PaneRequestImageResource {
         builder: &mut ::planus::Builder,
         field_view_id: impl ::planus::WriteAs<::planus::Offset<str>>,
         field_key: impl ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
+        field_original_encodings: impl ::planus::WriteAsDefault<bool, bool>,
         
-    ) -> ::planus::Offset<Self> {let prepared_view_id = field_view_id.prepare(builder);let prepared_key = field_key.prepare(builder);
+    ) -> ::planus::Offset<Self> {let prepared_view_id = field_view_id.prepare(builder);let prepared_key = field_key.prepare(builder);let prepared_original_encodings = field_original_encodings.prepare(builder, &false);
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
-        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<self::ImageKey>>(1);
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<self::ImageKey>>(1);if prepared_original_encodings.is_some() {table_writer.write_entry::<bool>(2);}
 
         unsafe {
-            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_view_id);object_writer.write::<_, _, 4>(&prepared_key);
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_view_id);object_writer.write::<_, _, 4>(&prepared_key);if let ::core::option::Option::Some(prepared_original_encodings) = prepared_original_encodings {object_writer.write::<_, _, 1>(&prepared_original_encodings);}
                 
             });
         }builder.current_offset()
@@ -48866,6 +48870,10 @@ impl ::planus::WriteAsOffset<PaneRequestImageResource> for PaneRequestImageResou
         
             
             &self.key,
+            
+        
+            
+            self.original_encodings,
             
         
         )
@@ -48952,6 +48960,74 @@ impl<
     
 }
 
+impl<
+    
+        T0,
+    
+        T1,
+    
+> PaneRequestImageResourceBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`original_encodings` field](PaneRequestImageResource#structfield.original_encodings).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn original_encodings<T2>(self, value: T2) -> PaneRequestImageResourceBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsDefault<bool, bool>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;PaneRequestImageResourceBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`original_encodings` field](PaneRequestImageResource#structfield.original_encodings) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn original_encodings_as_default(self) -> PaneRequestImageResourceBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.original_encodings(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
 
 
 impl<
@@ -48960,11 +49036,15 @@ impl<
     
         T1,
     
+        T2,
+    
 > PaneRequestImageResourceBuilder<(
     
         T0,
     
         T1,
+    
+        T2,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [PaneRequestImageResource].
@@ -48982,11 +49062,15 @@ impl<
     
         T1: ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
     
+        T2: ::planus::WriteAsDefault<bool, bool>,
+    
 > ::planus::WriteAs<::planus::Offset<PaneRequestImageResource>> for PaneRequestImageResourceBuilder<(
     
         T0,
     
         T1,
+    
+        T2,
     
 )> {
     type Prepared = ::planus::Offset<PaneRequestImageResource>;
@@ -49003,11 +49087,15 @@ impl<
     
         T1: ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
     
+        T2: ::planus::WriteAsDefault<bool, bool>,
+    
 > ::planus::WriteAsOptional<::planus::Offset<PaneRequestImageResource>> for PaneRequestImageResourceBuilder<(
     
         T0,
     
         T1,
+    
+        T2,
     
 )> {
     type Prepared = ::planus::Offset<PaneRequestImageResource>;
@@ -49024,11 +49112,15 @@ impl<
     
         T1: ::planus::WriteAs<::planus::Offset<self::ImageKey>>,
     
+        T2: ::planus::WriteAsDefault<bool, bool>,
+    
 > ::planus::WriteAsOffset<PaneRequestImageResource> for PaneRequestImageResourceBuilder<(
     
         T0,
     
         T1,
+    
+        T2,
     
 )> {
     #[inline]
@@ -49040,12 +49132,16 @@ impl<
             
                 v1,
             
+                v2,
+            
         ) = &self.0;PaneRequestImageResource::create(
             builder,
             
                 v0,
             
                 v1,
+            
+                v2,
             
         )
     }
@@ -49086,12 +49182,25 @@ impl<'a> PaneRequestImageResourceRef<'a> {
             
         }
     
+        /// Getter for the [`original_encodings` field](PaneRequestImageResource#structfield.original_encodings).
+        #[inline]
+        pub fn original_encodings(&self) -> ::planus::Result<bool> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(2, "PaneRequestImageResource", "original_encodings")
+              
+            
+            ?.unwrap_or(false))
+            
+        }
+    
 }
 
 impl<'a> ::core::fmt::Debug for PaneRequestImageResourceRef<'a> {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         let mut f = f.debug_struct("PaneRequestImageResourceRef");
-        f.field("view_id", &self.view_id());f.field("key", &self.key());
+        f.field("view_id", &self.view_id());f.field("key", &self.key());f.field("original_encodings", &self.original_encodings());
         f.finish()
     }
 }
@@ -49104,7 +49213,7 @@ impl<'a> ::core::convert::TryFrom<PaneRequestImageResourceRef<'a>> for PaneReque
     fn try_from(value: PaneRequestImageResourceRef<'a>) -> ::planus::Result<Self> {
 
         ::core::result::Result::Ok(Self {
-            view_id: ::core::convert::Into::into(value.view_id()?),key: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.key()?)?),
+            view_id: ::core::convert::Into::into(value.view_id()?),key: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.key()?)?),original_encodings: ::core::convert::TryInto::try_into(value.original_encodings()?)?,
         })
     }
 }
@@ -49174,7 +49283,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestImageResourceRef<'a> {
 /// The union `PaneRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `PaneRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:489`
+/// * Union `PaneRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:491`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -50176,7 +50285,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PaneRequestRef<'a> {
 /// The table `SearchActionQuery` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionQuery` in the file `crates/bkpr-protocol/src/wire/native.fbs:490`
+/// * Table `SearchActionQuery` in the file `crates/bkpr-protocol/src/wire/native.fbs:492`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -50481,7 +50590,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionQueryRef<'a> {
 /// The table `SearchActionNext` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionNext` in the file `crates/bkpr-protocol/src/wire/native.fbs:493`
+/// * Table `SearchActionNext` in the file `crates/bkpr-protocol/src/wire/native.fbs:495`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -50707,7 +50816,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionNextRef<'a> {
 /// The table `SearchActionPrevious` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionPrevious` in the file `crates/bkpr-protocol/src/wire/native.fbs:496`
+/// * Table `SearchActionPrevious` in the file `crates/bkpr-protocol/src/wire/native.fbs:498`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -50933,7 +51042,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionPreviousRef<'a> {
 /// The table `SearchActionClear` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionClear` in the file `crates/bkpr-protocol/src/wire/native.fbs:499`
+/// * Table `SearchActionClear` in the file `crates/bkpr-protocol/src/wire/native.fbs:501`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -51159,7 +51268,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionClearRef<'a> {
 /// The union `SearchAction` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `SearchAction` in the file `crates/bkpr-protocol/src/wire/native.fbs:502`
+/// * Union `SearchAction` in the file `crates/bkpr-protocol/src/wire/native.fbs:504`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -51430,7 +51539,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for SearchActionRef<'a> {
 /// The table `LayoutNodeLeaf` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `LayoutNodeLeaf` in the file `crates/bkpr-protocol/src/wire/native.fbs:503`
+/// * Table `LayoutNodeLeaf` in the file `crates/bkpr-protocol/src/wire/native.fbs:505`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -51735,7 +51844,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for LayoutNodeLeafRef<'a> {
 /// The table `LayoutNodeSplit` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `LayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:506`
+/// * Table `LayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:508`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -52333,7 +52442,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for LayoutNodeSplitRef<'a> {
 /// The union `LayoutNode` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `LayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:512`
+/// * Union `LayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:514`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -52518,7 +52627,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for LayoutNodeRef<'a> {
 /// The table `SpawnLayoutNodeExisting` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeExisting` in the file `crates/bkpr-protocol/src/wire/native.fbs:513`
+/// * Table `SpawnLayoutNodeExisting` in the file `crates/bkpr-protocol/src/wire/native.fbs:515`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -52823,7 +52932,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeExistingRef<'a> {
 /// The table `SpawnLayoutNodeNew` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeNew` in the file `crates/bkpr-protocol/src/wire/native.fbs:516`
+/// * Table `SpawnLayoutNodeNew` in the file `crates/bkpr-protocol/src/wire/native.fbs:518`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -53128,7 +53237,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeNewRef<'a> {
 /// The table `SpawnLayoutNodeSplit` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:519`
+/// * Table `SpawnLayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:521`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -53726,7 +53835,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeSplitRef<'a> {
 /// The union `SpawnLayoutNode` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `SpawnLayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:525`
+/// * Union `SpawnLayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:527`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -53954,7 +54063,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for SpawnLayoutNodeRef<'a> {
 /// The table `NativeConversation` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `NativeConversation` in the file `crates/bkpr-protocol/src/wire/native.fbs:526`
+/// * Table `NativeConversation` in the file `crates/bkpr-protocol/src/wire/native.fbs:528`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -54465,7 +54574,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for NativeConversationRef<'a> {
 /// The table `AgentBindingGuard` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentBindingGuard` in the file `crates/bkpr-protocol/src/wire/native.fbs:531`
+/// * Table `AgentBindingGuard` in the file `crates/bkpr-protocol/src/wire/native.fbs:533`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -54854,7 +54963,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentBindingGuardRef<'a> {
 /// The table `CaptureEventBind` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventBind` in the file `crates/bkpr-protocol/src/wire/native.fbs:535`
+/// * Table `CaptureEventBind` in the file `crates/bkpr-protocol/src/wire/native.fbs:537`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -55486,7 +55595,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventBindRef<'a> {
 /// The table `CaptureEventError` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventError` in the file `crates/bkpr-protocol/src/wire/native.fbs:541`
+/// * Table `CaptureEventError` in the file `crates/bkpr-protocol/src/wire/native.fbs:543`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -55791,7 +55900,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventErrorRef<'a> {
 /// The table `CaptureEventEnd` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:544`
+/// * Table `CaptureEventEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:546`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -56017,7 +56126,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventEndRef<'a> {
 /// The table `CaptureEventPromptSubmitted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventPromptSubmitted` in the file `crates/bkpr-protocol/src/wire/native.fbs:547`
+/// * Table `CaptureEventPromptSubmitted` in the file `crates/bkpr-protocol/src/wire/native.fbs:549`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -56419,7 +56528,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventPromptSubmittedRef<'a> {
 /// The table `CaptureEventStatusEnroll` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventStatusEnroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:551`
+/// * Table `CaptureEventStatusEnroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:553`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -56821,7 +56930,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventStatusEnrollRef<'a> {
 /// The table `CaptureEventStatusReport` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventStatusReport` in the file `crates/bkpr-protocol/src/wire/native.fbs:555`
+/// * Table `CaptureEventStatusReport` in the file `crates/bkpr-protocol/src/wire/native.fbs:557`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -57586,7 +57695,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventStatusReportRef<'a> {
 /// The table `CaptureEventUnbind` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventUnbind` in the file `crates/bkpr-protocol/src/wire/native.fbs:562`
+/// * Table `CaptureEventUnbind` in the file `crates/bkpr-protocol/src/wire/native.fbs:564`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -58116,7 +58225,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventUnbindRef<'a> {
 /// The table `CaptureEventNativeContext` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventNativeContext` in the file `crates/bkpr-protocol/src/wire/native.fbs:567`
+/// * Table `CaptureEventNativeContext` in the file `crates/bkpr-protocol/src/wire/native.fbs:569`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -58505,7 +58614,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventNativeContextRef<'a> {
 /// The union `CaptureEvent` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `CaptureEvent` in the file `crates/bkpr-protocol/src/wire/native.fbs:571`
+/// * Union `CaptureEvent` in the file `crates/bkpr-protocol/src/wire/native.fbs:573`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -58948,7 +59057,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for CaptureEventRef<'a> {
 /// The table `AgentRequestWhoami` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWhoami` in the file `crates/bkpr-protocol/src/wire/native.fbs:572`
+/// * Table `AgentRequestWhoami` in the file `crates/bkpr-protocol/src/wire/native.fbs:574`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -59264,7 +59373,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWhoamiRef<'a> {
 /// The table `AgentRequestControl` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestControl` in the file `crates/bkpr-protocol/src/wire/native.fbs:575`
+/// * Table `AgentRequestControl` in the file `crates/bkpr-protocol/src/wire/native.fbs:577`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -59763,7 +59872,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestControlRef<'a> {
 /// The table `AgentRequestSetTitle` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestSetTitle` in the file `crates/bkpr-protocol/src/wire/native.fbs:580`
+/// * Table `AgentRequestSetTitle` in the file `crates/bkpr-protocol/src/wire/native.fbs:582`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -60068,7 +60177,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestSetTitleRef<'a> {
 /// The table `AgentRequestDiscoverAgents` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestDiscoverAgents` in the file `crates/bkpr-protocol/src/wire/native.fbs:583`
+/// * Table `AgentRequestDiscoverAgents` in the file `crates/bkpr-protocol/src/wire/native.fbs:585`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -61009,7 +61118,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestDiscoverAgentsRef<'a> {
 /// The table `AgentRequestSendMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestSendMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:591`
+/// * Table `AgentRequestSendMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:593`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -61613,7 +61722,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestSendMessageRef<'a> {
 /// The table `AgentRequestReadInbox` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReadInbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:598`
+/// * Table `AgentRequestReadInbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:600`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -62253,7 +62362,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReadInboxRef<'a> {
 /// The table `AgentRequestReadMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReadMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:604`
+/// * Table `AgentRequestReadMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:606`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -62780,7 +62889,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReadMessageRef<'a> {
 /// The table `AgentRequestAckMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestAckMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:609`
+/// * Table `AgentRequestAckMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:611`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -63085,7 +63194,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestAckMessageRef<'a> {
 /// The table `AgentRequestInspectOutbox` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestInspectOutbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:612`
+/// * Table `AgentRequestInspectOutbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:614`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -63623,7 +63732,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestInspectOutboxRef<'a> {
 /// The table `AgentRequestReceiverRegister` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReceiverRegister` in the file `crates/bkpr-protocol/src/wire/native.fbs:617`
+/// * Table `AgentRequestReceiverRegister` in the file `crates/bkpr-protocol/src/wire/native.fbs:619`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -64134,7 +64243,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReceiverRegisterRef<'a> {
 /// The table `AgentRequestReceiverSubscribe` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReceiverSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:622`
+/// * Table `AgentRequestReceiverSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:624`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -64536,7 +64645,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReceiverSubscribeRef<'a> {
 /// The table `AgentRequestWakeValidate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWakeValidate` in the file `crates/bkpr-protocol/src/wire/native.fbs:626`
+/// * Table `AgentRequestWakeValidate` in the file `crates/bkpr-protocol/src/wire/native.fbs:628`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -65034,7 +65143,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeValidateRef<'a> {
 /// The table `AgentRequestWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:631`
+/// * Table `AgentRequestWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:633`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -65623,7 +65732,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeOutcomeRef<'a> {
 /// The union `AgentRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:637`
+/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:639`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -66281,7 +66390,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentRequestRef<'a> {
 /// The table `AgentWakeOutcomeAccepted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:638`
+/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:640`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -66507,7 +66616,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeAcceptedRef<'a> {
 /// The table `AgentWakeOutcomeFailed` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:641`
+/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:643`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -66812,7 +66921,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeFailedRef<'a> {
 /// The table `AgentWakeOutcomeUnknown` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:644`
+/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:646`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -67117,7 +67226,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeUnknownRef<'a> {
 /// The union `AgentWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:647`
+/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:649`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -67345,7 +67454,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentWakeOutcomeRef<'a> {
 /// The table `RequestFailureSessionClosing` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:648`
+/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:650`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -67661,7 +67770,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureSessionClosingRef<'a> {
 /// The table `RequestFailureBusy` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureBusy` in the file `crates/bkpr-protocol/src/wire/native.fbs:651`
+/// * Table `RequestFailureBusy` in the file `crates/bkpr-protocol/src/wire/native.fbs:653`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -67966,7 +68075,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureBusyRef<'a> {
 /// The union `RequestFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:654`
+/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:656`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -68151,7 +68260,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for RequestFailureRef<'a> {
 /// The table `OptionalU64` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:655`
+/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:657`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -68467,7 +68576,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalU64Ref<'a> {
 /// The table `OptionalPalette` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:658`
+/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:660`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -68772,7 +68881,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPaletteRef<'a> {
 /// The table `OptionalUsize` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:661`
+/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:663`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -69088,7 +69197,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalUsizeRef<'a> {
 /// The table `NullValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:666`
+/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:668`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -69314,7 +69423,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for NullValueRef<'a> {
 /// The table `BoolValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:667`
+/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:669`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -69630,7 +69739,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for BoolValueRef<'a> {
 /// The table `SignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:668`
+/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:670`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -69946,7 +70055,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SignedValueRef<'a> {
 /// The table `UnsignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:669`
+/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:671`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -70262,7 +70371,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for UnsignedValueRef<'a> {
 /// The table `FloatValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:670`
+/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:672`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -70578,7 +70687,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for FloatValueRef<'a> {
 /// The table `StringValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:671`
+/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:673`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -70883,7 +70992,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for StringValueRef<'a> {
 /// The table `ArrayValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:672`
+/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:674`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -71188,7 +71297,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ArrayValueRef<'a> {
 /// The table `Entry` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:673`
+/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:675`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -71566,7 +71675,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for EntryRef<'a> {
 /// The table `ObjectValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:674`
+/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:676`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -71871,7 +71980,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ObjectValueRef<'a> {
 /// The union `ValueBody` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:675`
+/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:677`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -72314,7 +72423,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ValueBodyRef<'a> {
 /// The table `Value` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:676`
+/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:678`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -72609,7 +72718,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ValueRef<'a> {
 /// The table `ControlPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:677`
+/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:679`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -72904,7 +73013,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ControlPayloadRef<'a> {
 /// The table `PanePayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:678`
+/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:680`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -73297,7 +73406,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PanePayloadRef<'a> {
 /// The enum `ImagePixelFormat` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Enum `ImagePixelFormat` in the file `crates/bkpr-protocol/src/wire/native.fbs:679`
+/// * Enum `ImagePixelFormat` in the file `crates/bkpr-protocol/src/wire/native.fbs:681`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum ImagePixelFormat {
     
         /// The variant `Rgb` in the enum `ImagePixelFormat`
@@ -73448,7 +73557,7 @@ unsafe impl ::planus::VectorWrite<ImagePixelFormat> for ImagePixelFormat {
 /// The enum `ImageEncoding` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Enum `ImageEncoding` in the file `crates/bkpr-protocol/src/wire/native.fbs:680`
+/// * Enum `ImageEncoding` in the file `crates/bkpr-protocol/src/wire/native.fbs:683`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum ImageEncoding {
     
         /// The variant `Raw` in the enum `ImageEncoding`
@@ -73457,11 +73566,17 @@ unsafe impl ::planus::VectorWrite<ImagePixelFormat> for ImagePixelFormat {
         /// The variant `Zstd` in the enum `ImageEncoding`
         Zstd = 1,
     
+        /// The variant `Png` in the enum `ImageEncoding`
+        Png = 2,
+    
+        /// The variant `Zlib` in the enum `ImageEncoding`
+        Zlib = 3,
+    
 }
 
 impl ImageEncoding {
     /// Array containing all valid variants of ImageEncoding
-    pub const ENUM_VALUES: [Self; 2] = [Self::Raw,Self::Zstd,];
+    pub const ENUM_VALUES: [Self; 4] = [Self::Raw,Self::Zstd,Self::Png,Self::Zlib,];
 }
 
 impl ::core::convert::TryFrom<u8> for ImageEncoding {
@@ -73472,6 +73587,8 @@ impl ::core::convert::TryFrom<u8> for ImageEncoding {
         match value {
             0 => ::core::result::Result::Ok(ImageEncoding::Raw),
             1 => ::core::result::Result::Ok(ImageEncoding::Zstd),
+            2 => ::core::result::Result::Ok(ImageEncoding::Png),
+            3 => ::core::result::Result::Ok(ImageEncoding::Zlib),
             
 
             _ => ::core::result::Result::Err(::planus::errors::UnknownEnumTagKind { tag: value as i128 }),
@@ -73591,7 +73708,7 @@ unsafe impl ::planus::VectorWrite<ImageEncoding> for ImageEncoding {
 /// The table `ImageDescriptor` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:681`
+/// * Table `ImageDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:684`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -74356,7 +74473,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageDescriptorRef<'a> {
 /// The table `ImagePreparing` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImagePreparing` in the file `crates/bkpr-protocol/src/wire/native.fbs:688`
+/// * Table `ImagePreparing` in the file `crates/bkpr-protocol/src/wire/native.fbs:691`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -74661,7 +74778,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImagePreparingRef<'a> {
 /// The table `ImageStart` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageStart` in the file `crates/bkpr-protocol/src/wire/native.fbs:689`
+/// * Table `ImageStart` in the file `crates/bkpr-protocol/src/wire/native.fbs:692`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -75172,7 +75289,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageStartRef<'a> {
 /// The table `ImageData` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageData` in the file `crates/bkpr-protocol/src/wire/native.fbs:694`
+/// * Table `ImageData` in the file `crates/bkpr-protocol/src/wire/native.fbs:697`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -75668,7 +75785,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageDataRef<'a> {
 /// The table `ImageEnd` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:695`
+/// * Table `ImageEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:698`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -76070,7 +76187,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageEndRef<'a> {
 /// The union `ImageResource` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ImageResource` in the file `crates/bkpr-protocol/src/wire/native.fbs:696`
+/// * Union `ImageResource` in the file `crates/bkpr-protocol/src/wire/native.fbs:699`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -76341,7 +76458,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ImageResourceRef<'a> {
 /// The table `ImageResourcePayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageResourcePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:697`
+/// * Table `ImageResourcePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:700`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -76636,7 +76753,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageResourcePayloadRef<'a> {
 /// The union `Payload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:698`
+/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:701`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -76864,7 +76981,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PayloadRef<'a> {
 /// The table `Request` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:699`
+/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:702`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -77253,7 +77370,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestRef<'a> {
 /// The table `OptionalPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:700`
+/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:703`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -77548,7 +77665,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPayloadRef<'a> {
 /// The table `OptionalFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:701`
+/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:704`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -77843,7 +77960,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalFailureRef<'a> {
 /// The table `Response` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:702`
+/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:705`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize

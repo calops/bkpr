@@ -12,6 +12,7 @@ fn admitted(fixture: &Fixture) -> Admitted {
         _permit: permit,
         started: Instant::now(),
         pane_id: fixture.pane.shared.pane_id.clone(),
+        original_encodings: false,
     }
 }
 #[test]
@@ -69,6 +70,7 @@ fn stalled_resource_write_cancels_without_waiting_for_the_total_deadline() {
             height: 1024,
             format: PixelFormat::Rgba,
             pixels,
+            source: None,
         })];
         published.frame = Some(Arc::new(frame));
     }

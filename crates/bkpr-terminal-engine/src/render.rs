@@ -288,5 +288,37 @@ fn read_image(
         height,
         format,
         pixels: pixels.to_vec(),
+        source: read_source(&native, format)?,
     }))
+}
+/// The program's PNG or zlib payload, when the engine retained one that clients can forward.
+fn read_source(
+    native: &sdk::kitty::graphics::Image<'_>,
+    format: PixelFormat,
+) -> Result<Option<std::sync::Arc<bkpr_protocol::ImageSource>>> {
+    use bkpr_protocol::ImageSourceEncoding;
+    use sdk::kitty::graphics::{Compression, ImageFormat};
+    let Some(source) = native.source()? else {
+        return Ok(None);
+    };
+    let encoding = match (source.format, source.compression) {
+        (ImageFormat::Png, Compression::None) if format == PixelFormat::Rgba => {
+            ImageSourceEncoding::Png
+        }
+        (ImageFormat::Rgb, Compression::ZlibDeflate) if format == PixelFormat::Rgb => {
+            ImageSourceEncoding::Zlib
+        }
+        (ImageFormat::Rgba, Compression::ZlibDeflate) if format == PixelFormat::Rgba => {
+            ImageSourceEncoding::Zlib
+        }
+        // Gray, or zlib-wrapped PNG: no forwardable Kitty form here; send decoded pixels.
+        _ => return Ok(None),
+    };
+    if source.bytes.len() > IMAGE_MAX_BYTES {
+        return Ok(None);
+    }
+    Ok(Some(std::sync::Arc::new(bkpr_protocol::ImageSource {
+        encoding,
+        bytes: source.bytes.to_vec(),
+    })))
 }

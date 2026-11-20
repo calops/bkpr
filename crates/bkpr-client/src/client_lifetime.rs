@@ -400,7 +400,7 @@ impl Endpoint {
                 let mut stream = tokio::net::UnixStream::from_std(stream)?;
                 let operation = Operation::Pane {
                     pane_id: pane.to_owned(),
-                    request: PaneRequest::ImageResource { view_id: view.to_owned(), key: descriptor.key },
+                    request: PaneRequest::ImageResource { view_id: view.to_owned(), key: descriptor.key, original_encodings: true },
                 };
                 let mut codec = Codec::new();
                 let payload = match &self.lease.authority {
@@ -1204,7 +1204,7 @@ mod tests {
             assert_eq!(authority.client_id, "client");
             assert_eq!(authority.token, "fixture-token");
             assert!(matches!(*request, Operation::Pane {
-                pane_id, request: PaneRequest::ImageResource { view_id, key },
+                pane_id, request: PaneRequest::ImageResource { view_id, key, .. },
             } if pane_id == "pane" && view_id == "view" && key == descriptor.key));
             let frames = [
                 ImageResource::Preparing { descriptor },

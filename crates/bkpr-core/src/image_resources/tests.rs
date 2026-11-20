@@ -97,6 +97,7 @@ impl Fixture {
                     height: 1,
                     format: PixelFormat::Rgba,
                     pixels: vec![id as u8, 21, 92, 0],
+                    source: None,
                 })
             })
             .collect();
@@ -371,6 +372,7 @@ fn shared_compression_reuses_compact_storage_and_completes_lossless_pixels() {
         height: 1024,
         format: PixelFormat::Rgba,
         pixels: vec![0; 4 * 1024 * 1024],
+        source: None,
     });
     {
         let mut published = fixture.pane.shared.published.lock().unwrap();

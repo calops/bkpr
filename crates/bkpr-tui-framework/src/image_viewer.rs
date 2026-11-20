@@ -248,6 +248,7 @@ mod tests {
             height: 20,
             format,
             pixels: vec![128; 40 * 20 * format.bytes_per_pixel()],
+            source: None,
         })
     }
 

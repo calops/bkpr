@@ -8,7 +8,7 @@ use crate::Rect;
 use crate::decoration::{DecorationKind, DecorationStyle};
 use crate::joined_contour::{Contour, Feature, Point, Rect as PixelRect, distance};
 use crate::{
-    prepared_png::PreparedPng,
+    prepared_png::PreparedTransport,
     raster_cache::{Raster, RasterCache},
 };
 use bkpr_protocol::{Frame, Image, ImageLayer, PixelFormat, Placement};
@@ -64,15 +64,21 @@ struct Patch {
     shadow: Arc<Image>,
     body_visible: bool,
     shadow_visible: bool,
-    body_png: Option<PreparedPng>,
-    shadow_png: Option<PreparedPng>,
+    body_png: Option<PreparedTransport>,
+    shadow_png: Option<PreparedTransport>,
 }
 impl Patch {
     fn bytes(&self) -> usize {
         self.body.pixels.len()
             + self.shadow.pixels.len()
-            + self.body_png.as_ref().map_or(0, PreparedPng::byte_len)
-            + self.shadow_png.as_ref().map_or(0, PreparedPng::byte_len)
+            + self
+                .body_png
+                .as_ref()
+                .map_or(0, PreparedTransport::byte_len)
+            + self
+                .shadow_png
+                .as_ref()
+                .map_or(0, PreparedTransport::byte_len)
     }
 }
 #[derive(Clone)]
@@ -98,7 +104,7 @@ pub(crate) struct PreparedJoined {
     pub spans: Vec<OpaqueSpan>,
 }
 impl PreparedJoined {
-    pub(crate) fn png_uploads(&self) -> impl Iterator<Item = &PreparedPng> {
+    pub(crate) fn png_uploads(&self) -> impl Iterator<Item = &PreparedTransport> {
         self.patches
             .iter()
             .flat_map(|patch| patch.body_png.iter().chain(patch.shadow_png.iter()))
@@ -940,6 +946,7 @@ fn finish_patch(
             height: size[1],
             format: PixelFormat::Rgba,
             pixels,
+            source: None,
         })
     };
     let body_image = image(id, body.pixels);
@@ -948,10 +955,10 @@ fn finish_patch(
         key,
         body_png: body
             .png
-            .map(|png| PreparedPng::from_verified(&body_image, png)),
+            .map(|png| PreparedTransport::from_verified(&body_image, png)),
         shadow_png: shadow
             .png
-            .map(|png| PreparedPng::from_verified(&shadow_image, png)),
+            .map(|png| PreparedTransport::from_verified(&shadow_image, png)),
         body: body_image,
         shadow: shadow_image,
         body_visible,
@@ -1323,6 +1330,7 @@ mod tests {
             height: 8,
             format: PixelFormat::Rgba,
             pixels: vec![255; 4 * 8 * 4],
+            source: None,
         });
         frame.images.push(Arc::clone(&native));
         let native_placement = Placement {

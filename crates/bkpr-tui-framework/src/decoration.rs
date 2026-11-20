@@ -92,7 +92,7 @@ pub(crate) struct PreparedDecoration {
     /// Shared RGBA atlas with a generation-scoped image identity.
     pub image: Arc<Image>,
     /// Verified encoded transport for the immutable atlas.
-    pub(crate) png: Option<crate::PreparedPng>,
+    pub(crate) png: Option<crate::PreparedTransport>,
 }
 impl PreparedDecoration {
     /// Append the perimeter in cell coordinates, reserving 64 IDs from `base`.
@@ -694,6 +694,7 @@ mod tests {
                 height,
                 format: PixelFormat::Rgba,
                 pixels: rasterize(style, cell).unwrap(),
+                source: None,
             });
             let decoration = PreparedDecoration {
                 style,
@@ -758,6 +759,7 @@ mod tests {
                 height,
                 format: PixelFormat::Rgba,
                 pixels: vec![0; (width * height * 4) as usize],
+                source: None,
             }),
         }
     }
@@ -989,6 +991,7 @@ mod tests {
             height,
             format: PixelFormat::Rgba,
             pixels: rasterize(style, cell).unwrap(),
+            source: None,
         });
         let tw = width / 3;
         let th = height / 3;
@@ -1109,6 +1112,7 @@ mod tests {
                 height,
                 format: PixelFormat::Rgba,
                 pixels: rasterize(style, [10, 20]).unwrap(),
+                source: None,
             }),
         };
         let size = Size {
@@ -1230,6 +1234,7 @@ mod tests {
                     height,
                     format: PixelFormat::Rgba,
                     pixels: rasterize(style, cell).unwrap(),
+                    source: None,
                 }),
             };
             let size = Size {

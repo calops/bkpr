@@ -485,6 +485,8 @@ table PaneRequestShutdown {
 table PaneRequestImageResource {
   view_id:string (required);
   key:ImageKey (required);
+  // Appended: the requester decodes Png/Zlib bodies; older daemons ignore it.
+  original_encodings:bool;
 }
 union PaneRequest { PaneRequestInspect, PaneRequestAttach, PaneRequestUpdate, PaneRequestDetach, PaneRequestPoll, PaneRequestPin, PaneRequestInput, PaneRequestPaste, PaneRequestPasteContents, PaneRequestKey, PaneRequestMouse, PaneRequestFocus, PaneRequestScroll, PaneRequestSelect, PaneRequestCopySelection, PaneRequestSearch, PaneRequestClipboard, PaneRequestColors, PaneRequestTerminate, PaneRequestShutdown, PaneRequestImageResource }
 table SearchActionQuery {
@@ -677,7 +679,8 @@ table Value { body:ValueBody (required); }
 table ControlPayload { value:Value (required); }
 table PanePayload { metadata:Value (required); scene:[ubyte]; }
 enum ImagePixelFormat : ubyte { Rgb, Rgba, GrayAlpha, Gray }
-enum ImageEncoding : ubyte { Raw, Zstd }
+// Png and Zlib carry the program's original Kitty payload; sent only to requesters that opt in.
+enum ImageEncoding : ubyte { Raw, Zstd, Png, Zlib }
 table ImageDescriptor {
   key:ImageKey (required);
   width:uint;

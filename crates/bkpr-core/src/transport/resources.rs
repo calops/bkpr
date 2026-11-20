@@ -18,6 +18,8 @@ pub(super) struct Admitted {
     _permit: StreamPermit,
     started: Instant,
     pane_id: String,
+    /// The requester decodes forwarded original Png/Zlib payloads.
+    original_encodings: bool,
 }
 /// Authenticate the native client and exact pane/view/image, then reserve bounded FIFO admission.
 pub(super) fn admit(
@@ -29,7 +31,12 @@ pub(super) fn admit(
     let client = registry.client_lease(authority, &operation, stream)?;
     let Operation::Pane {
         pane_id,
-        request: PaneRequest::ImageResource { view_id, key },
+        request:
+            PaneRequest::ImageResource {
+                view_id,
+                key,
+                original_encodings,
+            },
     } = operation
     else {
         bail!("not an image resource request");
@@ -43,6 +50,7 @@ pub(super) fn admit(
         _permit: permit,
         started: Instant::now(),
         pane_id,
+        original_encodings,
     })
 }
 
@@ -117,6 +125,10 @@ fn transfer(
             heartbeat = Instant::now() + Duration::from_secs(1);
         }
     }
+    // The program's own PNG/zlib payload needs no preparation: forward it unchanged.
+    if let Some(original) = original(admitted) {
+        return stream_body(admitted, writer, codec, original.0, original.1);
+    }
     let preparation = admitted.pool.request(&admitted.observation)?;
     let preparation_deadline = (Instant::now() + PREPARE_TOTAL).min(writer.deadline);
     heartbeat = Instant::now() + Duration::from_secs(1);
@@ -138,25 +150,59 @@ fn transfer(
             heartbeat = Instant::now() + Duration::from_secs(1);
         }
     };
+    stream_body(
+        admitted,
+        writer,
+        codec,
+        encoded.encoding,
+        encoded.bytes.clone(),
+    )
+}
+
+/// Original payload of the observed generation, when the requester accepts it.
+fn original(admitted: &Admitted) -> Option<(bkpr_protocol::ImageEncoding, bytes::Bytes)> {
+    if !admitted.original_encodings {
+        return None;
+    }
+    let image = admitted.observation.image.upgrade()?;
+    let (encoding, _) = bkpr_protocol::original_body(&image)?;
+    let source = image.source.clone()?;
+    Some((encoding, bytes::Bytes::from_owner(SourceBytes(source))))
+}
+
+/// Shares an image's retained original payload with the response writer without copying.
+struct SourceBytes(Arc<bkpr_protocol::ImageSource>);
+impl AsRef<[u8]> for SourceBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.0.bytes
+    }
+}
+
+/// Send Start, bounded Data chunks and End for one complete encoded body.
+fn stream_body(
+    admitted: &Admitted,
+    writer: &mut ResponseWriter<'_>,
+    codec: &mut Codec,
+    encoding: bkpr_protocol::ImageEncoding,
+    bytes: bytes::Bytes,
+) -> Result<()> {
     admitted.observation.validate()?;
     let descriptor = admitted.observation.descriptor;
-    let encoded_len = encoded.bytes.len() as u64;
+    let encoded_len = bytes.len() as u64;
     send(
         admitted,
         writer,
         codec,
         ImageResource::Start {
             descriptor,
-            encoding: encoded.encoding,
+            encoding,
             encoded_len,
         },
         "image.start",
     )?;
-    for offset in (0..encoded.bytes.len()).step_by(IMAGE_CHUNK_BYTES) {
+    for offset in (0..bytes.len()).step_by(IMAGE_CHUNK_BYTES) {
         admitted.observation.validate()?;
-        let end = offset
-            .saturating_add(IMAGE_CHUNK_BYTES)
-            .min(encoded.bytes.len());
+        let end = offset.saturating_add(IMAGE_CHUNK_BYTES).min(bytes.len());
         send(
             admitted,
             writer,
@@ -164,7 +210,7 @@ fn transfer(
             ImageResource::Data {
                 key: descriptor.key,
                 offset: offset as u64,
-                data: encoded.bytes.slice(offset..end),
+                data: bytes.slice(offset..end),
             },
             "image.data",
         )?;

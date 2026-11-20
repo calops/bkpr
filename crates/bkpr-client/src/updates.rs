@@ -414,6 +414,7 @@ mod tests {
             height: 1,
             format: PixelFormat::Rgb,
             pixels: vec![1, 2, 3],
+            source: None,
         });
         let descriptor = ImageDescriptor::from_image(&image).unwrap();
         let mut initial = frame("λ");
@@ -464,7 +465,7 @@ mod tests {
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
             assert!(matches!(read_request(&mut stream).unwrap().operation,
-                Operation::Pane { pane_id, request: PaneRequest::ImageResource { view_id, key } }
+                Operation::Pane { pane_id, request: PaneRequest::ImageResource { view_id, key, .. } }
                 if pane_id == "pane" && view_id == "view" && key == descriptor.key));
             for resource in [
                 ImageResource::Start {
