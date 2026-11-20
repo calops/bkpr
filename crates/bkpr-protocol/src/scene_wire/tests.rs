@@ -73,6 +73,7 @@ fn fixture() -> Frame {
                 height: 1,
                 format,
                 pixels: vec![index as u8; 2 * format.bytes_per_pixel()],
+                source: None,
             })
         })
         .collect(),

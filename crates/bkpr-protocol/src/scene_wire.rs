@@ -650,6 +650,7 @@ fn read_metadata(frame: g::FrameRef<'_>) -> Result<Frame> {
                 height: image.height()?,
                 format: read_format(image.format()?),
                 pixels: image.pixels()?.to_vec(),
+                source: None,
             }))
         })
         .collect::<Result<_>>()?;

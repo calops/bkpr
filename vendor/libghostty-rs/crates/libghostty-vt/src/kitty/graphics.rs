@@ -852,6 +852,15 @@ impl Terminal<'_, '_> {
         self.set(ffi::TerminalOption::KITTY_IMAGE_MEDIUM_SHARED_MEM, &allowed)?;
         Ok(self)
     }
+    /// Keep each completed image's transmitted PNG or zlib payload, readable
+    /// through [`Image::source`], so it can be forwarded without re-encoding.
+    /// Retained bytes count against the Kitty image storage limit.
+    ///
+    /// Has no effect when Kitty graphics are disabled at build time.
+    pub fn set_kitty_image_retain_source(&mut self, retain: bool) -> Result<&mut Self> {
+        self.set(ffi::TerminalOption::KITTY_IMAGE_RETAIN_SOURCE, &retain)?;
+        Ok(self)
+    }
 
     /// Set the maximum bytes the APC handler will buffer for Kitty graphics
     /// protocol data.
@@ -1013,6 +1022,55 @@ impl<'t> Image<'t> {
         // SAFETY: We trust libghostty to return valid results
         Ok(Some(unsafe { std::slice::from_raw_parts(ptr, len) }))
     }
+
+    /// The PNG or zlib payload the program transmitted this image with.
+    ///
+    /// Valid as long as the underlying terminal is not mutated. Requires
+    /// [`Terminal::set_kitty_image_retain_source`]; `None` when retention was
+    /// off, the payload was raw and uncompressed, or the image has animation
+    /// state. Decoding it yields exactly the pixels of [`Image::data`].
+    pub fn source(&self) -> Result<Option<ImageSource<'t>>> {
+        let mut ptr = std::mem::MaybeUninit::<*const u8>::uninit();
+        let result = unsafe {
+            ffi::ghostty_kitty_graphics_image_get(
+                self.inner.as_raw(),
+                ffi::KittyGraphicsImageData::SOURCE_PTR,
+                ptr.as_mut_ptr().cast(),
+            )
+        };
+        let Some(ptr) = from_optional_result_uninit(result, ptr)? else {
+            return Ok(None);
+        };
+        if ptr.is_null() {
+            return Ok(None);
+        }
+        let len = self.get::<usize>(ffi::KittyGraphicsImageData::SOURCE_LEN)?;
+        let format = self
+            .get::<ffi::KittyImageFormat::Type>(ffi::KittyGraphicsImageData::SOURCE_FORMAT)
+            .and_then(|v| v.try_into().map_err(|_| Error::InvalidValue))?;
+        let compression = self
+            .get::<ffi::KittyImageCompression::Type>(
+                ffi::KittyGraphicsImageData::SOURCE_COMPRESSION,
+            )
+            .and_then(|v| v.try_into().map_err(|_| Error::InvalidValue))?;
+        Ok(Some(ImageSource {
+            format,
+            compression,
+            // SAFETY: We trust libghostty to return valid results
+            bytes: unsafe { std::slice::from_raw_parts(ptr, len) },
+        }))
+    }
+}
+
+/// A Kitty image payload exactly as the program transmitted it.
+#[derive(Clone, Copy, Debug)]
+pub struct ImageSource<'t> {
+    /// [`ImageFormat::Png`] for a PNG file, otherwise the raw pixel layout.
+    pub format: ImageFormat,
+    /// Compression applied to the payload.
+    pub compression: Compression,
+    /// The payload bytes.
+    pub bytes: &'t [u8],
 }
 
 impl<'alloc> PlacementIterator<'alloc> {

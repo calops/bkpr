@@ -567,6 +567,7 @@ mod tests {
                 height: 1,
                 format: bkpr_protocol::PixelFormat::Rgb,
                 pixels: vec![12, 34, 56],
+                source: None,
             });
             surface.frame.images.push(image.clone());
             surface.frame.placements.push(bkpr_protocol::Placement {

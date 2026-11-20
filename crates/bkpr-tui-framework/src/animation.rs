@@ -573,6 +573,7 @@ mod tests {
             height: 1,
             format: PixelFormat::Rgba,
             pixels: vec![10, 20, 30, 128],
+            source: None,
         }));
         frame.placements.push(Placement {
             image_id: 7,

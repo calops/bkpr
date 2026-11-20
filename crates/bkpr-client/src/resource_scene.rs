@@ -200,6 +200,7 @@ mod tests {
             height: 1,
             format: PixelFormat::Rgb,
             pixels: vec![generation as u8, 2, 3],
+            source: None,
         })
     }
 
@@ -439,7 +440,7 @@ mod tests {
                     .set_read_timeout(Some(Duration::from_secs(3)))
                     .unwrap();
                 assert!(matches!(read_request(&mut stream).unwrap().operation,
-                    Operation::Pane { pane_id, request: PaneRequest::ImageResource { view_id, key } }
+                    Operation::Pane { pane_id, request: PaneRequest::ImageResource { view_id, key, .. } }
                     if pane_id == "focused-pane" && view_id == "focused-view" && key == descriptor.key));
                 send(
                     &mut stream,

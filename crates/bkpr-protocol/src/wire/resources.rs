@@ -81,6 +81,8 @@ pub(super) fn write_resource(
             let encoding = match encoding {
                 ImageEncoding::Raw => g::ImageEncoding::Raw,
                 ImageEncoding::Zstd => g::ImageEncoding::Zstd,
+                ImageEncoding::Png => g::ImageEncoding::Png,
+                ImageEncoding::Zlib => g::ImageEncoding::Zlib,
             };
             let value = g::ImageStart::create(builder, descriptor, encoding, *encoded_len);
             g::ImageResource::create_image_start(builder, value)
@@ -125,6 +127,8 @@ pub(super) fn read_resource(
             let encoding = match value.encoding()? {
                 g::ImageEncoding::Raw => ImageEncoding::Raw,
                 g::ImageEncoding::Zstd => ImageEncoding::Zstd,
+                g::ImageEncoding::Png => ImageEncoding::Png,
+                g::ImageEncoding::Zlib => ImageEncoding::Zlib,
             };
             let encoded_len = value.encoded_len()?;
             encoded_length(&descriptor, encoding, encoded_len)?;

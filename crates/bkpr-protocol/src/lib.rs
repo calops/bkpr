@@ -134,6 +134,9 @@ pub enum PaneRequest {
         view_id: String,
         /// Exact pane-scoped image generation from its descriptor manifest.
         key: ImageKey,
+        /// Requester decodes [`ImageEncoding::Png`]/[`ImageEncoding::Zlib`] bodies,
+        /// letting the backend forward the program's original payload unchanged.
+        original_encodings: bool,
     },
     /// Accept the desired size lease; actual frame geometry converges asynchronously.
     Pin {

@@ -2623,6 +2623,7 @@ mod snapshot_tests {
             height: 1,
             format: PixelFormat::Rgba,
             pixels: vec![1, 2, 3, 4],
+            source: None,
         })];
         let keys = expected.image_keys();
         pane.shared.published.lock().unwrap().frame = Some(Arc::new(expected.clone()));

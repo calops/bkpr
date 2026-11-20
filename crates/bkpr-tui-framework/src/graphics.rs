@@ -3,7 +3,7 @@
 use crate::ColorProbe;
 use crate::decoration::{self, DecorationGeometry, DecorationStyle, PreparedDecoration};
 use crate::joined::{JoinedCache, JoinedSurface, OpaqueSpan, PreparedJoined};
-use crate::{TerminalGuard, prepared_png::PreparedPng, raster_cache::RasterCache};
+use crate::{TerminalGuard, prepared_png::PreparedTransport, raster_cache::RasterCache};
 use bkpr_protocol::{ColorSource, Frame, Image, ImageLayer, PixelFormat, Placement, Size};
 use resvg::{tiny_skia, usvg};
 use std::{
@@ -81,11 +81,11 @@ struct Entry {
     asset_id: u32,
     rgb: [u8; 3],
     image: Arc<Image>,
-    png: Option<PreparedPng>,
+    png: Option<PreparedTransport>,
 }
 impl Entry {
     fn bytes(&self) -> usize {
-        self.image.pixels.len() + self.png.as_ref().map_or(0, PreparedPng::byte_len)
+        self.image.pixels.len() + self.png.as_ref().map_or(0, PreparedTransport::byte_len)
     }
 
     fn matches(&self, asset_id: u32, config: &Config, rgb: [u8; 3]) -> bool {
@@ -223,7 +223,7 @@ impl SvgGraphics {
         if !self.uploads_dirty {
             return;
         }
-        terminal.register_prepared_pngs(
+        terminal.register_prepared_transports(
             self.ready
                 .iter()
                 .filter_map(|entry| entry.png.as_ref())
@@ -775,11 +775,12 @@ fn run(
                         height: config.height,
                         format: PixelFormat::Rgba,
                         pixels,
+                        source: None,
                     });
                     let entry = Entry {
                         asset_id: asset.id,
                         rgb,
-                        png: png.map(|png| PreparedPng::from_verified(&image, png)),
+                        png: png.map(|png| PreparedTransport::from_verified(&image, png)),
                         image,
                     };
                     next_id = following;
@@ -866,18 +867,19 @@ fn run(
                     height,
                     format: PixelFormat::Rgba,
                     pixels: raster.pixels,
+                    source: None,
                 });
                 let entry = PreparedDecoration {
                     style,
                     cell: config.cell,
                     png: raster
                         .png
-                        .map(|png| PreparedPng::from_verified(&image, png)),
+                        .map(|png| PreparedTransport::from_verified(&image, png)),
                     image,
                 };
                 next_id = following;
-                let retained_bytes =
-                    entry.image.pixels.len() + entry.png.as_ref().map_or(0, PreparedPng::byte_len);
+                let retained_bytes = entry.image.pixels.len()
+                    + entry.png.as_ref().map_or(0, PreparedTransport::byte_len);
                 if retained_bytes <= MAX_DECORATION_BYTES {
                     while decoration_cache.len() >= MAX_DECORATION_CACHE
                         || decoration_bytes + retained_bytes > MAX_DECORATION_BYTES
@@ -886,7 +888,7 @@ fn run(
                             break;
                         };
                         decoration_bytes -= old.image.pixels.len()
-                            + old.png.as_ref().map_or(0, PreparedPng::byte_len);
+                            + old.png.as_ref().map_or(0, PreparedTransport::byte_len);
                     }
                     decoration_bytes += retained_bytes;
                     decoration_cache.push_back(entry.clone());

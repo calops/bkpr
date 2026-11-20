@@ -6662,6 +6662,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 }
                 let scene = Scene { size, surfaces };
                 graphics.register_uploads(&mut terminal);
+                app.resources.register_transports(&mut terminal);
                 renderer.render(&mut out, &scene, &app.colors, &mut terminal)?;
                 let ready = unsafe {
                     libc::poll(
@@ -8494,6 +8495,7 @@ pub(super) mod tests {
             height: 1,
             format: PixelFormat::Rgba,
             pixels: vec![1, 2, 3, 255],
+            source: None,
         });
         let new = Arc::new(Image {
             id: 7,
@@ -8502,6 +8504,7 @@ pub(super) mod tests {
             height: 1,
             format: PixelFormat::Rgba,
             pixels: vec![4, 5, 6, 255],
+            source: None,
         });
         attached.images.insert(old.key(), old.clone());
         let mut next = attached.frame.clone().unwrap();

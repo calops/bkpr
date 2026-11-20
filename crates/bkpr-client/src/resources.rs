@@ -1,7 +1,8 @@
 //! Endpoint-owned image reception, residency and truthful scene receipts.
 use crate::transport::{Endpoint, ImageResourcePhase};
 use anyhow::{Context, Result, ensure};
-use bkpr_protocol::{IMAGE_MAX_BYTES, Image, ImageDescriptor, ImageKey};
+use bkpr_protocol::{IMAGE_MAX_BYTES, Image, ImageDescriptor, ImageKey, ImageSourceEncoding};
+use bkpr_tui_framework::PreparedTransport;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::{Read, Write},
@@ -83,6 +84,8 @@ struct State {
     views: HashMap<View, Vec<ImageKey>>,
     round_robin: VecDeque<(View, usize)>,
     entries: HashMap<String, HashMap<ImageKey, Entry>>,
+    /// Worker-prepared terminal payloads not yet handed to the terminal writer.
+    transports: Vec<PreparedTransport>,
     serial: u64,
     dirty: bool,
     stopped: bool,
@@ -361,6 +364,14 @@ impl Resources {
         }
     }
 
+    /// Hand newly prepared terminal payloads to the writer; no codec work, no-op when none arrived.
+    pub(crate) fn register_transports(&self, terminal: &mut bkpr_tui_framework::TerminalGuard) {
+        let transports = std::mem::take(&mut self.shared.state.lock().unwrap().transports);
+        if !transports.is_empty() {
+            terminal.register_prepared_transports(&transports);
+        }
+    }
+
     /// Share ready immutable pixels without copying; pending/failed keys return None.
     pub(crate) fn image(&self, pane: &str, key: ImageKey) -> Option<Arc<Image>> {
         if self.shared.endpoint.is_revoked() {
@@ -597,12 +608,32 @@ fn fetch_worker(shared: Arc<Shared>, runtime: tokio::runtime::Runtime) {
                 }
             },
         ));
+        // Prepare the terminal payload here, off the render path and outside the lock.
+        let prepared = result.map(|image| {
+            let image = Arc::new(image);
+            // Forward the program's own payload when it arrived; compress only otherwise.
+            let transport = match image.source.as_deref() {
+                Some(source) => match source.encoding {
+                    ImageSourceEncoding::Png => Some(PreparedTransport::from_verified(
+                        &image,
+                        source.bytes.as_slice().into(),
+                    )),
+                    ImageSourceEncoding::Zlib => PreparedTransport::from_verified_zlib(
+                        &image,
+                        source.bytes.as_slice().into(),
+                    ),
+                },
+                None => PreparedTransport::compress(&image),
+            };
+            (image, transport)
+        });
         let mut state = shared.state.lock().unwrap();
         if let Some(entry) = current(&mut state, &job) {
-            match result {
-                Ok(image) if !shared.endpoint.is_revoked() => {
-                    entry.image = Some(Arc::new(image));
+            match prepared {
+                Ok((image, transport)) if !shared.endpoint.is_revoked() => {
+                    entry.image = Some(image);
                     entry.status.phase = ResourcePhase::Ready;
+                    state.transports.extend(transport);
                 }
                 Ok(_) => {
                     entry.status.phase = ResourcePhase::Failed;
@@ -693,7 +724,7 @@ mod tests {
             .unwrap();
         let request = read_request(&mut stream).unwrap();
         assert!(matches!(request.operation, Operation::Pane {
-            pane_id, request: PaneRequest::ImageResource { view_id, key },
+            pane_id, request: PaneRequest::ImageResource { view_id, key, .. },
         } if pane_id == "pane" && view_id == "view" && key == expected));
         stream
     }
@@ -918,6 +949,7 @@ mod tests {
                 height: 1,
                 format: PixelFormat::Rgb,
                 pixels: vec![1, 2, 3],
+                source: None,
             });
             state
                 .entries
@@ -936,6 +968,7 @@ mod tests {
             height: 1,
             format: PixelFormat::Gray,
             pixels,
+            source: None,
         });
         let desc = ImageDescriptor::from_image(&image).unwrap();
         let view: View = ("pane".into(), "view".into());
@@ -1000,6 +1033,7 @@ mod tests {
             height: 1,
             format: PixelFormat::Gray,
             pixels,
+            source: None,
         });
         let descriptor = ImageDescriptor::from_image(&pinned).unwrap();
         let mut resources =
@@ -1041,6 +1075,7 @@ mod tests {
             height: 1,
             format: PixelFormat::Rgb,
             pixels: vec![1, 2, 3],
+            source: None,
         });
         let original = descriptor(1);
         let replacement = descriptor(2);

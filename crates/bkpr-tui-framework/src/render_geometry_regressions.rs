@@ -37,6 +37,7 @@ fn image(id: u32, width: u32, height: u32, pixels: Vec<u8>) -> Arc<Image> {
         height,
         format: PixelFormat::Rgba,
         pixels,
+        source: None,
     })
 }
 fn placement(id: u32, width: u32, height: u32) -> Placement {
@@ -578,6 +579,7 @@ fn image_variant_switches_and_retirement_stay_inside_the_physical_update() {
         height: 4,
         format: PixelFormat::Rgba,
         pixels: [255, 255, 0, 255].repeat(16),
+        source: None,
     });
     for p in &mut frame.placements[..2] {
         p.image_id = 1;

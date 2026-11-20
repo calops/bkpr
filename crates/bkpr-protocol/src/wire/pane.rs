@@ -13,10 +13,15 @@ pub(super) fn write_pane_request(
 ) -> Result<UnionOffset<g::PaneRequest>> {
     budget.node(depth)?;
     Ok(match value {
-        PaneRequest::ImageResource { view_id, key } => {
+        PaneRequest::ImageResource {
+            view_id,
+            key,
+            original_encodings,
+        } => {
             let view_id = write_text(builder, view_id, budget)?;
             let key = write_image_key(builder, key, budget, depth + 1)?;
-            let value = g::PaneRequestImageResource::create(builder, view_id, key);
+            let value =
+                g::PaneRequestImageResource::create(builder, view_id, key, *original_encodings);
             g::PaneRequest::create_pane_request_image_resource(builder, value)
         }
         PaneRequest::Inspect => {
@@ -317,6 +322,7 @@ pub(super) fn read_pane_request(
         g::PaneRequestRef::PaneRequestImageResource(value) => PaneRequest::ImageResource {
             view_id: read_text(value.view_id()?, budget)?,
             key: read_image_key(value.key()?, budget, depth + 1)?,
+            original_encodings: value.original_encodings()?,
         },
         g::PaneRequestRef::PaneRequestInspect(_value) => PaneRequest::Inspect,
         g::PaneRequestRef::PaneRequestAttach(value) => PaneRequest::Attach {

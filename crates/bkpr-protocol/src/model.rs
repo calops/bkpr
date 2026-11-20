@@ -183,6 +183,26 @@ pub struct Image {
     /// Packed row-major pixel bytes; JSON represents them as bounded standard base64.
     #[serde(with = "pixel_base64")]
     pub pixels: Vec<u8>,
+    /// The program's original payload when it was PNG or zlib; decodes to exactly `pixels`.
+    /// Carried only by the binary resource stream, never by JSON.
+    #[serde(skip)]
+    pub source: Option<std::sync::Arc<ImageSource>>,
+}
+/// An image payload exactly as the program transmitted it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageSource {
+    /// [`ImageSourceEncoding::Png`] for a PNG file, otherwise zlib-compressed `pixels`.
+    pub encoding: ImageSourceEncoding,
+    /// The payload bytes.
+    pub bytes: Vec<u8>,
+}
+/// Form of an [`ImageSource`] payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageSourceEncoding {
+    /// A complete PNG file whose decoded RGB(A) pixels, expanded to the image format, are `pixels`.
+    Png,
+    /// A single zlib stream inflating to exactly `pixels`.
+    Zlib,
 }
 /// Packed channel layout with one byte per channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,8 +1,24 @@
 diff --git a/crates/libghostty-vt/src/kitty/graphics.rs b/crates/libghostty-vt/src/kitty/graphics.rs
-index 4ed7920..525cf07 100644
+index 4ed7920..570314f 100644
 --- a/crates/libghostty-vt/src/kitty/graphics.rs
 +++ b/crates/libghostty-vt/src/kitty/graphics.rs
-@@ -993,7 +993,17 @@ impl<'t> Image<'t> {
+@@ -852,6 +852,15 @@ impl Terminal<'_, '_> {
+         self.set(ffi::TerminalOption::KITTY_IMAGE_MEDIUM_SHARED_MEM, &allowed)?;
+         Ok(self)
+     }
++    /// Keep each completed image's transmitted PNG or zlib payload, readable
++    /// through [`Image::source`], so it can be forwarded without re-encoding.
++    /// Retained bytes count against the Kitty image storage limit.
++    ///
++    /// Has no effect when Kitty graphics are disabled at build time.
++    pub fn set_kitty_image_retain_source(&mut self, retain: bool) -> Result<&mut Self> {
++        self.set(ffi::TerminalOption::KITTY_IMAGE_RETAIN_SOURCE, &retain)?;
++        Ok(self)
++    }
+ 
+     /// Set the maximum bytes the APC handler will buffer for Kitty graphics
+     /// protocol data.
+@@ -993,7 +1002,17 @@ impl<'t> Image<'t> {
      /// [generation](Image::generation) changes whenever the current frame
      /// changes, so generation-keyed caches remain coherent.
      pub fn data(&self) -> Result<Option<&'t [u8]>> {
@@ -21,7 +37,63 @@ index 4ed7920..525cf07 100644
          if ptr.is_null() {
              return Ok(None);
          }
-@@ -1566,20 +1576,37 @@ pub trait DecodePng: Send + 'static {
+@@ -1003,6 +1022,55 @@ impl<'t> Image<'t> {
+         // SAFETY: We trust libghostty to return valid results
+         Ok(Some(unsafe { std::slice::from_raw_parts(ptr, len) }))
+     }
++
++    /// The PNG or zlib payload the program transmitted this image with.
++    ///
++    /// Valid as long as the underlying terminal is not mutated. Requires
++    /// [`Terminal::set_kitty_image_retain_source`]; `None` when retention was
++    /// off, the payload was raw and uncompressed, or the image has animation
++    /// state. Decoding it yields exactly the pixels of [`Image::data`].
++    pub fn source(&self) -> Result<Option<ImageSource<'t>>> {
++        let mut ptr = std::mem::MaybeUninit::<*const u8>::uninit();
++        let result = unsafe {
++            ffi::ghostty_kitty_graphics_image_get(
++                self.inner.as_raw(),
++                ffi::KittyGraphicsImageData::SOURCE_PTR,
++                ptr.as_mut_ptr().cast(),
++            )
++        };
++        let Some(ptr) = from_optional_result_uninit(result, ptr)? else {
++            return Ok(None);
++        };
++        if ptr.is_null() {
++            return Ok(None);
++        }
++        let len = self.get::<usize>(ffi::KittyGraphicsImageData::SOURCE_LEN)?;
++        let format = self
++            .get::<ffi::KittyImageFormat::Type>(ffi::KittyGraphicsImageData::SOURCE_FORMAT)
++            .and_then(|v| v.try_into().map_err(|_| Error::InvalidValue))?;
++        let compression = self
++            .get::<ffi::KittyImageCompression::Type>(
++                ffi::KittyGraphicsImageData::SOURCE_COMPRESSION,
++            )
++            .and_then(|v| v.try_into().map_err(|_| Error::InvalidValue))?;
++        Ok(Some(ImageSource {
++            format,
++            compression,
++            // SAFETY: We trust libghostty to return valid results
++            bytes: unsafe { std::slice::from_raw_parts(ptr, len) },
++        }))
++    }
++}
++
++/// A Kitty image payload exactly as the program transmitted it.
++#[derive(Clone, Copy, Debug)]
++pub struct ImageSource<'t> {
++    /// [`ImageFormat::Png`] for a PNG file, otherwise the raw pixel layout.
++    pub format: ImageFormat,
++    /// Compression applied to the payload.
++    pub compression: Compression,
++    /// The payload bytes.
++    pub bytes: &'t [u8],
+ }
+ 
+ impl<'alloc> PlacementIterator<'alloc> {
+@@ -1566,17 +1634,38 @@ pub trait DecodePng: Send + 'static {
  /// # }
  /// ```
  #[cfg(all(feature = "kitty-graphics", feature = "png"))]
@@ -40,7 +112,9 @@ index 4ed7920..525cf07 100644
      #[must_use]
      pub const fn new() -> Self {
 -        Self
-+        Self { max_decoded_bytes: usize::MAX }
++        Self {
++            max_decoded_bytes: usize::MAX,
++        }
 +    }
 +
 +    /// Bound the decoded RGBA8 output before allocating or decoding pixels.
@@ -52,17 +126,16 @@ index 4ed7920..525cf07 100644
 +    pub const fn with_max_decoded_bytes(mut self, limit: usize) -> Self {
 +        self.max_decoded_bytes = limit;
 +        self
++    }
++}
++#[cfg(all(feature = "kitty-graphics", feature = "png"))]
++impl Default for RustPngDecoder {
++    fn default() -> Self {
++        Self::new()
      }
  }
  #[cfg(all(feature = "kitty-graphics", feature = "png"))]
-+impl Default for RustPngDecoder {
-+    fn default() -> Self { Self::new() }
-+}
-+#[cfg(all(feature = "kitty-graphics", feature = "png"))]
- impl DecodePng for RustPngDecoder {
-     fn decode_png<'alloc>(
-         &mut self,
-@@ -1601,6 +1628,9 @@ impl DecodePng for RustPngDecoder {
+@@ -1601,6 +1690,9 @@ impl DecodePng for RustPngDecoder {
          let (width, height) = reader.info().size();
          let pixels = (width as usize).checked_mul(height as usize)?;
          let rgba_len = pixels.checked_mul(4)?;
@@ -72,7 +145,7 @@ index 4ed7920..525cf07 100644
  
          // Allocate the output with the provided allocator *before* decoding
          // anything. libghostty caps what the decoder may allocate, and the
-@@ -1804,7 +1834,7 @@ mod png_decoder_tests {
+@@ -1804,7 +1896,7 @@ mod png_decoder_tests {
      }
  
      fn decode(encoded: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
@@ -81,7 +154,7 @@ index 4ed7920..525cf07 100644
              .decode_png(&Allocator::GLOBAL, encoded)
              .map(|image| (image.width, image.height, image.data.to_vec()))
      }
-@@ -1917,13 +1947,57 @@ mod png_decoder_tests {
+@@ -1917,13 +2009,61 @@ mod png_decoder_tests {
  
          let capped = Capped::new(1024 * 1024);
          assert!(
@@ -116,7 +189,11 @@ index 4ed7920..525cf07 100644
 +        for (color, pixels, expected) in [
 +            (png::ColorType::Rgba, &[1, 2, 3, 4][..], [1, 2, 3, 4]),
 +            (png::ColorType::Grayscale, &[17][..], [17, 17, 17, 255]),
-+            (png::ColorType::GrayscaleAlpha, &[17, 29][..], [17, 17, 17, 29]),
++            (
++                png::ColorType::GrayscaleAlpha,
++                &[17, 29][..],
++                [17, 17, 17, 29],
++            ),
 +        ] {
 +            let encoded = png(color, png::BitDepth::Eight, pixels).encode();
 +            let capped = Capped::new(128);
@@ -237,7 +314,7 @@ index 68046d0..9160111 100644
      ///
      /// Expected checksums, worked out from upstream's `xt_checksum.compute`:
 diff --git a/crates/libghostty-vt-sys/build.rs b/crates/libghostty-vt-sys/build.rs
-index d8e9dde..9f1868e 100644
+index d8e9dde..f2a92bc 100644
 --- a/crates/libghostty-vt-sys/build.rs
 +++ b/crates/libghostty-vt-sys/build.rs
 @@ -4,7 +4,7 @@ use std::process::Command;
@@ -301,7 +378,7 @@ index d8e9dde..9f1868e 100644
      println!("cargo:rerun-if-env-changed=LIBGHOSTTY_VT_SYS_CPU");
      println!("cargo:rerun-if-env-changed=LIBGHOSTTY_VT_SYS_OPTIMIZE");
      println!("cargo:rerun-if-env-changed=GHOSTTY_SOURCE_DIR");
-@@ -142,6 +187,21 @@ fn build_vendored(link_mode: LinkMode, target: &str) {
+@@ -142,6 +187,36 @@ fn build_vendored(link_mode: LinkMode, target: &str) {
          }
          Err(_) => fetch_ghostty(&out_dir),
      };
@@ -320,10 +397,25 @@ index d8e9dde..9f1868e 100644
 +            .current_dir(&ghostty_dir);
 +        run(apply, "native paste-offer contribution");
 +    }
++    // Retained Kitty image sources, also a separately reviewable contribution.
++    let source_patch = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
++        .join("native/kitty-image-source.patch");
++    println!("cargo:rerun-if-changed={}", source_patch.display());
++    let terminal_header =
++        std::fs::read_to_string(ghostty_dir.join("include/ghostty/vt/terminal.h"))
++            .expect("reading pinned terminal ABI");
++    if !terminal_header.contains("GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_RETAIN_SOURCE") {
++        let mut apply = Command::new("patch");
++        apply
++            .args(["--batch", "--fuzz=0", "--forward", "-p1", "-i"])
++            .arg(&source_patch)
++            .current_dir(&ghostty_dir);
++        run(apply, "native image-source contribution");
++    }
  
      // Build libghostty-vt via zig.
      let install_prefix = out_dir.join("ghostty-install");
-@@ -204,6 +264,8 @@ fn build_vendored(link_mode: LinkMode, target: &str) {
+@@ -204,6 +279,8 @@ fn build_vendored(link_mode: LinkMode, target: &str) {
      let mut build = Command::new(zig);
      build
          .arg("build")
@@ -332,7 +424,7 @@ index d8e9dde..9f1868e 100644
          .arg("-Demit-lib-vt=true")
          .arg(format!("-Doptimize={optimize}"))
          // Cargo artifacts may run on older CPUs than the build host. Without
-diff --git a/crates/libghostty-vt-sys/native/clipboard-offer.patch b/crates/libghostty-vt-sys/native/clipboard-offer.patch
+diff --git b/crates/libghostty-vt-sys/native/clipboard-offer.patch b/crates/libghostty-vt-sys/native/clipboard-offer.patch
 new file mode 100644
 index 0000000..bf0bab9
 --- /dev/null
@@ -544,8 +636,365 @@ index 0000000..bf0bab9
 +             .reply_ctx = &state,
 +             .reply_fn = &KittyClipboardReadState.reply,
 +         });
+diff --git b/crates/libghostty-vt-sys/native/kitty-image-source.patch b/crates/libghostty-vt-sys/native/kitty-image-source.patch
+new file mode 100644
+index 0000000..85abe57
+--- /dev/null
++++ b/crates/libghostty-vt-sys/native/kitty-image-source.patch
+@@ -0,0 +1,351 @@
++diff -ruN a/include/ghostty/vt/kitty_graphics.h b/include/ghostty/vt/kitty_graphics.h
++--- a/include/ghostty/vt/kitty_graphics.h
+++++ b/include/ghostty/vt/kitty_graphics.h
++@@ -564,6 +564,43 @@
++    */
++   GHOSTTY_KITTY_IMAGE_DATA_GENERATION = 9,
++ 
+++  /**
+++   * The format of the payload the program transmitted this image with:
+++   * GHOSTTY_KITTY_IMAGE_FORMAT_PNG for a PNG file, otherwise the raw pixel
+++   * layout. Only available when GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_RETAIN_SOURCE
+++   * was enabled, the payload was PNG or compressed, and the image has no
+++   * animation state; otherwise GHOSTTY_NO_VALUE. Decoding the payload
+++   * yields exactly the pixels GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR returns.
+++   *
+++   * Output type: GhosttyKittyImageFormat *
+++   */
+++  GHOSTTY_KITTY_IMAGE_DATA_SOURCE_FORMAT = 10,
+++
+++  /**
+++   * The compression of the transmitted payload. Same availability as
+++   * GHOSTTY_KITTY_IMAGE_DATA_SOURCE_FORMAT.
+++   *
+++   * Output type: GhosttyKittyImageCompression *
+++   */
+++  GHOSTTY_KITTY_IMAGE_DATA_SOURCE_COMPRESSION = 11,
+++
+++  /**
+++   * Borrowed pointer to the transmitted payload, valid until the next call
+++   * that changes the terminal. Same availability as
+++   * GHOSTTY_KITTY_IMAGE_DATA_SOURCE_FORMAT.
+++   *
+++   * Output type: const uint8_t **
+++   */
+++  GHOSTTY_KITTY_IMAGE_DATA_SOURCE_PTR = 12,
+++
+++  /**
+++   * Length in bytes of the transmitted payload. Same availability as
+++   * GHOSTTY_KITTY_IMAGE_DATA_SOURCE_FORMAT.
+++   *
+++   * Output type: size_t *
+++   */
+++  GHOSTTY_KITTY_IMAGE_DATA_SOURCE_LEN = 13,
+++
++   GHOSTTY_KITTY_IMAGE_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
++ } GhosttyKittyGraphicsImageData;
++ 
++diff -ruN a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
++--- a/include/ghostty/vt/terminal.h
+++++ b/include/ghostty/vt/terminal.h
++@@ -2789,6 +2789,17 @@
++    * Input type: GhosttyTerminalResizeWindowFn
++    */
++   GHOSTTY_TERMINAL_OPT_RESIZE_WINDOW = 47,
+++
+++  /**
+++   * Keep each completed Kitty image's transmitted PNG or zlib payload so
+++   * embedders can forward the program's original encoding (see
+++   * GHOSTTY_KITTY_IMAGE_DATA_SOURCE_PTR). Retained bytes count against the
+++   * Kitty image storage limit. Defaults to false. A NULL value pointer is a
+++   * no-op. Has no effect when Kitty graphics are disabled at build time.
+++   *
+++   * Input type: bool*
+++   */
+++  GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_RETAIN_SOURCE = 48,
++   GHOSTTY_TERMINAL_OPT_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
++ } GhosttyTerminalOption;
++ 
++diff -ruN a/src/terminal/c/kitty_graphics.zig b/src/terminal/c/kitty_graphics.zig
++--- a/src/terminal/c/kitty_graphics.zig
+++++ b/src/terminal/c/kitty_graphics.zig
++@@ -183,15 +183,19 @@
++     data_ptr = 7,
++     data_len = 8,
++     generation = 9,
+++    source_format = 10,
+++    source_compression = 11,
+++    source_ptr = 12,
+++    source_len = 13,
++ 
++     pub fn OutType(comptime self: ImageData) type {
++         return switch (self) {
++             .invalid => void,
++             .id, .number, .width, .height => u32,
++-            .format => ImageFormat,
++-            .compression => ImageCompression,
++-            .data_ptr => [*]const u8,
++-            .data_len => usize,
+++            .format, .source_format => ImageFormat,
+++            .compression, .source_compression => ImageCompression,
+++            .data_ptr, .source_ptr => [*]const u8,
+++            .data_len, .source_len => usize,
++             .generation => u64,
++         };
++     }
++@@ -292,6 +296,12 @@
++         .data_ptr => out.* = (image.renderData().bytes() orelse return .no_value).ptr,
++         .data_len => out.* = image.renderData().len(),
++         .generation => out.* = image.generation,
+++        // The transmitted payload, only while it still describes the
+++        // displayed pixels (see Image.currentSource).
+++        .source_format => out.* = (image.currentSource() orelse return .no_value).format,
+++        .source_compression => out.* = (image.currentSource() orelse return .no_value).compression,
+++        .source_ptr => out.* = (image.currentSource() orelse return .no_value).bytes.ptr,
+++        .source_len => out.* = (image.currentSource() orelse return .no_value).bytes.len,
++     }
++ 
++     return .success;
++diff -ruN a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
++--- a/src/terminal/c/terminal.zig
+++++ b/src/terminal/c/terminal.zig
++@@ -1487,6 +1487,7 @@
++     xt_checksum_extension = 45,
++     program_status = 46,
++     resize_window = 47,
+++    kitty_image_retain_source = 48,
++ 
++     /// Input type expected for setting the option.
++     pub fn InType(comptime self: Option) type {
++@@ -1518,6 +1519,7 @@
++             .xt_checksum_extension => ?*const u8,
++             .kitty_image_medium_file,
++             .kitty_image_medium_shared_mem,
+++            .kitty_image_retain_source,
++             .glyph_protocol,
++             .title_report,
++             .xt_checksum_report,
++@@ -1670,6 +1672,7 @@
++         },
++         .kitty_image_medium_file,
++         .kitty_image_medium_shared_mem,
+++        .kitty_image_retain_source,
++         => {
++             if (comptime !build_options.kitty_graphics) return .success;
++             const val = (value orelse return .success).*;
++@@ -1679,6 +1682,7 @@
++                 switch (option) {
++                     .kitty_image_medium_file => screen.kitty_images.image_limits.file = val,
++                     .kitty_image_medium_shared_mem => screen.kitty_images.image_limits.shared_memory = val,
+++                    .kitty_image_retain_source => screen.kitty_images.image_limits.retain_source = val,
++                     else => unreachable,
++                 }
++             }
++diff -ruN a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_image.zig
++--- a/src/terminal/kitty/graphics_image.zig
+++++ b/src/terminal/kitty/graphics_image.zig
++@@ -44,6 +44,9 @@
++     /// being stored as an image.
++     frame: ?FrameContext = null,
++ 
+++    /// Whether completion keeps the transmitted payload (Limits.retain_source).
+++    retain_source: bool = false,
+++
++     /// Quiet is the quiet settings for the initial load command. This is
++     /// used if q isn't set on subsequent chunks.
++     quiet: command.Command.Quiet,
++@@ -87,6 +90,12 @@
++         },
++         shared_memory: bool,
++ 
+++        /// Keep a copy of each completed image's transmitted PNG or zlib
+++        /// payload, before decoding, so embedders can forward the
+++        /// application's original encoding (see `Image.source`). Retained
+++        /// bytes count against the storage limit.
+++        retain_source: bool = false,
+++
++         /// Enables all filesystem-related image transmission mediums. `path`
++         /// is the temporary directory to expect files in when files are
++         /// transmitted using said medium.
++@@ -144,6 +153,7 @@
++                 .enabled => |d| d.directory,
++                 .disabled => null,
++             },
+++            .retain_source = limits.retain_source,
++         };
++ 
++         // Special case for the direct medium, we just add the chunk directly.
++@@ -569,6 +579,20 @@
++     pub fn complete(self: *LoadingImage, alloc: Allocator) !Image {
++         const img = &self.image;
++ 
+++        // Keep the encoded payload before decoding replaces it. Only PNG or
+++        // zlib payloads are worth forwarding; raw pixels equal the data.
+++        var source: ?Image.Source = null;
+++        errdefer if (source) |s| alloc.free(s.bytes);
+++        if (self.retain_source and self.frame == null and
+++            (img.format == .png or img.compression != .none))
+++        {
+++            source = .{
+++                .format = img.format,
+++                .compression = img.compression,
+++                .bytes = try alloc.dupe(u8, self.data.items),
+++            };
+++        }
+++
++         // Decompress the data if it is compressed.
++         try self.decompress(alloc);
++ 
++@@ -607,6 +631,7 @@
++         var result = self.image;
++         result.data = .{ .complete = try self.data.toOwnedSlice(alloc) };
++         errdefer result.deinit(alloc);
+++        result.source = source;
++         self.image = .{};
++         return result;
++     }
++@@ -795,6 +820,19 @@
++     /// pointer and never own it).
++     animation: ?*animation.Animation = null,
++ 
+++    /// The PNG or zlib payload this image was transmitted with, owned by
+++    /// the image, when loading retained it (`Limits.retain_source`).
+++    /// Decoding it yields the root frame's pixels; see `currentSource`.
+++    source: ?Source = null,
+++
+++    /// A transmitted payload exactly as the application sent it.
+++    pub const Source = struct {
+++        /// `.png` for a PNG file, otherwise the raw pixel layout.
+++        format: command.Transmission.Format,
+++        compression: command.Transmission.Compression,
+++        bytes: []const u8,
+++    };
+++
++     pub const Error = error{
++         InsufficientData,
++         InvalidData,
++@@ -846,6 +884,10 @@
++ 
++     pub fn deinit(self: *Image, alloc: Allocator) void {
++         self.data.deinit(alloc);
+++        if (self.source) |s| {
+++            alloc.free(s.bytes);
+++            self.source = null;
+++        }
++         if (self.animation) |anim| {
++             anim.deinit(alloc);
++             alloc.destroy(anim);
++@@ -906,10 +948,19 @@
++     /// for this image: the base data plus any animation frames.
++     pub fn storageSize(self: *const Image) usize {
++         var total: usize = self.data.len();
+++        if (self.source) |s| total += s.bytes.len;
++         if (self.animation) |anim| total += anim.frameBytes();
++         return total;
++     }
++ 
+++    /// The retained payload when it still describes the displayed pixels.
+++    /// Animation state means another frame may be shown or the root frame
+++    /// may have been edited, so no source is reported once it is attached.
+++    pub fn currentSource(self: *const Image) ?Source {
+++        if (self.animation != null) return null;
+++        return self.source;
+++    }
+++
++     /// Mostly for logging
++     pub fn withoutData(self: *const Image) Image {
++         var copy = self.*;
++@@ -1259,6 +1310,67 @@
++     try testing.expect(img.compression == .none);
++ }
++ 
+++test "image load: retain_source keeps the exact compressed payload" {
+++    const testing = std.testing;
+++    const alloc = testing.allocator;
+++    const io = testing.io;
+++    const payload = @embedFile("testdata/image-rgb-zlib_deflate-128x96-2147483647-raw.data");
+++
+++    for ([_]bool{ true, false }) |retain| {
+++        var cmd: command.Command = .{
+++            .control = .{ .transmit = .{
+++                .format = .rgb,
+++                .medium = .direct,
+++                .compression = .zlib_deflate,
+++                .height = 96,
+++                .width = 128,
+++                .image_id = 31,
+++            } },
+++            .data = try alloc.dupe(u8, payload),
+++        };
+++        defer cmd.deinit(alloc);
+++        var limits: LoadingImage.Limits = .direct;
+++        limits.retain_source = retain;
+++        var loading = try LoadingImage.init(io, alloc, &cmd, limits);
+++        defer loading.deinit(alloc);
+++        var img = try loading.complete(alloc);
+++        defer img.deinit(alloc);
+++
+++        try testing.expect(img.compression == .none);
+++        if (retain) {
+++            const source = img.currentSource().?;
+++            try testing.expect(source.format == .rgb);
+++            try testing.expect(source.compression == .zlib_deflate);
+++            try testing.expectEqualSlices(u8, payload, source.bytes);
+++            try testing.expectEqual(img.data.len() + payload.len, img.storageSize());
+++        } else {
+++            try testing.expect(img.currentSource() == null);
+++            try testing.expectEqual(img.data.len(), img.storageSize());
+++        }
+++    }
+++
+++    // Raw payloads equal the decoded pixels, so nothing extra is retained.
+++    var raw: command.Command = .{
+++        .control = .{ .transmit = .{
+++            .format = .rgb,
+++            .medium = .direct,
+++            .compression = .none,
+++            .width = 20,
+++            .height = 15,
+++            .image_id = 31,
+++        } },
+++        .data = try alloc.dupe(u8, @embedFile("testdata/image-rgb-none-20x15-2147483647-raw.data")),
+++    };
+++    defer raw.deinit(alloc);
+++    var limits: LoadingImage.Limits = .direct;
+++    limits.retain_source = true;
+++    var loading = try LoadingImage.init(io, alloc, &raw, limits);
+++    defer loading.deinit(alloc);
+++    var img = try loading.complete(alloc);
+++    defer img.deinit(alloc);
+++    try testing.expect(img.currentSource() == null);
+++}
+++
++ test "image load: rgb, not compressed, direct" {
++     const testing = std.testing;
++     const alloc = testing.allocator;
++diff -ruN a/src/terminal/kitty/graphics_storage.zig b/src/terminal/kitty/graphics_storage.zig
++--- a/src/terminal/kitty/graphics_storage.zig
+++++ b/src/terminal/kitty/graphics_storage.zig
++@@ -408,7 +408,7 @@
++         s: *terminal.Screen,
++         img: Image,
++     ) Allocator.Error!void {
++-        const new_len = img.data.len();
+++        const new_len = img.storageSize();
++ 
++         // If the image itself is over the limit, then error immediately
++         if (new_len > self.total_limit) return error.OutOfMemory;
++@@ -1166,6 +1166,13 @@
++         alloc: Allocator,
++         img: *Image,
++     ) Allocator.Error!void {
+++        // Composition may edit the pixels from here on, so a retained
+++        // transmission payload no longer describes them.
+++        if (img.source) |s| {
+++            self.total_bytes -= s.bytes.len;
+++            alloc.free(s.bytes);
+++            img.source = null;
+++        }
++         if (img.format == .rgba) return;
++         const old = img.data.bytes() orelse return;
++ 
 diff --git a/crates/libghostty-vt-sys/src/bindings.rs b/crates/libghostty-vt-sys/src/bindings.rs
-index c6e2c28..cb31542 100644
+index c6e2c28..3116047 100644
 --- a/crates/libghostty-vt-sys/src/bindings.rs
 +++ b/crates/libghostty-vt-sys/src/bindings.rs
 @@ -1,4 +1,5 @@
@@ -554,7 +1003,24 @@ index c6e2c28..cb31542 100644
  
  pub const COLOR_NAMED_BLACK: u8 = 0;
  pub const COLOR_NAMED_RED: u8 = 1;
-@@ -2368,6 +2369,8 @@ pub struct ClipboardRead {
+@@ -1771,7 +1772,15 @@ pub mod KittyGraphicsImageData {
+     pub const DATA_LEN: Type = 8;
+     #[doc = " A value that changes whenever this image's pixels may have changed:\n when a program sends the image or replaces it, and when an animation\n moves to a new frame. Use it as part of your texture cache key. If\n it matches the texture you have, you don't need to read the pixels\n again. The render state reports the same value for each of its\n entries as GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION.\n\n Don't use the image's size or data length to detect changes instead.\n A program can send new pixels of the same size under the same ID.\n\n A value is never reused, not even by another image, another screen,\n or another terminal. It is never 0 for a stored image, so you can\n use 0 to mean \"no texture yet\".\n\n One case doesn't change this value. When a program finishes sending\n an image whose pixels were still on the way, the image keeps its\n value, and GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR starts returning the\n pixels. GHOSTTY_KITTY_GRAPHICS_DATA_GENERATION changes when that\n happens, so read DATA_PTR again then.\n\n Output type: uint64_t *"]
+     pub const GENERATION: Type = 9;
+-    #[doc = " A value that changes whenever this image's pixels may have changed:\n when a program sends the image or replaces it, and when an animation\n moves to a new frame. Use it as part of your texture cache key. If\n it matches the texture you have, you don't need to read the pixels\n again. The render state reports the same value for each of its\n entries as GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION.\n\n Don't use the image's size or data length to detect changes instead.\n A program can send new pixels of the same size under the same ID.\n\n A value is never reused, not even by another image, another screen,\n or another terminal. It is never 0 for a stored image, so you can\n use 0 to mean \"no texture yet\".\n\n One case doesn't change this value. When a program finishes sending\n an image whose pixels were still on the way, the image keeps its\n value, and GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR starts returning the\n pixels. GHOSTTY_KITTY_GRAPHICS_DATA_GENERATION changes when that\n happens, so read DATA_PTR again then.\n\n Output type: uint64_t *"]
++    #[doc = " The format of the payload the program transmitted this image with:\n GHOSTTY_KITTY_IMAGE_FORMAT_PNG for a PNG file, otherwise the raw pixel\n layout. Only available when GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_RETAIN_SOURCE\n was enabled, the payload was PNG or compressed, and the image has no\n animation state; otherwise GHOSTTY_NO_VALUE. Decoding the payload\n yields exactly the pixels GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR returns.\n\n Output type: GhosttyKittyImageFormat *"]
++    pub const SOURCE_FORMAT: Type = 10;
++    #[doc = " The compression of the transmitted payload. Same availability as\n GHOSTTY_KITTY_IMAGE_DATA_SOURCE_FORMAT.\n\n Output type: GhosttyKittyImageCompression *"]
++    pub const SOURCE_COMPRESSION: Type = 11;
++    #[doc = " Borrowed pointer to the transmitted payload, valid until the next call\n that changes the terminal. Same availability as\n GHOSTTY_KITTY_IMAGE_DATA_SOURCE_FORMAT.\n\n Output type: const uint8_t **"]
++    pub const SOURCE_PTR: Type = 12;
++    #[doc = " Length in bytes of the transmitted payload. Same availability as\n GHOSTTY_KITTY_IMAGE_DATA_SOURCE_FORMAT.\n\n Output type: size_t *"]
++    pub const SOURCE_LEN: Type = 13;
++    #[doc = " Length in bytes of the transmitted payload. Same availability as\n GHOSTTY_KITTY_IMAGE_DATA_SOURCE_FORMAT.\n\n Output type: size_t *"]
+     pub const MAX_VALUE: Type = 2147483647;
+ }
+ #[doc = " The geometry of a storage placement, filled in by\n ghostty_kitty_graphics_placement_render_info().\n\n It holds the results of ghostty_kitty_graphics_placement_pixel_size(),\n ghostty_kitty_graphics_placement_grid_size(),\n ghostty_kitty_graphics_placement_viewport_pos() and\n ghostty_kitty_graphics_placement_source_rect(), so you can get all of\n them in one call. That helps most when each call is expensive, such\n as through FFI or Cgo.\n\n This is for inspecting the storage. To draw, use the render state's\n image list, which gives the same values for every image on screen.\n See \"Drawing Images\" in the @ref kitty_graphics documentation.\n\n Later versions may add fields to the end of this struct. Set `size`\n with GHOSTTY_INIT_SIZED before each call, so the library knows which\n fields you have:\n\n GhosttyKittyGraphicsPlacementRenderInfo info =\n     GHOSTTY_INIT_SIZED(GhosttyKittyGraphicsPlacementRenderInfo);\n ghostty_kitty_graphics_placement_render_info(iter, image, terminal, &info);\n"]
+@@ -2368,6 +2377,8 @@ pub struct ClipboardRead {
      pub ctx: *const ::std::os::raw::c_void,
      #[doc = " Answer the read; see the struct documentation."]
      pub reply: ClipboardReadReplyFn,
@@ -563,7 +1029,18 @@ index c6e2c28..cb31542 100644
  }
  impl Default for ClipboardRead {
      fn default() -> Self {
-@@ -2953,12 +2956,13 @@ unsafe extern "C" {
+@@ -2818,7 +2829,9 @@ pub mod TerminalOption {
+     pub const PROGRAM_STATUS: Type = 46;
+     #[doc = " Callback invoked when the running program asks to resize the window,\n such as with CSI 8 ; rows ; columns t. Set to NULL to ignore resize\n requests.\n\n Input type: GhosttyTerminalResizeWindowFn"]
+     pub const RESIZE_WINDOW: Type = 47;
+-    #[doc = " Callback invoked when the running program asks to resize the window,\n such as with CSI 8 ; rows ; columns t. Set to NULL to ignore resize\n requests.\n\n Input type: GhosttyTerminalResizeWindowFn"]
++    #[doc = " Keep each completed Kitty image's transmitted PNG or zlib payload so\n embedders can forward the program's original encoding (see\n GHOSTTY_KITTY_IMAGE_DATA_SOURCE_PTR). Retained bytes count against the\n Kitty image storage limit. Defaults to false. A NULL value pointer is a\n no-op. Has no effect when Kitty graphics are disabled at build time.\n\n Input type: bool*"]
++    pub const KITTY_IMAGE_RETAIN_SOURCE: Type = 48;
++    #[doc = " Keep each completed Kitty image's transmitted PNG or zlib payload so\n embedders can forward the program's original encoding (see\n GHOSTTY_KITTY_IMAGE_DATA_SOURCE_PTR). Retained bytes count against the\n Kitty image storage limit. Defaults to false. A NULL value pointer is a\n no-op. Has no effect when Kitty graphics are disabled at build time.\n\n Input type: bool*"]
+     pub const MAX_VALUE: Type = 2147483647;
+ }
+ pub mod TerminalData {
+@@ -2953,12 +2966,13 @@ unsafe extern "C" {
      pub fn ghostty_terminal_vt_write(terminal: Terminal, data: *const u8, len: usize);
  }
  unsafe extern "C" {
@@ -580,7 +1057,7 @@ index c6e2c28..cb31542 100644
      ) -> Result::Type;
  }
  unsafe extern "C" {
-@@ -4521,6 +4525,8 @@ pub struct Paste {
+@@ -4521,6 +4535,8 @@ pub struct Paste {
      pub reader: MimeReader,
      #[doc = " Write text that could inject commands. Call with false, confirm\n with the user on GHOSTTY_REJECTED, and call again with true."]
      pub allow_unsafe: bool,
@@ -589,7 +1066,7 @@ index c6e2c28..cb31542 100644
  }
  impl Default for Paste {
      fn default() -> Self {
-diff --git a/crates/libghostty-vt-sys/src/boundary.rs b/crates/libghostty-vt-sys/src/boundary.rs
+diff --git b/crates/libghostty-vt-sys/src/boundary.rs b/crates/libghostty-vt-sys/src/boundary.rs
 new file mode 100644
 index 0000000..e1f8b17
 --- /dev/null

@@ -1437,6 +1437,7 @@ mod scene_tests {
         let image = Arc::new(Image {
             id: 4, generation: 1, width: 16, height: 16,
             format: PixelFormat::Rgba, pixels: vec![255; 16 * 16 * 4],
+            source: None,
         });
         pane.images.push(Arc::clone(&image));
         pane.placements.push(Placement {
@@ -1510,6 +1511,7 @@ mod scene_tests {
         let image = Arc::new(Image {
             id: 9, generation: 2, width: 8, height: 16,
             format: PixelFormat::Rgba, pixels: vec![128; 8 * 16 * 4],
+            source: None,
         });
         let manifest = ImageManifest::new(vec![ImageDescriptor::from_image(&image).unwrap()]).unwrap();
         frame.placements.push(Placement {
@@ -2151,6 +2153,7 @@ mod scene_tests {
                 height: 16,
                 format: PixelFormat::Rgba,
                 pixels: color.repeat(8 * 16),
+                source: None,
             }));
             frame.placements.push(Placement {
                 image_id: 7,
@@ -2606,6 +2609,7 @@ mod scene_tests {
             height: 1,
             format: PixelFormat::Rgba,
             pixels: vec![0, 0, 0, 64],
+            source: None,
         }));
         frame.placements.push(Placement {
             image_id: 9,
@@ -3140,6 +3144,7 @@ mod scene_tests {
                 pixels: (0..image_width * image_height)
                     .flat_map(|i| [(i * 17) as u8, (i * 31) as u8, (i * 47) as u8, 128])
                     .collect(),
+                source: None,
             }));
             material.placements.push(Placement {
                 image_id: 91,
@@ -3467,6 +3472,7 @@ mod scene_tests {
                 height,
                 format: PixelFormat::Rgba,
                 pixels: rasterize(style, cell).unwrap(),
+                source: None,
             }),
         };
         // Match the fork's physical translation: exterior edges move by the
@@ -4176,6 +4182,7 @@ mod scene_tests {
             height: 16,
             format: PixelFormat::Rgba,
             pixels: [255, 0, 0, 255].repeat(8 * 16),
+            source: None,
         }));
         source.placements.push(Placement {
             image_id: 7,

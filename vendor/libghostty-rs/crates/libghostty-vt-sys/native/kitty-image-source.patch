@@ -1,0 +1,351 @@
+diff -ruN a/include/ghostty/vt/kitty_graphics.h b/include/ghostty/vt/kitty_graphics.h
+--- a/include/ghostty/vt/kitty_graphics.h
++++ b/include/ghostty/vt/kitty_graphics.h
+@@ -564,6 +564,43 @@
+    */
+   GHOSTTY_KITTY_IMAGE_DATA_GENERATION = 9,
+ 
++  /**
++   * The format of the payload the program transmitted this image with:
++   * GHOSTTY_KITTY_IMAGE_FORMAT_PNG for a PNG file, otherwise the raw pixel
++   * layout. Only available when GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_RETAIN_SOURCE
++   * was enabled, the payload was PNG or compressed, and the image has no
++   * animation state; otherwise GHOSTTY_NO_VALUE. Decoding the payload
++   * yields exactly the pixels GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR returns.
++   *
++   * Output type: GhosttyKittyImageFormat *
++   */
++  GHOSTTY_KITTY_IMAGE_DATA_SOURCE_FORMAT = 10,
++
++  /**
++   * The compression of the transmitted payload. Same availability as
++   * GHOSTTY_KITTY_IMAGE_DATA_SOURCE_FORMAT.
++   *
++   * Output type: GhosttyKittyImageCompression *
++   */
++  GHOSTTY_KITTY_IMAGE_DATA_SOURCE_COMPRESSION = 11,
++
++  /**
++   * Borrowed pointer to the transmitted payload, valid until the next call
++   * that changes the terminal. Same availability as
++   * GHOSTTY_KITTY_IMAGE_DATA_SOURCE_FORMAT.
++   *
++   * Output type: const uint8_t **
++   */
++  GHOSTTY_KITTY_IMAGE_DATA_SOURCE_PTR = 12,
++
++  /**
++   * Length in bytes of the transmitted payload. Same availability as
++   * GHOSTTY_KITTY_IMAGE_DATA_SOURCE_FORMAT.
++   *
++   * Output type: size_t *
++   */
++  GHOSTTY_KITTY_IMAGE_DATA_SOURCE_LEN = 13,
++
+   GHOSTTY_KITTY_IMAGE_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
+ } GhosttyKittyGraphicsImageData;
+ 
+diff -ruN a/include/ghostty/vt/terminal.h b/include/ghostty/vt/terminal.h
+--- a/include/ghostty/vt/terminal.h
++++ b/include/ghostty/vt/terminal.h
+@@ -2789,6 +2789,17 @@
+    * Input type: GhosttyTerminalResizeWindowFn
+    */
+   GHOSTTY_TERMINAL_OPT_RESIZE_WINDOW = 47,
++
++  /**
++   * Keep each completed Kitty image's transmitted PNG or zlib payload so
++   * embedders can forward the program's original encoding (see
++   * GHOSTTY_KITTY_IMAGE_DATA_SOURCE_PTR). Retained bytes count against the
++   * Kitty image storage limit. Defaults to false. A NULL value pointer is a
++   * no-op. Has no effect when Kitty graphics are disabled at build time.
++   *
++   * Input type: bool*
++   */
++  GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_RETAIN_SOURCE = 48,
+   GHOSTTY_TERMINAL_OPT_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
+ } GhosttyTerminalOption;
+ 
+diff -ruN a/src/terminal/c/kitty_graphics.zig b/src/terminal/c/kitty_graphics.zig
+--- a/src/terminal/c/kitty_graphics.zig
++++ b/src/terminal/c/kitty_graphics.zig
+@@ -183,15 +183,19 @@
+     data_ptr = 7,
+     data_len = 8,
+     generation = 9,
++    source_format = 10,
++    source_compression = 11,
++    source_ptr = 12,
++    source_len = 13,
+ 
+     pub fn OutType(comptime self: ImageData) type {
+         return switch (self) {
+             .invalid => void,
+             .id, .number, .width, .height => u32,
+-            .format => ImageFormat,
+-            .compression => ImageCompression,
+-            .data_ptr => [*]const u8,
+-            .data_len => usize,
++            .format, .source_format => ImageFormat,
++            .compression, .source_compression => ImageCompression,
++            .data_ptr, .source_ptr => [*]const u8,
++            .data_len, .source_len => usize,
+             .generation => u64,
+         };
+     }
+@@ -292,6 +296,12 @@
+         .data_ptr => out.* = (image.renderData().bytes() orelse return .no_value).ptr,
+         .data_len => out.* = image.renderData().len(),
+         .generation => out.* = image.generation,
++        // The transmitted payload, only while it still describes the
++        // displayed pixels (see Image.currentSource).
++        .source_format => out.* = (image.currentSource() orelse return .no_value).format,
++        .source_compression => out.* = (image.currentSource() orelse return .no_value).compression,
++        .source_ptr => out.* = (image.currentSource() orelse return .no_value).bytes.ptr,
++        .source_len => out.* = (image.currentSource() orelse return .no_value).bytes.len,
+     }
+ 
+     return .success;
+diff -ruN a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
+--- a/src/terminal/c/terminal.zig
++++ b/src/terminal/c/terminal.zig
+@@ -1487,6 +1487,7 @@
+     xt_checksum_extension = 45,
+     program_status = 46,
+     resize_window = 47,
++    kitty_image_retain_source = 48,
+ 
+     /// Input type expected for setting the option.
+     pub fn InType(comptime self: Option) type {
+@@ -1518,6 +1519,7 @@
+             .xt_checksum_extension => ?*const u8,
+             .kitty_image_medium_file,
+             .kitty_image_medium_shared_mem,
++            .kitty_image_retain_source,
+             .glyph_protocol,
+             .title_report,
+             .xt_checksum_report,
+@@ -1670,6 +1672,7 @@
+         },
+         .kitty_image_medium_file,
+         .kitty_image_medium_shared_mem,
++        .kitty_image_retain_source,
+         => {
+             if (comptime !build_options.kitty_graphics) return .success;
+             const val = (value orelse return .success).*;
+@@ -1679,6 +1682,7 @@
+                 switch (option) {
+                     .kitty_image_medium_file => screen.kitty_images.image_limits.file = val,
+                     .kitty_image_medium_shared_mem => screen.kitty_images.image_limits.shared_memory = val,
++                    .kitty_image_retain_source => screen.kitty_images.image_limits.retain_source = val,
+                     else => unreachable,
+                 }
+             }
+diff -ruN a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_image.zig
+--- a/src/terminal/kitty/graphics_image.zig
++++ b/src/terminal/kitty/graphics_image.zig
+@@ -44,6 +44,9 @@
+     /// being stored as an image.
+     frame: ?FrameContext = null,
+ 
++    /// Whether completion keeps the transmitted payload (Limits.retain_source).
++    retain_source: bool = false,
++
+     /// Quiet is the quiet settings for the initial load command. This is
+     /// used if q isn't set on subsequent chunks.
+     quiet: command.Command.Quiet,
+@@ -87,6 +90,12 @@
+         },
+         shared_memory: bool,
+ 
++        /// Keep a copy of each completed image's transmitted PNG or zlib
++        /// payload, before decoding, so embedders can forward the
++        /// application's original encoding (see `Image.source`). Retained
++        /// bytes count against the storage limit.
++        retain_source: bool = false,
++
+         /// Enables all filesystem-related image transmission mediums. `path`
+         /// is the temporary directory to expect files in when files are
+         /// transmitted using said medium.
+@@ -144,6 +153,7 @@
+                 .enabled => |d| d.directory,
+                 .disabled => null,
+             },
++            .retain_source = limits.retain_source,
+         };
+ 
+         // Special case for the direct medium, we just add the chunk directly.
+@@ -569,6 +579,20 @@
+     pub fn complete(self: *LoadingImage, alloc: Allocator) !Image {
+         const img = &self.image;
+ 
++        // Keep the encoded payload before decoding replaces it. Only PNG or
++        // zlib payloads are worth forwarding; raw pixels equal the data.
++        var source: ?Image.Source = null;
++        errdefer if (source) |s| alloc.free(s.bytes);
++        if (self.retain_source and self.frame == null and
++            (img.format == .png or img.compression != .none))
++        {
++            source = .{
++                .format = img.format,
++                .compression = img.compression,
++                .bytes = try alloc.dupe(u8, self.data.items),
++            };
++        }
++
+         // Decompress the data if it is compressed.
+         try self.decompress(alloc);
+ 
+@@ -607,6 +631,7 @@
+         var result = self.image;
+         result.data = .{ .complete = try self.data.toOwnedSlice(alloc) };
+         errdefer result.deinit(alloc);
++        result.source = source;
+         self.image = .{};
+         return result;
+     }
+@@ -795,6 +820,19 @@
+     /// pointer and never own it).
+     animation: ?*animation.Animation = null,
+ 
++    /// The PNG or zlib payload this image was transmitted with, owned by
++    /// the image, when loading retained it (`Limits.retain_source`).
++    /// Decoding it yields the root frame's pixels; see `currentSource`.
++    source: ?Source = null,
++
++    /// A transmitted payload exactly as the application sent it.
++    pub const Source = struct {
++        /// `.png` for a PNG file, otherwise the raw pixel layout.
++        format: command.Transmission.Format,
++        compression: command.Transmission.Compression,
++        bytes: []const u8,
++    };
++
+     pub const Error = error{
+         InsufficientData,
+         InvalidData,
+@@ -846,6 +884,10 @@
+ 
+     pub fn deinit(self: *Image, alloc: Allocator) void {
+         self.data.deinit(alloc);
++        if (self.source) |s| {
++            alloc.free(s.bytes);
++            self.source = null;
++        }
+         if (self.animation) |anim| {
+             anim.deinit(alloc);
+             alloc.destroy(anim);
+@@ -906,10 +948,19 @@
+     /// for this image: the base data plus any animation frames.
+     pub fn storageSize(self: *const Image) usize {
+         var total: usize = self.data.len();
++        if (self.source) |s| total += s.bytes.len;
+         if (self.animation) |anim| total += anim.frameBytes();
+         return total;
+     }
+ 
++    /// The retained payload when it still describes the displayed pixels.
++    /// Animation state means another frame may be shown or the root frame
++    /// may have been edited, so no source is reported once it is attached.
++    pub fn currentSource(self: *const Image) ?Source {
++        if (self.animation != null) return null;
++        return self.source;
++    }
++
+     /// Mostly for logging
+     pub fn withoutData(self: *const Image) Image {
+         var copy = self.*;
+@@ -1259,6 +1310,67 @@
+     try testing.expect(img.compression == .none);
+ }
+ 
++test "image load: retain_source keeps the exact compressed payload" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++    const io = testing.io;
++    const payload = @embedFile("testdata/image-rgb-zlib_deflate-128x96-2147483647-raw.data");
++
++    for ([_]bool{ true, false }) |retain| {
++        var cmd: command.Command = .{
++            .control = .{ .transmit = .{
++                .format = .rgb,
++                .medium = .direct,
++                .compression = .zlib_deflate,
++                .height = 96,
++                .width = 128,
++                .image_id = 31,
++            } },
++            .data = try alloc.dupe(u8, payload),
++        };
++        defer cmd.deinit(alloc);
++        var limits: LoadingImage.Limits = .direct;
++        limits.retain_source = retain;
++        var loading = try LoadingImage.init(io, alloc, &cmd, limits);
++        defer loading.deinit(alloc);
++        var img = try loading.complete(alloc);
++        defer img.deinit(alloc);
++
++        try testing.expect(img.compression == .none);
++        if (retain) {
++            const source = img.currentSource().?;
++            try testing.expect(source.format == .rgb);
++            try testing.expect(source.compression == .zlib_deflate);
++            try testing.expectEqualSlices(u8, payload, source.bytes);
++            try testing.expectEqual(img.data.len() + payload.len, img.storageSize());
++        } else {
++            try testing.expect(img.currentSource() == null);
++            try testing.expectEqual(img.data.len(), img.storageSize());
++        }
++    }
++
++    // Raw payloads equal the decoded pixels, so nothing extra is retained.
++    var raw: command.Command = .{
++        .control = .{ .transmit = .{
++            .format = .rgb,
++            .medium = .direct,
++            .compression = .none,
++            .width = 20,
++            .height = 15,
++            .image_id = 31,
++        } },
++        .data = try alloc.dupe(u8, @embedFile("testdata/image-rgb-none-20x15-2147483647-raw.data")),
++    };
++    defer raw.deinit(alloc);
++    var limits: LoadingImage.Limits = .direct;
++    limits.retain_source = true;
++    var loading = try LoadingImage.init(io, alloc, &raw, limits);
++    defer loading.deinit(alloc);
++    var img = try loading.complete(alloc);
++    defer img.deinit(alloc);
++    try testing.expect(img.currentSource() == null);
++}
++
+ test "image load: rgb, not compressed, direct" {
+     const testing = std.testing;
+     const alloc = testing.allocator;
+diff -ruN a/src/terminal/kitty/graphics_storage.zig b/src/terminal/kitty/graphics_storage.zig
+--- a/src/terminal/kitty/graphics_storage.zig
++++ b/src/terminal/kitty/graphics_storage.zig
+@@ -408,7 +408,7 @@
+         s: *terminal.Screen,
+         img: Image,
+     ) Allocator.Error!void {
+-        const new_len = img.data.len();
++        const new_len = img.storageSize();
+ 
+         // If the image itself is over the limit, then error immediately
+         if (new_len > self.total_limit) return error.OutOfMemory;
+@@ -1166,6 +1166,13 @@
+         alloc: Allocator,
+         img: *Image,
+     ) Allocator.Error!void {
++        // Composition may edit the pixels from here on, so a retained
++        // transmission payload no longer describes them.
++        if (img.source) |s| {
++            self.total_bytes -= s.bytes.len;
++            alloc.free(s.bytes);
++            img.source = null;
++        }
+         if (img.format == .rgba) return;
+         const old = img.data.bytes() orelse return;
+ 
