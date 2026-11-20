@@ -569,6 +569,23 @@ fn current<'a>(state: &'a mut State, job: &Job) -> Option<&'a mut Entry> {
         })
 }
 
+/// Terminal payload for one received image, prepared off the render path: the program's
+/// own PNG/zlib bytes when they arrived, otherwise compressed pixels when that is smaller.
+pub(crate) fn prepare_transport(image: &Arc<Image>) -> Option<PreparedTransport> {
+    match image.source.as_deref() {
+        Some(source) => match source.encoding {
+            ImageSourceEncoding::Png => Some(PreparedTransport::from_verified(
+                image,
+                source.bytes.as_slice().into(),
+            )),
+            ImageSourceEncoding::Zlib => {
+                PreparedTransport::from_verified_zlib(image, source.bytes.as_slice().into())
+            }
+        },
+        None => PreparedTransport::compress(image),
+    }
+}
+
 fn fetch_worker(shared: Arc<Shared>, runtime: tokio::runtime::Runtime) {
     loop {
         let job = {
@@ -611,20 +628,7 @@ fn fetch_worker(shared: Arc<Shared>, runtime: tokio::runtime::Runtime) {
         // Prepare the terminal payload here, off the render path and outside the lock.
         let prepared = result.map(|image| {
             let image = Arc::new(image);
-            // Forward the program's own payload when it arrived; compress only otherwise.
-            let transport = match image.source.as_deref() {
-                Some(source) => match source.encoding {
-                    ImageSourceEncoding::Png => Some(PreparedTransport::from_verified(
-                        &image,
-                        source.bytes.as_slice().into(),
-                    )),
-                    ImageSourceEncoding::Zlib => PreparedTransport::from_verified_zlib(
-                        &image,
-                        source.bytes.as_slice().into(),
-                    ),
-                },
-                None => PreparedTransport::compress(&image),
-            };
+            let transport = prepare_transport(&image);
             (image, transport)
         });
         let mut state = shared.state.lock().unwrap();

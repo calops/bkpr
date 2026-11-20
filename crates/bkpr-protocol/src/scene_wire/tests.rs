@@ -438,7 +438,17 @@ fn compact_aliases_cannot_bypass_expanded_link_or_image_budgets() {
     let mut builder = Builder::new();
     let pixels = vec![0u8; 1024 * 1024];
     let pixels = builder.create_vector(pixels.as_slice());
-    let image = g::Image::create(&mut builder, 1, 1, 1024, 1024, g::PixelFormat::Gray, pixels);
+    let image = g::Image::create(
+        &mut builder,
+        1,
+        1,
+        1024,
+        1024,
+        g::PixelFormat::Gray,
+        pixels,
+        g::ImageSourceEncoding::None,
+        None::<planus::Offset<[u8]>>,
+    );
     let images = vec![image; 65];
     let images = builder.create_vector(images.as_slice());
     let f = &scene.frame;
@@ -599,4 +609,50 @@ fn empty_progressive_manifest_keeps_its_representation_after_ownership_transfer(
             .unwrap()
             .is_progressive()
     );
+}
+
+#[test]
+fn sources_encoding_carries_original_payloads_and_reconstructs_exact_pixels() {
+    use std::io::Write;
+    let mut frame = fixture();
+    let original = frame.images[0].clone();
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(&vec![7u8; 64 * 64 * 4]).unwrap();
+    let payload = encoder.finish().unwrap();
+    let image = Arc::new(Image {
+        width: 64,
+        height: 64,
+        format: PixelFormat::Rgba,
+        pixels: vec![7u8; 64 * 64 * 4],
+        source: Some(Arc::new(crate::ImageSource {
+            encoding: crate::ImageSourceEncoding::Zlib,
+            bytes: payload.clone(),
+        })),
+        ..original.as_ref().clone()
+    });
+    frame.images = vec![image.clone()];
+    frame
+        .placements
+        .retain(|p| p.image_id == image.id && p.generation == image.generation);
+    for placement in &mut frame.placements {
+        placement.source_width = placement.source_width.min(64);
+        placement.source_height = placement.source_height.min(64);
+    }
+
+    let with_sources = encode_with_sources(&frame, 1, None, 0, &[]).unwrap();
+    let plain = encode(&frame, 1, None, 0, &[]).unwrap();
+    // The original payload replaces the pixels on the wire.
+    assert!(with_sources.len() + image.pixels.len() / 2 < plain.len());
+    let decoded = decode(&with_sources).unwrap();
+    let received = &decoded.images()[0];
+    assert_eq!(received.pixels, image.pixels);
+    assert_eq!(received.source.as_ref().unwrap().bytes, payload);
+    // Older consumers keep receiving plain pixels and no source.
+    let decoded = decode(&plain).unwrap();
+    assert_eq!(decoded.images()[0].pixels, image.pixels);
+    assert!(decoded.images()[0].source.is_none());
+    // Known generations stay omitted either way.
+    let omitted =
+        decode(&encode_with_sources(&frame, 1, None, 0, &[image.key()]).unwrap()).unwrap();
+    assert!(omitted.images().is_empty());
 }

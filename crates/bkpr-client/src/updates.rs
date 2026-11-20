@@ -15,7 +15,11 @@ use std::{
 pub struct Snapshot {
     pub metadata: PaneSnapshot,
     pub scene: Option<scene_wire::DecodedScene>,
+    /// Terminal payloads for the scene's newly supplied images, prepared on the poll thread.
+    pub transports: Vec<bkpr_tui_framework::PreparedTransport>,
 }
+/// Image generations a view retains, reported on each poll so the backend omits them.
+pub type HeldImages = Arc<std::sync::Mutex<Vec<ImageKey>>>;
 /// Bounded single-flight receiver: output cannot grow an unbounded queue or
 /// block the UI's keyboard reader. All worker state is owned, never UI-borrowed.
 pub struct Pump<T> {
@@ -101,29 +105,34 @@ impl<T> Drop for Pump<T> {
         drop(self.worker.take());
     }
 }
-/// Observe progressive scenes with independent frame/metadata cursors and fresh residency receipts.
+/// Observe inline scenes, in order with their images, with independent frame/metadata cursors.
+/// Images arrive with the scene that first references them, as their original payload when the
+/// backend retained one; `held` names the generations the view already has.
 pub fn pane(
     socket: &Endpoint,
     pane_id: &str,
     view: &str,
-    receipts: crate::resources::Receipts,
+    held: HeldImages,
 ) -> Result<Pump<Snapshot>> {
     let socket = socket.to_owned();
     let pane_id = pane_id.to_owned();
     let view_id = view.to_owned();
     let (mut frame_after, mut snapshot_after) = (0, 0);
     Pump::start(move || {
+        // Copy in its own statement: a guard in the call expression would stay locked for
+        // the whole long-poll and block the UI thread's update of `held`.
+        let resources = held.lock().unwrap().clone();
         let (metadata, scene) = socket.checked_scene(Operation::Pane {
             pane_id: pane_id.clone(),
             request: PaneRequest::Poll {
                 view_id: view_id.clone(),
                 after: 0,
                 frame_after,
-                resources: receipts.received(&pane_id, &view_id),
+                resources,
                 snapshot_after,
                 wait_ms: 1000,
                 row_deltas: true,
-                scene_encoding: Some(PROGRESSIVE_SCENE_ENCODING.into()),
+                scene_encoding: Some(SOURCES_SCENE_ENCODING.into()),
             },
         })?;
         ensure!(
@@ -132,7 +141,16 @@ pub fn pane(
         );
         snapshot_after = metadata.snapshot_revision;
         frame_after = metadata.revision;
-        Ok(Snapshot { metadata, scene })
+        let transports = scene
+            .iter()
+            .flat_map(|scene| scene.images())
+            .filter_map(crate::resources::prepare_transport)
+            .collect();
+        Ok(Snapshot {
+            metadata,
+            scene,
+            transports,
+        })
     })
 }
 pub fn registry(socket: &Endpoint, after: u64) -> Result<Pump<RegistrySnapshot>> {
@@ -313,7 +331,7 @@ mod tests {
                 );
                 assert!(resources.is_empty());
                 assert!(row_deltas);
-                assert_eq!(scene_encoding.as_deref(), Some(PROGRESSIVE_SCENE_ENCODING));
+                assert_eq!(scene_encoding.as_deref(), Some(SOURCES_SCENE_ENCODING));
                 let mut snapshot = metadata(revision, index as u64 + 11);
                 if index == 4 {
                     snapshot.frame = nested_frame.take();
@@ -337,8 +355,7 @@ mod tests {
             }
         });
         let endpoint = Endpoint::unmanaged(&socket);
-        let resources = crate::resources::Resources::new(endpoint.clone()).unwrap();
-        let mut pump = pane(&endpoint, "pane", "view", resources.receipts()).unwrap();
+        let mut pump = pane(&endpoint, "pane", "view", HeldImages::default()).unwrap();
         let (mut revision, mut current) = (0, None);
         let empty = pump.initial().unwrap();
         assert!(empty.metadata.frame.is_none());
@@ -399,48 +416,58 @@ mod tests {
     }
 
     #[test]
-    fn polls_sample_complete_residency_instead_of_acknowledging_scene_descriptors() {
-        use crate::resources::{ResourcePhase, Resources};
+    fn inline_images_arrive_with_their_scene_and_held_generations_are_reported() {
         use crate::transport::test_wire::{read_request, write_response};
-        use std::os::fd::AsRawFd;
 
         let directory = tempfile::tempdir().unwrap();
-        let socket = directory.path().join("progressive-polls.sock");
+        let socket = directory.path().join("inline-polls.sock");
         let listener = UnixListener::bind(&socket).unwrap();
+        let pixels = vec![9u8; 32 * 32 * 3];
+        let source = {
+            use std::io::Write;
+            let mut encoder =
+                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(&pixels).unwrap();
+            encoder.finish().unwrap()
+        };
         let image = Arc::new(Image {
             id: 7,
             generation: 1,
-            width: 1,
-            height: 1,
+            width: 32,
+            height: 32,
             format: PixelFormat::Rgb,
-            pixels: vec![1, 2, 3],
-            source: None,
+            pixels: pixels.clone(),
+            source: Some(Arc::new(ImageSource {
+                encoding: ImageSourceEncoding::Zlib,
+                bytes: source.clone(),
+            })),
         });
-        let descriptor = ImageDescriptor::from_image(&image).unwrap();
+        let key = image.key();
+        // Generations the view already holds are reported verbatim on every poll.
+        let other = ImageKey {
+            id: 3,
+            generation: 9,
+        };
         let mut initial = frame("λ");
         initial.images.push(image);
-        let scene = scene_wire::encode_progressive(&initial, 1, None, 0, &[]).unwrap();
+        let scene = scene_wire::encode_with_sources(&initial, 1, None, 0, &[]).unwrap();
         let (polled, polled_rx) = mpsc::channel();
-        let (complete, complete_rx) = mpsc::channel();
         let server = thread::spawn(move || {
-            let poll = |listener: &UnixListener, expected: &[ImageKey], snapshot_after| {
+            let poll = |listener: &UnixListener, expected: &[ImageKey]| {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(3)))
                     .unwrap();
                 assert!(matches!(read_request(&mut stream).unwrap().operation,
                     Operation::Pane { pane_id, request: PaneRequest::Poll {
-                        view_id, frame_after, resources, snapshot_after: actual_snapshot,
-                        scene_encoding, ..
-                    } } if pane_id == "pane" && view_id == "view"
-                        && frame_after == u64::from(snapshot_after != 0)
-                        && actual_snapshot == snapshot_after && resources == expected
-                        && scene_encoding.as_deref() == Some(PROGRESSIVE_SCENE_ENCODING)));
+                        view_id, resources, scene_encoding, ..
+                    } } if pane_id == "pane" && view_id == "view" && resources == expected
+                        && scene_encoding.as_deref() == Some(SOURCES_SCENE_ENCODING)));
                 stream
             };
             let reply = |stream: &mut UnixStream, snapshot_revision, scene: Option<Vec<u8>>| {
                 let mut metadata = metadata(1, snapshot_revision);
-                metadata.image_refs = vec![descriptor.key];
+                metadata.image_refs = vec![key];
                 write_response(
                     stream,
                     &Response {
@@ -456,86 +483,23 @@ mod tests {
                 )
                 .unwrap();
             };
-            let mut first = poll(&listener, &[], 0);
+            let mut first = poll(&listener, &[other]);
             reply(&mut first, 11, Some(scene));
-            let mut second = poll(&listener, &[], 11);
             polled.send(()).unwrap();
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(3)))
-                .unwrap();
-            assert!(matches!(read_request(&mut stream).unwrap().operation,
-                Operation::Pane { pane_id, request: PaneRequest::ImageResource { view_id, key, .. } }
-                if pane_id == "pane" && view_id == "view" && key == descriptor.key));
-            for resource in [
-                ImageResource::Start {
-                    descriptor,
-                    encoding: ImageEncoding::Raw,
-                    encoded_len: 3,
-                },
-                ImageResource::Data {
-                    key: descriptor.key,
-                    offset: 0,
-                    data: vec![1, 2, 3].into(),
-                },
-                ImageResource::End {
-                    key: descriptor.key,
-                    encoded_len: 3,
-                },
-            ] {
-                write_response(
-                    &mut stream,
-                    &Response {
-                        version: PROTOCOL_VERSION,
-                        ok: true,
-                        result: Some(Payload::ImageResource(resource)),
-                        error: None,
-                        failure: None,
-                    },
-                )
-                .unwrap();
-            }
-            complete_rx.recv_timeout(Duration::from_secs(3)).unwrap();
-            reply(&mut second, 12, None);
-            let mut third = poll(&listener, &[descriptor.key], 12);
-            reply(&mut third, 13, Some(vec![0]));
         });
         let endpoint = Endpoint::unmanaged(&socket);
-        let mut resources = Resources::new(endpoint.clone()).unwrap();
-        let mut pump = pane(&endpoint, "pane", "view", resources.receipts()).unwrap();
+        let held = HeldImages::new(std::sync::Mutex::new(vec![other]));
+        let mut pump = pane(&endpoint, "pane", "view", held.clone()).unwrap();
         let first = pump.initial().unwrap();
-        let descriptors = first.scene.as_ref().unwrap().image_descriptors();
-        assert_eq!(descriptors, &[descriptor]);
-        assert!(resources.received("pane", "view").is_empty());
+        // The image arrived with its scene, decoded, with its original payload retained
+        // and a terminal payload prepared on the poll thread.
+        let images = first.scene.as_ref().unwrap().images();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].pixels, pixels);
+        assert_eq!(images[0].source.as_ref().unwrap().bytes, source);
+        assert_eq!(first.transports.len(), 1);
         polled_rx.recv_timeout(Duration::from_secs(3)).unwrap();
-        resources
-            .sync_view("pane", "view", descriptors, |_| None)
-            .unwrap();
-        loop {
-            resources.poll().unwrap();
-            if resources
-                .statuses("pane", "view")
-                .iter()
-                .any(|status| status.phase == ResourcePhase::Ready)
-            {
-                break;
-            }
-            let mut fd = libc::pollfd {
-                fd: resources.wake().as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: fd points to one initialized pollfd for this call.
-            assert_eq!(
-                unsafe { libc::poll(&mut fd, 1, 3000) },
-                1,
-                "resource wake timed out"
-            );
-        }
-        complete.send(()).unwrap();
-        assert!(pump.initial().unwrap().scene.is_none());
-        assert!(pump.initial().is_err());
-        pump.worker.take().unwrap().join().unwrap();
+        pump.cancel();
         server.join().unwrap();
     }
 

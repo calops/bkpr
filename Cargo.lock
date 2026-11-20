@@ -299,6 +299,7 @@ dependencies = [
  "anyhow",
  "bkpr-protocol",
  "bkpr-tui-framework",
+ "flate2",
  "futures",
  "libc",
  "nucleo-matcher",

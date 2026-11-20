@@ -110,11 +110,13 @@ def main() -> int:
     started = time.time()
     sent = 0
     write_ms = []
+    sent_at = []
     for index, frame in enumerate([*frames, final]):
         target = started + index * interval
         if (delay := target - time.time()) > 0:
             time.sleep(delay)
         before = time.time()
+        sent_at.append(before)
         out.write(frame)
         out.flush()
         write_ms.append((time.time() - before) * 1000)
@@ -127,6 +129,7 @@ def main() -> int:
         "first_sent": started, "last_sent": finished, "bytes": sent,
         "frame_bytes": [len(frame) for frame in frames],
         "write_ms": write_ms,
+        "sent_at": sent_at,
     }))
     while True:
         time.sleep(3600)

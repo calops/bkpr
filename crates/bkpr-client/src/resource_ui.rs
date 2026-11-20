@@ -95,6 +95,11 @@ impl App {
             let Some(attached) = self.views.get_mut(pane) else {
                 continue;
             };
+            // Inline frames arrive complete with their images: nothing is left to load.
+            if attached.frame.is_some() && !attached.progressive {
+                self.image_feedback.remove(pane);
+                continue;
+            }
             let (Some(frame), Some(manifest)) = (&attached.frame, &attached.image_manifest) else {
                 continue;
             };

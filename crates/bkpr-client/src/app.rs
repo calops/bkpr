@@ -253,6 +253,12 @@ struct Attached {
     history: bool,
     revision: u64,
     images: HashMap<ImageKey, Arc<Image>>,
+    /// Recently unreferenced images, kept so a reappearing generation needs no resend.
+    recent: std::collections::VecDeque<Arc<Image>>,
+    /// Generations reported to the backend as retained; shared with the poll thread.
+    held: updates::HeldImages,
+    /// Prepared terminal payloads for newly received images, awaiting the writer.
+    transports: Vec<bkpr_tui_framework::PreparedTransport>,
     progressive: bool,
     image_manifest: Option<ImageManifest>,
     seeded: u64,
@@ -2492,13 +2498,10 @@ impl App {
                 if !self.jobs.contains(&key) && !self.jobs.is_full() && !self.pane_retiring(id) {
                     let socket = self.socket.to_owned();
                     let pane = id.clone();
-                    let receipts = self.resources.receipts();
                     if let Err(error) = self.jobs.submit(key, move || {
-                        attach(&socket, &pane, spec, receipts).map(|attached| {
-                            Background::Attached {
-                                pane,
-                                attached: Box::new(attached),
-                            }
+                        attach(&socket, &pane, spec).map(|attached| Background::Attached {
+                            pane,
+                            attached: Box::new(attached),
                         })
                     }) {
                         self.fail_view(id.clone(), "Couldn't start loading this pane.", &error);
@@ -4876,12 +4879,7 @@ impl App {
 
 // Runs exclusively on the bounded background pool. Attach starts ineligible:
 // a stale or slow initial poll must never acquire hidden size/device authority.
-fn attach(
-    socket: &Endpoint,
-    pane: &str,
-    mut spec: ViewSpec,
-    receipts: crate::resources::Receipts,
-) -> Result<Attached> {
+fn attach(socket: &Endpoint, pane: &str, mut spec: ViewSpec) -> Result<Attached> {
     spec.visible = false;
     spec.interactive = false;
     spec.clipboard = false;
@@ -4892,11 +4890,16 @@ fn attach(
     let result: AttachResult = serde_json::from_value(payload)
         .map_err(|error| transport::mark_outcome_unknown(error.into()))?;
     let view = result.view_id;
-    let mut pump = match updates::pane(socket, pane, &view, receipts) {
+    let held = updates::HeldImages::default();
+    let mut pump = match updates::pane(socket, pane, &view, held.clone()) {
         Ok(pump) => pump,
         Err(error) => return Err(detach_failed_attach(socket, pane, &view, error)),
     };
-    let Snapshot { metadata, scene } = match pump.initial() {
+    let Snapshot {
+        metadata,
+        scene,
+        transports,
+    } = match pump.initial() {
         Ok(snapshot) => snapshot,
         Err(error) => {
             pump.cancel();
@@ -4919,7 +4922,10 @@ fn attach(
         history: false,
         revision: 0,
         images: HashMap::new(),
-        progressive: true,
+        recent: Default::default(),
+        held,
+        transports,
+        progressive: false,
         image_manifest: None,
         seeded: 0,
         retirement_requested: false,
@@ -6203,6 +6209,13 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             // non-animation deadline fixed so clipboard/input/session timers cannot
             // be postponed by an animation, and return on every ready descriptor.
             let presentation_deadline = Instant::now() + Duration::from_millis(timeout as u64);
+            // Hand newly received pane images' terminal payloads to the writer (no codec work).
+            for view in app.views.values_mut() {
+                if !view.transports.is_empty() {
+                    terminal.register_prepared_transports(&view.transports);
+                    view.transports.clear();
+                }
+            }
             let hits = loop {
                 title_animation.apply(&mut chrome_surface.frame);
                 let mut surfaces = vec![Surface {
@@ -8429,6 +8442,9 @@ pub(super) mod tests {
                 history: false,
                 revision: 1,
                 images: HashMap::new(),
+                recent: Default::default(),
+                held: Default::default(),
+                transports: Vec::new(),
                 progressive: false,
                 image_manifest: None,
                 seeded: 0,
@@ -8469,6 +8485,7 @@ pub(super) mod tests {
             let update = Snapshot {
                 metadata,
                 scene: Some(scene_wire::decode(&bytes).unwrap()),
+                transports: Vec::new(),
             };
             assert!(attached.apply(update).is_err());
             assert_eq!(
@@ -8518,6 +8535,7 @@ pub(super) mod tests {
             .apply(Snapshot {
                 metadata,
                 scene: Some(scene_wire::decode(&bytes).unwrap()),
+                transports: Vec::new(),
             })
             .unwrap();
         assert_eq!(attached.revision, 2);
@@ -10132,6 +10150,7 @@ pub(super) mod tests {
                 .apply(Snapshot {
                     metadata,
                     scene: Some(scene_wire::decode(&bytes).unwrap()),
+                    transports: Vec::new(),
                 })
                 .unwrap();
             assert_eq!(app.focused_history(), offset != 0);

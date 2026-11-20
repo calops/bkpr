@@ -1,5 +1,8 @@
 use super::*;
 
+/// Recently unreferenced generations retained per view; bounds memory while avoiding resends.
+const RECENT_IMAGES: usize = 8;
+
 fn validate_roster(manifest: &ImageManifest, keys: &[ImageKey]) -> Result<()> {
     anyhow::ensure!(
         keys.len() == manifest.descriptors().len(),
@@ -28,6 +31,15 @@ impl Attached {
                 .iter()
                 .copied()
                 .collect::<HashSet<_>>();
+            // A generation dropped recently may be referenced again (scrollback, screens).
+            for key in &retained {
+                if !self.images.contains_key(key)
+                    && let Some(index) = self.recent.iter().position(|image| image.key() == *key)
+                {
+                    let image = self.recent.remove(index).unwrap();
+                    self.images.insert(*key, image);
+                }
+            }
             let incoming = update.image_keys().collect::<HashSet<_>>();
             anyhow::ensure!(
                 retained
@@ -46,7 +58,21 @@ impl Attached {
             for image in frame.images.drain(..) {
                 self.images.insert(image.key(), image);
             }
-            self.images.retain(|key, _| retained.contains(key));
+            let dropped: Vec<_> = self
+                .images
+                .extract_if(|key, _| !retained.contains(key))
+                .map(|(_, image)| image)
+                .collect();
+            for image in dropped {
+                self.recent.push_front(image);
+            }
+            self.recent.truncate(RECENT_IMAGES);
+            *self.held.lock().unwrap() = self
+                .images
+                .keys()
+                .copied()
+                .chain(self.recent.iter().map(|image| image.key()))
+                .collect();
             frame.images = self
                 .metadata
                 .image_refs
@@ -165,6 +191,7 @@ impl Attached {
                 );
             }
         }
+        self.transports.extend(snapshot.transports);
         let previous_metadata = std::mem::replace(&mut self.metadata, snapshot.metadata);
         if let Some(scene) = snapshot.scene
             && let Err(error) = self.scene(scene)
@@ -278,6 +305,7 @@ mod tests {
         Snapshot {
             metadata,
             scene: Some(scene_wire::decode(&bytes).unwrap()),
+            transports: Vec::new(),
         }
     }
 
@@ -343,6 +371,7 @@ mod tests {
                 let result = attached.apply(Snapshot {
                     metadata,
                     scene: Some(scene_wire::decode(&bytes).unwrap()),
+                    transports: Vec::new(),
                 });
                 if progressive == encoded_progressive {
                     result.unwrap();

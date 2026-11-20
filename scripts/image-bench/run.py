@@ -339,6 +339,7 @@ def main() -> int:
             threading.Timer(args.screenshot_at, lambda: shutil.copy(
                 fbdir / "Xvfb_screen0", evidence / "screen.xwd")).start()
         samples = []
+        sizes = []
         deadline = time.time() + 30 + args.frames / args.fps * 4
         green_since = None
         while time.time() < deadline:
@@ -351,11 +352,14 @@ def main() -> int:
                 elif colour == GREEN:
                     green |= 1 << index
             samples.append((now, bg, green))
+            if not sizes or now - sizes[-1][0] >= 0.005:
+                sizes.append((now, transcript.stat().st_size))
             if green.bit_count() > len(points) // 4:
                 green_since = green_since or now
                 if now - green_since > 1.0:
                     break
         after = accounting(owned)
+        (evidence / "final-screen.txt").write_text(screen_text())
         transcript_after = transcript.stat().st_size
 
         emitted = json.loads(emitter_log.read_text())
@@ -405,6 +409,7 @@ def main() -> int:
         })
         write_json(evidence / "result.json", result)
         if args.keep_transcript:
+            write_json(evidence / "transcript-sizes.json", sizes)
             shutil.copy(transcript, evidence / "terminal.raw")
             shutil.copy(timing, evidence / "terminal.timing")
         print(json.dumps({k: result[k] for k in ("presentation", "bytes", "processes", "sampling")}, indent=1))

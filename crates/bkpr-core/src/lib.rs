@@ -777,7 +777,9 @@ impl Pane {
                 ..
             } => {
                 if scene_encoding.as_deref().is_some_and(|encoding| {
-                    encoding != "planus_v1" && encoding != bkpr_protocol::PROGRESSIVE_SCENE_ENCODING
+                    encoding != "planus_v1"
+                        && encoding != bkpr_protocol::PROGRESSIVE_SCENE_ENCODING
+                        && encoding != bkpr_protocol::SOURCES_SCENE_ENCODING
                 }) {
                     bail!("unsupported scene encoding");
                 }
@@ -1272,6 +1274,16 @@ impl Pane {
                         frame_after,
                         resources,
                     )
+                } else if matches!(request, Request::Poll { scene_encoding: Some(encoding), .. }
+                    if encoding == bkpr_protocol::SOURCES_SCENE_ENCODING)
+                {
+                    scene_wire::encode_with_sources(
+                        frame,
+                        revision,
+                        baseline.as_ref(),
+                        frame_after,
+                        resources,
+                    )
                 } else {
                     scene_wire::encode(frame, revision, baseline.as_ref(), frame_after, resources)
                 }
@@ -1309,7 +1321,11 @@ impl Pane {
                 view_timeout_ms: 10000,
                 poll_wait_max_ms: 1000,
                 row_deltas: true,
-                scene_encodings: ["planus_v1", bkpr_protocol::PROGRESSIVE_SCENE_ENCODING],
+                scene_encodings: [
+                    "planus_v1",
+                    bkpr_protocol::PROGRESSIVE_SCENE_ENCODING,
+                    bkpr_protocol::SOURCES_SCENE_ENCODING,
+                ],
             },
         })?;
         Ok(Payload::Pane(PanePayload { metadata, scene }))
