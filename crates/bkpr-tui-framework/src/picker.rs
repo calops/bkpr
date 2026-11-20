@@ -21,7 +21,20 @@ pub struct PickerLayout {
 impl PickerLayout {
     /// Build floating cards, or return `None` when compact content is necessary.
     pub fn new(size: Size, details: bool) -> Option<Self> {
-        if size.cols < 40 || size.rows < if details { 14 } else { 8 } {
+        Self::build(size, details, false)
+    }
+
+    /// Build full-width search, results and details cards at every supported width.
+    ///
+    /// Results retain at least three rows and details retain at least three rows.
+    /// Returns `None` below eight columns or fourteen rows; callers may then use
+    /// compact content. Borders and content bounds are independent of graphics.
+    pub fn stacked(size: Size) -> Option<Self> {
+        Self::build(size, true, true)
+    }
+
+    fn build(size: Size, details: bool, stacked: bool) -> Option<Self> {
+        if size.cols < if stacked { 8 } else { 40 } || size.rows < if details { 14 } else { 8 } {
             return None;
         }
         let search = Rect {
@@ -37,7 +50,7 @@ impl PickerLayout {
         };
         let (results, detail) = if !details {
             (body, Rect::default())
-        } else if size.cols >= 84 {
+        } else if !stacked && size.cols >= 84 {
             let split = (u32::from(size.cols) * 2 / 5) as u16;
             (
                 Rect {
@@ -51,7 +64,7 @@ impl PickerLayout {
                 },
             )
         } else {
-            let split = ((u32::from(body.height) * 2 / 5) as u16).max(4);
+            let split = ((u32::from(body.height) * 2 / 5) as u16).max(if stacked { 5 } else { 4 });
             (
                 Rect {
                     height: split,
@@ -159,6 +172,45 @@ impl PickerLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stacked_cards_keep_full_width_and_useful_heights_across_width_boundary() {
+        for cols in [8, 39, 40, 83, 84, 120] {
+            for rows in [14, 15, 36, u16::MAX] {
+                let size = Size {
+                    cols,
+                    rows,
+                    cell_width: 9,
+                    cell_height: 18,
+                };
+                let layout = PickerLayout::stacked(size).unwrap();
+                assert_eq!(layout.cards().len(), 3);
+                assert!(layout.results.height >= 3);
+                assert!(layout.details.height >= 3);
+                assert_eq!(layout.results.width, cols - 4);
+                assert_eq!(layout.details.width, cols - 4);
+                assert!(layout.results.y + layout.results.height < layout.details.y);
+                for (outer, content) in layout.cards() {
+                    assert_eq!(outer.x, 0);
+                    assert_eq!(outer.width, cols);
+                    assert!(u32::from(outer.y) + u32::from(outer.height) <= u32::from(rows));
+                    assert!(content.y > outer.y);
+                    assert!(content.y + content.height < outer.y + outer.height);
+                }
+            }
+        }
+        for (cols, rows) in [(7, 14), (8, 13), (0, 0)] {
+            assert!(
+                PickerLayout::stacked(Size {
+                    cols,
+                    rows,
+                    cell_width: 9,
+                    cell_height: 18,
+                })
+                .is_none()
+            );
+        }
+    }
 
     #[test]
     fn sections_and_borders_share_bounded_geometry_at_responsive_boundaries() {

@@ -43,12 +43,15 @@
 * **agents:** resolve message recipients by launch or uniquely matching live conversation ID within scope, pin retries to their original launch, and distinguish copyable launch/conversation identities in the TUI.
 * **client:** unify Finder, recovery and theme picker cards with tinted input, separated floating sections and complete rounded Unicode fallback borders. Keep contextual shortcut popups above modals, update them from effective bindings, group editor keys, and remove duplicate inline shortcut footers.
 * **client:** stop showing routine resize-completion and cancellation toasts; retain rejected and unknown-outcome layout errors.
+* **client:** give recovery a full-width aligned list with colored harness icons and details below it; retain saved pane titles as metadata rather than presenting shell names as conversation identities.
+* **client:** keep the sidebar refresh-checks hint stable across unrelated registry revisions without relaxing painted-source validation for dispatched actions.
 
 ### Breaking Rust API Changes
 
 * **tui-framework:** `Surface` accepts an explicit optional image manifest; `SurfaceContent` and toast pointer routing add passive-annotation and activation variants. Protocol request/payload enums add image-resource variants. Exhaustive Rust matches must be updated; native wire family 11 and remote control 2 are unchanged.
 * **tui-framework:** replace `TextSweep::apply_repeated` with `apply_periodic`, taking explicit cell spacing independently of band width.
 * **tui-framework:** `SearchList::new` takes `Option<&T>` for initial selection, and `SearchList::apply_theme` takes explicit foreground/background annotations. Overlay `Policy` adds `above_modal` for independent paint priority. Callers migrate directly; native wire family 11 and remote control 2 are unchanged.
+* **tui-framework:** `ListLayout` adds `StackedCards`; exhaustive matches must handle the new presentation. Native and remote wire families are unchanged.
 
 ### Security
 

@@ -1265,7 +1265,9 @@ impl App {
         Ok(())
     }
     fn picker_sections(&self, size: Size) -> Option<bkpr_tui_framework::picker::PickerLayout> {
-        if self.picker_open() {
+        if self.recovery.open() {
+            bkpr_tui_framework::picker::PickerLayout::stacked(size)
+        } else if self.picker_open() {
             bkpr_tui_framework::picker::PickerLayout::new(size, self.theme_picker.is_none())
         } else {
             None
@@ -5610,11 +5612,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     rows: outer.height,
                     ..size
                 };
-                let border_key = (
-                    local,
-                    picker_cards.as_ref().map(|layout| layout.cards().len()),
-                );
-                if window_size != Some(border_key) {
+                let border_key = (local, picker_cards.clone());
+                if window_size.as_ref() != Some(&border_key) {
                     let rows = picker_cards.as_ref().map_or_else(
                         || window::border_rows(local, "", window::Border::Rounded),
                         |layout| layout.border_rows(),

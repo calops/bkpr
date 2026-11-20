@@ -737,10 +737,15 @@ impl Popover {
     }
     /// Only the currently presented owner and source revision can offer actions.
     fn current_owner(&self, tree: &crate::tree::Tree) -> Option<crate::tree::Owner> {
+        let owner = self.presented_owner(tree)?;
+        (self.content_key.as_ref()?.registry_revision == tree.session(owner)?.registry.revision)
+            .then_some(owner)
+    }
+
+    fn presented_owner(&self, tree: &crate::tree::Tree) -> Option<crate::tree::Owner> {
         let key = self.content_key.as_ref()?;
         let session = tree.session(key.owner)?;
         (session.group.status == crate::controller::SessionStatus::Online
-            && key.registry_revision == session.registry.revision
             && crate::controller::tree_popup_target(tree, false).is_some_and(|target| {
                 target.owner == key.owner
                     && matches!(&target.node, crate::tree::Node::Native(native) if key.target.as_ref() == Some(native))
@@ -777,6 +782,15 @@ impl Popover {
         point: Option<(u16, u16)>,
     ) -> Option<(crate::tree::Owner, &bkpr_protocol::CiRefreshTarget)> {
         let owner = self.current_owner(tree)?;
+        self.refresh_for_owner(tree, owner, point)
+    }
+
+    fn refresh_for_owner(
+        &self,
+        tree: &crate::tree::Tree,
+        owner: crate::tree::Owner,
+        point: Option<(u16, u16)>,
+    ) -> Option<(crate::tree::Owner, &bkpr_protocol::CiRefreshTarget)> {
         let session = tree.session(owner)?;
         let mut targets = self
             .content
@@ -815,7 +829,11 @@ impl Popover {
         Some((owner, target))
     }
     pub(crate) fn refresh_available(&self, tree: &crate::tree::Tree) -> bool {
-        self.refresh_candidate(tree, None).is_some()
+        // Registry updates precede popup painting; unrelated revisions must not
+        // toggle hints. Actual dispatch still requires the current painted source.
+        self.presented_owner(tree)
+            .and_then(|owner| self.refresh_for_owner(tree, owner, None))
+            .is_some()
     }
     pub(crate) fn refresh_at(
         &mut self,
@@ -1652,6 +1670,14 @@ mod tests {
             .paint_tree(&tree, Some(&target), 3, 28, screen)
             .unwrap();
         let hit = popup.refresh_hits[0].0;
+        registry.revision += 1;
+        tree.reconcile(vec![session(registry.clone(), owner)], owner);
+        tree.hover = Some(target.clone());
+        assert!(popup.refresh_available(&tree));
+        assert!(popup.refresh_at(&tree, Some((hit.x, hit.y))).is_none());
+        popup
+            .paint_tree(&tree, Some(&target), 3, 28, screen)
+            .unwrap();
         let accepted = popup.refresh_at(&tree, Some((hit.x, hit.y))).unwrap();
         assert_eq!(accepted.0, owner);
         assert_eq!(accepted.1.pane_id, "terminal");
