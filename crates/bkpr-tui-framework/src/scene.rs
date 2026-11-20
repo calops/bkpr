@@ -620,6 +620,7 @@ fn effective_style(
     palette: PaletteOverride<'_>,
     native_palette: &[bool; 16],
     override_defaults: bool,
+    native_background: Option<[u8; 3]>,
 ) -> Style {
     let entry = |index| {
         palette
@@ -681,6 +682,12 @@ fn effective_style(
             projected_source(style.background_source)
         };
     result.underline_source = projected_source(style.underline_source);
+    if let Some(physical) = native_background
+        && style.background_source == ColorSource::Default
+    {
+        result.background = physical;
+        result.background_source = ColorSource::Default;
+    }
     result
 }
 fn copy_cell(destination: &mut Cell, source: &Cell, style: &Style) {
@@ -761,7 +768,13 @@ fn inherit_annotation_colors(
         }
     }
 }
-fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect], host: &ColorProbe) {
+fn compose_cells(
+    canvas: &mut Frame,
+    surface: &Surface<'_>,
+    visible: &[Rect],
+    host: &ColorProbe,
+    physical_background: Option<[u8; 3]>,
+) {
     let palette = surface.palette.unwrap_or(PaletteOverride {
         foreground: surface.frame.foreground,
         background: surface.frame.background,
@@ -775,6 +788,19 @@ fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect], ho
             .or_else(|| surface.frame.palette.get(index))
             .is_some_and(|rgb| host.palette.get(&index) == Some(rgb))
     });
+    // Kitty draws below-background images only through cells left on the
+    // physical default background, so such panes cannot carry a card color.
+    let native_background = (surface.content == SurfaceContent::All
+        && surface
+            .frame
+            .placements
+            .iter()
+            .any(|p| p.layer == ImageLayer::BelowBackground))
+    .then(|| {
+        physical_background
+            .or(host.background)
+            .unwrap_or(palette.background)
+    });
     let blank = blank_cell();
     let mut blank_style = effective_style(
         &blank.style,
@@ -782,6 +808,7 @@ fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect], ho
         palette,
         &native_palette,
         surface.palette.is_some(),
+        native_background,
     );
     blank_style.faint |= surface.faint;
     let r = surface.rect;
@@ -835,6 +862,7 @@ fn compose_cells(canvas: &mut Frame, surface: &Surface<'_>, visible: &[Rect], ho
                             palette,
                             &native_palette,
                             surface.palette.is_some(),
+                            native_background,
                         );
                         style.faint |= surface.faint;
                         while search_index < search.len() && search[search_index].end <= x {
@@ -1066,7 +1094,13 @@ impl Renderer {
                 } else {
                     occlude(&mut prepared.placements, cover, scene.size)?;
                 }
-                compose_cells(canvas, surface, &self.visible[index], host);
+                compose_cells(
+                    canvas,
+                    surface,
+                    &self.visible[index],
+                    host,
+                    terminal.background.surface(),
+                );
             }
             if surface.focused && surface.interaction_rect().is_some() {
                 let cursor = &surface.frame.cursor;
@@ -1207,6 +1241,7 @@ mod scene_tests {
             },
             &[false; 16],
             false,
+            None,
         )
     }
 
@@ -1389,6 +1424,64 @@ mod scene_tests {
         let canvas = renderer.canvas.as_ref().unwrap();
         assert_eq!(canvas.rows[0].cells[1].text, "b");
         assert!(canvas.cursor.visible);
+    }
+
+    #[test]
+    fn below_background_images_keep_default_pane_cells_native_under_view_palettes() {
+        let size = Size { cols: 2, rows: 1, cell_width: 8, cell_height: 16 };
+        let theme = [30, 30, 46];
+        let explicit = [200, 10, 10];
+        let mut pane = blank(size);
+        pane.rows[0].cells[1].style.background_source = ColorSource::Rgb(explicit);
+        pane.rows[0].cells[1].style.background = explicit;
+        let image = Arc::new(Image {
+            id: 4, generation: 1, width: 16, height: 16,
+            format: PixelFormat::Rgba, pixels: vec![255; 16 * 16 * 4],
+        });
+        pane.images.push(Arc::clone(&image));
+        pane.placements.push(Placement {
+            image_id: image.id, generation: image.generation, placement_id: 1,
+            col: 0, row: 0, offset_x: 0, offset_y: 0,
+            width: 16, height: 16, source_x: 0, source_y: 0,
+            source_width: 16, source_height: 16,
+            layer: ImageLayer::BelowBackground, z: i32::MIN,
+        });
+        let host = ColorProbe {
+            truecolor: true,
+            background: Some([0, 0, 0]),
+            foreground: Some([255, 255, 255]),
+            ..ColorProbe::default()
+        };
+        let render = |frame: &Frame| {
+            let scene = Scene {
+                size,
+                surfaces: vec![Surface {
+                    id: "pane", rect: Rect { x: 0, y: 0, width: 2, height: 1 }, frame,
+                    image_manifest: None,
+                    palette: Some(PaletteOverride { foreground: [205, 214, 244], background: theme, palette: &[] }),
+                    content: SurfaceContent::All, selection: &[], search: &[],
+                    focused: false, faint: false,
+                }],
+            };
+            let mut renderer = Renderer::default();
+            let mut terminal = terminal();
+            let mut out = Vec::new();
+            renderer.render(&mut out, &scene, &host, &mut terminal).unwrap();
+            let cells = renderer.canvas.as_ref().unwrap().rows[0].cells.clone();
+            (cells, String::from_utf8_lossy(&out).into_owned())
+        };
+
+        let (cells, out) = render(&pane);
+        assert_eq!(cells[0].style.background_source, ColorSource::Default);
+        assert_eq!(cells[1].style.background_source, ColorSource::Rgb(explicit));
+        assert!(out.contains("\x1b[49m"), "{out:?}");
+        assert!(!out.contains("48;2;30;30;46"), "{out:?}");
+
+        pane.placements[0].layer = ImageLayer::BelowText;
+        pane.placements[0].z = -1;
+        let (cells, out) = render(&pane);
+        assert_eq!(cells[0].style.background_source, ColorSource::Rgb(theme));
+        assert!(out.contains("48;2;30;30;46"), "{out:?}");
     }
 
     #[test]
