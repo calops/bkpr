@@ -39,17 +39,6 @@ impl ImageViewer {
                 rect: title,
                 role: Role::Title,
             });
-            let hint = Rect {
-                x: 1,
-                y: size.rows - 1,
-                width: size.cols - 2,
-                height: 1,
-            };
-            lines.push((hint, window::fit("Esc close", hint.width), false));
-            spans.push(RoleSpan {
-                rect: hint,
-                role: Role::Muted,
-            });
         }
         if let Some(button) = close_rect(size) {
             lines.push((button, "×".into(), false));

@@ -631,6 +631,12 @@ select: Enter or the Resume button explicitly starts an eligible candidate.
 Live and unavailable candidates retain their reason, and read-only attachments
 can inspect but never resume.
 
+Recovery, pane Finder and theme selection share floating search/results cards,
+with a separate details card where needed and a tinted query area. Plain
+rendering keeps the same layout with rounded Unicode borders. Shortcuts stay in
+the bottom-left key hint popup, above the active overlay, and follow its current
+focus and available actions rather than repeating inside the dialog.
+
 `Ctrl-r` refreshes while keeping the query and exact surviving selection.
 Tab switches between the list and scrollable details; arrows, PageUp/PageDown
 and Home/End navigate the focused area. Esc closes the picker. Closing before
@@ -1351,6 +1357,11 @@ Movement clamps to useful subtree sizes where space permits. Very small windows
 can hide a split's second subtree without removing panes or changing saved ratios;
 expanding the window projects it again. Extremely wide layouts can move in larger
 steps because saved ratios use thousandths.
+
+Double-click an actual divider to equalize its two sides, within one cell where
+subtree minimum sizes permit. At a corner, both adjoining axes are balanced.
+Unrelated splits keep their ratios. Routine resize completion is silent; rejected
+and unknown-outcome updates still report errors.
 
 Accepted changes update the backend-owned layout and other clients' projections,
 not pane membership or process lifetime. Read-only clients can observe but cannot

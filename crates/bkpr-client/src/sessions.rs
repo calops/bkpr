@@ -1212,7 +1212,7 @@ impl Coordinator {
             app.backgrounded = true;
             let host_focused = app.host_focused;
             app.host_focused = false;
-            app.retire_resize("session focus changed");
+            app.retire_resize();
             app.selection_focus_lost();
             app.close_search();
             let retired = app.sync_views(size, &[]);

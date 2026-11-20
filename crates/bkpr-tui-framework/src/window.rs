@@ -251,6 +251,29 @@ pub fn decorate(frame: &mut Frame, title: &str, border: Border) -> Rect {
     content(frame.size)
 }
 
+/// Extend content-local separator rules through a surrounding single-cell frame.
+/// Horizontal and vertical intersections use connected Unicode junctions.
+pub fn connect_separators(frame: &mut Frame, content: Rect, rules: impl IntoIterator<Item = Rect>) {
+    if content.x == 0 || content.y == 0 {
+        return;
+    }
+    let left = content.x - 1;
+    let right = content.x + content.width;
+    let bottom = content.y + content.height;
+    for rule in rules {
+        if rule.height == 1 && rule.width > 1 {
+            let y = content.y + rule.y;
+            text(frame, left, y, "├", false);
+            text(frame, right, y, "┤", false);
+        } else if rule.width == 1 && rule.height > 0 {
+            let x = content.x + rule.x;
+            let top = content.y + rule.y;
+            text(frame, x, top.saturating_sub(1), "┬", false);
+            text(frame, x, bottom, "┴", false);
+        }
+    }
+}
+
 /// Paint connected, single-cell edge strips into an existing root-sized frame.
 /// The caller owns clearing/caching the frame and projecting only the strips;
 /// unrelated cells, resources and cursor state are unchanged. No palette or
@@ -344,6 +367,57 @@ pub fn paint_edge_feedback(frame: &mut Frame, segments: &[Rect], style: &Style) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compact_separators_connect_to_both_rounded_edges_and_each_other() {
+        let size = Size {
+            cols: 22,
+            rows: 10,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        let mut frame = crate::UiSurface::new(size).frame;
+        let content = decorate(&mut frame, "", Border::Rounded);
+        let horizontal = Rect {
+            x: 0,
+            y: 2,
+            width: content.width,
+            height: 1,
+        };
+        let vertical = Rect {
+            x: 8,
+            y: 3,
+            width: 1,
+            height: content.height - 3,
+        };
+        crate::text(
+            &mut frame,
+            content.x,
+            content.y + horizontal.y,
+            &"─".repeat(usize::from(horizontal.width)),
+            false,
+        );
+        for y in vertical.y..vertical.y + vertical.height {
+            crate::text(
+                &mut frame,
+                content.x + vertical.x,
+                content.y + y,
+                "│",
+                false,
+            );
+        }
+        connect_separators(&mut frame, content, [horizontal, vertical]);
+        let glyph = |x: usize, y: usize| frame.rows[y].cells[x].text.as_str();
+        assert_eq!(glyph(0, 0), "╭");
+        assert_eq!(glyph(21, 0), "╮");
+        assert_eq!(glyph(0, 9), "╰");
+        assert_eq!(glyph(21, 9), "╯");
+        assert_eq!(glyph(0, 3), "├");
+        assert_eq!(glyph(21, 3), "┤");
+        assert_eq!(glyph(9, 3), "┬");
+        assert_eq!(glyph(9, 9), "┴");
+        assert!((1..21).all(|x| glyph(x, 3) == if x == 9 { "┬" } else { "─" }));
+    }
+
     use super::*;
     fn size(cols: u16, rows: u16) -> Size {
         Size {

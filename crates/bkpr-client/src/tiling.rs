@@ -274,6 +274,24 @@ pub(crate) fn resize_targets(layout: &LayoutNode, area: Rect, x: u16, y: u16) ->
     targets
 }
 
+/// Restrict quadrant drag targets to separators physically under the pointer.
+pub(crate) fn separator_targets(
+    layout: &LayoutNode,
+    area: Rect,
+    targets: &[DragTarget],
+    x: u16,
+    y: u16,
+) -> Vec<DragTarget> {
+    targets
+        .iter()
+        .filter(|target| {
+            split_at(layout, area, &target.path)
+                .is_some_and(|split| split.axis == target.axis && split.divider.contains(x, y))
+        })
+        .cloned()
+        .collect()
+}
+
 pub(crate) fn resize_feedback(
     layout: &LayoutNode,
     area: Rect,
@@ -389,13 +407,11 @@ fn ceil_ratio(cells: u32, usable: u16) -> u32 {
     (cells * 1000).div_ceil(u32::from(usable))
 }
 
-fn resized_ratio(
+fn ratio_bounds(
     layout: &LayoutNode,
     split: &SplitRef<'_>,
-    target: i32,
-    forward: Option<bool>,
     preserve_subtrees: bool,
-) -> Option<u16> {
+) -> Option<(u16, u16, u16)> {
     let LayoutNode::Split {
         axis,
         ratio,
@@ -433,6 +449,18 @@ fn resized_ratio(
     } else {
         (2, usable - 2)
     };
+    Some((usable, low, high))
+}
+
+fn resized_ratio(
+    layout: &LayoutNode,
+    split: &SplitRef<'_>,
+    target: i32,
+    forward: Option<bool>,
+    preserve_subtrees: bool,
+) -> Option<u16> {
+    let (usable, low, high) = ratio_bounds(layout, split, preserve_subtrees)?;
+    let ratio = &split.ratio;
     let current = boundary(usable, *ratio);
     if target == i32::from(current) {
         return None;
@@ -521,6 +549,40 @@ pub(crate) fn drag_targets(
             Axis::Vertical => i32::from(y) - i32::from(split.area.y),
         } - target.grab_offset;
         if let Some(value) = resized_ratio(current, &split, offset, None, true) {
+            set_ratio(
+                result.get_or_insert_with(|| layout.clone()),
+                &target.path,
+                value,
+            );
+        }
+    }
+    result
+}
+
+/// Equalize only the selected separators, preserving descendant ratios and minima.
+/// Targets are resolved ancestor-first, with at most one layout-tree copy.
+pub(crate) fn equalize_targets(
+    layout: &LayoutNode,
+    area: Rect,
+    targets: &[DragTarget],
+) -> Option<LayoutNode> {
+    for target in targets {
+        if split_at(layout, area, &target.path)?.axis != target.axis {
+            return None;
+        }
+    }
+    let mut result = None;
+    for target in targets {
+        let current = result.as_ref().unwrap_or(layout);
+        let split = split_at(current, area, &target.path)?;
+        let (usable, low, high) = ratio_bounds(current, &split, true)?;
+        let half = boundary(usable, 500);
+        let value = if (low..=high).contains(&half) {
+            Some(500)
+        } else {
+            resized_ratio(current, &split, i32::from(half), None, true)
+        };
+        if let Some(value) = value.filter(|value| *value != split.ratio) {
             set_ratio(
                 result.get_or_insert_with(|| layout.clone()),
                 &target.path,
@@ -1154,6 +1216,104 @@ mod pointer_tests {
         for line in resize_feedback(&moved, area, &targets) {
             assert!(line.x.checked_add(line.width).is_some());
             assert!(line.y.checked_add(line.height).is_some());
+        }
+    }
+
+    #[test]
+    fn equalization_uses_physical_separator_hits_not_nearby_quadrant_edges() {
+        let layout = split(
+            Axis::Horizontal,
+            300,
+            split(Axis::Vertical, 350, leaf("a"), leaf("b")),
+            leaf("c"),
+        );
+        let area = area();
+        let before = splits(&layout, area);
+        let (x, y) = (before[0].divider.x - 3, before[1].divider.y);
+        let drag = resize_targets(&layout, area, x, y);
+        assert_eq!(drag.len(), 2);
+        let exact = separator_targets(&layout, area, &drag, x, y);
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].path, [false]);
+        let equalized = equalize_targets(&layout, area, &exact).unwrap();
+        let after = splits(&equalized, area);
+        assert_eq!(after[0].ratio, 300);
+        assert_eq!(after[1].ratio, 500);
+        assert!(separator_targets(&layout, area, &drag, x, y + 1).is_empty());
+    }
+
+    #[test]
+    fn equalization_preserves_nested_minima_and_unrelated_ratios_on_both_axes() {
+        for axis in [Axis::Horizontal, Axis::Vertical] {
+            let layout = split(axis, 900, split(axis, 25, leaf("a"), leaf("b")), leaf("c"));
+            let area = Rect {
+                width: 121,
+                height: 121,
+                ..area()
+            };
+            let before = splits(&layout, area);
+            let divider = before[0].divider;
+            let (x, y) = (
+                divider.x + divider.width / 2,
+                divider.y + divider.height / 2,
+            );
+            let targets = resize_targets(&layout, area, x, y);
+            let exact = separator_targets(&layout, area, &targets, x, y);
+            assert_eq!(exact.len(), 1);
+            let equalized = equalize_targets(&layout, area, &exact).unwrap();
+            let after = splits(&equalized, area);
+            assert_eq!(after[1].ratio, 25);
+            let LayoutNode::Split { first, .. } = &equalized else {
+                unreachable!()
+            };
+            let required = minimum_at_ratios(first, axis).unwrap();
+            let (first_area, _, _) = partition(area, axis, after[0].ratio).unwrap();
+            assert!(length(first_area, axis) >= required);
+            let mut panes = Vec::new();
+            layout_rects(Some(&equalized), area, &mut panes);
+            assert_eq!(panes.len(), 3);
+            for (_, frame) in panes {
+                let body = content(frame);
+                assert!(body.width >= 1 && body.height >= 1);
+            }
+            assert!(equalize_targets(&equalized, area, &exact).is_none());
+        }
+    }
+
+    #[test]
+    fn equalization_of_corners_is_atomic_and_rejects_stale_target_sets() {
+        for axis in [Axis::Horizontal, Axis::Vertical] {
+            let other = if axis == Axis::Horizontal {
+                Axis::Vertical
+            } else {
+                Axis::Horizontal
+            };
+            let layout = split(
+                axis,
+                300,
+                split(other, 350, leaf("a"), leaf("b")),
+                split(other, 650, leaf("c"), leaf("d")),
+            );
+            let area = area();
+            let before = splits(&layout, area);
+            let (x, y) = if axis == Axis::Horizontal {
+                (before[0].divider.x, before[1].divider.y)
+            } else {
+                (before[1].divider.x, before[0].divider.y)
+            };
+            let drag = resize_targets(&layout, area, x, y);
+            let targets = separator_targets(&layout, area, &drag, x, y);
+            assert_eq!(targets.len(), 2);
+            let equalized = equalize_targets(&layout, area, &targets).unwrap();
+            let after = splits(&equalized, area);
+            assert_eq!(after[0].ratio, 500);
+            assert_eq!(after[1].ratio, 500);
+            assert_eq!(after[2].ratio, 650);
+            assert!(equalize_targets(&equalized, area, &targets).is_none());
+            assert!(equalize_targets(&cross(other), area, &targets).is_none());
+            let mut invalid = targets;
+            invalid[1].path.push(false);
+            assert!(equalize_targets(&layout, area, &invalid).is_none());
         }
     }
 }

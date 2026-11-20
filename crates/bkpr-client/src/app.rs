@@ -350,7 +350,8 @@ struct GuideKey {
     cols: u16,
     rows: u16,
     sidebar_columns: u16,
-    flags: u16,
+    availability: crate::keyguide::Availability,
+    management_pending: bool,
     resize_hint: Option<&'static str>,
 }
 #[derive(Default)]
@@ -726,7 +727,7 @@ impl App {
         if self.sidebar_resize_blocked() || !self.sidebar_resize_handle(size, x, y) {
             return false;
         }
-        self.retire_resize("sidebar resized");
+        self.retire_resize();
         self.clear_tree_pointer();
         self.pointer_capture = Some(PointerCapture::SidebarResize {
             size,
@@ -815,7 +816,7 @@ impl App {
         );
     }
     fn enter_sidebar(&mut self) {
-        self.retire_resize("sidebar focused");
+        self.retire_resize();
         self.selection_focus_lost();
         self.close_search();
         self.tree.lock().unwrap().enter();
@@ -924,44 +925,41 @@ impl App {
 
     fn supports_action(&self, action: crate::keyguide::Action) -> bool {
         use crate::keyguide::Action;
-        if let Some(form) = &self.state.form
-            && matches!(form.kind, FormKind::StopSession(_))
-        {
-            match action {
-                Action::Cancel => return true,
-                Action::Submit => {
-                    return !self.options.read_only
-                        && form.pending.is_none()
-                        && !form.ambiguous
-                        && form.error.is_none();
-                }
-                _ => {}
-            }
-        }
         if action == Action::ShowDiagnostics {
             return self.latest_diagnostic().is_some();
         }
         if self.diagnostic_active() {
             return matches!(action, Action::Navigate(_) | Action::Cancel);
         }
+        if self.image_viewer.is_some() {
+            return action == Action::Cancel;
+        }
+        if let Some(form) = &self.state.form {
+            if action == Action::Cancel {
+                return form.can_dismiss();
+            }
+            if form.pending.is_some()
+                || form.ambiguous
+                || (matches!(form.kind, FormKind::StopSession(_)) && form.error.is_some())
+            {
+                return false;
+            }
+            if action == Action::Submit {
+                return !self.options.read_only;
+            }
+        }
+        if action == Action::Submit {
+            if let Some(picker) = &self.theme_picker {
+                return picker.list.selected().is_some();
+            }
+            if let Some(finder) = &self.finder {
+                return finder.selected_target().is_some();
+            }
+        }
         if self.recovery.open() && action == Action::Submit {
             return !self.options.read_only && self.recovery.can_resume();
         } else if self.recovery.open() && action == Action::RefreshRecovery {
             return !self.recovery.starting();
-        } else if self.recovery.open()
-            && !self.recovery.list_focused()
-            && matches!(
-                action,
-                Action::Edit(
-                    EditAction::Left
-                        | EditAction::Right
-                        | EditAction::Backspace
-                        | EditAction::Delete
-                        | EditAction::Clear
-                )
-            )
-        {
-            return false;
         }
         let backend_available = if self.state.sidebar.active {
             self.sidebar_backend_available
@@ -1080,7 +1078,9 @@ impl App {
     }
     fn guide_context(&self) -> crate::keyguide::Context {
         use crate::keyguide::{Context, ContextState, ModalContext};
-        let modal = if self.diagnostic_active() {
+        let modal = if self.image_viewer.is_some() {
+            Some(ModalContext::ImageViewer)
+        } else if self.diagnostic_active() {
             Some(ModalContext::Details)
         } else if self
             .consent
@@ -1106,7 +1106,11 @@ impl App {
         } else if self.theme_picker.is_some() {
             Some(ModalContext::Theme)
         } else if self.recovery.open() {
-            Some(ModalContext::Recovery)
+            Some(if self.recovery.list_focused() {
+                ModalContext::Recovery
+            } else {
+                ModalContext::RecoveryDetails
+            })
         } else {
             None
         };
@@ -1137,36 +1141,16 @@ impl App {
     }
     fn refresh_guide(&mut self, size: Size) {
         let context = self.guide_context();
-        let flags = u16::from(self.options.read_only)
-            | (u16::from(self.options.clipboard_policy == "deny") << 1)
-            | (u16::from(self.state.current(&self.registry).is_some()) << 2)
-            | (u16::from(
-                self.state
-                    .form
-                    .as_ref()
-                    .is_some_and(|form| form.pending.is_some() || form.ambiguous),
-            ) << 3)
-            | (u16::from(self.focused_history()) << 4)
-            | (u16::from(self.search_open()) << 5)
-            | (u16::from(self.state.sidebar.active) << 6)
-            | (u16::from(self.resize_dragging()) << 7)
-            | (u16::from(!self.management.is_empty()) << 8)
-            | (u16::from(self.sidebar_backend_available) << 9)
-            | (u16::from(self.sidebar_has_workspace) << 10)
-            | (u16::from(self.spawn_defaults.is_some() && !self.socket.is_revoked()) << 11)
-            | (u16::from(self.supports_action(crate::keyguide::Action::RefreshCi)) << 12)
-            | (u16::from(self.latest_diagnostic().is_some()) << 13)
-            | (u16::from(self.supports_action(crate::keyguide::Action::StopSession)) << 14)
-            | (u16::from(self.state.form.as_ref().is_some_and(|form| {
-                matches!(form.kind, FormKind::StopSession(_)) && form.error.is_some()
-            })) << 15);
+        let availability =
+            crate::keyguide::Availability::new(context, |action| self.supports_action(action));
         let sidebar_columns = self.screen_geometry(size).0.width;
         let key = GuideKey {
             context,
             cols: size.cols,
             rows: size.rows,
             sidebar_columns,
-            flags,
+            availability,
+            management_pending: !self.management.is_empty(),
             resize_hint: self.resize_hint(),
         };
         if self.guide.key != Some(key) {
@@ -1182,7 +1166,7 @@ impl App {
                 sidebar_columns,
                 size.cols,
                 max_rows,
-                |action| self.supports_action(action),
+                |action| availability.contains(action),
                 notice,
             );
             self.guide = GuideCache {
@@ -1191,20 +1175,8 @@ impl App {
             };
         }
     }
-    fn guide_geometry(&self, size: Size, modal: bool) -> Option<Rect> {
-        if modal
-            || !matches!(
-                self.guide_context(),
-                crate::keyguide::Context::Application
-                    | crate::keyguide::Context::CommandPrefix
-                    | crate::keyguide::Context::Sidebar { .. }
-                    | crate::keyguide::Context::Sessions
-                    | crate::keyguide::Context::History
-                    | crate::keyguide::Context::Search
-                    | crate::keyguide::Context::Resize
-            )
-            || self.guide.content.expanded.is_empty()
-        {
+    fn guide_geometry(&self, size: Size) -> Option<Rect> {
+        if self.guide.content.expanded.is_empty() {
             return None;
         }
         let width = self.guide.content.columns;
@@ -1224,7 +1196,7 @@ impl App {
         Some(rect)
     }
     fn guide_rows(&self, size: Size) -> u16 {
-        self.guide_geometry(size, false)
+        self.guide_geometry(size)
             .map_or(0, |rect| size.rows.saturating_sub(rect.y))
     }
 
@@ -1257,7 +1229,7 @@ impl App {
     }
     fn begin_finder(&mut self) {
         self.begin_modal();
-        self.retire_resize("finder opened");
+        self.retire_resize();
         self.selection_focus_lost();
         self.close_search();
         self.popover.hide();
@@ -1292,6 +1264,14 @@ impl App {
         }
         Ok(())
     }
+    fn picker_sections(&self, size: Size) -> Option<bkpr_tui_framework::picker::PickerLayout> {
+        if self.picker_open() {
+            bkpr_tui_framework::picker::PickerLayout::new(size, self.theme_picker.is_none())
+        } else {
+            None
+        }
+    }
+
     fn modal_geometry(&self, screen: Size) -> (Rect, Rect) {
         let (width, height) = if self.finder.is_some() {
             (
@@ -1321,11 +1301,7 @@ impl App {
             width.min(screen.cols.saturating_sub(4).max(1)),
             height.min(screen.rows.saturating_sub(2).max(1)),
         );
-        let content = if self
-            .finder
-            .as_ref()
-            .is_some_and(|finder| finder.is_graphical())
-        {
+        let content = if self.picker_sections(placement.outer.size(screen)).is_some() {
             placement.outer
         } else {
             placement.content
@@ -1339,7 +1315,7 @@ impl App {
         self.begin_modal();
         self.finder = None;
         self.popover.hide();
-        self.retire_resize("modal opened");
+        self.retire_resize();
         self.selection_focus_lost();
         self.close_search();
         if matches!(kind, FormKind::StopSession(_)) {
@@ -1401,7 +1377,7 @@ impl App {
     }
     fn focus(&mut self, pane: String) {
         if self.state.focused.as_ref() != Some(&pane) {
-            self.retire_resize("pane focus changed");
+            self.retire_resize();
             self.close_search();
         }
         self.selection_epoch = self.selection_epoch.wrapping_add(1);
@@ -1410,7 +1386,7 @@ impl App {
     }
     fn switch(&mut self, workspace: String) {
         if self.state.workspace.as_ref() != Some(&workspace) {
-            self.retire_resize("workspace focus changed");
+            self.retire_resize();
             self.close_search();
         }
         self.selection_epoch = self.selection_epoch.wrapping_add(1);
@@ -1419,7 +1395,7 @@ impl App {
     }
     fn switch_window(&mut self, window: String) {
         if self.state.window.as_ref() != Some(&window) {
-            self.retire_resize("window focus changed");
+            self.retire_resize();
             self.close_search();
         }
         self.selection_epoch = self.selection_epoch.wrapping_add(1);
@@ -1955,7 +1931,7 @@ impl App {
         if !focused {
             let releases = self.cancel_held_keys();
             self.scope_input_result(releases)?;
-            self.retire_resize("terminal focus lost");
+            self.retire_resize();
             self.clear_resize_hover();
             self.sidebar_resize_hover = false;
             if matches!(
@@ -3593,7 +3569,7 @@ impl App {
                 self.directional(direction.key(), &rects);
             }
             Action::PreviousWorkspace | Action::NextWorkspace => {
-                self.retire_resize("workspace focus changed");
+                self.retire_resize();
                 self.selection_epoch = self.selection_epoch.wrapping_add(1);
                 self.state.cycle_workspace(
                     &self.registry,
@@ -3606,7 +3582,7 @@ impl App {
                 self.select_current_lease();
             }
             Action::NextPane => {
-                self.retire_resize("pane focus changed");
+                self.retire_resize();
                 self.selection_epoch = self.selection_epoch.wrapping_add(1);
                 self.state.cycle_pane(&self.registry);
                 self.select_current_lease();
@@ -3703,7 +3679,7 @@ impl App {
             expected_revision: window.revision,
             layout: Some(layout),
         };
-        self.retire_resize("pane rearrangement");
+        self.retire_resize();
         self.selection_focus_lost();
         self.operation(operation)
     }
@@ -3793,7 +3769,9 @@ impl App {
             return Ok(false);
         }
         if self.image_viewer.is_some() {
-            if event.key == "Escape" {
+            if crate::keyguide::lookup(self.guide_context(), &event)
+                == Some(crate::keyguide::Action::Cancel)
+            {
                 self.image_viewer = None;
                 self.overlays.remove("ui:image-viewer");
                 self.notify_focus()?;
@@ -3925,7 +3903,8 @@ impl App {
             self.state.suppressed.insert(event.key.clone());
             let form = self.state.form.as_ref().unwrap();
             let context = form.context();
-            let action = keyguide::lookup(context, &event);
+            let action =
+                keyguide::lookup_with(context, &event, |action| self.supports_action(action));
             if action == Some(Action::Cancel) {
                 self.cancel_modal();
                 return Ok(false);
@@ -4116,19 +4095,19 @@ impl App {
                     })?;
                 }
                 Some(Action::PreviousWorkspace) => {
-                    self.retire_resize("workspace focus changed");
+                    self.retire_resize();
                     self.selection_epoch = self.selection_epoch.wrapping_add(1);
                     self.state.cycle_workspace(&self.registry, -1);
                     self.select_current_lease();
                 }
                 Some(Action::NextWorkspace) => {
-                    self.retire_resize("workspace focus changed");
+                    self.retire_resize();
                     self.selection_epoch = self.selection_epoch.wrapping_add(1);
                     self.state.cycle_workspace(&self.registry, 1);
                     self.select_current_lease();
                 }
                 Some(Action::NextPane) => {
-                    self.retire_resize("pane focus changed");
+                    self.retire_resize();
                     self.selection_epoch = self.selection_epoch.wrapping_add(1);
                     self.state.cycle_pane(&self.registry);
                     self.select_current_lease();
@@ -4141,7 +4120,7 @@ impl App {
                 _ => self.notify("Unknown Ctrl-b command; press Ctrl-b for bindings".into()),
             };
             if self.state.form.is_some() {
-                self.retire_resize("modal opened");
+                self.retire_resize();
                 self.selection_focus_lost();
                 self.close_search();
             }
@@ -4249,6 +4228,11 @@ impl App {
             };
             (event_button, action)
         });
+        self.resize_click_pointer(
+            mouse.x,
+            mouse.y,
+            !wheel && matches!(event_button, MouseButton::Left | MouseButton::None),
+        );
         if self.image_viewer.is_some() && !self.diagnostic_active() {
             self.last_button = button;
             if action == MouseAction::Release {
@@ -5167,6 +5151,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             ..initial_size
         });
         let mut window_size = None;
+        let mut window_roles = Vec::new();
         let mut guide_painted = None;
         let mut form_theme = Theme::default();
         let mut search_surface = UiSurface::new(initial_size);
@@ -5524,7 +5509,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             let regular_modal = consent_open || app.state.form.is_some() || app.picker_open();
             let popup =
                 regular_modal || app.image_viewer.is_some() || app.diagnostic_view.is_some();
-            let mut placement = (regular_modal && app.image_viewer.is_none()).then(|| {
+            let placement = (regular_modal && app.image_viewer.is_none()).then(|| {
                 if consent_open {
                     let placement = OverlayPlacement::centered(
                         size,
@@ -5536,38 +5521,36 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     app.modal_geometry(size)
                 }
             });
-            let mut finder_cards = None;
+            let picker_cards = if consent_open {
+                None
+            } else {
+                placement.and_then(|(outer, _)| app.picker_sections(outer.size(size)))
+            };
             let mut form_region = None;
             let mut modal_graphical = false;
-            if !consent_open
-                && let Some((outer, _)) = placement
-                && let Some(finder) = &mut app.finder
+            if let Some((outer, _)) = placement
+                && let Some(layout) = &picker_cards
             {
-                if let Some(regions) = crate::finder::Finder::graphic_regions(outer.size(size)) {
-                    let ready = regions.iter().enumerate().all(|(index, (card, body))| {
-                        let absolute = |rect: Rect| Rect {
-                            x: outer.x + rect.x,
-                            y: outer.y + rect.y,
-                            ..rect
-                        };
-                        graphics.decorate_region(
-                            &mut window_effects,
-                            absolute(*card),
-                            absolute(*body),
-                            1 + index as u32 * 1024,
-                            (index == 0).then_some(6),
-                        )
-                    });
-                    if ready {
-                        finder_cards = Some(regions);
-                        modal_graphical = true;
-                    } else {
-                        window_effects.images.clear();
-                        window_effects.placements.clear();
-                    }
+                let mut ready = true;
+                for (index, &(card, body)) in layout.cards().iter().enumerate() {
+                    let absolute = |rect: Rect| Rect {
+                        x: outer.x + rect.x,
+                        y: outer.y + rect.y,
+                        ..rect
+                    };
+                    ready &= graphics.decorate_region(
+                        &mut window_effects,
+                        absolute(card),
+                        absolute(body),
+                        1 + index as u32 * 1024,
+                        (index == 0).then_some(6),
+                    );
                 }
-                finder.set_graphical(finder_cards.is_some());
-                placement = Some(app.modal_geometry(size));
+                modal_graphical = ready;
+                if !ready {
+                    window_effects.images.clear();
+                    window_effects.placements.clear();
+                }
             }
             if !consent_open
                 && let Some((outer, inner)) = placement
@@ -5627,13 +5610,21 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     rows: outer.height,
                     ..size
                 };
-                if window_size != Some(local) {
-                    window_surface.paint(
-                        local,
-                        window::border_rows(local, "", window::Border::Rounded),
-                        None,
+                let border_key = (
+                    local,
+                    picker_cards.as_ref().map(|layout| layout.cards().len()),
+                );
+                if window_size != Some(border_key) {
+                    let rows = picker_cards.as_ref().map_or_else(
+                        || window::border_rows(local, "", window::Border::Rounded),
+                        |layout| layout.border_rows(),
                     );
-                    window_size = Some(local);
+                    window_roles = picker_cards.as_ref().map_or_else(
+                        || window::theme_spans(local).to_vec(),
+                        |layout| layout.border_spans(),
+                    );
+                    window_surface.paint(local, rows, None);
+                    window_size = Some(border_key);
                 }
                 let local = inner.size(size);
                 if consent_open {
@@ -5646,7 +5637,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                                 width: local.cols,
                                 height: 1,
                             },
-                            "Clipboard request: y allow / n deny (pane-local)".into(),
+                            "Clipboard access requested for this pane".into(),
                             false,
                         )],
                         None,
@@ -5665,15 +5656,16 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         }],
                     );
                 } else if let Some(picker) = &mut app.theme_picker {
-                    picker.list.set_title(if ui_palette.override_supported() {
-                        "Themes · Enter keep · Esc cancel"
-                    } else {
-                        "Themes · RGB unavailable; using terminal colors"
-                    });
-                    picker.list.paint(&mut popup_surface, local);
-                    picker.list.apply_theme(&mut popup_surface, &theme, &[]);
+                    picker.paint(
+                        &mut popup_surface,
+                        local,
+                        &theme,
+                        ui_colors,
+                        ui_palette.override_supported(),
+                    );
                 } else if app.recovery.open() {
-                    app.recovery.paint(&mut popup_surface, local, &theme);
+                    app.recovery
+                        .paint(&mut popup_surface, local, &theme, ui_colors);
                 } else if let Some(finder) = &mut app.finder {
                     finder.paint(&mut popup_surface, local);
                     finder.apply_theme(&mut popup_surface, &theme, ui_colors, &project_palette);
@@ -5687,26 +5679,23 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     };
                     theme_modal(&mut popup_surface, form_palette, form);
                 }
-                window_surface.apply_theme(
+                let card_backgrounds = picker_cards
+                    .as_ref()
+                    .map(|layout| crate::appearance::picker_backgrounds(ui_colors, layout, true));
+                window_surface.apply_theme_with_colors(
                     &theme,
                     Role::Panel,
-                    &window::theme_spans(window_surface.frame.size),
+                    &window_roles,
+                    &[],
+                    card_backgrounds.as_ref().map_or(&[], |spans| &spans[..]),
                 );
                 window_surface.frame.images.clear();
                 window_surface.frame.placements.clear();
-                if app.finder.is_some() && finder_cards.is_none() {
-                    material_border(
-                        &mut window_surface.frame,
-                        Rect {
-                            x: 0,
-                            y: 0,
-                            width: outer.width,
-                            height: outer.height,
-                        },
-                        true,
-                        &[],
-                    );
-                } else if finder_cards.is_none() && form_region.is_none() {
+                if let Some(finder) = &app.finder
+                    && picker_cards.is_none()
+                {
+                    finder.decorate_fallback(&mut window_surface.frame);
+                } else if picker_cards.is_none() && form_region.is_none() {
                     modal_graphical = raised_material(
                         &graphics,
                         &mut window_surface.frame,
@@ -5837,7 +5826,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 image_surface.frame.images.clear();
                 image_surface.frame.placements.clear();
             }
-            let guide_rect = app.guide_geometry(size, popup);
+            let guide_rect = app.guide_geometry(size);
             let mut guide_draw_rect = None;
             if let Some(rect) = guide_rect {
                 graphics.retain_decoration_sources(&mut guide_effects);
@@ -5955,7 +5944,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 app.overlays.present(
                     "ui:guide",
                     OverlayPlacement::framed(rect, size),
-                    OverlayPolicy::PASSIVE,
+                    OverlayPolicy::COMPANION,
                     None,
                 );
             } else {
@@ -6408,21 +6397,48 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         continue;
                     }
                     if layer.id == "ui:modal"
-                        && let Some(regions) = finder_cards
+                        && let Some(layout) = &picker_cards
                     {
-                        for (index, (_, body)) in regions.into_iter().enumerate() {
+                        if !modal_graphical {
+                            surfaces.push(Surface {
+                                image_manifest: None,
+                                palette: None,
+                                id: "ui:window",
+                                content: SurfaceContent::All,
+                                rect: layer.placement.outer,
+                                frame: &window_surface.frame,
+                                selection: &[],
+                                search: &[],
+                                focused: false,
+                                faint: false,
+                            });
+                        }
+                        for (index, &(_, body)) in layout.cards().iter().enumerate() {
+                            let recovery_detail = (index == 2)
+                                .then(|| app.recovery.details(layer.placement.content))
+                                .flatten();
+                            let (frame, rect, content, focused) =
+                                if let Some((frame, rect, focused)) = recovery_detail {
+                                    (frame, rect, SurfaceContent::All, focused)
+                                } else {
+                                    (
+                                        &popup_surface.frame,
+                                        layer.placement.outer,
+                                        SurfaceContent::CellsClipped(body),
+                                        index == 0 && app.recovery.list_focused(),
+                                    )
+                                };
                             surfaces.push(Surface {
                                 image_manifest: None,
                                 palette: None,
                                 id: ["ui:modal:input", "ui:modal:results", "ui:modal:preview"]
                                     [index],
-                                content: SurfaceContent::CellsClipped(body),
-                                rect: layer.placement.outer,
-                                frame: &popup_surface.frame,
+                                content,
+                                rect,
+                                frame,
                                 selection: &[],
                                 search: &[],
-                                focused: index == 0
-                                    && app.overlays.keyboard_owner() == Some(layer.id),
+                                focused: focused && app.overlays.keyboard_owner() == Some(layer.id),
                                 faint: false,
                             });
                         }
@@ -6529,11 +6545,14 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                                 && (layer.id != "ui:modal"
                                     || consent_open
                                     || app.recovery.list_focused()),
-                            faint: faint_background && !layer.policy.modal,
+                            faint: faint_background
+                                && !layer.policy.modal
+                                && layer.id != "ui:guide",
                         });
                     }
                     if layer.id == "ui:modal"
                         && !consent_open
+                        && picker_cards.is_none()
                         && let Some((frame, rect, focused)) =
                             app.recovery.details(layer.placement.content)
                     {
@@ -6668,7 +6687,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 size
             };
             if geometry_changed {
-                app.retire_resize("terminal geometry changed");
+                app.retire_resize();
                 app.validate_sidebar_resize(input_size);
                 app.clear_resize_hover();
                 app.sidebar_resize_hover = false;
@@ -6809,7 +6828,7 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
         );
         return finished;
     }
-    app.retire_resize("client detached");
+    app.retire_resize();
     let mut cleanup = Ok(());
     while app.consent.is_some() {
         let finished = app.finish_consent(ClipboardResponse::denied());
@@ -7723,7 +7742,7 @@ pub(super) mod tests {
         app.state.sidebar.active = false;
         app.refresh_guide(size);
         let sidebar = app.screen_geometry(size).0;
-        let normal = app.guide_geometry(size, false).unwrap();
+        let normal = app.guide_geometry(size).unwrap();
         assert_eq!(normal.x, sidebar.x);
         assert_eq!(normal.y + normal.height, size.rows);
         assert_eq!(app.guide_accent(), None);
@@ -7732,13 +7751,12 @@ pub(super) mod tests {
         app.state.prefix = true;
         app.refresh_guide(size);
         assert_eq!(app.guide_accent(), Some(3));
-        assert!(app.guide_geometry(size, false).is_some());
+        assert!(app.guide_geometry(size).is_some());
         app.state.prefix = false;
         app.state.sidebar.active = true;
         app.refresh_guide(size);
         assert_eq!(app.guide_accent(), Some(4));
-        assert_eq!(app.guide_geometry(size, false).unwrap().x, sidebar.x);
-        assert!(app.guide_geometry(size, true).is_none());
+        assert_eq!(app.guide_geometry(size).unwrap().x, sidebar.x);
         app.state.sidebar.active = false;
         let narrow = Size {
             cols: 30,
@@ -7746,10 +7764,46 @@ pub(super) mod tests {
             ..size
         };
         app.refresh_guide(narrow);
-        let overflow = app.guide_geometry(narrow, false).unwrap();
+        let overflow = app.guide_geometry(narrow).unwrap();
         assert_eq!(overflow.x, app.screen_geometry(narrow).0.x);
         assert!(overflow.width > app.screen_geometry(narrow).0.width);
         assert!(overflow.width <= narrow.cols);
+        assert!(received.try_recv().is_err());
+    }
+
+    #[test]
+    fn picker_guide_stays_visible_and_drops_submit_when_search_has_no_result() {
+        let (mut app, received) = fixture();
+        let size = Size {
+            cols: 120,
+            rows: 44,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        app.begin_theme_picker();
+        app.refresh_guide(size);
+        let rect = app.guide_geometry(size).unwrap();
+        assert_eq!(rect.y + rect.height, size.rows);
+        assert_eq!(rect.x, app.screen_geometry(size).0.x);
+        assert!(
+            app.guide
+                .content
+                .expanded
+                .iter()
+                .any(|row| row.contains("Enter"))
+        );
+        let mut text = key("KeyZ");
+        text.text = "this-theme-does-not-exist".into();
+        app.key(text, &mut Vec::new(), size, &[]).unwrap();
+        app.refresh_guide(size);
+        assert!(
+            !app.guide
+                .content
+                .expanded
+                .iter()
+                .any(|row| row.contains("Enter"))
+        );
+        assert!(app.guide_geometry(size).is_some());
         assert!(received.try_recv().is_err());
     }
 

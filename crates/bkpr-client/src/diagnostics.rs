@@ -309,26 +309,6 @@ impl Viewer {
                 role: line.role,
             });
         }
-        if size.cols >= 3 && size.rows >= 3 {
-            let caption = Rect {
-                x: 1,
-                y: size.rows - 1,
-                width: size.cols - 2,
-                height: 1,
-            };
-            lines.push((
-                caption,
-                window::fit(
-                    "Esc close · ↑↓ scroll · PgUp/PgDn · Home/End",
-                    caption.width,
-                ),
-                false,
-            ));
-            spans.push(RoleSpan {
-                rect: caption,
-                role: Role::Muted,
-            });
-        }
         let cursor = surface.frame.cursor.clone();
         surface.paint(size, lines, Some(cursor));
         surface.apply_theme(theme, Role::Panel, &spans);

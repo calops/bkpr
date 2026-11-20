@@ -331,6 +331,27 @@ pub(crate) fn region_background(host: &ColorProbe, accent: Option<u8>) -> Option
     )
 }
 
+/// Bkpr picker cards share one raised base, with a cyan-tinted search section.
+pub(crate) fn picker_backgrounds(
+    host: &ColorProbe,
+    layout: &bkpr_tui_framework::picker::PickerLayout,
+    framed: bool,
+) -> [bkpr_tui_framework::BackgroundSpan; 3] {
+    std::array::from_fn(|index| bkpr_tui_framework::BackgroundSpan {
+        rect: layout
+            .cards()
+            .get(index)
+            .map_or_else(
+                Default::default,
+                |&(outer, body)| {
+                    if framed { outer } else { body }
+                },
+            ),
+        background: region_background(host, (index == 0).then_some(6))
+            .map_or(ColorSource::Default, ColorSource::Rgb),
+    })
+}
+
 pub(crate) fn guide_background(host: &ColorProbe, accent: Option<u8>) -> Option<[u8; 3]> {
     if !host.truecolor {
         return None;

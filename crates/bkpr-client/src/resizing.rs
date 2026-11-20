@@ -36,12 +36,41 @@ struct Hover {
     position: (u16, u16),
     feedback: Vec<Rect>,
 }
+struct DividerClick {
+    workspace: String,
+    window: String,
+    pane: String,
+    revision: u64,
+    size: Size,
+    area: Rect,
+    position: (u16, u16),
+    targets: Vec<tiling::DragTarget>,
+    at: Instant,
+    released: bool,
+}
+
+impl DividerClick {
+    fn matches(&self, other: &Self) -> bool {
+        self.released
+            && other.at.saturating_duration_since(self.at) < Duration::from_millis(500)
+            && self.workspace == other.workspace
+            && self.window == other.window
+            && self.pane == other.pane
+            && self.revision == other.revision
+            && self.size == other.size
+            && self.area == other.area
+            && self.position == other.position
+            && self.targets == other.targets
+    }
+}
+
 #[derive(Default)]
 pub(super) struct State {
     generation: u64,
     gesture: Option<Gesture>,
     flight: Option<Commit>,
     hover: Option<Hover>,
+    click: Option<DividerClick>,
 }
 impl State {
     fn materialize_pointer(&mut self) {
@@ -122,13 +151,10 @@ impl App {
         self.resizing.capturing()
     }
 
-    pub(super) fn retire_resize(&mut self, reason: &str) {
+    pub(super) fn retire_resize(&mut self) {
         self.resizing.hover = None;
-        if self.resizing.gesture.take().is_some() {
-            self.notify(format!(
-                "Resize stopped: {reason}; accepted update may still finish; not replayed"
-            ));
-        }
+        self.resizing.click = None;
+        self.resizing.gesture = None;
         if matches!(self.pointer_capture, Some(PointerCapture::Resize)) {
             // Keep swallowing the physical gesture until its release, rather
             // than converting its tail into input to the pane under the mouse.
@@ -137,43 +163,61 @@ impl App {
     }
 
     pub(super) fn observe_resize(&mut self, registry: &RegistrySnapshot) {
+        if self.resizing.click.as_ref().is_some_and(|click| {
+            registry
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == click.workspace)
+                .and_then(|workspace| {
+                    workspace
+                        .windows
+                        .iter()
+                        .find(|window| window.id == click.window)
+                })
+                .is_none_or(|window| window.revision != click.revision)
+        }) {
+            self.resizing.click = None;
+        }
         if !self.resizing.observes(registry) {
-            self.retire_resize("window changed elsewhere");
+            self.retire_resize();
         }
     }
 
     pub(super) fn validate_resize(&mut self, size: Size) {
+        if self.resizing.click.as_ref().is_some_and(|click| {
+            self.options.read_only
+                || !self.host_focused
+                || click.size != size
+                || click.area != self.screen_geometry(size).1
+                || self.state.workspace.as_ref() != Some(&click.workspace)
+                || self.state.window.as_ref() != Some(&click.window)
+                || self.state.focused.as_ref() != Some(&click.pane)
+                || self
+                    .state
+                    .current_window(&self.registry)
+                    .is_none_or(|window| window.revision != click.revision)
+        }) {
+            self.resizing.click = None;
+        }
         let Some(gesture) = &self.resizing.gesture else {
             return;
         };
-        let reason = if self.options.read_only {
-            Some("client is read-only")
-        } else if !self.host_focused {
-            Some("terminal focus lost")
-        } else if gesture.size != size {
-            Some("terminal geometry changed")
-        } else if gesture.content_area != self.screen_geometry(size).1 {
-            Some("pane content geometry changed")
-        } else if self.state.workspace.as_ref() != Some(&gesture.workspace)
+        if self.options.read_only
+            || !self.host_focused
+            || gesture.size != size
+            || gesture.content_area != self.screen_geometry(size).1
+            || self.state.workspace.as_ref() != Some(&gesture.workspace)
             || self.state.window.as_ref() != Some(&gesture.window)
             || self.state.focused.as_ref() != Some(&gesture.pane)
-        {
-            Some("pane, window, or workspace focus changed")
-        } else if self.state.form.is_some()
+            || self.state.form.is_some()
             || self.picker_open()
             || self
                 .consent
                 .as_ref()
                 .is_some_and(|consent| !consent.state.allowed && !consent.state.sent)
+            || !self.resizing.observes(&self.registry)
         {
-            Some("modal opened")
-        } else if !self.resizing.observes(&self.registry) {
-            Some("window changed elsewhere")
-        } else {
-            None
-        };
-        if let Some(reason) = reason {
-            self.retire_resize(reason);
+            self.retire_resize();
         }
     }
 
@@ -220,6 +264,7 @@ impl App {
             bail!("Resize unavailable: no representable divider");
         }
         self.resizing.generation = self.resizing.generation.wrapping_add(1);
+        self.resizing.click = None;
         self.resizing.hover = None;
         self.resizing.gesture = Some(Gesture {
             generation: self.resizing.generation,
@@ -262,7 +307,6 @@ impl App {
                 && gesture.pending_pointer.is_none()
             {
                 self.resizing.gesture = None;
-                self.notify("Resize finished".into());
             }
         }
         if matches!(self.pointer_capture, Some(PointerCapture::Resize)) {
@@ -333,6 +377,17 @@ impl App {
 
     pub(super) fn clear_resize_hover(&mut self) {
         self.resizing.hover = None;
+    }
+
+    pub(super) fn resize_click_pointer(&mut self, x: u16, y: u16, eligible: bool) {
+        if self
+            .resizing
+            .click
+            .as_ref()
+            .is_some_and(|click| !eligible || click.position != (x, y))
+        {
+            self.resizing.click = None;
+        }
     }
 
     pub(super) fn update_resize_hover(&mut self, size: Size, position: Option<(u16, u16)>) -> bool {
@@ -430,23 +485,69 @@ impl App {
     }
 
     pub(super) fn begin_divider_resize(&mut self, size: Size, x: u16, y: u16) -> Result<bool> {
+        self.begin_divider_resize_at(size, x, y, Instant::now())
+    }
+
+    fn begin_divider_resize_at(&mut self, size: Size, x: u16, y: u16, at: Instant) -> Result<bool> {
+        let previous = self.resizing.click.take();
         let area = self.screen_geometry(size).1;
-        let targets = self
-            .state
-            .current_window(&self.registry)
-            .and_then(|window| window.layout.as_ref())
-            .map_or_else(Vec::new, |layout| {
-                tiling::resize_targets(layout, area, x, y)
-            });
+        let Some(window) = self.state.current_window(&self.registry) else {
+            return Ok(false);
+        };
+        let Some(layout) = &window.layout else {
+            return Ok(false);
+        };
+        let targets = tiling::resize_targets(layout, area, x, y);
         if targets.is_empty() {
             return Ok(false);
         }
+        let separators = tiling::separator_targets(layout, area, &targets, x, y);
+        let click = (!separators.is_empty()).then(|| DividerClick {
+            workspace: self.state.workspace.clone().unwrap(),
+            window: window.id.clone(),
+            pane: self.state.focused.clone().unwrap_or_default(),
+            revision: window.revision,
+            size,
+            area,
+            position: (x, y),
+            targets: separators,
+            at,
+            released: false,
+        });
+        let equalize = previous
+            .as_ref()
+            .zip(click.as_ref())
+            .is_some_and(|(previous, click)| previous.matches(click));
         self.begin_resize(size, Mode::Drag, targets)?;
         self.pointer_capture = Some(PointerCapture::Resize);
+        if equalize {
+            let gesture = self.resizing.gesture.as_mut().unwrap();
+            if let Some(layout) = tiling::equalize_targets(
+                &gesture.acknowledged,
+                area,
+                &click.as_ref().unwrap().targets,
+            ) {
+                gesture.desired = layout;
+            }
+            self.finish_resize()?;
+        } else {
+            self.resizing.click = click;
+        }
         Ok(true)
     }
 
     pub(super) fn resize_pointer(&mut self, x: u16, y: u16, release: bool) -> Result<()> {
+        if self
+            .resizing
+            .click
+            .as_ref()
+            .is_some_and(|click| click.position != (x, y))
+        {
+            self.resizing.click = None;
+        }
+        if release && let Some(click) = &mut self.resizing.click {
+            click.released = true;
+        }
         let Some(gesture) = &mut self.resizing.gesture else {
             return Ok(());
         };
@@ -477,7 +578,6 @@ impl App {
         if gesture.desired == gesture.acknowledged {
             if matches!(gesture.mode, Mode::Finishing) {
                 self.resizing.gesture = None;
-                self.notify("Resize finished".into());
             }
             return Ok(());
         }
@@ -501,7 +601,7 @@ impl App {
                 management::execute(&socket, command).map(Background::Resize)
             })
         {
-            self.retire_resize("layout update was not admitted");
+            self.retire_resize();
             return Err(error);
         }
         self.resizing.flight = Some(flight);
@@ -545,12 +645,11 @@ impl App {
         match result {
             Ok(result) => {
                 self.accept_management(result, None);
-                if self.resizing.acknowledge() && self.resizing.gesture.is_none() {
-                    self.notify("Resize finished".into());
-                }
+                self.resizing.acknowledge();
             }
             Err(error) => {
                 self.resizing.gesture = None;
+                self.resizing.click = None;
                 let flight = self.resizing.flight.take().unwrap();
                 if matches!(self.pointer_capture, Some(PointerCapture::Resize)) {
                     self.pointer_capture = Some(PointerCapture::Ui);
@@ -622,6 +721,7 @@ mod tests {
                 layout: layout(600),
             }),
             hover: None,
+            click: None,
         }
     }
 
@@ -792,5 +892,215 @@ mod tests {
         state.materialize_pointer();
         assert!(state.gesture.is_none());
         assert!(state.flight.is_none());
+    }
+}
+
+#[cfg(test)]
+mod double_click_tests {
+    use super::*;
+
+    fn fixture(axis: Axis) -> (App, Size, (u16, u16)) {
+        let (mut app, _) = crate::app::tests::fixture();
+        let layout = LayoutNode::Split {
+            axis,
+            ratio: 300,
+            first: Box::new(LayoutNode::Leaf {
+                pane_id: "a".into(),
+            }),
+            second: Box::new(LayoutNode::Split {
+                axis: if axis == Axis::Horizontal {
+                    Axis::Vertical
+                } else {
+                    Axis::Horizontal
+                },
+                ratio: 650,
+                first: Box::new(LayoutNode::Leaf {
+                    pane_id: "b".into(),
+                }),
+                second: Box::new(LayoutNode::Leaf {
+                    pane_id: "c".into(),
+                }),
+            }),
+        };
+        app.registry = RegistrySnapshot {
+            revision: 1,
+            workspaces: vec![Workspace {
+                id: "workspace".into(),
+                name: "workspace".into(),
+                revision: 1,
+                windows: vec![Window {
+                    id: "window".into(),
+                    name: "window".into(),
+                    revision: 7,
+                    layout: Some(layout),
+                }],
+            }],
+            panes: Vec::new(),
+        };
+        app.state.workspace = Some("workspace".into());
+        app.state.window = Some("window".into());
+        app.state.focused = Some("a".into());
+        app.jobs = jobs::Scope::new(1).unwrap();
+        let size = Size {
+            cols: 140,
+            rows: 44,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let mut splits = Vec::new();
+        tiling::dividers(
+            app.registry.workspaces[0].windows[0].layout.as_ref(),
+            app.screen_geometry(size).1,
+            &mut splits,
+        );
+        let divider = splits[0].divider;
+        let point = (
+            divider.x + divider.width / 2,
+            divider.y + divider.height / 2,
+        );
+        (app, size, point)
+    }
+
+    fn click(app: &mut App, size: Size, point: (u16, u16), at: Instant) {
+        assert!(
+            app.begin_divider_resize_at(size, point.0, point.1, at)
+                .unwrap()
+        );
+        app.resize_pointer(point.0, point.1, true).unwrap();
+        app.pointer_capture = None;
+        // Queue the second click's desired mutation without issuing native I/O.
+        app.jobs
+            .submit("fixture:capacity".into(), || bail!("fixture"))
+            .unwrap();
+    }
+
+    #[test]
+    fn double_click_equalizes_each_axis_without_changing_unrelated_splits() {
+        for axis in [Axis::Horizontal, Axis::Vertical] {
+            let (mut app, size, point) = fixture(axis);
+            let at = Instant::now();
+            click(&mut app, size, point, at);
+            assert!(app.resizing.gesture.is_none());
+            assert!(
+                app.begin_divider_resize_at(
+                    size,
+                    point.0,
+                    point.1,
+                    at + Duration::from_millis(499),
+                )
+                .unwrap()
+            );
+            let gesture = app.resizing.gesture.as_ref().unwrap();
+            assert!(matches!(gesture.mode, Mode::Finishing));
+            assert_eq!(gesture.revision, 7);
+            assert_eq!(gesture.window, "window");
+            let mut expected = gesture.acknowledged.clone();
+            let LayoutNode::Split { ratio, .. } = &mut expected else {
+                unreachable!()
+            };
+            *ratio = 500;
+            assert_eq!(gesture.desired, expected);
+            assert!(matches!(app.pointer_capture, Some(PointerCapture::Ui)));
+            app.resize_pointer(point.0 + 5, point.1 + 3, true).unwrap();
+            assert_eq!(app.resizing.gesture.as_ref().unwrap().desired, expected);
+            assert!(app.resizing.flight.is_none());
+            app.retire_resize();
+            assert!(app.resizing.gesture.is_none());
+            assert!(app.resizing.click.is_none());
+            assert!(matches!(app.pointer_capture, Some(PointerCapture::Ui)));
+        }
+    }
+
+    #[test]
+    fn invalidated_clicks_never_equalize_a_later_matching_separator() {
+        for invalidation in [
+            "movement",
+            "foreign",
+            "geometry",
+            "retired",
+            "other-button",
+            "timeout",
+            "window",
+        ] {
+            let (mut app, size, point) = fixture(Axis::Horizontal);
+            let at = Instant::now();
+            click(&mut app, size, point, at);
+            match invalidation {
+                "movement" => {
+                    app.resize_click_pointer(point.0 + 1, point.1, true);
+                    app.resize_click_pointer(point.0, point.1, true);
+                }
+                "foreign" => {
+                    let mut changed = app.registry.clone();
+                    changed.workspaces[0].windows[0].revision += 1;
+                    app.observe_resize(&changed);
+                }
+                "geometry" => app.validate_resize(Size {
+                    cols: size.cols + 1,
+                    ..size
+                }),
+                "retired" => app.retire_resize(),
+                "other-button" => app.resize_click_pointer(point.0, point.1, false),
+                "timeout" => {}
+                "window" => {
+                    let mut other = app.registry.workspaces[0].windows[0].clone();
+                    other.id = "other-window".into();
+                    app.registry.workspaces[0].windows.push(other);
+                    app.state.window = Some("other-window".into());
+                }
+                _ => unreachable!(),
+            }
+            let delay = if invalidation == "timeout" { 500 } else { 100 };
+            assert!(
+                app.begin_divider_resize_at(
+                    size,
+                    point.0,
+                    point.1,
+                    at + Duration::from_millis(delay),
+                )
+                .unwrap()
+            );
+            let gesture = app.resizing.gesture.as_ref().unwrap();
+            assert!(matches!(gesture.mode, Mode::Drag), "{invalidation}");
+            assert_eq!(gesture.desired, gesture.acknowledged, "{invalidation}");
+        }
+    }
+
+    #[test]
+    fn readonly_modal_and_inflight_second_clicks_cannot_admit_equalization() {
+        for invalidation in ["readonly", "modal", "inflight"] {
+            let (mut app, size, point) = fixture(Axis::Horizontal);
+            let at = Instant::now();
+            click(&mut app, size, point, at);
+            match invalidation {
+                "readonly" => app.options.read_only = true,
+                "modal" => app.state.open(FormKind::ProjectDetails, String::new()),
+                "inflight" => {
+                    app.resizing.flight = Some(Commit {
+                        generation: 1,
+                        workspace: "workspace".into(),
+                        window: "window".into(),
+                        revision: 7,
+                        layout: app.registry.workspaces[0].windows[0]
+                            .layout
+                            .clone()
+                            .unwrap(),
+                    });
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                app.begin_divider_resize_at(
+                    size,
+                    point.0,
+                    point.1,
+                    at + Duration::from_millis(100),
+                )
+                .is_err()
+            );
+            assert!(app.resizing.gesture.is_none());
+            assert!(app.resizing.click.is_none());
+            assert!(app.jobs.is_full());
+        }
     }
 }

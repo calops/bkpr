@@ -2000,7 +2000,7 @@ pub fn modal(surface: &mut UiSurface, size: Size, form: &Form, registry: &Regist
         FormKind::CloseWorkspace => "Close workspace, all its windows and owned terminals?",
         FormKind::CloseWindow => "Close window and all its owned terminals?",
         FormKind::StopSession(_) => "Stop session, keep recovery?",
-        FormKind::ProjectDetails => "Focused project (arrows scroll)",
+        FormKind::ProjectDetails => "Focused project",
     };
     if matches!(
         form.kind,
@@ -2071,7 +2071,7 @@ pub fn modal(surface: &mut UiSurface, size: Size, form: &Form, registry: &Regist
             x,
             y.saturating_add(5),
             width,
-            "↑/↓ choose directory · no old program or conversation is resumed",
+            "No old program or conversation is resumed",
             false,
         ));
     } else if let FormKind::StopSession(target) = &form.kind {
@@ -2127,29 +2127,13 @@ pub fn modal(surface: &mut UiSurface, size: Size, form: &Form, registry: &Regist
             ));
         }
     }
-    lines.push(line(
-        x,
-        size.rows.saturating_sub(2),
-        width,
-        if let Some(error) = &form.error {
-            error.as_str()
-        } else if form.pending.is_some() {
-            "Waiting for backend receipt · Esc leaves without cancelling accepted work"
-        } else if form.kind == FormKind::ProjectDetails {
-            "↑/↓ scroll · Enter / Esc close"
-        } else if matches!(
-            form.kind,
-            FormKind::TerminatePane
-                | FormKind::CloseWorkspace
-                | FormKind::CloseWindow
-                | FormKind::StopSession(_)
-        ) {
-            "y / Enter confirms · n / Esc cancels"
-        } else {
-            "Enter applies · Esc cancels"
-        },
-        false,
-    ));
+    if let Some(status) = form.error.as_deref().or_else(|| {
+        form.pending
+            .as_ref()
+            .map(|_| "Waiting for backend receipt; accepted work continues independently")
+    }) {
+        lines.push(line(x, size.rows.saturating_sub(2), width, status, false));
+    }
     surface.paint(size, lines, None);
 }
 

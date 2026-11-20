@@ -196,9 +196,13 @@ mod tests {
             &crate::project_colors::ProjectSlots::default(),
             |id| app.views.get(id).map(|view| &view.metadata),
         );
-        finder.set_graphical(graphical);
         let mut surface = UiSurface::new(size);
         finder.paint(&mut surface, size);
+        if !graphical {
+            crate::finder::Finder::sections(size)
+                .unwrap()
+                .decorate(&mut surface.frame);
+        }
         let mut buttons = Vec::new();
         for (y, row) in surface.frame.rows.iter().enumerate() {
             for (x, cells) in row.cells.windows(6).enumerate() {

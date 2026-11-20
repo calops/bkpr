@@ -2,7 +2,8 @@
 //! The caller owns the outer window, title, placement, and cancellation rollback.
 
 use crate::{
-    EditAction, ForegroundSpan, Rect, Role, RoleSpan, TextInput, Theme, UiSurface, window,
+    BackgroundSpan, EditAction, ForegroundSpan, Rect, Role, RoleSpan, TextInput, Theme, UiSurface,
+    window,
 };
 use bkpr_protocol::{
     Cursor, CursorShape, KeyAction, KeyEvent, MouseAction, MouseButton, MouseEvent, Size,
@@ -33,6 +34,32 @@ pub enum MouseActivation {
     /// Select and accept on a left press.
     #[default]
     Accept,
+}
+
+/// Presentation geometry; it never depends on artwork readiness.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ListLayout {
+    /// Compact content inside a caller-owned window.
+    #[default]
+    Inline,
+    /// Floating search/results cards, optionally reserving a details card.
+    Cards {
+        /// Reserve responsive details geometry for caller-owned content.
+        details: bool,
+    },
+}
+
+/// Current content rectangles in the same coordinates as paint and pointer input.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ContentLayout {
+    /// Optional heading row.
+    pub title: Rect,
+    /// Query editor row.
+    pub input: Rect,
+    /// Actual result rows, excluding any query error.
+    pub results: Rect,
+    /// Optional caller-owned details content.
+    pub details: Rect,
 }
 
 struct Item<T> {
@@ -80,6 +107,7 @@ pub struct SearchList<T> {
     match_cells: Vec<(u16, u16)>,
     mouse_activation: MouseActivation,
     select_on_hover: bool,
+    layout: ListLayout,
 }
 
 impl<T: Clone + Eq> SearchList<T> {
@@ -105,6 +133,7 @@ impl<T: Clone + Eq> SearchList<T> {
             match_cells: Vec::new(),
             mouse_activation: MouseActivation::default(),
             select_on_hover: true,
+            layout: ListLayout::default(),
         };
         list.rank();
         list
@@ -136,6 +165,48 @@ impl<T: Clone + Eq> SearchList<T> {
     /// Choose whether motion changes selection; disable for explicit-action lists.
     pub fn set_select_on_hover(&mut self, enabled: bool) {
         self.select_on_hover = enabled;
+    }
+
+    /// Change section presentation without changing query, caret or selection.
+    pub fn set_layout(&mut self, layout: ListLayout) {
+        self.layout = layout;
+    }
+
+    /// Derive content from current dimensions, including before the first paint.
+    pub fn content_layout(&self, size: Size) -> ContentLayout {
+        if let ListLayout::Cards { details } = self.layout
+            && let Some(layout) = crate::picker::PickerLayout::new(size, details)
+        {
+            let mut results = layout.results;
+            if self.input.error().is_some() {
+                results.y += 1;
+                results.height = results.height.saturating_sub(1);
+            }
+            return ContentLayout {
+                title: layout.title,
+                input: layout.input,
+                results,
+                details: layout.details,
+            };
+        }
+        let heading = u16::from(self.title.is_some() && size.rows > 1);
+        let row = |y| Rect {
+            x: 0,
+            y,
+            width: size.cols,
+            height: u16::from(y < size.rows),
+        };
+        let start = heading + 1 + u16::from(self.input.error().is_some());
+        ContentLayout {
+            title: if heading > 0 { row(0) } else { Rect::default() },
+            input: row(heading),
+            results: Rect {
+                y: start.min(size.rows),
+                height: size.rows.saturating_sub(start),
+                ..row(0)
+            },
+            details: Rect::default(),
+        }
     }
 
     /// Borrow visible values and row rectangles for caller-owned semantic annotations.
@@ -232,12 +303,13 @@ impl<T: Clone + Eq> SearchList<T> {
     /// Motion follows `set_select_on_hover`; left presses follow `set_mouse_activation`.
     /// Wheel events navigate results only while the pointer is in the list area.
     pub fn handle_mouse(&mut self, event: &MouseEvent, size: Size) -> SearchListIntent {
+        let results = self.content_layout(size).results;
         if !event.x.is_finite()
             || !event.y.is_finite()
-            || event.x < 0.0
-            || event.y < f32::from(self.list_start(size))
-            || event.x >= f32::from(size.cols)
-            || event.y >= f32::from(size.rows)
+            || event.x < f32::from(results.x)
+            || event.y < f32::from(results.y)
+            || event.x >= f32::from(results.x + results.width)
+            || event.y >= f32::from(results.y + results.height)
         {
             return SearchListIntent::None;
         }
@@ -255,7 +327,7 @@ impl<T: Clone + Eq> SearchList<T> {
                 _ => {}
             }
         }
-        let index = self.scroll + usize::from(event.y as u16 - self.list_start(size));
+        let index = self.scroll + usize::from(event.y as u16 - results.y);
         if index < self.results.len()
             && ((event.action == MouseAction::Motion && self.select_on_hover)
                 || (event.action == MouseAction::Press && event.button == MouseButton::Left))
@@ -290,29 +362,21 @@ impl<T: Clone + Eq> SearchList<T> {
         self.roles.clear();
         let mut lines = Vec::with_capacity(usize::from(size.rows));
         let mut cursor = None;
-        if size.cols > 0 && size.rows > 0 {
-            let input_y = self.input_row(size);
-            if input_y > 0 {
-                let rect = Rect {
-                    x: 0,
-                    y: 0,
-                    width: size.cols,
-                    height: 1,
-                };
-                lines.push((rect, self.title.as_ref().unwrap().clone(), false));
+        let layout = self.content_layout(size);
+        if layout.input.width > 0 && layout.input.height > 0 {
+            if layout.title.height > 0 {
+                let rect = layout.title;
+                lines.push((rect, self.title.clone().unwrap_or_default(), false));
                 self.roles.push(RoleSpan {
                     rect,
-                    role: Role::Accent,
+                    role: Role::Title,
                 });
             }
-            let prefix = if size.cols >= 3 { "> " } else { "" };
-            let (visible, caret) = self.input.visible(usize::from(size.cols) - prefix.len());
-            let input_rect = Rect {
-                x: 0,
-                y: input_y,
-                width: size.cols,
-                height: 1,
-            };
+            let prefix = if layout.input.width >= 3 { "> " } else { "" };
+            let (visible, caret) = self
+                .input
+                .visible(usize::from(layout.input.width) - prefix.len());
+            let input_rect = layout.input;
             lines.push((input_rect, format!("{prefix}{visible}"), false));
             self.roles.push(RoleSpan {
                 rect: input_rect,
@@ -323,17 +387,24 @@ impl<T: Clone + Eq> SearchList<T> {
                 },
             });
             cursor = Some(Cursor {
-                x: (prefix.len() + caret).min(usize::from(size.cols - 1)) as u16,
-                y: input_y,
+                x: input_rect.x
+                    + (prefix.len() + caret).min(usize::from(input_rect.width - 1)) as u16,
+                y: input_rect.y,
                 visible: true,
                 blinking: true,
                 shape: CursorShape::Bar,
                 color: None,
             });
-            if let Some(error) = self.input.error().filter(|_| size.rows > input_y + 1) {
+            if let Some(error) = self
+                .input
+                .error()
+                .filter(|_| layout.results.y > input_rect.y + 1 && layout.results.y <= size.rows)
+            {
                 let rect = Rect {
-                    y: input_y + 1,
-                    ..input_rect
+                    y: layout.results.y - 1,
+                    x: layout.results.x,
+                    width: layout.results.width,
+                    height: 1,
                 };
                 lines.push((rect, error.to_owned(), false));
                 self.roles.push(RoleSpan {
@@ -342,10 +413,7 @@ impl<T: Clone + Eq> SearchList<T> {
                 });
             }
             if self.results.is_empty() && self.capacity(size) > 0 {
-                let rect = Rect {
-                    y: self.list_start(size),
-                    ..input_rect
-                };
+                let rect = self.row_rect(size, 0);
                 lines.push((rect, "No matches".to_owned(), false));
                 self.roles.push(RoleSpan {
                     rect,
@@ -359,21 +427,21 @@ impl<T: Clone + Eq> SearchList<T> {
                 .take(self.capacity(size))
                 .enumerate()
             {
-                let y = self.list_start(size) + visible as u16;
+                let rect = self.row_rect(size, visible);
+                let y = rect.y;
                 let item = &self.items[result.item];
-                let mut label = window::fit(&item.label, size.cols);
+                let mut label = window::fit(&item.label, rect.width);
                 let used = display_width(&label);
-                // Pad selection through the full row even without an RGB theme.
-                label.extend(std::iter::repeat_n(' ', usize::from(size.cols) - used));
+                label.extend(std::iter::repeat_n(' ', usize::from(rect.width) - used));
                 lines.push((
                     self.row_rect(size, visible),
                     label,
                     self.scroll + visible == self.selected,
                 ));
-                let mut x = 0;
+                let mut x = usize::from(rect.x);
                 for (index, grapheme) in item.label.graphemes(true).enumerate() {
                     let width = unicode_width::UnicodeWidthStr::width(grapheme);
-                    if x + width > usize::from(size.cols) {
+                    if x + width > usize::from(rect.x + rect.width) {
                         break;
                     }
                     if result.matches.binary_search(&(index as u32)).is_ok() {
@@ -399,28 +467,27 @@ impl<T: Clone + Eq> SearchList<T> {
         surface: &mut UiSurface,
         theme: &Theme,
         foregrounds: &[ForegroundSpan],
+        backgrounds: &[BackgroundSpan],
     ) {
-        surface.apply_theme_with_colors(theme, Role::Panel, &self.roles, foregrounds, &[]);
+        surface.apply_theme_with_colors(theme, Role::Panel, &self.roles, foregrounds, backgrounds);
     }
 
     fn row_rect(&self, size: Size, visible: usize) -> Rect {
+        let results = self.content_layout(size).results;
         Rect {
-            x: 0,
-            y: self.list_start(size) + visible as u16,
-            width: size.cols,
+            y: results.y + visible as u16,
             height: 1,
+            ..results
         }
-    }
-    fn input_row(&self, size: Size) -> u16 {
-        u16::from(self.title.is_some() && size.rows > 1)
-    }
-
-    fn list_start(&self, size: Size) -> u16 {
-        self.input_row(size) + 1 + u16::from(self.input.error().is_some())
     }
 
     fn capacity(&self, size: Size) -> usize {
-        usize::from(size.rows.saturating_sub(self.list_start(size)))
+        let results = self.content_layout(size).results;
+        if results.width == 0 {
+            0
+        } else {
+            usize::from(results.height)
+        }
     }
 
     fn navigate(&mut self, delta: isize, size: Size) {
@@ -541,6 +608,62 @@ mod tests {
             action,
             button,
             modifiers: 0,
+        }
+    }
+
+    #[test]
+    fn cards_use_exact_painted_rows_and_ignore_borders_after_resize() {
+        let mut list = list();
+        list.set_title("Choose");
+        list.paste("o");
+        list.handle_key(&key("ArrowLeft", 0, ""), size(100, 24));
+        let query = list.input.value.clone();
+        let caret = list.input.cursor;
+        let selected = list.selected().copied();
+        let mut surface = UiSurface::new(size(100, 24));
+        for details in [false, true] {
+            list.set_layout(ListLayout::Cards { details });
+            for dimensions in [
+                size(100, 24),
+                size(60, 18),
+                size(39, 7),
+                size(1, 1),
+                size(0, 0),
+            ] {
+                list.paint(&mut surface, dimensions);
+                assert_eq!(list.input.value, query);
+                assert_eq!(list.input.cursor, caret);
+                assert_eq!(list.selected().copied(), selected);
+                let content = list.content_layout(dimensions);
+                for (rect, _) in list.visible_items(dimensions) {
+                    assert_eq!(rect.x, content.results.x);
+                    assert!(rect.y >= content.results.y);
+                    assert!(rect.y < content.results.y + content.results.height);
+                    assert_eq!(rect.width, content.results.width);
+                    assert!(
+                        surface.frame.rows[usize::from(rect.y)].cells
+                            [usize::from(rect.x)..usize::from(rect.x + rect.width)]
+                            .iter()
+                            .any(|cell| !cell.text.trim().is_empty())
+                    );
+                }
+                if let Some(cards) = crate::picker::PickerLayout::new(dimensions, details) {
+                    let border = cards.cards()[1].0;
+                    assert_eq!(
+                        list.handle_mouse(
+                            &mouse(
+                                f32::from(border.x),
+                                f32::from(border.y),
+                                MouseAction::Press,
+                                MouseButton::Left
+                            ),
+                            dimensions,
+                        ),
+                        SearchListIntent::None
+                    );
+                    assert_eq!(list.selected().copied(), selected);
+                }
+            }
         }
     }
 
@@ -747,14 +870,14 @@ mod tests {
         list.paste("oc");
         for _ in 0..2 {
             list.paint(&mut surface, dimensions);
-            list.apply_theme(&mut surface, &theme, &[]);
+            list.apply_theme(&mut surface, &theme, &[], &[]);
             assert_eq!(surface.frame.rows[1].cells[0].style.underline, 1);
             assert_eq!(surface.frame.rows[1].cells[1].style.underline, 1);
             assert_eq!(surface.frame.rows[1].cells[2].style.underline, 0);
         }
         list.handle_key(&key("KeyU", 2, ""), dimensions);
         list.paint(&mut surface, dimensions);
-        list.apply_theme(&mut surface, &theme, &[]);
+        list.apply_theme(&mut surface, &theme, &[], &[]);
         assert!(
             surface.frame.rows[1]
                 .cells

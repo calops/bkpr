@@ -22,6 +22,7 @@ mod navigation;
 pub use navigation::{Navigation, NavigationRow};
 pub mod notification;
 pub mod overlay;
+pub mod picker;
 pub mod search_list;
 mod spinner;
 pub use spinner::Spinner;

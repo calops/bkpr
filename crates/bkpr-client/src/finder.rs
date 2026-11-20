@@ -158,86 +158,18 @@ struct FinderLayout {
     preview: Rect,
     search_rule: Option<Rect>,
     body_rule: Option<Rect>,
-    footer: Option<Rect>,
 }
 impl FinderLayout {
-    fn raised(size: Size) -> Option<(Self, [(Rect, Rect); 3])> {
-        if size.cols < 40 || size.rows < 14 {
-            return None;
-        }
-        let search = Rect {
-            x: 0,
-            y: 0,
-            width: size.cols,
-            height: 4,
-        };
-        let body = size.rows - 4;
-        let (list, preview) = if size.cols >= 84 {
-            let split = (u32::from(size.cols) * 2 / 5) as u16;
-            (
-                Rect {
-                    x: 0,
-                    y: 4,
-                    width: split,
-                    height: body,
-                },
-                Rect {
-                    x: split,
-                    y: 4,
-                    width: size.cols - split,
-                    height: body,
-                },
-            )
-        } else {
-            let split = ((u32::from(body) * 2 / 5) as u16).max(4);
-            (
-                Rect {
-                    x: 0,
-                    y: 4,
-                    width: size.cols,
-                    height: split,
-                },
-                Rect {
-                    x: 0,
-                    y: 4 + split,
-                    width: size.cols,
-                    height: body - split,
-                },
-            )
-        };
-        let inset = |rect: Rect| Rect {
-            x: rect.x + 2,
-            y: rect.y + 1,
-            width: rect.width - 4,
-            height: rect.height - 2,
-        };
-        let title = Rect {
-            x: 2,
-            y: 1,
-            width: size.cols - 4,
-            height: 1,
-        };
-        let layout = Self {
-            title,
-            input: Rect { y: 2, ..title },
-            list: inset(list),
-            preview: inset(preview),
-            ..Self::default()
-        };
-        Some((
-            layout,
-            [
-                (search, Rect { height: 2, ..title }),
-                (list, layout.list),
-                (preview, layout.preview),
-            ],
-        ))
-    }
-
-    // The parent owns the rounded outer border; these are its inner cells.
-    fn new(size: Size, compact: CompactView, graphical: bool) -> Self {
-        if graphical && let Some((layout, _)) = Self::raised(size) {
-            return layout;
+    // Compact coordinates are the parent's inner cells; cards use the full overlay.
+    fn new(size: Size, compact: CompactView) -> Self {
+        if let Some(layout) = bkpr_tui_framework::picker::PickerLayout::new(size, true) {
+            return Self {
+                title: layout.title,
+                input: layout.input,
+                list: layout.results,
+                preview: layout.details,
+                ..Self::default()
+            };
         }
         let row = |y| Rect {
             x: 0,
@@ -275,15 +207,11 @@ impl FinderLayout {
         if rule != 0 {
             layout.search_rule = Some(row(top));
         }
-        let footer = u16::from(size.rows >= 5);
-        if footer != 0 {
-            layout.footer = Some(row(size.rows - 1));
-        }
         let body = Rect {
             x: 0,
             y: top + rule,
             width: size.cols,
-            height: size.rows - top - rule - footer,
+            height: size.rows - top - rule,
         };
         layout.list = body;
         if size.cols >= 84 && body.height >= 2 {
@@ -353,7 +281,7 @@ pub struct Finder {
     preview_lines: Vec<PreviewLine>,
     copy_hits: Vec<(Rect, metadata::IdentityCopy)>,
     preview_key: Option<(u64, String, u16)>,
-    graphical: bool,
+    painted_size: Option<Size>,
     roles: Vec<RoleSpan>,
     projects: Vec<ProjectSpan>,
     foregrounds: Vec<ForegroundSpan>,
@@ -384,7 +312,7 @@ impl Finder {
             preview_lines: Vec::new(),
             copy_hits: Vec::new(),
             preview_key: None,
-            graphical: false,
+            painted_size: None,
             roles: Vec::new(),
             projects: Vec::new(),
             foregrounds: Vec::new(),
@@ -398,19 +326,27 @@ impl Finder {
         }
         finder
     }
-    /// Candidate regions are independent of artwork readiness. Every coordinate
-    /// is local to the complete overlay, including the opaque text insets.
-    pub(crate) fn graphic_regions(size: Size) -> Option<[(Rect, Rect); 3]> {
-        FinderLayout::raised(size).map(|(_, regions)| regions)
-    }
-    pub(crate) fn set_graphical(&mut self, graphical: bool) {
-        self.graphical = graphical;
-    }
-    pub(crate) fn is_graphical(&self) -> bool {
-        self.graphical
+    /// Section geometry shared by painting, hit testing and either presentation.
+    pub(crate) fn sections(size: Size) -> Option<bkpr_tui_framework::picker::PickerLayout> {
+        bkpr_tui_framework::picker::PickerLayout::new(size, true)
     }
     fn layout(&self, size: Size) -> FinderLayout {
-        FinderLayout::new(size, self.compact, self.graphical)
+        FinderLayout::new(size, self.compact)
+    }
+
+    /// Connect compact content separators to the parent's rounded outer frame.
+    pub(crate) fn decorate_fallback(&self, frame: &mut bkpr_protocol::Frame) {
+        let content = bkpr_tui_framework::window::content(frame.size);
+        let layout = self.layout(Size {
+            cols: content.width,
+            rows: content.height,
+            ..frame.size
+        });
+        bkpr_tui_framework::window::connect_separators(
+            frame,
+            content,
+            [layout.search_rule, layout.body_rule].into_iter().flatten(),
+        );
     }
 
     pub fn target(&self, result: &FinderResult) -> Option<&FinderTarget> {
@@ -781,6 +717,10 @@ impl Finder {
         }
         let (x, y) = (event.x as u16, event.y as u16);
         let layout = self.layout(size);
+        self.reveal(layout.count());
+        if self.painted_size != Some(size) {
+            self.copy_hits.clear();
+        }
         let in_list = contains(layout.list, x, y);
         let in_preview = contains(layout.preview, x, y);
         let hit = in_list
@@ -865,17 +805,13 @@ impl Finder {
             Some(Action::Navigate(Navigation::Previous)) => self.navigate(-1, size),
             Some(Action::Navigate(Navigation::Next)) => self.navigate(1, size),
             Some(Action::Navigate(Navigation::PagePrevious)) => {
-                let page = preview_capacity(
-                    FinderLayout::new(size, CompactView::Preview, self.graphical).preview,
-                )
-                .max(1);
+                let page =
+                    preview_capacity(FinderLayout::new(size, CompactView::Preview).preview).max(1);
                 self.scroll_preview(-(page as isize), size);
             }
             Some(Action::Navigate(Navigation::PageNext)) => {
-                let page = preview_capacity(
-                    FinderLayout::new(size, CompactView::Preview, self.graphical).preview,
-                )
-                .max(1);
+                let page =
+                    preview_capacity(FinderLayout::new(size, CompactView::Preview).preview).max(1);
                 self.scroll_preview(page as isize, size);
             }
             Some(Action::CycleView) => {
@@ -898,9 +834,9 @@ impl Finder {
         FinderIntent::None
     }
 
-    /// Paint the supplied presentation size: full overlay for the three-card
-    /// graphical view, or the parent's inner plain-popup rectangle otherwise.
+    /// Paint full-overlay section geometry, or compact inner content on tiny screens.
     pub fn paint(&mut self, surface: &mut UiSurface, size: Size) {
+        self.painted_size = Some(size);
         let layout = self.layout(size);
         self.reveal(layout.count());
         let preview_count = preview_capacity(layout.preview);
@@ -1126,17 +1062,6 @@ impl Finder {
                 }
             }
         }
-        if let Some(footer) = layout.footer {
-            role_line(
-                &mut lines,
-                &mut self.roles,
-                footer,
-                0,
-                "Tab views · ↑/↓ select · PgUp/PgDn preview · Enter open · Esc cancel".into(),
-                Role::Muted,
-                false,
-            );
-        }
         let cursor = (layout.input.height > 0
             && layout.input.width > 0
             && self.compact == CompactView::Input)
@@ -1170,21 +1095,30 @@ impl Finder {
         host: &ColorProbe,
         palette: &ProjectPalette,
     ) {
-        let backgrounds = Self::graphic_regions(surface.frame.size)
-            .filter(|_| self.graphical)
-            .map(|regions| {
-                std::array::from_fn::<_, 3, _>(|index| BackgroundSpan {
-                    rect: regions[index].1,
-                    background: crate::appearance::region_background(
-                        host,
-                        (index == 0).then_some(6),
-                    )
-                    .map_or(
+        let backgrounds = Self::sections(surface.frame.size).map_or_else(
+            || {
+                let input = self.layout(surface.frame.size).input;
+                let tint = BackgroundSpan {
+                    rect: input,
+                    background: crate::appearance::region_background(host, Some(6)).map_or(
                         bkpr_protocol::ColorSource::Default,
                         bkpr_protocol::ColorSource::Rgb,
                     ),
-                })
-            });
+                };
+                [
+                    tint,
+                    BackgroundSpan {
+                        rect: Rect::default(),
+                        ..tint
+                    },
+                    BackgroundSpan {
+                        rect: Rect::default(),
+                        ..tint
+                    },
+                ]
+            },
+            |layout| crate::appearance::picker_backgrounds(host, &layout, false),
+        );
         self.foregrounds.clear();
         let muted = theme.ink(Role::Muted, false);
         let roles_len = self.roles.len();
@@ -1204,7 +1138,7 @@ impl Finder {
             Role::Panel,
             &self.roles,
             &self.foregrounds,
-            backgrounds.as_ref().map_or(&[], |spans| &spans[..]),
+            &backgrounds,
         );
         self.roles.truncate(roles_len);
     }
@@ -1760,7 +1694,7 @@ mod tests {
         assert!(finder.input.error().is_some());
     }
     #[test]
-    fn graphical_regions_share_painted_and_pointer_geometry() {
+    fn sections_share_painted_and_pointer_geometry() {
         let mut finder = Finder::new(&registry(), None, &ProjectSlots::default(), |_| None);
         for (cols, rows) in [(120, 28), (84, 18), (60, 24), (40, 14)] {
             let size = Size {
@@ -1768,17 +1702,16 @@ mod tests {
                 rows,
                 ..size()
             };
-            let regions = Finder::graphic_regions(size).unwrap();
-            finder.set_graphical(true);
-            assert!(finder.is_graphical());
+            let sections = Finder::sections(size).unwrap();
+            let regions = sections.cards();
             let layout = finder.layout(size);
             assert_eq!(layout.list, regions[1].1);
             assert_eq!(layout.preview, regions[2].1);
             for (card, text) in regions {
                 assert!(card.x + card.width <= cols && card.y + card.height <= rows);
-                assert!(contains(card, text.x, text.y));
+                assert!(contains(*card, text.x, text.y));
                 assert!(contains(
-                    card,
+                    *card,
                     text.x + text.width - 1,
                     text.y + text.height - 1
                 ));
@@ -1831,7 +1764,7 @@ mod tests {
     }
 
     #[test]
-    fn presentation_toggle_and_tiny_resize_preserve_query_selection_and_preview_focus() {
+    fn responsive_resize_preserves_query_selection_and_preview_focus() {
         let mut finder = Finder::new(&registry(), None, &ProjectSlots::default(), |_| None);
         finder.paste("build");
         finder.navigate(1, size());
@@ -1856,7 +1789,7 @@ mod tests {
                 rows,
                 ..size()
             };
-            finder.set_graphical(Finder::graphic_regions(size).is_some());
+            assert_eq!(Finder::sections(size).is_some(), cols >= 40 && rows >= 14);
             finder.paint(&mut surface, size);
             assert_eq!(finder.input.value, query);
             assert_eq!(finder.input.cursor, cursor);
