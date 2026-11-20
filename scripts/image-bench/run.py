@@ -223,9 +223,13 @@ def delta(before: dict, after: dict) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pair", type=Path, required=True, help="directory holding matching bkpr and bkprd")
-    parser.add_argument("--topology", choices=("local", "remote", "ssh-tty"), default="local",
+    parser.add_argument("--topology", choices=("direct", "local", "remote", "ssh-tty"), default="local",
                         help="remote: bkpr remote mode over SSH; ssh-tty: client on the host, terminal over SSH")
     parser.add_argument("--link", help="shape SSH as MBIT,DELAY_MS (one-way delay per direction)")
+    parser.add_argument("--keep-transcript", action="store_true", help="keep terminal bytes and timing")
+    parser.add_argument("--screenshot-at", type=float, help="save one screenshot this many seconds after the trigger")
+    parser.add_argument("--client-env", action="append", default=[],
+                        help="KEY=VALUE for the client process (local and remote topologies)")
     parser.add_argument("--mode", choices=("png", "strips"), default="png")
     parser.add_argument("--frames", type=int, default=60)
     parser.add_argument("--fps", type=float, default=15)
@@ -248,6 +252,7 @@ def main() -> int:
     host_env = private_environment(host_root, base)
     client_env = private_environment(client_root, base) if args.topology != "local" else dict(host_env)
     link = tuple(map(float, args.link.split(","))) if args.link else None
+    client_env.update(entry.split("=", 1) for entry in args.client_env)
     owned = OwnedProcesses(host_env, evidence)
     result: dict = {"args": {key: str(value) for key, value in vars(args).items()}}
     framebuffer = None
@@ -265,12 +270,16 @@ def main() -> int:
         client_env["DISPLAY"] = display
 
         trigger, emitter_log = root / "trigger", root / "emitter.json"
-        _, endpoint, family = start_host(owned, pair, host_env, host_root)
         emitter = [tool("python3"), HERE / "emitter.py", "--mode", args.mode, "--frames", args.frames,
                    "--fps", args.fps, "--trigger", trigger, "--log", emitter_log]
-        open_session(pair, host_env, endpoint, family, emitter, host_root)
+        if args.topology != "direct":
+            _, endpoint, family = start_host(owned, pair, host_env, host_root)
+            open_session(pair, host_env, endpoint, family, emitter, host_root)
 
-        if args.topology == "remote":
+        if args.topology == "direct":
+            # Ground truth: the same workload straight in Kitty, without bkpr.
+            client = emitter
+        elif args.topology == "remote":
             ssh_config, remote_bin = start_ssh(owned, root, host_env, pair, link)
             client = [pair / "bkpr", "--session", f"benchhost:{SESSION}", "--ssh-config", ssh_config,
                       "--remote-bkpr-bin", remote_bin, "--clipboard", "deny"]
@@ -282,8 +291,9 @@ def main() -> int:
             client = [pair / "bkpr", "--bkprd", pair / "bkprd", "--session", SESSION, "--clipboard", "deny"]
 
         transcript = root / "terminal.raw"
+        timing = root / "terminal.timing"
         wrapped = [tool("script"), "--quiet", "--return", "--flush", "--echo", "never",
-                   "--log-out", transcript, "--command", shlex.join(map(str, client))]
+                   "--log-out", transcript, "--log-timing", timing, "--command", shlex.join(map(str, client))]
         terminal_socket = root / "kitty.sock"
         options = {"background": "#101010", "foreground": "#d0d0d0", "allow_remote_control": "socket-only",
                    "confirm_os_window_close": "0", "enable_audio_bell": "no", "remember_window_size": "no",
@@ -324,6 +334,10 @@ def main() -> int:
         before = accounting(owned)
         transcript_before = transcript.stat().st_size
         trigger.touch()
+        if args.screenshot_at is not None:
+            import threading
+            threading.Timer(args.screenshot_at, lambda: shutil.copy(
+                fbdir / "Xvfb_screen0", evidence / "screen.xwd")).start()
         samples = []
         deadline = time.time() + 30 + args.frames / args.fps * 4
         green_since = None
@@ -390,6 +404,9 @@ def main() -> int:
             "processes": delta(before, after),
         })
         write_json(evidence / "result.json", result)
+        if args.keep_transcript:
+            shutil.copy(transcript, evidence / "terminal.raw")
+            shutil.copy(timing, evidence / "terminal.timing")
         print(json.dumps({k: result[k] for k in ("presentation", "bytes", "processes", "sampling")}, indent=1))
     finally:
         if framebuffer:
