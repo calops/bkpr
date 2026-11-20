@@ -135,16 +135,16 @@ mod identity_copy;
 mod jobs;
 #[path = "management.rs"]
 mod management;
+#[path = "pane_feedback.rs"]
+mod pane_feedback;
+#[path = "pane_scene.rs"]
+mod pane_scene;
 #[path = "recovery_picker.rs"]
 mod recovery_picker;
 #[path = "recovery_ui.rs"]
 mod recovery_ui;
 #[path = "resizing.rs"]
 mod resizing;
-#[path = "resource_scene.rs"]
-mod resource_scene;
-#[path = "resource_ui.rs"]
-mod resource_ui;
 #[path = "scrollback.rs"]
 mod scrollback;
 #[path = "search.rs"]
@@ -259,8 +259,6 @@ struct Attached {
     held: updates::HeldImages,
     /// Prepared terminal payloads for newly received images, awaiting the writer.
     transports: Vec<bkpr_tui_framework::PreparedTransport>,
-    progressive: bool,
-    image_manifest: Option<ImageManifest>,
     seeded: u64,
     retirement_requested: bool,
     retirement_policy: RetirementPolicy,
@@ -511,9 +509,7 @@ struct App {
     state: Controller,
     views: HashMap<String, Attached>,
     retiring: Vec<RetiringView>,
-    resources: crate::resources::Resources,
-    image_feedback: HashMap<String, resource_ui::Feedback>,
-    image_runtime_failed: bool,
+    image_feedback: HashMap<String, pane_feedback::Feedback>,
     retiring_candidates: Vec<RetiringCandidate>,
     jobs: jobs::Scope<Background>,
     management: HashMap<String, ManagementIntent>,
@@ -629,7 +625,7 @@ impl App {
 
     fn fail_view(&mut self, pane: String, summary: &str, error: &anyhow::Error) {
         let diagnostic = self.report_failure(summary, error);
-        self.retire_image_resources(&pane);
+        self.retire_image_feedback(&pane);
         self.view_failures.insert(
             pane,
             ViewFailure {
@@ -644,11 +640,6 @@ impl App {
             self.view_failures
                 .get(pane)
                 .map(|failure| failure.diagnostic)
-                .or_else(|| {
-                    self.image_feedback
-                        .get(pane)
-                        .and_then(|feedback| feedback.diagnostic)
-                })
         });
         let store = self.diagnostics.lock().unwrap();
         preferred
@@ -1651,7 +1642,7 @@ impl App {
                         });
                     }
                     if let Some(pane) = completion.key.strip_prefix("attach:") {
-                        self.retire_image_resources(pane);
+                        self.retire_image_feedback(pane);
                         self.view_failures.insert(
                             pane.to_owned(),
                             ViewFailure {
@@ -2256,7 +2247,7 @@ impl App {
         }
     }
     fn retire_view(&mut self, pane: &str, wait_policy: bool) -> Result<()> {
-        self.retire_image_resources(pane);
+        self.retire_image_feedback(pane);
         let Some(attached) = self.views.get(pane) else {
             return Ok(());
         };
@@ -4631,28 +4622,19 @@ impl App {
             && mouse.modifiers == Modifiers::ALT
         {
             let area = content(*rect);
-            let hit =
-                area.contains(mouse.x, mouse.y)
-                    .then(|| {
-                        let view = self.views.get(pane)?;
-                        let frame = view.frame.as_ref()?;
-                        let x = f32::from(mouse.x - area.x) + 0.5;
-                        let y = f32::from(mouse.y - area.y) + 0.5;
-                        match &view.image_manifest {
-                            Some(manifest) => {
-                                image_viewer::hit_test_with_manifest(frame, manifest, x, y)
-                            }
-                            None => image_viewer::hit_test(frame, x, y)
-                                .map(image_viewer::ImageHit::Ready),
-                        }
-                    })
-                    .flatten();
-            if let Some(hit) = hit {
+            let hit = area
+                .contains(mouse.x, mouse.y)
+                .then(|| {
+                    let view = self.views.get(pane)?;
+                    let frame = view.frame.as_ref()?;
+                    let x = f32::from(mouse.x - area.x) + 0.5;
+                    let y = f32::from(mouse.y - area.y) + 0.5;
+                    image_viewer::hit_test(frame, x, y)
+                })
+                .flatten();
+            if let Some(image) = hit {
                 self.last_button = button;
                 self.pointer_capture = Some(PointerCapture::Ui);
-                let image_viewer::ImageHit::Ready(image) = hit else {
-                    return Ok(());
-                };
                 if !self.colors.graphics.supported() {
                     self.notify("Image viewing requires Kitty graphics support".into());
                     return Ok(());
@@ -4925,8 +4907,6 @@ fn attach(socket: &Endpoint, pane: &str, mut spec: ViewSpec) -> Result<Attached>
         recent: Default::default(),
         held,
         transports,
-        progressive: false,
-        image_manifest: None,
         seeded: 0,
         retirement_requested: false,
         retirement_policy: RetirementPolicy::Visible,
@@ -4996,7 +4976,6 @@ impl App {
             Some(input) => input,
             None => InputPump::new(&socket)?,
         };
-        let resources = crate::resources::Resources::new(socket.clone())?;
         Ok(Self {
             socket,
             options,
@@ -5013,9 +4992,7 @@ impl App {
             registry,
             state,
             views: HashMap::new(),
-            resources,
             image_feedback: HashMap::new(),
-            image_runtime_failed: false,
             retiring: Vec::new(),
             retiring_candidates: Vec::new(),
             jobs,
@@ -5241,7 +5218,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             }
             app.sync_views(size, &rects)?;
             app.poll_views();
-            app.sync_image_resources(size, &rects);
+            app.sync_image_feedback(size, &rects);
             let search = app.flush_search();
             app.scope_input_result(search)?;
             let tick = app.selection_tick();
@@ -6149,13 +6126,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 },
             ]);
             fds.extend_from_slice(&session_fds);
-            if !app.image_runtime_failed {
-                fds.push(libc::pollfd {
-                    fd: app.resources.wake().as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                });
-            }
             for (pane, view) in &app.views {
                 if view.retirement_requested || app.view_failures.contains_key(pane) {
                     continue;
@@ -6219,7 +6189,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             let hits = loop {
                 title_animation.apply(&mut chrome_surface.frame);
                 let mut surfaces = vec![Surface {
-                    image_manifest: None,
                     palette: None,
                     id: "ui:chrome",
                     content: SurfaceContent::Cells,
@@ -6247,10 +6216,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         .or_else(|| placeholders.get(id).map(|surface| &surface.frame))
                     {
                         surfaces.push(Surface {
-                            image_manifest: app
-                                .views
-                                .get(id)
-                                .and_then(|view| view.image_manifest.as_ref()),
                             palette: pane_palette,
                             id,
                             content: SurfaceContent::All,
@@ -6279,7 +6244,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             id: "ui:images:feedback",
                             rect,
                             frame: &feedback.surface.frame,
-                            image_manifest: None,
                             palette: pane_palette,
                             content: SurfaceContent::Annotation(Rect {
                                 x: 0,
@@ -6295,7 +6259,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     }
                 }
                 surfaces.push(Surface {
-                    image_manifest: None,
                     palette: None,
                     id: "ui:chrome:graphics",
                     content: SurfaceContent::Graphics,
@@ -6313,7 +6276,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 });
                 for segment in &resize_feedback_regions {
                     surfaces.push(Surface {
-                        image_manifest: None,
                         palette: None,
                         id: "ui:resize:edges",
                         content: SurfaceContent::CellsWithUnderlay(*segment),
@@ -6333,7 +6295,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 // Artwork may extend into the joined item's framing column. Keep
                 // it above passive materials, but below modal contents and effects.
                 let mut artwork_surface = Some(Surface {
-                    image_manifest: None,
                     palette: None,
                     id: "ui:sidebar:artwork",
                     content: SurfaceContent::Graphics,
@@ -6357,7 +6318,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     }
                     if layer.id == "ui:diagnostics" {
                         surfaces.push(Surface {
-                            image_manifest: None,
                             palette: None,
                             id: "ui:diagnostics",
                             content: SurfaceContent::All,
@@ -6369,7 +6329,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             faint: false,
                         });
                         surfaces.push(Surface {
-                            image_manifest: None,
                             palette: None,
                             id: "ui:diagnostics:graphics",
                             content: SurfaceContent::Graphics,
@@ -6389,7 +6348,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     }
                     if layer.id == "ui:image-viewer" {
                         surfaces.push(Surface {
-                            image_manifest: None,
                             palette: None,
                             id: "ui:image-viewer",
                             content: SurfaceContent::All,
@@ -6401,7 +6359,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             faint: false,
                         });
                         surfaces.push(Surface {
-                            image_manifest: None,
                             palette: None,
                             id: "ui:image-viewer:graphics",
                             content: SurfaceContent::Graphics,
@@ -6419,7 +6376,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     {
                         if !modal_graphical {
                             surfaces.push(Surface {
-                                image_manifest: None,
                                 palette: None,
                                 id: "ui:window",
                                 content: SurfaceContent::All,
@@ -6447,7 +6403,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                                     )
                                 };
                             surfaces.push(Surface {
-                                image_manifest: None,
                                 palette: None,
                                 id: ["ui:modal:input", "ui:modal:results", "ui:modal:preview"]
                                     [index],
@@ -6498,7 +6453,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                                     continue;
                                 }
                                 surfaces.push(Surface {
-                                    image_manifest: None,
                                     palette: None,
                                     id: layer.id,
                                     content: SurfaceContent::CellsClipped(clip),
@@ -6526,7 +6480,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             "ui:modal" => {
                                 if !modal_graphical {
                                     surfaces.push(Surface {
-                                        image_manifest: None,
                                         palette: None,
                                         id: "ui:window",
                                         content: SurfaceContent::All,
@@ -6551,7 +6504,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             _ => continue,
                         };
                         surfaces.push(Surface {
-                            image_manifest: None,
                             palette: None,
                             id: layer.id,
                             content,
@@ -6575,7 +6527,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             app.recovery.details(layer.placement.content)
                     {
                         surfaces.push(Surface {
-                            image_manifest: None,
                             palette: None,
                             id: "ui:recovery:details",
                             content: SurfaceContent::All,
@@ -6594,7 +6545,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         _ => continue,
                     };
                     surfaces.push(Surface {
-                        image_manifest: None,
                         palette: None,
                         id: effects_id,
                         content: SurfaceContent::Graphics,
@@ -6616,7 +6566,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 }
                 if searching && !popup {
                     surfaces.push(Surface {
-                        image_manifest: None,
                         palette: None,
                         id: "ui:search",
                         content: SurfaceContent::All,
@@ -6633,7 +6582,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         .as_ref()
                         .expect("visible toast presentation");
                     surfaces.push(Surface {
-                        image_manifest: None,
                         palette: None,
                         id: "ui:toast",
                         content: if card.graphical {
@@ -6656,7 +6604,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 }
                 if !toast_effects.placements.is_empty() {
                     surfaces.push(Surface {
-                        image_manifest: None,
                         palette: None,
                         id: "ui:toast:graphics",
                         content: SurfaceContent::Graphics,
@@ -6675,7 +6622,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 }
                 let scene = Scene { size, surfaces };
                 graphics.register_uploads(&mut terminal);
-                app.resources.register_transports(&mut terminal);
                 renderer.render(&mut out, &scene, &app.colors, &mut terminal)?;
                 let ready = unsafe {
                     libc::poll(
@@ -7103,7 +7049,6 @@ pub(super) mod tests {
         static ENDPOINT: std::sync::LazyLock<Endpoint> =
             std::sync::LazyLock::new(|| Endpoint::unmanaged(Path::new("/unused-ui-test-endpoint")));
         let socket = ENDPOINT.clone();
-        let resources = crate::resources::Resources::new(socket.clone()).unwrap();
         (
             App {
                 socket,
@@ -7130,9 +7075,7 @@ pub(super) mod tests {
                 registry,
                 state,
                 views: HashMap::new(),
-                resources,
                 image_feedback: HashMap::new(),
-                image_runtime_failed: false,
                 retiring: Vec::new(),
                 retiring_candidates: Vec::new(),
                 jobs: jobs::Scope::new(8).unwrap(),
@@ -7530,7 +7473,6 @@ pub(super) mod tests {
         let hits = Scene {
             size,
             surfaces: vec![Surface {
-                image_manifest: None,
                 id: "ui:chrome",
                 rect: Rect {
                     x: 0,
@@ -8445,8 +8387,6 @@ pub(super) mod tests {
                 recent: Default::default(),
                 held: Default::default(),
                 transports: Vec::new(),
-                progressive: false,
-                image_manifest: None,
                 seeded: 0,
                 retirement_requested: false,
                 retirement_policy: RetirementPolicy::Visible,
@@ -8719,7 +8659,6 @@ pub(super) mod tests {
         let scene = Scene {
             size,
             surfaces: vec![Surface {
-                image_manifest: None,
                 palette: None,
                 id: "ui:chrome",
                 content: SurfaceContent::All,
@@ -8814,7 +8753,6 @@ pub(super) mod tests {
                 vec![("focused-pane".into(), first), ("beta".into(), second)];
             let frame = blank(size);
             let mut surfaces = vec![Surface {
-                image_manifest: None,
                 palette: None,
                 id: "ui:chrome",
                 content: SurfaceContent::All,
@@ -8832,7 +8770,6 @@ pub(super) mod tests {
             }];
             for (pane, rect) in &rects {
                 surfaces.push(Surface {
-                    image_manifest: None,
                     palette: None,
                     id: pane,
                     content: SurfaceContent::All,

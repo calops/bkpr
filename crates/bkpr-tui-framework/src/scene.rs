@@ -76,28 +76,6 @@ pub struct PaletteOverride<'a> {
     /// Indexed colors, starting at palette entry zero.
     pub palette: &'a [[u8; 3]],
 }
-/// Return unique visible image generations that are declared but not resident.
-/// Uses rendering's projection and validates all references and crops, including
-/// offscreen placements. Invalid resources, geometry or undeclared keys fail.
-pub fn pending_image_keys(
-    frame: &Frame,
-    viewport: Size,
-    manifest: &crate::image_resources::ImageManifest,
-) -> Result<Vec<ImageKey>> {
-    geometry::pending_image_keys(frame, viewport, manifest)
-}
-
-/// Return unique visible declared image generations, whether ready or pending.
-/// Uses rendering's projection and validates every resource reference and crop,
-/// including offscreen placements. Keys retain their first visible placement order.
-pub fn visible_image_keys(
-    frame: &Frame,
-    viewport: Size,
-    manifest: &crate::image_resources::ImageManifest,
-) -> Result<Vec<ImageKey>> {
-    geometry::visible_image_keys(frame, viewport, manifest)
-}
-
 /// A borrowed frame projected at a scene-local origin without modifying canonical data.
 pub struct Surface<'a> {
     /// Stable hit-test identity and image-resource scope within the renderer.
@@ -106,9 +84,6 @@ pub struct Surface<'a> {
     pub rect: Rect,
     /// Canonical cells, cursor, colors and generation-qualified image resources.
     pub frame: &'a Frame,
-    /// Complete validated image metadata admitting explicitly declared pending pixels.
-    /// `None` requires every referenced generation to have resident pixels.
-    pub image_manifest: Option<&'a crate::image_resources::ImageManifest>,
     /// Presentation colors for defaults and indexed colors, never explicit RGB.
     pub palette: Option<PaletteOverride<'a>>,
     /// Which cells and images participate in composition.
@@ -1135,11 +1110,7 @@ impl Renderer {
             ) {
                 continue;
             }
-            let mut local = geometry::prepare_with_manifest(
-                surface.frame,
-                r.size(scene.size),
-                surface.image_manifest,
-            )?;
+            let mut local = geometry::prepare(surface.frame, r.size(scene.size))?;
             if !local.placements.is_sorted_by_key(|p| p.z) {
                 local.placements.sort_by_key(|p| p.z);
             }
@@ -1276,12 +1247,12 @@ mod scene_tests {
                         size,
                         surfaces: vec![
                             Surface {
-                                id: "pane", rect: bounds, frame: &pane, image_manifest: None,
+                                id: "pane", rect: bounds, frame: &pane,
                                 palette: None, content: SurfaceContent::All, selection: &[],
                                 search: &[], focused: true, faint: false,
                             },
                             Surface {
-                                id: "annotation", rect: bounds, frame: &annotation, image_manifest: None,
+                                id: "annotation", rect: bounds, frame: &annotation,
                                 palette: None, content: SurfaceContent::Annotation(bounds), selection: &[],
                                 search: &[], focused: false, faint: false,
                             },
@@ -1344,12 +1315,12 @@ mod scene_tests {
                     size,
                     surfaces: vec![
                         Surface {
-                            id: "pane", rect: bounds, frame: &pane, image_manifest: None,
+                            id: "pane", rect: bounds, frame: &pane,
                             palette: None, content: SurfaceContent::All, selection: &[],
                             search: &[], focused: true, faint: false,
                         },
                         Surface {
-                            id: "annotation", rect: bounds, frame: &annotation, image_manifest: None,
+                            id: "annotation", rect: bounds, frame: &annotation,
                             palette: None, content: SurfaceContent::Annotation(clip), selection: &[],
                             search: &[], focused: false, faint: false,
                         },
@@ -1392,12 +1363,12 @@ mod scene_tests {
             size,
             surfaces: vec![
                 Surface {
-                    id: "pane", rect: bounds, frame: &pane, image_manifest: None,
+                    id: "pane", rect: bounds, frame: &pane,
                     palette: None, content: SurfaceContent::All, selection: &[],
                     search: &[], focused: true, faint: false,
                 },
                 Surface {
-                    id: "annotation", rect: bounds, frame: &annotation, image_manifest: None,
+                    id: "annotation", rect: bounds, frame: &annotation,
                     palette: None, content: SurfaceContent::Annotation(clip), selection: &[],
                     search: &[], focused: true, faint: false,
                 },
@@ -1458,7 +1429,6 @@ mod scene_tests {
                 size,
                 surfaces: vec![Surface {
                     id: "pane", rect: Rect { x: 0, y: 0, width: 2, height: 1 }, frame,
-                    image_manifest: None,
                     palette: Some(PaletteOverride { foreground: [205, 214, 244], background: theme, palette: &[] }),
                     content: SurfaceContent::All, selection: &[], search: &[],
                     focused: false, faint: false,
@@ -1483,79 +1453,6 @@ mod scene_tests {
         let (cells, out) = render(&pane);
         assert_eq!(cells[0].style.background_source, ColorSource::Rgb(theme));
         assert!(out.contains("48;2;30;30;46"), "{out:?}");
-    }
-
-    #[test]
-    fn progressive_arrival_uses_local_render_and_preserves_surface_scopes_and_hits() {
-        use crate::image_resources::ImageManifest;
-        fn scene<'a>(frame: &'a Frame, manifest: &'a ImageManifest) -> Scene<'a> {
-            Scene {
-                size: Size { cols: 4, ..frame.size },
-                surfaces: ["left", "right"].into_iter().enumerate().map(|(index, id)| Surface {
-                    id,
-                    rect: Rect { x: index as u16 * 2, y: 0, width: 2, height: 1 },
-                    frame,
-                    image_manifest: Some(manifest),
-                    palette: None,
-                    content: SurfaceContent::All,
-                    selection: &[],
-                    search: &[],
-                    focused: index == 0,
-                    faint: false,
-                }).collect(),
-            }
-        }
-        let mut frame = blank(Size { cols: 2, rows: 1, cell_width: 8, cell_height: 16 });
-        text(&mut frame, 0, 0, "ok", false);
-        frame.cursor.visible = true;
-        let image = Arc::new(Image {
-            id: 9, generation: 2, width: 8, height: 16,
-            format: PixelFormat::Rgba, pixels: vec![128; 8 * 16 * 4],
-            source: None,
-        });
-        let manifest = ImageManifest::new(vec![ImageDescriptor::from_image(&image).unwrap()]).unwrap();
-        frame.placements.push(Placement {
-            image_id: image.id, generation: image.generation, placement_id: 1,
-            col: 0, row: 0, offset_x: 0, offset_y: 0,
-            width: 8, height: 16, source_x: 0, source_y: 0,
-            source_width: 8, source_height: 16, layer: ImageLayer::AboveText, z: 0,
-        });
-        let rows = frame.rows.clone();
-        let placements = frame.placements.clone();
-        let mut renderer = Renderer::default();
-        let mut terminal = terminal();
-        renderer.set_resource_namespace(7, 3, ["left"]);
-        {
-            let pending = scene(&frame, &manifest);
-            renderer.render(&mut Vec::new(), &pending, &ColorProbe::default(), &mut terminal).unwrap();
-            assert!(renderer.aliases.is_empty());
-            assert!(terminal.graphics.image_ids.is_empty());
-            assert_eq!(pending.hit_test(0, 0), Some("left"));
-            assert_eq!(pending.hit_test(2, 0), Some("right"));
-            assert_eq!(renderer.canvas.as_ref().unwrap().rows[0].cells[0].text, "o");
-            assert!(renderer.canvas.as_ref().unwrap().cursor.visible);
-        }
-        frame.images.push(Arc::clone(&image));
-        let ready = scene(&frame, &manifest);
-        renderer.render(&mut Vec::new(), &ready, &ColorProbe::default(), &mut terminal).unwrap();
-        assert_eq!(renderer.aliases.len(), 2);
-        assert_eq!(terminal.graphics.image_ids.len(), 2);
-        let left = renderer.aliases[&((7, 3), "left".into(), image.key())];
-        let right = renderer.aliases[&((0, 0), "right".into(), image.key())];
-        assert_ne!(left, right);
-        let right_upload = terminal.graphics.image_ids[&right];
-        let mut unchanged = Vec::new();
-        renderer.render(&mut unchanged, &ready, &ColorProbe::default(), &mut terminal).unwrap();
-        assert!(unchanged.is_empty());
-        renderer.set_resource_namespace(8, 3, ["left"]);
-        renderer.render(&mut Vec::new(), &ready, &ColorProbe::default(), &mut terminal).unwrap();
-        assert_ne!(renderer.aliases[&((8, 3), "left".into(), image.key())], left);
-        assert_eq!(renderer.aliases[&((0, 0), "right".into(), image.key())], right);
-        assert_eq!(terminal.graphics.image_ids[&right], right_upload);
-        assert_eq!(ready.hit_test(0, 0), Some("left"));
-        assert_eq!(frame.rows, rows);
-        assert_eq!(frame.placements, placements);
-        assert!(Arc::ptr_eq(&frame.images[0], &image));
     }
 
     #[test]
@@ -1627,7 +1524,7 @@ mod scene_tests {
             surfaces: palettes
                 .into_iter()
                 .enumerate()
-                .map(|(index, palette)| Surface { image_manifest: None, id: ["first", "second", "canonical"][index],
+                .map(|(index, palette)| Surface { id: ["first", "second", "canonical"][index],
                 rect: Rect {
                     x: index as u16 * 5,
                     y: 0,
@@ -1759,7 +1656,6 @@ mod scene_tests {
         let scene = Scene {
             size,
             surfaces: vec![Surface {
-                image_manifest: None,
                 id: "clipped",
                 rect: Rect {
                     x: 1,
@@ -1833,7 +1729,6 @@ mod scene_tests {
             size,
             surfaces: vec![
                 Surface {
-                    image_manifest: None,
                     id: "pane",
                     rect: Rect {
                         x: 0,
@@ -1850,7 +1745,6 @@ mod scene_tests {
                     content: SurfaceContent::All,
                 },
                 Surface {
-                    image_manifest: None,
                     id: "popup",
                     rect: Rect {
                         x: 4,
@@ -2034,7 +1928,6 @@ mod scene_tests {
                 size,
                 surfaces: vec![
                     Surface {
-                        image_manifest: None,
                         id: "sidebar",
                         rect: Rect { x: 0, y: 0, width: 8, height: 2 },
                         frame: &ui.frame,
@@ -2046,7 +1939,6 @@ mod scene_tests {
                         content: SurfaceContent::Cells,
                     },
                     Surface {
-                        image_manifest: None,
                         id: "native",
                         rect: Rect { x: 8, y: 0, width: 10, height: 2 },
                         frame: &native,
@@ -2181,7 +2073,6 @@ mod scene_tests {
             size,
             surfaces: vec![
                 Surface {
-                    image_manifest: None,
                     id: "left",
                     rect: Rect {
                         x: 0,
@@ -2198,7 +2089,6 @@ mod scene_tests {
                     content: SurfaceContent::All,
                 },
                 Surface {
-                    image_manifest: None,
                     id: "right",
                     rect: Rect {
                         x: 4,
@@ -2281,7 +2171,6 @@ mod scene_tests {
         let scene = Scene {
             size,
             surfaces: vec![Surface {
-                image_manifest: None,
                 id: "pane",
                 rect: Rect {
                     x: 0,
@@ -2367,7 +2256,6 @@ mod scene_tests {
                 size,
                 surfaces: vec![
                     Surface {
-                        image_manifest: None,
                         id: "native",
                         rect: Rect {
                             x: 4,
@@ -2384,7 +2272,6 @@ mod scene_tests {
                         content: SurfaceContent::All,
                     },
                     Surface {
-                        image_manifest: None,
                         id: "sidebar",
                         rect: Rect {
                             x: 0,
@@ -2401,7 +2288,6 @@ mod scene_tests {
                         content: SurfaceContent::Cells,
                     },
                     Surface {
-                        image_manifest: None,
                         id: "popup",
                         rect: Rect {
                             x: 7,
@@ -2475,7 +2361,6 @@ mod scene_tests {
             let scene = Scene {
                 size,
                 surfaces: vec![Surface {
-                    image_manifest: None,
                     id: "clipped",
                     rect: Rect {
                         x: 2,
@@ -2540,7 +2425,6 @@ mod scene_tests {
                 size,
                 surfaces: vec![
                     Surface {
-                        image_manifest: None,
                         id: "sidebar",
                         rect: Rect {
                             x: 0,
@@ -2557,7 +2441,6 @@ mod scene_tests {
                         faint: false,
                     },
                     Surface {
-                        image_manifest: None,
                         id: "passive-joined-anchor",
                         rect: Rect {
                             x: 0,
@@ -2661,7 +2544,6 @@ mod scene_tests {
                 size,
                 surfaces: vec![
                     Surface {
-                        image_manifest: None,
                         id: "native",
                         rect: Rect {
                             x: 0,
@@ -2678,7 +2560,6 @@ mod scene_tests {
                         faint: false,
                     },
                     Surface {
-                        image_manifest: None,
                         id: "clipped",
                         rect: Rect {
                             x: 2,
@@ -2769,7 +2650,7 @@ mod scene_tests {
                 rows: 2,
                 ..size
             });
-            let mut surface = Surface { image_manifest: None, id: "clipped",
+            let mut surface = Surface { id: "clipped",
             rect: Rect {
                 x: 2,
                 y: 1,
@@ -2839,7 +2720,6 @@ mod scene_tests {
             size,
             surfaces: vec![
                 Surface {
-                    image_manifest: None,
                     id: "native",
                     rect,
                     frame: &native,
@@ -2851,7 +2731,6 @@ mod scene_tests {
                     content: SurfaceContent::All,
                 },
                 Surface {
-                    image_manifest: None,
                     id: "effects",
                     rect,
                     frame: &effects,
@@ -2938,7 +2817,6 @@ mod scene_tests {
             size,
             surfaces: vec![
                 Surface {
-                    image_manifest: None,
                     id: "native",
                     rect,
                     frame: &native,
@@ -2950,7 +2828,6 @@ mod scene_tests {
                     content: SurfaceContent::All,
                 },
                 Surface {
-                    image_manifest: None,
                     id: "effects",
                     rect,
                     frame: &effects,
@@ -3051,7 +2928,7 @@ mod scene_tests {
         let width = (u32::from(size.cols) * size.cell_width) as usize;
         let height = (u32::from(size.rows) * size.cell_height) as usize;
         let mut pixels = vec![None; width * height];
-        let prepared = geometry::prepare_with_manifest(frame, size, None).unwrap();
+        let prepared = geometry::prepare(frame, size).unwrap();
         for p in prepared.placements {
             let (w, h) = if let Some(key) = p.derived {
                 (key.visible.width, key.visible.height)
@@ -3176,7 +3053,6 @@ mod scene_tests {
                 size,
                 surfaces: vec![
                     Surface {
-                        image_manifest: None,
                         id: "native",
                         rect,
                         frame: &native,
@@ -3188,7 +3064,6 @@ mod scene_tests {
                         faint: false,
                     },
                     Surface {
-                        image_manifest: None,
                         id: "material",
                         rect,
                         frame: &material,
@@ -3216,7 +3091,7 @@ mod scene_tests {
             let baseline = native_material_pixels(&consumer.snapshot().unwrap());
             let alias = renderer.aliases[&((0, 0), "material".into(), source.key())];
             for (id, segment) in [("vertical", vertical), ("horizontal", horizontal)] {
-                scene.surfaces.push(Surface { image_manifest: None, id,
+                scene.surfaces.push(Surface { id,
                 rect,
                 frame: &feedback,
                 content: SurfaceContent::CellsWithUnderlay(segment),
@@ -3270,7 +3145,7 @@ mod scene_tests {
                 .render(&mut output, &scene, &ColorProbe::default(), &mut terminal)
                 .unwrap();
             assert!(output.is_empty(), "retained feedback should be idle");
-            scene.surfaces.push(Surface { image_manifest: None, id: "popup",
+            scene.surfaces.push(Surface { id: "popup",
             rect: popup_rect,
             frame: &popup,
             content: SurfaceContent::Cells,
@@ -3346,7 +3221,7 @@ mod scene_tests {
         let mut background = effect_frame(size);
         background.placements[0].layer = ImageLayer::BelowBackground;
         let feedback = blank(size);
-        let image_surface = |id, frame| Surface { image_manifest: None, id,
+        let image_surface = |id, frame| Surface { id,
         rect,
         frame,
         content: SurfaceContent::Graphics,
@@ -3363,7 +3238,6 @@ mod scene_tests {
                 image_surface("second", &second),
                 image_surface("third", &third),
                 Surface {
-                    image_manifest: None,
                     id: "feedback",
                     rect,
                     frame: &feedback,
@@ -3499,7 +3373,7 @@ mod scene_tests {
         let reference = |frame: &Frame| {
             composite_rgba_projections(
                 size,
-                &geometry::prepare_with_manifest(frame, size, None)
+                &geometry::prepare(frame, size)
                     .unwrap()
                     .placements,
                 &decoration.image,
@@ -3527,7 +3401,6 @@ mod scene_tests {
             size,
             surfaces: vec![
                 Surface {
-                    image_manifest: None,
                     id: "native",
                     rect: screen,
                     frame: &native,
@@ -3539,7 +3412,6 @@ mod scene_tests {
                     faint: false,
                 },
                 Surface {
-                    image_manifest: None,
                     id: "upper",
                     rect: screen,
                     frame: &upper,
@@ -3551,7 +3423,6 @@ mod scene_tests {
                     faint: false,
                 },
                 Surface {
-                    image_manifest: None,
                     id: "lower",
                     rect: screen,
                     frame: &lower,
@@ -3597,7 +3468,7 @@ mod scene_tests {
             ..size
         });
         text(&mut popup, 0, 0, "PP", false);
-        scene.surfaces.push(Surface { image_manifest: None, id: "popup",
+        scene.surfaces.push(Surface { id: "popup",
         rect: Rect {
             x: 9,
             y: 5,
@@ -3661,7 +3532,6 @@ mod scene_tests {
             size,
             surfaces: vec![
                 Surface {
-                    image_manifest: None,
                     id: "native",
                     rect,
                     frame: &native,
@@ -3673,7 +3543,6 @@ mod scene_tests {
                     content: SurfaceContent::All,
                 },
                 Surface {
-                    image_manifest: None,
                     id: "effects",
                     rect,
                     frame: &effects,
@@ -3685,7 +3554,6 @@ mod scene_tests {
                     content: SurfaceContent::Graphics,
                 },
                 Surface {
-                    image_manifest: None,
                     id: "popup",
                     rect: Rect {
                         width: 1,
@@ -3865,7 +3733,7 @@ mod scene_tests {
             surfaces: panes
                 .iter()
                 .enumerate()
-                .map(|(index, frame)| Surface { image_manifest: None, id: ["default", "local", "explicit"][index],
+                .map(|(index, frame)| Surface { id: ["default", "local", "explicit"][index],
                 rect: Rect {
                     x: index as u16 * 2,
                     y: 0,
@@ -3975,7 +3843,6 @@ mod scene_tests {
             size,
             surfaces: vec![
                 Surface {
-                    image_manifest: None,
                     id: "a",
                     rect: Rect {
                         x: 0,
@@ -3992,7 +3859,6 @@ mod scene_tests {
                     content: SurfaceContent::All,
                 },
                 Surface {
-                    image_manifest: None,
                     id: "b",
                     rect: Rect {
                         x: 2,
@@ -4081,7 +3947,6 @@ mod scene_tests {
         let scene = Scene {
             size,
             surfaces: vec![Surface {
-                image_manifest: None,
                 id: "ui",
                 rect: Rect {
                     x: 0,
@@ -4114,7 +3979,6 @@ mod scene_tests {
         let scene = Scene {
             size,
             surfaces: vec![Surface {
-                image_manifest: None,
                 id: "app",
                 rect: Rect {
                     x: 0,
@@ -4208,7 +4072,6 @@ mod scene_tests {
             size,
             surfaces: vec![
                 Surface {
-                    image_manifest: None,
                     id: "selected-view",
                     rect: Rect {
                         x: 0,
@@ -4225,7 +4088,6 @@ mod scene_tests {
                     content: SurfaceContent::All,
                 },
                 Surface {
-                    image_manifest: None,
                     id: "other-view",
                     rect: Rect {
                         x: 6,
@@ -4398,7 +4260,6 @@ mod scene_tests {
             size,
             surfaces: vec![
                 Surface {
-                    image_manifest: None,
                     id: "first",
                     rect: Rect {
                         x: 0,
@@ -4415,7 +4276,6 @@ mod scene_tests {
                     content: SurfaceContent::All,
                 },
                 Surface {
-                    image_manifest: None,
                     id: "other",
                     rect: Rect {
                         x: 2,

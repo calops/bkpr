@@ -1,7 +1,7 @@
 //! Binary full scenes and complete-row deltas with response-local style and hyperlink tables.
 //! Cell text boundaries and widths are preserved without Unicode re-segmentation.
 //! Consumers retain image generations separately; JSON conversion is diagnostic only.
-use crate::{Cell, Frame, Image, ImageDescriptor, ImageKey, Row, Size};
+use crate::{Cell, Frame, Image, ImageKey, Row, Size};
 use anyhow::{Context, Result, ensure};
 use planus::{Builder, ReadAsRoot};
 use serde_json::Value;
@@ -71,15 +71,7 @@ pub fn encode(
     frame_after: u64,
     resources: &[ImageKey],
 ) -> Result<Vec<u8>> {
-    encode_inner(
-        frame,
-        revision,
-        baseline,
-        frame_after,
-        resources,
-        false,
-        false,
-    )
+    encode_inner(frame, revision, baseline, frame_after, resources, false)
 }
 
 /// Like [`encode`], but images with a retained original PNG/zlib payload carry that
@@ -91,35 +83,7 @@ pub fn encode_with_sources(
     frame_after: u64,
     resources: &[ImageKey],
 ) -> Result<Vec<u8>> {
-    encode_inner(
-        frame,
-        revision,
-        baseline,
-        frame_after,
-        resources,
-        false,
-        true,
-    )
-}
-
-/// Encode text and a complete validated descriptor manifest without image pixel bodies.
-/// The explicit progressive representation requires separate checked resource completion.
-pub fn encode_progressive(
-    frame: &Frame,
-    revision: u64,
-    baseline: Option<&(u64, Arc<Frame>)>,
-    frame_after: u64,
-    resources: &[ImageKey],
-) -> Result<Vec<u8>> {
-    encode_inner(
-        frame,
-        revision,
-        baseline,
-        frame_after,
-        resources,
-        true,
-        false,
-    )
+    encode_inner(frame, revision, baseline, frame_after, resources, true)
 }
 
 fn encode_inner(
@@ -128,7 +92,6 @@ fn encode_inner(
     baseline: Option<&(u64, Arc<Frame>)>,
     frame_after: u64,
     resources: &[ImageKey],
-    progressive: bool,
     sources: bool,
 ) -> Result<Vec<u8>> {
     crate::valid_size(frame.size)?;
@@ -168,23 +131,8 @@ fn encode_inner(
             ensure!(expanded_text <= MAX_TEXT_BYTES, "scene expanded text limit");
         }
     }
-    let descriptors = if progressive {
-        let descriptors = frame
-            .images
-            .iter()
-            .map(|image| ImageDescriptor::from_image(image))
-            .collect::<Result<Vec<_>>>()?;
-        validate_manifest(&descriptors, &frame.placements)?;
-        descriptors
-    } else {
-        Vec::new()
-    };
-    let known: HashSet<_> = if progressive {
-        HashSet::new()
-    } else {
-        resources.iter().copied().collect()
-    };
-    let include = |image: &&Arc<Image>| !progressive && !known.contains(&image.key());
+    let known: HashSet<_> = resources.iter().copied().collect();
+    let include = |image: &&Arc<Image>| !known.contains(&image.key());
     let source_of = |image| sent_source(image, sources);
     let mut image_count = 0usize;
     let mut image_bytes = 0usize;
@@ -322,28 +270,11 @@ fn encode_inner(
         frame.scrollback_total,
         frame.scrollback_offset,
     );
-    let descriptors = if progressive {
-        let offsets = descriptors
-            .iter()
-            .map(|descriptor| {
-                g::ImageDescriptor::create(
-                    &mut builder,
-                    descriptor.key.id,
-                    descriptor.key.generation,
-                    descriptor.width,
-                    descriptor.height,
-                    write_format(descriptor.format),
-                    descriptor.decoded_len,
-                )
-            })
-            .collect::<Vec<_>>();
-        Some(builder.create_vector(offsets.as_slice()))
-    } else {
-        None
-    };
+    // Scene version 2 (descriptor-only progressive scenes) and the
+    // image_descriptors field are retired.
     let root = g::Scene::create(
         &mut builder,
-        if progressive { 2 } else { VERSION },
+        VERSION,
         revision,
         baseline.is_some(),
         baseline.map_or(0, |(base, _)| *base),
@@ -351,7 +282,7 @@ fn encode_inner(
         styles,
         hyperlinks,
         rows,
-        descriptors,
+        None::<planus::Offset<[planus::Offset<g::ImageDescriptor>]>>,
     );
     // Planus 1.3 exposes only a borrowed finished slice, not owned extraction.
     // The API's owned output requires this final copy; source image pixels were
@@ -365,25 +296,10 @@ pub struct DecodedScene {
     pub revision: u64,
     /// Required baseline revision for a delta, or `None` for a full replacement.
     pub base_revision: Option<u64>,
-    descriptors: Vec<ImageDescriptor>,
-    progressive: bool,
     frame: Frame,
     rows: Vec<(usize, Row)>,
 }
 impl DecodedScene {
-    /// Complete manifest of a progressive update; descriptors are not resource receipts.
-    pub fn image_descriptors(&self) -> &[ImageDescriptor] {
-        &self.descriptors
-    }
-    /// Transfer the validated descriptor sidecar without cloning; leaves an empty borrowed manifest.
-    /// Scene representation and row-apply semantics are unchanged.
-    pub fn take_image_descriptors(&mut self) -> Vec<ImageDescriptor> {
-        std::mem::take(&mut self.descriptors)
-    }
-    /// Whether the scene explicitly uses descriptor-only resources, even with an empty/taken manifest.
-    pub fn is_progressive(&self) -> bool {
-        self.progressive
-    }
     /// Iterate image generations supplied by this update, excluding previously known resources.
     pub fn image_keys(&self) -> impl Iterator<Item = ImageKey> + '_ {
         self.frame.images.iter().map(|image| image.key())
@@ -427,8 +343,7 @@ fn sent_source(image: &Image, sources: bool) -> Option<(crate::ImageSourceEncodi
     if !sources {
         return None;
     }
-    let (_, bytes) = crate::original_body(image)?;
-    Some((image.source.as_deref()?.encoding, bytes))
+    crate::original_payload(image)
 }
 
 /// Exact packed pixel length of an image, bounded before any decode allocation.
@@ -446,70 +361,6 @@ fn check_image(width: u32, height: u32, format: crate::PixelFormat, length: usiz
         .and_then(|pixels| pixels.checked_mul(format.bytes_per_pixel()));
     ensure!(expected == Some(length), "scene image dimensions mismatch");
     Ok(())
-}
-
-fn validate_manifest(
-    descriptors: &[ImageDescriptor],
-    placements: &[crate::Placement],
-) -> Result<()> {
-    ensure!(
-        descriptors.len() <= MAX_IMAGES,
-        "scene descriptor count limit"
-    );
-    let mut keys = HashMap::with_capacity(descriptors.len());
-    let mut decoded = 0u64;
-    for descriptor in descriptors {
-        descriptor.validate()?;
-        decoded = decoded.saturating_add(descriptor.decoded_len);
-        ensure!(
-            decoded <= MAX_IMAGE_BYTES as u64,
-            "scene decoded image byte limit"
-        );
-        ensure!(
-            keys.insert(descriptor.key, descriptor).is_none(),
-            "duplicate scene image descriptor"
-        );
-    }
-    for placement in placements {
-        let descriptor = keys
-            .get(&ImageKey {
-                id: placement.image_id,
-                generation: placement.generation,
-            })
-            .context("scene placement references unknown image generation")?;
-        descriptor.validate_placement(placement)?;
-    }
-    Ok(())
-}
-
-fn read_descriptors(scene: g::SceneRef<'_>) -> Result<Vec<ImageDescriptor>> {
-    let Some(descriptors) = scene.image_descriptors()? else {
-        ensure!(
-            scene.version()? != 2,
-            "progressive scene missing descriptor manifest"
-        );
-        return Ok(Vec::new());
-    };
-    ensure!(
-        descriptors.len() <= MAX_IMAGES,
-        "scene descriptor count limit"
-    );
-    descriptors
-        .iter()
-        .map(|descriptor| {
-            let descriptor = descriptor?;
-            Ok(ImageDescriptor {
-                key: ImageKey {
-                    id: descriptor.id()?,
-                    generation: descriptor.generation()?,
-                },
-                width: descriptor.width()?,
-                height: descriptor.height()?,
-                format: read_format(descriptor.format()?),
-                decoded_len: descriptor.decoded_len()?,
-            })
-        })
-        .collect()
 }
 
 fn read_size(frame: g::FrameRef<'_>) -> Result<Size> {
@@ -549,8 +400,8 @@ fn validate(bytes: &[u8]) -> Result<g::SceneRef<'_>> {
     );
     let scene = g::SceneRef::read_as_root(bytes)?;
     ensure!(
-        matches!(scene.version()?, VERSION | 2),
-        "unsupported Planus scene version"
+        scene.version()? == VERSION,
+        "unsupported Planus scene version (descriptor-only version 2 is retired)"
     );
     let revision = scene.revision()?;
     let base = base_revision(scene)?;
@@ -575,23 +426,10 @@ fn validate(bytes: &[u8]) -> Result<g::SceneRef<'_>> {
     let palette = frame.palette()?;
     let images = frame.images()?;
     let placements = frame.placements()?;
-    let descriptors = read_descriptors(scene)?;
-    if scene.version()? == 2 {
-        ensure!(
-            images.is_empty(),
-            "progressive scene contains inline image bodies"
-        );
-        let placements = placements
-            .iter()
-            .map(read_placement)
-            .collect::<Result<Vec<_>>>()?;
-        validate_manifest(&descriptors, &placements)?;
-    } else {
-        ensure!(
-            descriptors.is_empty(),
-            "inline scene contains progressive descriptors"
-        );
-    }
+    ensure!(
+        scene.image_descriptors()?.is_none(),
+        "scene carries retired image descriptors"
+    );
     let styles = scene.styles()?;
     let links = scene.hyperlinks()?;
     let rows = scene.rows()?;
@@ -744,20 +582,9 @@ fn read_metadata(frame: g::FrameRef<'_>) -> Result<Frame> {
         .iter()
         .map(|image| {
             let image = image?;
-            let descriptor = crate::ImageDescriptor {
-                key: crate::ImageKey {
-                    id: image.id()?,
-                    generation: image.generation()?,
-                },
-                width: image.width()?,
-                height: image.height()?,
-                format: read_format(image.format()?),
-                decoded_len: expected_len(
-                    image.width()?,
-                    image.height()?,
-                    read_format(image.format()?),
-                )? as u64,
-            };
+            let (width, height) = (image.width()?, image.height()?);
+            let format = read_format(image.format()?);
+            let decoded_len = expected_len(width, height, format)?;
             let (pixels, source) = match image.source_encoding()? {
                 g::ImageSourceEncoding::None => (image.pixels()?.to_vec(), None),
                 encoding => {
@@ -765,15 +592,17 @@ fn read_metadata(frame: g::FrameRef<'_>) -> Result<Frame> {
                     let (encoding, pixels) = match encoding {
                         g::ImageSourceEncoding::Png => (
                             crate::ImageSourceEncoding::Png,
-                            crate::image_resource::decode_png_rgba(bytes, &descriptor)?,
+                            crate::image_source::decode_png_rgba(
+                                bytes,
+                                width,
+                                height,
+                                format,
+                                decoded_len,
+                            )?,
                         ),
                         _ => (
                             crate::ImageSourceEncoding::Zlib,
-                            crate::image_resource::inflate_exact(
-                                bytes,
-                                descriptor.decoded_len as usize,
-                                &|| false,
-                            )?,
+                            crate::image_source::inflate_exact(bytes, decoded_len)?,
                         ),
                     };
                     let source = crate::ImageSource {
@@ -784,11 +613,11 @@ fn read_metadata(frame: g::FrameRef<'_>) -> Result<Frame> {
                 }
             };
             Ok(Arc::new(Image {
-                id: descriptor.key.id,
-                generation: descriptor.key.generation,
-                width: descriptor.width,
-                height: descriptor.height,
-                format: descriptor.format,
+                id: image.id()?,
+                generation: image.generation()?,
+                width,
+                height,
+                format,
                 pixels,
                 source,
             }))
@@ -866,8 +695,6 @@ fn decode_validated(scene: g::SceneRef<'_>) -> Result<DecodedScene> {
     Ok(DecodedScene {
         revision: scene.revision()?,
         base_revision: base_revision(scene)?,
-        descriptors: read_descriptors(scene)?,
-        progressive: scene.version()? == 2,
         frame,
         rows,
     })
@@ -881,11 +708,9 @@ pub fn to_json(bytes: &[u8]) -> Result<Value> {
         let mut revision = 0;
         let mut frame = None;
         decode_validated(scene)?.apply(&mut revision, &mut frame)?;
-        let mut value = serde_json::to_value(frame.context("scene missing full frame")?)?;
-        if scene.version()? == 2 {
-            value["image_descriptors"] = serde_json::to_value(read_descriptors(scene)?)?;
-        }
-        return Ok(value);
+        return Ok(serde_json::to_value(
+            frame.context("scene missing full frame")?,
+        )?);
     }
     let frame = read_metadata(scene.frame()?)?;
     let styles = scene
@@ -916,7 +741,6 @@ pub fn to_json(bytes: &[u8]) -> Result<Value> {
         "version": scene.version()?, "revision": scene.revision()?,
         "base_revision": base_revision(scene)?, "frame": frame,
         "styles": styles, "hyperlinks": links, "rows": rows,
-        "image_descriptors": read_descriptors(scene)?,
     }))
 }
 

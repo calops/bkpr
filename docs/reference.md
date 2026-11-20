@@ -1181,36 +1181,20 @@ pane while open. It requires confirmed Kitty graphics support, independently
 of fancy chrome. The viewer uses complete client-retained resources; it does not
 read original files or create an image archive or persistent settings.
 
-Pane scenes and image delivery have separate lifecycles. Progressive scenes
-carry text, cursor, placements and validated image descriptors without waiting
-for pixel bodies. Images arrive losslessly on bounded resource streams over the
-existing local or SSH connection. Input remains usable while images load.
+Pane images arrive inline, in order with the scene that first references them,
+so text and images always come from the same moment. Native clients request
+`planus_v1_sources`: an image the program sent as PNG or zlib-compressed pixels
+travels as those original bytes and reaches the terminal unchanged (`f=100` or
+`o=z`); other images are compressed for the terminal off the render path.
+`planus_v1` remains the explicit inline API with raw pixels. Each poll reports the
+image generations the client already holds, so unchanged images are never resent;
+a poll always returns the latest frame, so a slow link skips intermediate frames
+instead of queueing them.
 
-If visible images remain pending for 200 ms, one colored loading indicator
-appears in the center of that pane. Fast loads do not flash an indicator.
-Loading decoration owns no cursor, focus or pointer input. A terminal image
-failure stops loading feedback without discarding usable text; one concise
-notification represents that failure episode. Details retain the technical cause
-and outcome instead of repeating a wall of text on every keypress.
-A slow initial attach uses the same delay with a generic `Loading pane…` label
-until image demand is known. Click Details on an error notification, or press
-`Ctrl-b !`, to open the diagnostic report.
-
-Only complete validated resources enter the image cache or become receipt keys.
-Caches are bounded and scoped to the owning runtime, pane and exact image
-generation. Old or canceled transfers cannot install new pixels. Pending images
-cannot open a full-image viewer; their modified click is not forwarded into the
-application. Unsupported graphics still get an honest unsupported-content
-indication rather than endless loading.
-
-Native clients opt in with `planus_progressive_v1`; `planus_v1` remains the
-explicit inline API. A pane/view-authorized `ImageResource` request receives a
-binary preparation/start/data/end stream, not one round trip per chunk or pixel
-bytes embedded in JSON. Scene revisions and fully retained image receipts are
-independent. New progressive clients require a supporting daemon; native family
-11 and remote control 2 remain unchanged, and normal execution never replaces a
-running daemon automatically. Transfer failures distinguish stalls, total
-lifetime and cancellation; no unknown mutation or keyboard input is replayed.
+A slow initial attach shows a delayed `Loading pane…` indicator in the center of
+the pane; fast attaches do not flash it. It owns no cursor, focus or pointer input.
+Panes with images on a terminal without confirmed Kitty graphics support show an
+honest unsupported-content notice instead.
 
 Normal-sized panes share a one-cell separator in both orientations and presentation
 modes, rather than reserving two borders plus another divider. PTY size, pointer

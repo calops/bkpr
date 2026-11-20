@@ -217,7 +217,6 @@ impl InputFailure {
             PaneRequest::Update { view_id, .. } => ("update", Some(view_id)),
             PaneRequest::Detach { view_id } => ("detach", Some(view_id)),
             PaneRequest::Poll { view_id, .. } => ("poll", Some(view_id)),
-            PaneRequest::ImageResource { view_id, .. } => ("image_resource", Some(view_id)),
             PaneRequest::Pin { view_id, .. } => ("pin", Some(view_id)),
             PaneRequest::Input { view_id, .. } => ("input", Some(view_id)),
             PaneRequest::Paste { view_id, .. } => ("paste", Some(view_id)),

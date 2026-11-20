@@ -260,43 +260,9 @@ fn project(
     Ok(Some(projection))
 }
 /// Validate image resources and project placements into the viewport, borrowing pixels.
-/// Without a manifest every reference must be resident; a manifest permits declared pending images.
+/// Every referenced image generation must be resident in the frame.
 /// Rejects invalid resources/crops, zero cell metrics, overflow and excessive working sets.
-pub(super) fn prepare_with_manifest<'a>(
-    frame: &'a Frame,
-    viewport: Size,
-    manifest: Option<&'a crate::image_resources::ImageManifest>,
-) -> Result<Prepared<'a>> {
-    prepare_inner(frame, viewport, manifest, None)
-}
-
-pub(super) fn pending_image_keys(
-    frame: &Frame,
-    viewport: Size,
-    manifest: &crate::image_resources::ImageManifest,
-) -> Result<Vec<ImageKey>> {
-    let mut pending = Vec::new();
-    let prepared = prepare_inner(frame, viewport, Some(manifest), Some(&mut pending))?;
-    pending.retain(|key| !prepared.images.contains_key(key));
-    Ok(pending)
-}
-
-pub(super) fn visible_image_keys(
-    frame: &Frame,
-    viewport: Size,
-    manifest: &crate::image_resources::ImageManifest,
-) -> Result<Vec<ImageKey>> {
-    let mut visible = Vec::new();
-    prepare_inner(frame, viewport, Some(manifest), Some(&mut visible))?;
-    Ok(visible)
-}
-
-fn prepare_inner<'a>(
-    frame: &'a Frame,
-    viewport: Size,
-    manifest: Option<&'a crate::image_resources::ImageManifest>,
-    mut visible: Option<&mut Vec<ImageKey>>,
-) -> Result<Prepared<'a>> {
+pub(super) fn prepare<'a>(frame: &'a Frame, viewport: Size) -> Result<Prepared<'a>> {
     if frame.images.len() > 1024 || frame.placements.len() > 4096 {
         bail!("image projection resource count limit");
     }
@@ -329,11 +295,6 @@ fn prepare_inner<'a>(
             bail!("duplicate image resource key");
         }
     }
-    if let Some(manifest) = manifest {
-        for image in images.values() {
-            manifest.validate_image(image)?;
-        }
-    }
     let mut original = HashSet::new();
     let mut derived = HashSet::new();
     let mut placements = Vec::with_capacity(frame.placements.len());
@@ -343,53 +304,18 @@ fn prepare_inner<'a>(
             id: p.image_id,
             generation: p.generation,
         };
-        let image = images.get(&key).copied();
-        if let Some(manifest) = manifest {
-            manifest
-                .descriptor(key)
-                .context("placement references missing image descriptor")?
-                .validate_placement(p)?;
-        } else {
-            let image = image.context("placement references missing resource")?;
-            if p.source_width == 0
-                || p.source_height == 0
-                || u64::from(p.source_x) + u64::from(p.source_width) > u64::from(image.width)
-                || u64::from(p.source_y) + u64::from(p.source_height) > u64::from(image.height)
-            {
-                bail!("placement source rectangle outside image");
-            }
-        }
-        let Some(mut projected) = project(p, frame.size, viewport, index + 1)? else {
-            continue;
-        };
-        if let Some(visible) = visible.as_deref_mut()
-            && !visible.contains(&key)
+        let image = *images
+            .get(&key)
+            .context("placement references missing resource")?;
+        if p.source_width == 0
+            || p.source_height == 0
+            || u64::from(p.source_x) + u64::from(p.source_width) > u64::from(image.width)
+            || u64::from(p.source_y) + u64::from(p.source_height) > u64::from(image.height)
         {
-            visible.push(key);
+            bail!("placement source rectangle outside image");
         }
-        // A pending replacement keeps presenting its previous generation under that
-        // generation's own key, so the terminal keeps the image it already holds.
-        let image = match image {
-            Some(image) => image,
-            None => {
-                let Some(stand_in) = manifest.and_then(|manifest| manifest.stand_in(key)) else {
-                    continue;
-                };
-                let stand_in = stand_in.as_ref();
-                if images.insert(stand_in.key(), stand_in).is_none() {
-                    canonical_bytes = canonical_bytes
-                        .checked_add(stand_in.pixels.len())
-                        .context("image byte total overflow")?;
-                    if canonical_bytes > MAX_CANONICAL_BYTES {
-                        bail!("aggregate image byte limit");
-                    }
-                }
-                projected.image = stand_in.key();
-                if let Some(derived) = projected.derived.as_mut() {
-                    derived.image = stand_in.key();
-                }
-                stand_in
-            }
+        let Some(projected) = project(p, frame.size, viewport, index + 1)? else {
+            continue;
         };
         let (columns, rows) = projected.derived.map_or((1, 1), |key| {
             (
@@ -703,237 +629,5 @@ mod constant_axis_tests {
             }
         );
         assert_eq!(actual.cells, Some((11, 1)));
-    }
-}
-
-#[cfg(test)]
-mod progressive_tests {
-    use super::*;
-    use crate::image_resources::ImageManifest;
-
-    fn fixture() -> (Frame, ImageDescriptor) {
-        let size = Size {
-            cols: 4,
-            rows: 2,
-            cell_width: 8,
-            cell_height: 16,
-        };
-        let mut frame = blank(size);
-        let descriptor = ImageDescriptor {
-            key: ImageKey {
-                id: 4,
-                generation: 7,
-            },
-            width: 8,
-            height: 16,
-            format: PixelFormat::Rgba,
-            decoded_len: 8 * 16 * 4,
-        };
-        frame.placements.push(Placement {
-            image_id: descriptor.key.id,
-            generation: descriptor.key.generation,
-            placement_id: 1,
-            col: -1,
-            row: 0,
-            offset_x: 4,
-            offset_y: 0,
-            width: 16,
-            height: 16,
-            source_x: 0,
-            source_y: 0,
-            source_width: 8,
-            source_height: 16,
-            layer: ImageLayer::AboveText,
-            z: 0,
-        });
-        (frame, descriptor)
-    }
-
-    fn image(descriptor: ImageDescriptor) -> Arc<Image> {
-        Arc::new(Image {
-            id: descriptor.key.id,
-            generation: descriptor.key.generation,
-            width: descriptor.width,
-            height: descriptor.height,
-            format: descriptor.format,
-            pixels: vec![128; descriptor.decoded_len as usize],
-            source: None,
-        })
-    }
-
-    #[test]
-    fn only_declared_pending_resources_are_omitted_and_visible_demand_is_unique() {
-        let (mut frame, descriptor) = fixture();
-        let manifest = ImageManifest::new(vec![descriptor]).unwrap();
-        assert!(prepare_with_manifest(&frame, frame.size, None).is_err());
-        let prepared = prepare_with_manifest(&frame, frame.size, Some(&manifest)).unwrap();
-        assert!(prepared.images.is_empty());
-        assert!(prepared.placements.is_empty());
-        frame.placements.push(frame.placements[0].clone());
-        let mut offscreen = frame.placements[0].clone();
-        offscreen.col = 100;
-        frame.placements.push(offscreen);
-        assert_eq!(
-            pending_image_keys(&frame, frame.size, &manifest).unwrap(),
-            [descriptor.key]
-        );
-        frame.placements[0].col = 100;
-        frame.placements[1].col = 100;
-        assert!(
-            pending_image_keys(&frame, frame.size, &manifest)
-                .unwrap()
-                .is_empty()
-        );
-        frame.placements[2].generation += 1;
-        assert!(prepare_with_manifest(&frame, frame.size, Some(&manifest)).is_err());
-        assert!(pending_image_keys(&frame, frame.size, &manifest).is_err());
-    }
-
-    #[test]
-    fn pending_replacement_presents_its_previous_generation_under_the_old_key() {
-        let (frame, pending) = fixture();
-        let previous = ImageDescriptor {
-            key: ImageKey {
-                generation: pending.key.generation - 1,
-                ..pending.key
-            },
-            ..pending
-        };
-        let mut manifest = ImageManifest::new(vec![pending]).unwrap();
-        manifest.set_stand_in(pending.key, image(previous)).unwrap();
-        let prepared = prepare_with_manifest(&frame, frame.size, Some(&manifest)).unwrap();
-        assert_eq!(prepared.placements.len(), 1);
-        assert_eq!(prepared.placements[0].image, previous.key);
-        let uses = |key| {
-            prepared.original.contains(&key) || prepared.derived.iter().any(|d| d.image == key)
-        };
-        assert!(uses(previous.key) && !uses(pending.key));
-        assert!(prepared.images.contains_key(&previous.key));
-        // The replacement is still demanded until its own pixels are resident.
-        assert_eq!(
-            pending_image_keys(&frame, frame.size, &manifest).unwrap(),
-            [pending.key]
-        );
-        // A stand-in must match the pending generation's shape exactly.
-        let resized = ImageDescriptor {
-            width: previous.width + 1,
-            decoded_len: u64::from(previous.width + 1)
-                * u64::from(previous.height)
-                * previous.format.bytes_per_pixel() as u64,
-            ..previous
-        };
-        let mut other = ImageManifest::new(vec![pending]).unwrap();
-        assert!(other.set_stand_in(pending.key, image(resized)).is_err());
-        let prepared = prepare_with_manifest(&frame, frame.size, Some(&other)).unwrap();
-        assert!(prepared.placements.is_empty());
-    }
-
-    #[test]
-    fn visible_demand_keeps_ready_keys_and_excludes_offscreen_generations() {
-        let (mut frame, ready) = fixture();
-        let pending = ImageDescriptor {
-            key: ImageKey { id: 5, ..ready.key },
-            ..ready
-        };
-        let hidden = ImageDescriptor {
-            key: ImageKey { id: 6, ..ready.key },
-            ..ready
-        };
-        let manifest = ImageManifest::new(vec![ready, pending, hidden]).unwrap();
-        frame.images.push(image(ready));
-        let mut placement = frame.placements[0].clone();
-        placement.image_id = pending.key.id;
-        frame.placements.push(placement.clone());
-        frame.placements.push(placement.clone());
-        placement.image_id = hidden.key.id;
-        placement.col = 100;
-        frame.placements.push(placement);
-        assert_eq!(
-            visible_image_keys(&frame, frame.size, &manifest).unwrap(),
-            [ready.key, pending.key]
-        );
-        assert_eq!(
-            pending_image_keys(&frame, frame.size, &manifest).unwrap(),
-            [pending.key]
-        );
-        frame.images.push(image(pending));
-        assert_eq!(
-            visible_image_keys(&frame, frame.size, &manifest).unwrap(),
-            [ready.key, pending.key]
-        );
-        assert!(
-            pending_image_keys(&frame, frame.size, &manifest)
-                .unwrap()
-                .is_empty()
-        );
-        frame.placements[3].source_width += 1;
-        assert!(visible_image_keys(&frame, frame.size, &manifest).is_err());
-    }
-
-    #[test]
-    fn invalid_offscreen_crops_fail_without_pixels_or_fetch_demand() {
-        let (mut frame, descriptor) = fixture();
-        let manifest = ImageManifest::new(vec![descriptor]).unwrap();
-        frame.placements[0].col = 100;
-        for (x, width) in [(1, 8), (0, 0), (u32::MAX, 8)] {
-            frame.placements[0].source_x = x;
-            frame.placements[0].source_width = width;
-            assert!(prepare_with_manifest(&frame, frame.size, Some(&manifest)).is_err());
-            assert!(pending_image_keys(&frame, frame.size, &manifest).is_err());
-        }
-    }
-
-    #[test]
-    fn arrived_pixels_match_ordinary_exact_projection_without_replacing_placements() {
-        let (mut frame, descriptor) = fixture();
-        let manifest = ImageManifest::new(vec![descriptor]).unwrap();
-        frame.images.push(image(descriptor));
-        let ordinary = prepare_with_manifest(&frame, frame.size, None).unwrap();
-        let progressive = prepare_with_manifest(&frame, frame.size, Some(&manifest)).unwrap();
-        assert!(ordinary.placements == progressive.placements);
-        assert_eq!(ordinary.original, progressive.original);
-        assert_eq!(ordinary.derived, progressive.derived);
-        assert!(std::ptr::eq(
-            progressive.images[&descriptor.key],
-            frame.images[0].as_ref()
-        ));
-        assert!(
-            pending_image_keys(&frame, frame.size, &manifest)
-                .unwrap()
-                .is_empty()
-        );
-        let projection = progressive.placements[0];
-        assert_eq!((projection.col, projection.offset_x), (0, 0));
-    }
-
-    #[test]
-    fn resident_pixels_must_match_every_descriptor_field() {
-        let (mut frame, descriptor) = fixture();
-        let manifest = ImageManifest::new(vec![descriptor]).unwrap();
-        for invalid in [
-            Image {
-                width: 4,
-                height: 32,
-                ..image(descriptor).as_ref().clone()
-            },
-            Image {
-                format: PixelFormat::Rgb,
-                pixels: vec![128; 8 * 16 * 3],
-                ..image(descriptor).as_ref().clone()
-            },
-            Image {
-                pixels: vec![128; 1],
-                ..image(descriptor).as_ref().clone()
-            },
-            Image {
-                generation: 8,
-                ..image(descriptor).as_ref().clone()
-            },
-        ] {
-            frame.images = vec![Arc::new(invalid)];
-            assert!(prepare_with_manifest(&frame, frame.size, Some(&manifest)).is_err());
-        }
-        frame.images = vec![image(descriptor), image(descriptor)];
-        assert!(prepare_with_manifest(&frame, frame.size, Some(&manifest)).is_err());
     }
 }

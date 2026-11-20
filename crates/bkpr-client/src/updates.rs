@@ -144,7 +144,7 @@ pub fn pane(
         let transports = scene
             .iter()
             .flat_map(|scene| scene.images())
-            .filter_map(crate::resources::prepare_transport)
+            .filter_map(prepare_transport)
             .collect();
         Ok(Snapshot {
             metadata,
@@ -152,6 +152,24 @@ pub fn pane(
             transports,
         })
     })
+}
+/// Terminal payload for one received image, prepared on the poll thread rather than the
+/// render path: the program's own PNG/zlib bytes when they arrived, otherwise compressed
+/// pixels when that is smaller.
+fn prepare_transport(image: &Arc<Image>) -> Option<bkpr_tui_framework::PreparedTransport> {
+    use bkpr_tui_framework::PreparedTransport;
+    match image.source.as_deref() {
+        Some(source) => match source.encoding {
+            ImageSourceEncoding::Png => Some(PreparedTransport::from_verified(
+                image,
+                source.bytes.as_slice().into(),
+            )),
+            ImageSourceEncoding::Zlib => {
+                PreparedTransport::from_verified_zlib(image, source.bytes.as_slice().into())
+            }
+        },
+        None => PreparedTransport::compress(image),
+    }
 }
 pub fn registry(socket: &Endpoint, after: u64) -> Result<Pump<RegistrySnapshot>> {
     let socket = socket.to_owned();
@@ -267,7 +285,7 @@ mod tests {
                 view_timeout_ms: 0,
                 poll_wait_max_ms: 1000,
                 row_deltas: true,
-                scene_encodings: vec![PROGRESSIVE_SCENE_ENCODING.into()],
+                scene_encodings: vec![SOURCES_SCENE_ENCODING.into()],
             },
             selection: None,
             search: None,
@@ -285,12 +303,12 @@ mod tests {
             (0, None),
             (
                 1,
-                Some(scene_wire::encode_progressive(&initial, 1, None, 0, &[]).unwrap()),
+                Some(scene_wire::encode(&initial, 1, None, 0, &[]).unwrap()),
             ),
             (1, None),
             (
                 2,
-                Some(scene_wire::encode_progressive(&changed, 2, Some(&baseline), 1, &[]).unwrap()),
+                Some(scene_wire::encode(&changed, 2, Some(&baseline), 1, &[]).unwrap()),
             ),
             (3, invalid_scene),
         ];
@@ -399,14 +417,14 @@ mod tests {
 
     #[test]
     fn native_polls_reject_scene_revision_mismatch_before_delivery() {
-        let scene = scene_wire::encode_progressive(&frame("m"), 4, None, 0, &[]).unwrap();
+        let scene = scene_wire::encode(&frame("m"), 4, None, 0, &[]).unwrap();
         invalid_update_is_not_delivered(Some(scene), None);
     }
 
     #[test]
     fn native_polls_reject_nested_json_frame_even_with_a_valid_binary_scene() {
         let nested = frame("n");
-        let scene = scene_wire::encode_progressive(&nested, 3, None, 0, &[]).unwrap();
+        let scene = scene_wire::encode(&nested, 3, None, 0, &[]).unwrap();
         invalid_update_is_not_delivered(Some(scene), Some(nested));
     }
 

@@ -69,8 +69,6 @@ pub(super) fn open_session(root: &Path, name: &str, daemon_id: &str) -> Result<S
 /// No Debug/Serialize: the token and process observer are strictly ephemeral.
 pub(crate) struct ClientLease {
     pub(crate) id: String,
-    /// Fresh owning session-runtime identity used to scope ephemeral resources.
-    pub(crate) runtime: Uuid,
     token: String,
     owner: crate::transport::ClientOwner,
     lifetime: UnixStream,
@@ -240,7 +238,6 @@ impl Registry {
         let owner = crate::transport::ClientOwner::authenticate(stream)?;
         let client = Arc::new(ClientLease {
             id: Uuid::new_v4().to_string(),
-            runtime: Uuid::parse_str(&self.inner.session.session_instance_id)?,
             token: format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
             owner,
             lifetime: stream.try_clone()?,
@@ -294,27 +291,6 @@ impl Registry {
         Ok(client.clone())
     }
 
-    /// Resolve a live pane and validate the lease's visible view and exact immutable image generation.
-    pub(crate) fn image_observation(
-        &self,
-        client: Arc<ClientLease>,
-        pane_id: &str,
-        view_id: String,
-        key: bkpr_protocol::ImageKey,
-    ) -> Result<crate::image_resources::Observation> {
-        self.request_admission()?;
-        client.ensure_active()?;
-        let pane = self
-            .inner
-            .state
-            .lock()
-            .unwrap()
-            .live
-            .get(pane_id)
-            .cloned()
-            .context("image pane unavailable")?;
-        crate::image_resources::Observation::new(pane, client, view_id, key)
-    }
     pub(crate) fn client_request(
         &self,
         authority: ClientAuthority,

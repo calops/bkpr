@@ -18,37 +18,6 @@ fn runtime() -> tokio::runtime::Runtime {
 }
 
 #[test]
-fn saturated_bulk_admission_leaves_scene_control_and_lifetime_capacity() {
-    runtime().block_on(async {
-        let (sender, _receiver) = mpsc::channel(1);
-        let connector = RemoteConnector {
-            sender,
-            lifetime: Arc::new(Semaphore::new(1)),
-            control: Arc::new(Semaphore::new(1)),
-            observations: Arc::new(Semaphore::new(1)),
-            bulk: Arc::new(Semaphore::new(2)),
-        };
-        let first = connector.reserve(ConnectionPurpose::Bulk).await.unwrap();
-        let second = connector.reserve(ConnectionPurpose::Bulk).await.unwrap();
-        let third = connector.reserve(ConnectionPurpose::Bulk);
-        tokio::pin!(third);
-        assert!(futures::poll!(third.as_mut()).is_pending());
-        let scene = connector
-            .reserve(ConnectionPurpose::Observation)
-            .await
-            .unwrap();
-        let control = connector.reserve(ConnectionPurpose::Control).await.unwrap();
-        let lifetime = connector
-            .reserve(ConnectionPurpose::Lifetime)
-            .await
-            .unwrap();
-        drop(first);
-        let third = third.await.unwrap();
-        drop((second, third, scene, control, lifetime));
-    });
-}
-
-#[test]
 fn saturated_remote_observations_queue_fairly_without_starving_control_or_lifetime() {
     runtime().block_on(async {
         let (sender, _receiver) = mpsc::channel(1);
@@ -57,7 +26,6 @@ fn saturated_remote_observations_queue_fairly_without_starving_control_or_lifeti
             lifetime: Arc::new(Semaphore::new(1)),
             control: Arc::new(Semaphore::new(1)),
             observations: Arc::new(Semaphore::new(1)),
-            bulk: Arc::new(Semaphore::new(2)),
         };
         let first = connector
             .reserve(ConnectionPurpose::Observation)
@@ -102,7 +70,6 @@ fn async_observation_cancel_releases_admission_without_opening_or_replay() {
             lifetime: Arc::new(Semaphore::new(1)),
             control: Arc::new(Semaphore::new(1)),
             observations: Arc::new(Semaphore::new(0)),
-            bulk: Arc::new(Semaphore::new(2)),
         };
         let cancellation = CancellationToken::new();
         let mut connection = connector.connect_async(ConnectionPurpose::Observation, &cancellation);
@@ -764,7 +731,6 @@ fn authoritative_shutdown_drains_original_mutation_receipt_after_owner_drop() {
         lifetime: Arc::new(Semaphore::new(1)),
         control: Arc::new(Semaphore::new(15)),
         observations: Arc::new(Semaphore::new(77)),
-        bulk: Arc::new(Semaphore::new(2)),
     });
     let (stop, stop_rx) = watch::channel(false);
     let cancellation = CancellationToken::new();

@@ -78,6 +78,7 @@ table Image {
   source:[ubyte];
 }
 
+// Retired: only descriptor-only progressive scenes (version 2) used this; kept for slot stability.
 table ImageDescriptor {
   id:uint;
   generation:ulong;
@@ -123,5 +124,6 @@ table Scene {
   styles:[Style] (required);
   hyperlinks:[string] (required);
   rows:[Row] (required);
+  // Retired with progressive scenes; decoders reject any value.
   image_descriptors:[ImageDescriptor];
 }
