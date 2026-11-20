@@ -32,10 +32,12 @@ pub struct FinderTarget {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FinderIntent {
+pub(crate) enum FinderIntent {
     None,
     Cancel,
     Activate(FinderTarget),
+    /// Explicit export of the exact identity shown in the preview.
+    CopyIdentity(metadata::IdentityCopy),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -349,6 +351,7 @@ pub struct Finder {
     hovered: Option<String>,
     last_click: Option<(String, Instant)>,
     preview_lines: Vec<PreviewLine>,
+    copy_hits: Vec<(Rect, metadata::IdentityCopy)>,
     preview_key: Option<(u64, String, u16)>,
     graphical: bool,
     roles: Vec<RoleSpan>,
@@ -379,6 +382,7 @@ impl Finder {
             hovered: None,
             last_click: None,
             preview_lines: Vec::new(),
+            copy_hits: Vec::new(),
             preview_key: None,
             graphical: false,
             roles: Vec::new(),
@@ -721,6 +725,12 @@ impl Finder {
         self.reveal(self.visible_count(size));
     }
 
+    /// A clipboard action must still belong to the selected, visible preview.
+    pub(crate) fn shows_copy(&self, target: &metadata::IdentityCopy) -> bool {
+        self.selected_target()
+            .is_some_and(|selected| selected.pane_id == target.pane())
+            && self.copy_hits.iter().any(|(_, visible)| visible == target)
+    }
     fn prepare_preview(&mut self, width: u16) {
         let Some(result) = self.results.get(self.selected) else {
             self.preview_lines.clear();
@@ -798,6 +808,13 @@ impl Finder {
             }
             if event.button == MouseButton::Left {
                 if in_preview {
+                    if let Some((_, target)) = self
+                        .copy_hits
+                        .iter()
+                        .find(|(rect, target)| rect.contains(x, y) && self.shows_copy(target))
+                    {
+                        return FinderIntent::CopyIdentity(target.clone());
+                    }
                     self.compact = CompactView::Preview;
                 } else if in_list {
                     self.compact = CompactView::List;
@@ -908,6 +925,7 @@ impl Finder {
         }
         self.roles.clear();
         self.projects.clear();
+        self.copy_hits.clear();
         let mut lines = Vec::new();
         let title = self.input.error().map_or_else(
             || {
@@ -1096,6 +1114,16 @@ impl Finder {
                         },
                         slot: span.slot,
                     }));
+                if let Some((hit, target)) = &line.copy {
+                    self.copy_hits.push((
+                        Rect {
+                            x: layout.preview.x + hit.x,
+                            y: layout.preview.y + index as u16,
+                            ..*hit
+                        },
+                        target.clone(),
+                    ));
+                }
             }
         }
         if let Some(footer) = layout.footer {

@@ -148,6 +148,20 @@ struct ContextSelection<'a> {
     pane_id: Option<&'a str>,
     successor_pane: Option<&'a str>,
 }
+#[derive(Default)]
+struct ContextSnapshot {
+    facts: BTreeMap<String, ContextFact>,
+    recipient_bindings: Vec<(Launch, bool)>,
+}
+
+fn matches_recipient(launch: &Launch, selector: &str) -> bool {
+    launch.grant.launch_id == selector
+        || launch
+            .managed
+            .conversation
+            .as_ref()
+            .is_some_and(|conversation| conversation.id == selector)
+}
 struct DiscoveryQuery<'a> {
     scope: AgentScope,
     detail: bool,
@@ -867,7 +881,7 @@ impl Registry {
         own_id: &str,
         selection: ContextSelection<'_>,
         detail: bool,
-    ) -> Result<BTreeMap<String, ContextFact>> {
+    ) -> Result<ContextSnapshot> {
         let launches = self
             .inner
             .captures
@@ -877,7 +891,9 @@ impl Registry {
             .values()
             .filter(|l| {
                 l.grant.launch_id == own_id
-                    || Some(l.grant.launch_id.as_str()) == selection.recipient
+                    || selection
+                        .recipient
+                        .is_some_and(|selector| matches_recipient(l, selector))
                     || Some(l.grant.pane_id.as_str()) == selection.successor_pane
                     || (selection.all
                         && selection.launch_id.is_none_or(|id| l.grant.launch_id == id)
@@ -885,6 +901,24 @@ impl Registry {
             })
             .cloned()
             .collect::<Vec<_>>();
+        let recipient_bindings = if let Some(selector) = selection.recipient {
+            let state = self.inner.agents.state.lock().unwrap();
+            healthy_agents(&state)?;
+            launches
+                .iter()
+                .filter(|launch| matches_recipient(launch, selector))
+                .map(|launch| {
+                    let live = state
+                        .store
+                        .agents
+                        .get(&launch.grant.launch_id)
+                        .is_some_and(|agent| agent.exited_at.is_none());
+                    (launch.clone(), live)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let mut observed = Vec::with_capacity(launches.len());
         let table = proc::fresh_snapshot()?;
         for launch in launches {
@@ -895,7 +929,7 @@ impl Registry {
         let state = self.inner.state.lock().unwrap();
         healthy(&state)?;
         ensure!(!state.closing, "daemon shutting down");
-        Ok(observed
+        let facts = observed
             .into_iter()
             .filter_map(|(launch, active, cwd)| {
                 let original =
@@ -1007,7 +1041,85 @@ impl Registry {
                     },
                 ))
             })
-            .collect())
+            .collect();
+        Ok(ContextSnapshot {
+            facts,
+            recipient_bindings,
+        })
+    }
+    // The registry transaction and agent writer fix ownership and bindings here.
+    // Foreground/process observations were collected before either lock.
+    fn admit_agent_recipient(
+        &self,
+        store: &Store,
+        snapshot: &ContextSnapshot,
+        selector: &str,
+        scope: AgentScope,
+    ) -> Result<()> {
+        const CHANGED: &str =
+            "recipient context changed before admission; rediscover; nothing was sent";
+        let captures = self.inner.captures.lock().unwrap();
+        ensure!(
+            captures
+                .launches
+                .values()
+                .filter(|launch| matches_recipient(launch, selector))
+                .count()
+                == snapshot.recipient_bindings.len(),
+            CHANGED
+        );
+        for (expected, live) in &snapshot.recipient_bindings {
+            let current = captures
+                .launches
+                .get(&expected.grant.launch_id)
+                .context(CHANGED)?;
+            ensure!(
+                current.grant.pane_id == expected.grant.pane_id
+                    && current.root.identity == expected.root.identity
+                    && current.binding_generation == expected.binding_generation
+                    && current.managed.conversation == expected.managed.conversation
+                    && current.control.same_authority(&expected.control)
+                    && current.control.is_valid()
+                    && store
+                        .agents
+                        .get(&expected.grant.launch_id)
+                        .is_some_and(|agent| agent.exited_at.is_none())
+                        == *live,
+                CHANGED
+            );
+        }
+        drop(captures);
+        let state = self.inner.state.lock().unwrap();
+        healthy(&state)?;
+        ensure!(!state.closing, "daemon shutting down");
+        for fact in snapshot.facts.values() {
+            let current = state
+                .record
+                .registry
+                .panes
+                .iter()
+                .find(|pane| pane.id == fact.pane.id)
+                .context(CHANGED)?;
+            ensure!(
+                current.status == PaneStatus::Running
+                    && current.workspace_id == fact.pane.workspace_id,
+                CHANGED
+            );
+            if scope == AgentScope::Repository {
+                let repository = current
+                    .project
+                    .as_ref()
+                    .filter(|project| {
+                        fact.active
+                            && project.state == ProjectState::Ready
+                            && fact.cwd.as_ref() == Some(&project.cwd)
+                    })
+                    .and_then(|project| project.repository.as_ref())
+                    .map(|repository| &repository.common_dir);
+                ensure!(repository == fact.repository.as_ref(), CHANGED);
+            }
+        }
+        Ok(())
     }
     pub(super) fn agent_register(&self, launch: &Launch, _cwd: &Path) -> Result<()> {
         self.inner.agents.register(launch)
@@ -1150,9 +1262,12 @@ impl Registry {
                     scope != AgentScope::Repository,
                     "repository-scoped control is not supported; explicitly select workspace or session scope"
                 );
-                let contexts =
+                let snapshot =
                     self.agent_contexts(false, id, ContextSelection::default(), false)?;
-                let own = contexts.get(id).context("live agent context unavailable")?;
+                let own = snapshot
+                    .facts
+                    .get(id)
+                    .context("live agent context unavailable")?;
                 ensure!(own.active, "live foreground agent context unavailable");
                 {
                     let state = self.agent_request_state(&launch)?;
@@ -1322,7 +1437,7 @@ impl Registry {
                     AgentRequest::Whoami { detail } => (ContextSelection::default(), *detail, None),
                     _ => (ContextSelection::default(), false, None),
                 };
-                let contexts = if needs_context {
+                let snapshot = if needs_context {
                     self.agent_contexts(
                         resolve_repository,
                         id,
@@ -1333,8 +1448,9 @@ impl Registry {
                         detail,
                     )?
                 } else {
-                    BTreeMap::new()
+                    ContextSnapshot::default()
                 };
+                let contexts = &snapshot.facts;
                 #[cfg(test)]
                 self.inner.agents.wait_request_barrier(true);
                 match request {
@@ -1364,7 +1480,7 @@ impl Registry {
                         let own = contexts.get(id).context("live agent context unavailable")?;
                         discover(
                             &state,
-                            &contexts,
+                            contexts,
                             own,
                             DiscoveryQuery {
                                 scope,
@@ -1429,27 +1545,33 @@ impl Registry {
                         scope,
                     } => {
                         let own = contexts.get(id).context("live agent context unavailable")?;
-                        let receiver_ready = {
-                            let state = self.inner.agents.state.lock().unwrap();
-                            state.receivers.contains_key(&to)
-                                && current_subscribers(&state, &to) > 0
-                        };
+                        let transaction = self.inner.transaction.lock().unwrap();
                         self.inner.agents.transaction(|store| {
                             self.authorize_agent_guard(&launch)?;
-                            messages::send(
+                            let result = messages::send(
                                 store,
-                                id,
                                 own,
-                                &contexts,
+                                contexts,
                                 messages::SendInput {
                                     to,
                                     text,
                                     idempotency_key,
                                     scope,
-                                    receiver_ready,
                                 },
                                 &launch.grant.token,
-                            )
+                                |store, selector| {
+                                    self.admit_agent_recipient(store, &snapshot, selector, scope)
+                                },
+                                |recipient| {
+                                    let state = self.inner.agents.state.lock().unwrap();
+                                    state.receivers.contains_key(recipient)
+                                        && current_subscribers(&state, recipient) > 0
+                                },
+                            );
+                            // Admission fixes the launch and scope. Only the agent
+                            // writer must remain held while persisting that decision.
+                            drop(transaction);
+                            result
                         })
                     }
                     AgentRequest::ReadInbox {

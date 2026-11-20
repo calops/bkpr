@@ -88,13 +88,13 @@ pub enum AgentRequest {
         #[serde(default)]
         limit: Option<usize>,
     },
-    /// Durably send untrusted peer text to one exact launch and request its native wake.
+    /// Resolve a scoped recipient, durably send peer text and request its native wake.
     SendMessage {
-        /// Recipient launch ID, never a native conversation ID.
+        /// Exact launch ID or uniquely matching live native conversation ID within scope.
         to: String,
         /// Nonblank UTF-8 body of at most 65536 bytes, excluding the launch token.
         text: String,
-        /// Nonempty key of at most 256 bytes; retries must preserve all send fields.
+        /// Nonempty key of at most 256 bytes; identical retries retain the resolved launch.
         idempotency_key: String,
         /// Required relationship between sender and recipient.
         #[serde(default)]

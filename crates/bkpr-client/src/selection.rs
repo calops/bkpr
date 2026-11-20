@@ -279,6 +279,7 @@ impl App {
     }
 
     pub(super) fn selection_focus_lost(&mut self) {
+        self.identity_copy.cancel();
         let generation = self.terminal_selection.generation;
         self.terminal_selection.generation = generation.wrapping_add(1);
         self.terminal_selection.copies.clear();
@@ -503,36 +504,7 @@ impl App {
                 if copied.contents[0].data.is_empty() {
                     return Ok(());
                 }
-                let mut consent = Consent {
-                    id: String::new(),
-                    request: ClipboardRequest {
-                        operation: ClipboardOperation::Write {
-                            contents: copied.contents,
-                        },
-                        location: ClipboardLocation::Standard,
-                        name: String::new(),
-                        granted: true,
-                        can_remember: false,
-                        paste_offer_id: None,
-                    },
-                    started: Instant::now(),
-                    sent: false,
-                    allowed: true,
-                    contents: Vec::new(),
-                    available: Vec::new(),
-                    enhanced_supported: self.enhanced_supported,
-                    paste: false,
-                    password: None,
-                };
-                let answer = begin_clipboard(out, &mut consent)?;
-                if !answer.is_some_and(|answer| answer.result == ClipboardResult::Success) {
-                    bail!("selection clipboard export was not sent");
-                }
-                self.notify(
-                    "Selection sent to host clipboard; host permissions remain authoritative"
-                        .into(),
-                );
-                Ok(())
+                self.export_user_clipboard(out, copied.contents, "Selection")
             });
             if let Err(error) = result {
                 if error.downcast_ref::<std::io::Error>().is_some() {
@@ -543,6 +515,42 @@ impl App {
                 self.notify(format!("Selection copy failed: {error:#}; not replayed"));
             }
         }
+    }
+
+    /// Export explicitly requested UI text through host clipboard permissions.
+    pub(super) fn export_user_clipboard(
+        &mut self,
+        out: &mut impl Write,
+        contents: Vec<ClipboardContent>,
+        label: &str,
+    ) -> Result<()> {
+        let mut consent = Consent {
+            id: String::new(),
+            request: ClipboardRequest {
+                operation: ClipboardOperation::Write { contents },
+                location: ClipboardLocation::Standard,
+                name: String::new(),
+                granted: true,
+                can_remember: false,
+                paste_offer_id: None,
+            },
+            started: Instant::now(),
+            sent: false,
+            allowed: true,
+            contents: Vec::new(),
+            available: Vec::new(),
+            enhanced_supported: self.enhanced_supported,
+            paste: false,
+            password: None,
+        };
+        let answer = begin_clipboard(out, &mut consent)?;
+        if !answer.is_some_and(|answer| answer.result == ClipboardResult::Success) {
+            bail!("clipboard export was not sent");
+        }
+        self.notify(format!(
+            "{label} sent to host clipboard; host permissions remain authoritative"
+        ));
+        Ok(())
     }
 }
 

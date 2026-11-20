@@ -129,6 +129,8 @@ fn raised_material(
 
 #[path = "diagnostics.rs"]
 mod diagnostics;
+#[path = "identity_copy.rs"]
+mod identity_copy;
 #[path = "jobs.rs"]
 mod jobs;
 #[path = "management.rs"]
@@ -523,6 +525,7 @@ struct App {
     sidebar_resize_hover: bool,
     pressed_pointers: RefCell<Vec<PressedPointer>>,
     terminal_selection: selection::State,
+    identity_copy: identity_copy::State,
     resizing: resizing::State,
     search: search::State,
     finder: Option<crate::finder::Finder>,
@@ -1241,6 +1244,9 @@ impl App {
         match intent {
             crate::finder::FinderIntent::None => {}
             crate::finder::FinderIntent::Cancel => self.cancel_modal(),
+            crate::finder::FinderIntent::CopyIdentity(target) => {
+                self.queue_identity_copy(self.tree_owner(), target, identity_copy::Source::Finder);
+            }
             crate::finder::FinderIntent::Activate(target) => {
                 self.finder = None;
                 self.overlays.remove("ui:modal");
@@ -2875,6 +2881,7 @@ impl App {
         result
     }
     fn clipboard(&mut self, out: &mut impl Write) -> Result<()> {
+        self.identity_clipboard(out)?;
         self.answered.retain(|pane, id| {
             self.views
                 .get(pane)
@@ -4434,7 +4441,18 @@ impl App {
                         MouseButton::WheelUp => self.popover.scroll_by(-3),
                         MouseButton::WheelDown => self.popover.scroll_by(3),
                         MouseButton::Left if action == MouseAction::Press => {
-                            self.refresh_popup_ci(Some((mouse.x, mouse.y)))
+                            let copy = self
+                                .popover
+                                .copy_at(&self.tree.lock().unwrap(), (mouse.x, mouse.y));
+                            if let Some((owner, target)) = copy {
+                                self.queue_identity_copy(
+                                    owner,
+                                    target,
+                                    identity_copy::Source::Popover,
+                                );
+                            } else {
+                                self.refresh_popup_ci(Some((mouse.x, mouse.y)));
+                            }
                         }
                         _ => {}
                     }
@@ -4962,6 +4980,7 @@ impl App {
             sidebar_resize_hover: false,
             pressed_pointers: RefCell::new(Vec::new()),
             terminal_selection: selection::State::default(),
+            identity_copy: identity_copy::State::default(),
             resizing: resizing::State::default(),
             search: search::State::default(),
             finder: None,
@@ -6990,6 +7009,7 @@ pub(super) mod tests {
                 sidebar_resize_hover: false,
                 pressed_pointers: RefCell::new(Vec::new()),
                 terminal_selection: selection::State::default(),
+                identity_copy: identity_copy::State::default(),
                 resizing: resizing::State::default(),
                 search: search::State::default(),
                 finder: None,

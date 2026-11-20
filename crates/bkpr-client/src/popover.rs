@@ -10,7 +10,6 @@ use bkpr_tui_framework::{
     ForegroundSpan, Rect, Role, RoleSpan, Theme, UiSurface,
     window::{self, Border},
 };
-use unicode_width::UnicodeWidthStr;
 
 pub const SURFACE_ID: &str = "ui:tooltip";
 
@@ -307,6 +306,7 @@ pub struct Popover {
     projects: Vec<ProjectSpan>,
     foregrounds: Vec<ForegroundSpan>,
     refresh_hits: Vec<(Rect, bkpr_protocol::CiRefreshTarget)>,
+    copy_hits: Vec<(Rect, metadata::IdentityCopy)>,
     links: Vec<(u16, u16, u16, String)>,
     refresh_pending: Option<(crate::tree::Owner, bkpr_protocol::CiRefreshTarget)>,
     graphical: bool,
@@ -330,6 +330,7 @@ impl Popover {
             foregrounds: Vec::new(),
             graphical: false,
             refresh_hits: Vec::new(),
+            copy_hits: Vec::new(),
             links: Vec::new(),
             refresh_pending: None,
         }
@@ -351,6 +352,7 @@ impl Popover {
         self.scroll = 0;
         self.max_scroll = 0;
         self.refresh_hits.clear();
+        self.copy_hits.clear();
         self.clear_links();
     }
     fn clear_links(&mut self) {
@@ -548,7 +550,7 @@ impl Popover {
         let raw = &content.rows;
         let preferred_width = raw
             .iter()
-            .map(|paragraph| UnicodeWidthStr::width(paragraph.text.as_str()))
+            .map(Paragraph::preferred_width)
             .max()
             .unwrap_or(1)
             .saturating_add(4)
@@ -610,6 +612,7 @@ impl Popover {
         self.roles = window::theme_spans(local).to_vec();
         self.projects.clear();
         self.refresh_hits.clear();
+        self.copy_hits.clear();
         self.clear_links();
         if local.cols >= 3 && local.rows >= 3 {
             self.roles.push(RoleSpan {
@@ -660,6 +663,16 @@ impl Popover {
             }
             if let Some((hit, target)) = &line.refresh {
                 self.refresh_hits.push((
+                    Rect {
+                        x: rect.x + inner.x + hit.x,
+                        y: rect.y + inner.y + index as u16,
+                        ..*hit
+                    },
+                    target.clone(),
+                ));
+            }
+            if let Some((hit, target)) = &line.copy {
+                self.copy_hits.push((
                     Rect {
                         x: rect.x + inner.x + hit.x,
                         y: rect.y + inner.y + index as u16,
@@ -722,6 +735,40 @@ impl Popover {
         });
         Some(rect)
     }
+    /// Only the currently presented owner and source revision can offer actions.
+    fn current_owner(&self, tree: &crate::tree::Tree) -> Option<crate::tree::Owner> {
+        let key = self.content_key.as_ref()?;
+        let session = tree.session(key.owner)?;
+        (session.group.status == crate::controller::SessionStatus::Online
+            && key.registry_revision == session.registry.revision
+            && crate::controller::tree_popup_target(tree, false).is_some_and(|target| {
+                target.owner == key.owner
+                    && matches!(&target.node, crate::tree::Node::Native(native) if key.target.as_ref() == Some(native))
+            }))
+        .then_some(key.owner)
+    }
+    /// Copy buttons export exact identity bytes, never their clipped labels.
+    pub(crate) fn copy_at(
+        &self,
+        tree: &crate::tree::Tree,
+        point: (u16, u16),
+    ) -> Option<(crate::tree::Owner, metadata::IdentityCopy)> {
+        let owner = self.current_owner(tree)?;
+        self.copy_hits
+            .iter()
+            .find(|(rect, _)| rect.contains(point.0, point.1))
+            .map(|(_, target)| (owner, target.clone()))
+    }
+    /// A queued gesture cannot outlive its visible owner or metadata source.
+    pub(crate) fn shows_copy(
+        &self,
+        tree: &crate::tree::Tree,
+        owner: crate::tree::Owner,
+        target: &metadata::IdentityCopy,
+    ) -> bool {
+        self.current_owner(tree) == Some(owner)
+            && self.copy_hits.iter().any(|(_, visible)| visible == target)
+    }
     /// Only a current, visibly painted owner/source may issue refresh. This is
     /// independent of active terminal focus and rejects stale session generations.
     fn refresh_candidate(
@@ -729,22 +776,8 @@ impl Popover {
         tree: &crate::tree::Tree,
         point: Option<(u16, u16)>,
     ) -> Option<(crate::tree::Owner, &bkpr_protocol::CiRefreshTarget)> {
-        let key = self.content_key.as_ref()?;
-        let session = tree.session(key.owner)?;
-        if session.group.status != crate::controller::SessionStatus::Online {
-            return None;
-        }
-        if key.registry_revision != session.registry.revision
-            || crate::controller::tree_popup_target(tree, false).is_none_or(|target| {
-                target.owner != key.owner
-                    || match &target.node {
-                        crate::tree::Node::Native(native) => key.target.as_ref() != Some(native),
-                        _ => true,
-                    }
-            })
-        {
-            return None;
-        }
+        let owner = self.current_owner(tree)?;
+        let session = tree.session(owner)?;
         let mut targets = self
             .content
             .as_ref()?
@@ -775,11 +808,11 @@ impl Popover {
         if self
             .refresh_pending
             .as_ref()
-            .is_some_and(|(owner, pending)| *owner == key.owner && pending == target)
+            .is_some_and(|(pending_owner, pending)| *pending_owner == owner && pending == target)
         {
             return None;
         }
-        Some((key.owner, target))
+        Some((owner, target))
     }
     pub(crate) fn refresh_available(&self, tree: &crate::tree::Tree) -> bool {
         self.refresh_candidate(tree, None).is_some()

@@ -5,7 +5,6 @@ pub(super) struct SendInput {
     pub text: String,
     pub idempotency_key: String,
     pub scope: AgentScope,
-    pub receiver_ready: bool,
 }
 pub(super) struct SendPayload<'a> {
     pub to: &'a str,
@@ -45,12 +44,14 @@ pub(super) fn retry(
 }
 pub(super) fn send(
     store: &mut Store,
-    id: &str,
     own: &ContextFact,
     contexts: &BTreeMap<String, ContextFact>,
     input: SendInput,
     token: &str,
+    admit: impl FnOnce(&Store, &str) -> Result<()>,
+    receiver_ready: impl FnOnce(&str) -> bool,
 ) -> Result<Value> {
+    let id = &own.launch_id;
     if let Some(receipt) = retry(
         store,
         id,
@@ -69,45 +70,13 @@ pub(super) fn send(
         text,
         idempotency_key,
         scope,
-        receiver_ready,
     } = input;
-    ensure!(to != id, "cannot message self");
-    require_scope(scope, own, store)?;
-    if let Some(retired) = store
-        .agents
-        .get(&to)
-        .filter(|agent| agent.exited_at.is_some())
-    {
-        let successors = contexts
-            .values()
-            .filter(|candidate| {
-                candidate.launch_id != id
-                    && candidate.pane.id == retired.pane_id
-                    && candidate.active
-                    && store
-                        .agents
-                        .get(&candidate.launch_id)
-                        .is_some_and(|agent| agent.exited_at.is_none())
-                    && in_scope(scope, own, candidate, store)
-            })
-            .map(|candidate| candidate.launch_id.as_str())
-            .take(2)
-            .collect::<Vec<_>>();
-        if let [successor] = successors.as_slice() {
-            bail!(
-                "recipient launch is retired; current same-pane launch_id={successor}; rediscover and explicitly address a new message; nothing was redirected or sent"
-            );
-        }
-        bail!(
-            "recipient launch is retired; rediscover within the selected scope; nothing was sent"
-        );
-    }
-    let recipient = contexts.get(&to).context("recipient is not a live agent")?;
-    Agents::require_live(store, &to)?;
-    ensure!(
-        in_scope(scope, own, recipient, store),
-        "recipient outside selected live scope"
-    );
+    admit(store, &to)?;
+    let recipient = resolve_recipient(store, id, own, contexts, &to, scope)?;
+    let receiver_ready = receiver_ready(&recipient.launch_id);
+    // The retry identity is the caller's selector; only routing uses the launch.
+    let digest = payload(&to, &text, scope);
+    let to = recipient.launch_id.clone();
     ensure!(
         store
             .messages
@@ -122,7 +91,6 @@ pub(super) fn send(
         .checked_add(1)
         .context("message sequence exhausted")?;
     let n = store.agents[&to].notification.as_ref();
-    let digest = payload(&to, &text, scope);
     let message = Message {
         id: Uuid::new_v4().to_string(),
         from: id.to_owned(),
@@ -157,6 +125,83 @@ pub(super) fn send(
     let receipt = receipt(&message, false);
     store.messages.insert(message.id.clone(), message);
     Ok(receipt)
+}
+
+fn resolve_recipient<'a>(
+    store: &Store,
+    id: &str,
+    own: &ContextFact,
+    contexts: &'a BTreeMap<String, ContextFact>,
+    to: &str,
+    scope: AgentScope,
+) -> Result<&'a ContextFact> {
+    require_scope(scope, own, store)?;
+    if let Some(retired) = store
+        .agents
+        .get(to)
+        .filter(|agent| agent.exited_at.is_some())
+    {
+        let successors = contexts
+            .values()
+            .filter(|candidate| {
+                candidate.launch_id != id
+                    && candidate.pane.id == retired.pane_id
+                    && candidate.active
+                    && store
+                        .agents
+                        .get(&candidate.launch_id)
+                        .is_some_and(|agent| agent.exited_at.is_none())
+                    && in_scope(scope, own, candidate, store)
+            })
+            .map(|candidate| candidate.launch_id.as_str())
+            .take(2)
+            .collect::<Vec<_>>();
+        if let [successor] = successors.as_slice() {
+            bail!(
+                "recipient launch is retired; current same-pane launch_id={successor}; rediscover and explicitly address a new message; nothing was redirected or sent"
+            );
+        }
+        bail!(
+            "recipient launch is retired; rediscover within the selected scope; nothing was sent"
+        );
+    }
+    // An exact live launch never falls through to an unrelated conversation.
+    if store.agents.contains_key(to) {
+        let exact = contexts.get(to).context("recipient is not a live agent")?;
+        ensure!(
+            in_scope(scope, own, exact, store),
+            "recipient outside selected live scope"
+        );
+    }
+    let mut candidates = contexts.values().filter(|candidate| {
+        store
+            .agents
+            .get(&candidate.launch_id)
+            .is_some_and(|agent| agent.exited_at.is_none())
+            && in_scope(scope, own, candidate, store)
+            && (candidate.launch_id == to
+                || (candidate.active
+                    && candidate.conversation.as_ref().is_some_and(|conversation| {
+                        conversation.generation != 0 && conversation.id == to
+                    })))
+    });
+    let recipient = candidates.next().context("recipient is not a live agent")?;
+    if let Some(second) = candidates.next() {
+        const MAX_CANDIDATES: usize = 10;
+        let mut page = vec![recipient, second];
+        page.extend(candidates.by_ref().take(MAX_CANDIDATES - 2));
+        let has_more = candidates.next().is_some();
+        let candidates = page
+            .into_iter()
+            .map(|candidate| json!({"launch_id":candidate.launch_id,"pane_id":candidate.pane.id}))
+            .collect::<Vec<_>>();
+        bail!(
+            "ambiguous recipient; {}; address an exact launch_id; nothing was sent",
+            json!({"candidates":candidates,"has_more":has_more,"truncated":has_more})
+        );
+    }
+    ensure!(recipient.launch_id != id, "cannot message self");
+    Ok(recipient)
 }
 pub(super) fn page_limit(limit: Option<usize>) -> Result<usize> {
     let limit = limit.unwrap_or(10);

@@ -760,8 +760,28 @@ Control/input use `{operation,arguments,scope?,reply?}`. Exact IDs are required;
 bounded, in-scope prefix hints never resolve or redirect a mutation automatically.
 `recovery.list` and `pane.resume` retain their exact saved-descriptor guards.
 
-Sends require a sender-scoped `idempotency_key`. Only identical recipient, text and
-scope may reuse it; conflicting reuse fails. Every accepted direct message requests
+`send_message.to` accepts an exact launch ID or a uniquely matching live native
+conversation ID within the requested scope. A conversation is a lookup key,
+not delivery authority: acceptance binds the message to one exact launch.
+No match fails; ambiguous matches return bounded candidate identities so the
+caller can choose an explicit launch. Conversation IDs do not implicitly widen
+workspace scope or route across sessions. Sidebar popovers and Finder previews
+distinguish **Conversation ID** from **Launch ID**; both can be copied.
+
+Conversation lookup uses the current authenticated foreground root binding, not
+saved history or attested child contexts. Namespace collisions fail closed;
+known retired launch IDs never redirect. Ambiguity returns at most ten
+`launch_id`/`pane_id` pairs with `has_more` and `truncated`.
+
+This adds no wire fields: native family 11 and remote control 2 are unchanged.
+Conversation lookup requires a supporting daemon; older daemons still accept
+exact launch IDs. Updating the CLI does not replace a running daemon.
+
+Sends require a sender-scoped `idempotency_key`. Only the identical original
+recipient selector, text and scope may reuse it; conflicting reuse fails.
+A retry returns its original receipt even if the recipient exits, its
+conversation changes or a replacement appears. It never resolves the selector
+again or delivers to a replacement launch. Every accepted direct message requests
 a native wake through the current authenticated receiver. The `delivery` argument
 and other sender wake switches are not supported; obsolete arguments are rejected.
 Unavailable receivers leave the durable message blocked awaiting a subscription,
