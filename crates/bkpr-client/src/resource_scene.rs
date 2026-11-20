@@ -66,7 +66,7 @@ impl Attached {
             update.image_keys().next().is_none(),
             "progressive scene supplied inline pixels"
         );
-        let replacement = if self
+        let mut replacement = if self
             .image_manifest
             .as_ref()
             .is_some_and(|manifest| manifest.descriptors() == update.image_descriptors())
@@ -75,6 +75,9 @@ impl Attached {
         } else {
             Some(ImageManifest::new(update.take_image_descriptors())?)
         };
+        if let Some(manifest) = replacement.as_mut() {
+            self.carry_stand_ins(manifest);
+        }
         let manifest = replacement
             .as_ref()
             .or(self.image_manifest.as_ref())
@@ -115,6 +118,39 @@ impl Attached {
             .filter_map(|descriptor| self.images.get(&descriptor.key).cloned())
             .collect();
         Ok(())
+    }
+
+    /// Keep presenting each replaced image's newest resident (or presented) generation
+    /// while its replacement is pending, instead of leaving the placement blank.
+    fn carry_stand_ins(&self, manifest: &mut ImageManifest) {
+        let pending: Vec<ImageKey> = manifest
+            .descriptors()
+            .iter()
+            .map(|descriptor| descriptor.key)
+            .filter(|key| !self.images.contains_key(key))
+            .collect();
+        for key in pending {
+            let resident = self
+                .images
+                .values()
+                .filter(|image| image.id == key.id && image.generation < key.generation);
+            let presented = self.image_manifest.iter().flat_map(|previous| {
+                previous
+                    .descriptors()
+                    .iter()
+                    .filter(|descriptor| descriptor.key.id == key.id)
+                    .filter_map(|descriptor| previous.stand_in(descriptor.key))
+            });
+            let newest = resident
+                .chain(presented)
+                .filter(|image| image.generation < key.generation)
+                .max_by_key(|image| image.generation)
+                .cloned();
+            if let Some(image) = newest {
+                // Dimension or format changes keep the honest pending presentation.
+                let _ = manifest.set_stand_in(key, image);
+            }
+        }
     }
 
     /// Install scene and clipboard metadata only after the scene's preflight succeeds.
@@ -171,6 +207,10 @@ impl Attached {
         }
         if arrived.is_empty() {
             return Ok(false);
+        }
+        let manifest = self.image_manifest.as_mut().unwrap();
+        for (key, _) in &arrived {
+            manifest.clear_stand_in(*key);
         }
         self.images.extend(arrived);
         let frame = self.frame.as_mut().unwrap();

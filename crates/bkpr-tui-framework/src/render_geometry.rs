@@ -265,7 +265,7 @@ fn project(
 pub(super) fn prepare_with_manifest<'a>(
     frame: &'a Frame,
     viewport: Size,
-    manifest: Option<&crate::image_resources::ImageManifest>,
+    manifest: Option<&'a crate::image_resources::ImageManifest>,
 ) -> Result<Prepared<'a>> {
     prepare_inner(frame, viewport, manifest, None)
 }
@@ -294,7 +294,7 @@ pub(super) fn visible_image_keys(
 fn prepare_inner<'a>(
     frame: &'a Frame,
     viewport: Size,
-    manifest: Option<&crate::image_resources::ImageManifest>,
+    manifest: Option<&'a crate::image_resources::ImageManifest>,
     mut visible: Option<&mut Vec<ImageKey>>,
 ) -> Result<Prepared<'a>> {
     if frame.images.len() > 1024 || frame.placements.len() > 4096 {
@@ -343,7 +343,7 @@ fn prepare_inner<'a>(
             id: p.image_id,
             generation: p.generation,
         };
-        let image = images.get(&key);
+        let image = images.get(&key).copied();
         if let Some(manifest) = manifest {
             manifest
                 .descriptor(key)
@@ -359,7 +359,7 @@ fn prepare_inner<'a>(
                 bail!("placement source rectangle outside image");
             }
         }
-        let Some(projected) = project(p, frame.size, viewport, index + 1)? else {
+        let Some(mut projected) = project(p, frame.size, viewport, index + 1)? else {
             continue;
         };
         if let Some(visible) = visible.as_deref_mut()
@@ -367,8 +367,29 @@ fn prepare_inner<'a>(
         {
             visible.push(key);
         }
-        let Some(image) = image else {
-            continue;
+        // A pending replacement keeps presenting its previous generation under that
+        // generation's own key, so the terminal keeps the image it already holds.
+        let image = match image {
+            Some(image) => image,
+            None => {
+                let Some(stand_in) = manifest.and_then(|manifest| manifest.stand_in(key)) else {
+                    continue;
+                };
+                let stand_in = stand_in.as_ref();
+                if images.insert(stand_in.key(), stand_in).is_none() {
+                    canonical_bytes = canonical_bytes
+                        .checked_add(stand_in.pixels.len())
+                        .context("image byte total overflow")?;
+                    if canonical_bytes > MAX_CANONICAL_BYTES {
+                        bail!("aggregate image byte limit");
+                    }
+                }
+                projected.image = stand_in.key();
+                if let Some(derived) = projected.derived.as_mut() {
+                    derived.image = stand_in.key();
+                }
+                stand_in
+            }
         };
         let (columns, rows) = projected.derived.map_or((1, 1), |key| {
             (
@@ -416,7 +437,7 @@ fn prepare_inner<'a>(
                             .context("derived image byte total overflow")?;
                     }
                 } else {
-                    original.insert(key);
+                    original.insert(tile.image);
                 }
                 // Bound visible raster bytes plus planning metadata before any
                 // pixel buffer allocation. The factor two covers Vec growth
@@ -736,6 +757,7 @@ mod progressive_tests {
             height: descriptor.height,
             format: descriptor.format,
             pixels: vec![128; descriptor.decoded_len as usize],
+            source: None,
         })
     }
 
@@ -765,6 +787,45 @@ mod progressive_tests {
         frame.placements[2].generation += 1;
         assert!(prepare_with_manifest(&frame, frame.size, Some(&manifest)).is_err());
         assert!(pending_image_keys(&frame, frame.size, &manifest).is_err());
+    }
+
+    #[test]
+    fn pending_replacement_presents_its_previous_generation_under_the_old_key() {
+        let (frame, pending) = fixture();
+        let previous = ImageDescriptor {
+            key: ImageKey {
+                generation: pending.key.generation - 1,
+                ..pending.key
+            },
+            ..pending
+        };
+        let mut manifest = ImageManifest::new(vec![pending]).unwrap();
+        manifest.set_stand_in(pending.key, image(previous)).unwrap();
+        let prepared = prepare_with_manifest(&frame, frame.size, Some(&manifest)).unwrap();
+        assert_eq!(prepared.placements.len(), 1);
+        assert_eq!(prepared.placements[0].image, previous.key);
+        let uses = |key| {
+            prepared.original.contains(&key) || prepared.derived.iter().any(|d| d.image == key)
+        };
+        assert!(uses(previous.key) && !uses(pending.key));
+        assert!(prepared.images.contains_key(&previous.key));
+        // The replacement is still demanded until its own pixels are resident.
+        assert_eq!(
+            pending_image_keys(&frame, frame.size, &manifest).unwrap(),
+            [pending.key]
+        );
+        // A stand-in must match the pending generation's shape exactly.
+        let resized = ImageDescriptor {
+            width: previous.width + 1,
+            decoded_len: u64::from(previous.width + 1)
+                * u64::from(previous.height)
+                * previous.format.bytes_per_pixel() as u64,
+            ..previous
+        };
+        let mut other = ImageManifest::new(vec![pending]).unwrap();
+        assert!(other.set_stand_in(pending.key, image(resized)).is_err());
+        let prepared = prepare_with_manifest(&frame, frame.size, Some(&other)).unwrap();
+        assert!(prepared.placements.is_empty());
     }
 
     #[test]

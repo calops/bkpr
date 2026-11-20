@@ -1,7 +1,7 @@
 //! Validated image metadata independent of pixel residency.
 use anyhow::{Context, Result, ensure};
 use bkpr_protocol::{IMAGE_MAX_BYTES, Image, ImageDescriptor, ImageKey};
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 /// Ordered, complete image metadata for a canonical scene, including pending pixels.
 /// Construction validates the 1024-image and aggregate 64 MiB decoded quotas.
@@ -9,6 +9,8 @@ use std::collections::HashMap;
 pub struct ImageManifest {
     descriptors: Vec<ImageDescriptor>,
     indices: HashMap<ImageKey, usize>,
+    /// Previous resident generations presented while a replacement is pending.
+    stand_ins: HashMap<ImageKey, Arc<Image>>,
 }
 
 impl ImageManifest {
@@ -39,7 +41,37 @@ impl ImageManifest {
         Ok(Self {
             descriptors,
             indices,
+            stand_ins: HashMap::new(),
         })
+    }
+
+    /// Present `image`, an older resident generation of the same native image, while
+    /// `key` is pending, as a terminal keeps the old pixels until a replacement completes.
+    /// Requires identical dimensions and format so every placement crop stays valid.
+    pub fn set_stand_in(&mut self, key: ImageKey, image: Arc<Image>) -> Result<()> {
+        let descriptor = self
+            .descriptor(key)
+            .context("stand-in for undeclared image")?;
+        ensure!(
+            image.id == key.id
+                && image.generation < key.generation
+                && image.width == descriptor.width
+                && image.height == descriptor.height
+                && image.format == descriptor.format,
+            "stand-in differs from its pending image"
+        );
+        self.stand_ins.insert(key, image);
+        Ok(())
+    }
+
+    /// Stop presenting a stand-in, normally once the pending generation is resident.
+    pub fn clear_stand_in(&mut self, key: ImageKey) {
+        self.stand_ins.remove(&key);
+    }
+
+    /// Previous generation presented for a pending `key`, if any.
+    pub fn stand_in(&self, key: ImageKey) -> Option<&Arc<Image>> {
+        self.stand_ins.get(&key)
     }
 
     /// All validated descriptors in their original scene order.
