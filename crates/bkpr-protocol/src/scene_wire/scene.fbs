@@ -7,6 +7,8 @@ enum ColorKind : ubyte { Default, Palette, Rgb }
 enum CursorShape : ubyte { Bar, Block, Underline, Hollow }
 enum PixelFormat : ubyte { Rgb, Rgba, GrayAlpha, Gray }
 enum ImageLayer : ubyte { BelowBackground, BelowText, AboveText }
+// Original program payload carried instead of pixels (planus_v1_sources only).
+enum ImageSourceEncoding : ubyte { None, Png, Zlib }
 
 struct Size {
   cols:ushort;
@@ -70,7 +72,10 @@ table Image {
   width:uint;
   height:uint;
   format:PixelFormat;
+  // Empty when source carries the image.
   pixels:[ubyte] (required);
+  source_encoding:ImageSourceEncoding;
+  source:[ubyte];
 }
 
 table ImageDescriptor {

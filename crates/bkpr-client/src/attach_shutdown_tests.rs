@@ -80,8 +80,7 @@ fn initial_snapshot_shutdown_and_rollback_failures_keep_separate_provenance() {
         attach_fixture(&mut app);
         let spec = app.views["focused-pane"].spec.clone();
         let endpoint = Endpoint::unmanaged(&path);
-        let resources = crate::resources::Resources::new(endpoint.clone()).unwrap();
-        let error = attach(&endpoint, "pane", spec, resources.receipts()).err().unwrap();
+        let error = attach(&endpoint, "pane", spec).err().unwrap();
         assert_eq!(transport::expected_shutdown(&error, true), clean);
         assert_eq!(transport::outcome_unknown(&error), !malformed_snapshot);
         server.join().unwrap();

@@ -13,6 +13,8 @@ pub const IMAGE_CHUNK_BYTES: usize = 64 * 1024;
 pub const IMAGE_RESOURCE_MAX_FRAME: usize = IMAGE_CHUNK_BYTES + 4096;
 /// Explicit scene opt-in required for descriptor-only image delivery.
 pub const PROGRESSIVE_SCENE_ENCODING: &str = "planus_progressive_v1";
+/// Inline scene encoding whose images may carry their original PNG/zlib payload instead of pixels.
+pub const SOURCES_SCENE_ENCODING: &str = "planus_v1_sources";
 
 /// Complete pixel shape validated before receiving or allocating its body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -421,7 +423,11 @@ impl ImageTransfer {
 }
 
 /// Inflate one zlib stream to exactly `expected` bytes in bounded turns, rejecting trailing data.
-fn inflate_exact(body: &[u8], expected: usize, cancelled: &dyn Fn() -> bool) -> Result<Vec<u8>> {
+pub(crate) fn inflate_exact(
+    body: &[u8],
+    expected: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<u8>> {
     let mut decoder = flate2::read::ZlibDecoder::new(body);
     let mut pixels = Vec::new();
     pixels.try_reserve_exact(expected)?;
@@ -446,7 +452,7 @@ fn inflate_exact(body: &[u8], expected: usize, cancelled: &dyn Fn() -> bool) -> 
 
 /// Decode a PNG to the descriptor's 8-bit RGBA pixels, as the terminal engine stores it.
 /// Dimensions and the decoded size are checked before pixel allocation.
-fn decode_png_rgba(body: &[u8], descriptor: &ImageDescriptor) -> Result<Vec<u8>> {
+pub(crate) fn decode_png_rgba(body: &[u8], descriptor: &ImageDescriptor) -> Result<Vec<u8>> {
     ensure!(
         descriptor.format == PixelFormat::Rgba,
         "PNG image descriptor must be RGBA"

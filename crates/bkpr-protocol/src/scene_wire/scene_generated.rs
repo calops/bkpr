@@ -611,10 +611,157 @@ unsafe impl ::planus::VectorWrite<ImageLayer> for ImageLayer {
 }
 
     
+/// The enum `ImageSourceEncoding` in the namespace `scene`
+/// 
+/// Generated from these locations:
+/// * Enum `ImageSourceEncoding` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:11`
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum ImageSourceEncoding {
+    
+        /// The variant `None` in the enum `ImageSourceEncoding`
+        None = 0,
+    
+        /// The variant `Png` in the enum `ImageSourceEncoding`
+        Png = 1,
+    
+        /// The variant `Zlib` in the enum `ImageSourceEncoding`
+        Zlib = 2,
+    
+}
+
+impl ImageSourceEncoding {
+    /// Array containing all valid variants of ImageSourceEncoding
+    pub const ENUM_VALUES: [Self; 3] = [Self::None,Self::Png,Self::Zlib,];
+}
+
+impl ::core::convert::TryFrom<u8> for ImageSourceEncoding {
+    type Error = ::planus::errors::UnknownEnumTagKind;
+    #[inline]
+    fn try_from(value: u8) -> ::core::result::Result<Self, ::planus::errors::UnknownEnumTagKind> {
+        #[allow(clippy::match_single_binding)]
+        match value {
+            0 => ::core::result::Result::Ok(ImageSourceEncoding::None),
+            1 => ::core::result::Result::Ok(ImageSourceEncoding::Png),
+            2 => ::core::result::Result::Ok(ImageSourceEncoding::Zlib),
+            
+
+            _ => ::core::result::Result::Err(::planus::errors::UnknownEnumTagKind { tag: value as i128 }),
+        }
+    }
+}
+
+impl ::core::convert::From<ImageSourceEncoding> for u8 {
+    #[inline]
+    fn from(value: ImageSourceEncoding) -> Self {
+        value as u8
+    }
+}
+
+/// # Safety
+/// The Planus compiler correctly calculates `ALIGNMENT` and `SIZE`.
+unsafe impl ::planus::Primitive for ImageSourceEncoding {
+    const ALIGNMENT: usize = 1;
+    const SIZE: usize = 1;
+}
+
+impl ::planus::WriteAsPrimitive<ImageSourceEncoding> for ImageSourceEncoding {
+    #[inline]
+    fn write<const N: usize>(&self, cursor: ::planus::Cursor<'_, N>, buffer_position: u32) {
+        (*self as u8).write(cursor, buffer_position);
+    }
+}
+
+impl ::planus::WriteAs<ImageSourceEncoding> for ImageSourceEncoding {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> ImageSourceEncoding {
+        *self
+    }
+}
+
+impl ::planus::WriteAsDefault<ImageSourceEncoding, ImageSourceEncoding> for ImageSourceEncoding {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder, default: &ImageSourceEncoding) -> ::core::option::Option<ImageSourceEncoding> {
+        if self == default {
+            ::core::option::Option::None
+        } else {
+            ::core::option::Option::Some(*self)
+        }
+    }
+}
+
+impl ::planus::WriteAsOptional<ImageSourceEncoding> for ImageSourceEncoding {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> ::core::option::Option<ImageSourceEncoding> {
+        ::core::option::Option::Some(*self)
+    }
+}
+
+impl<'buf> ::planus::TableRead<'buf> for ImageSourceEncoding {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'buf>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        let n: u8 = ::planus::TableRead::from_buffer(buffer, offset)?;
+        ::core::result::Result::Ok(::core::convert::TryInto::try_into(n)?)
+    }
+}
+
+impl<'buf> ::planus::VectorReadInner<'buf> for ImageSourceEncoding {
+    type Error = ::planus::errors::UnknownEnumTag;
+    const STRIDE: usize = 1;
+    #[inline]
+    unsafe fn from_buffer(
+        buffer: ::planus::SliceWithStartOffset<'buf>,
+        offset: usize,
+    ) -> ::core::result::Result<Self, ::planus::errors::UnknownEnumTag> {let value = unsafe { *buffer.buffer.get_unchecked(offset) };let value: ::core::result::Result<Self, _> = ::core::convert::TryInto::try_into(value);
+        value.map_err(|error_kind| error_kind.with_error_location(
+            "ImageSourceEncoding",
+            "VectorRead::from_buffer",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<ImageSourceEncoding> for ImageSourceEncoding {
+    const STRIDE: usize = 1;
+
+    type Value = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> Self {
+        *self
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[Self],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 1];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                
+                buffer_position - i as u32,
+                
+            );
+        }
+    }
+}
+
+    
 /// The struct `Size` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Struct `Size` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:11`
+/// * Struct `Size` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:13`
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 Default, 
@@ -856,7 +1003,7 @@ unsafe impl ::planus::VectorWrite<Size> for Size {
 /// The struct `Style` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Struct `Style` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:19`
+/// * Struct `Style` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:21`
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 
@@ -1172,7 +1319,7 @@ unsafe impl ::planus::VectorWrite<Style> for Style {
 /// The struct `Layout` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Struct `Layout` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:33`
+/// * Struct `Layout` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:35`
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 Default, 
@@ -1397,7 +1544,7 @@ unsafe impl ::planus::VectorWrite<Layout> for Layout {
 /// The struct `Placement` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Struct `Placement` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:39`
+/// * Struct `Placement` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:41`
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 
@@ -1761,7 +1908,7 @@ unsafe impl ::planus::VectorWrite<Placement> for Placement {
 /// The table `Cursor` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `Cursor` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:57`
+/// * Table `Cursor` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:59`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -2839,7 +2986,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CursorRef<'a> {
 /// The table `Image` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `Image` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:67`
+/// * Table `Image` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:69`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -2857,7 +3004,11 @@ pub struct Image{
         /// The field `format` in the table `Image`
         pub format: self::PixelFormat,
         /// The field `pixels` in the table `Image`
-        pub pixels: ::planus::alloc::vec::Vec<u8>,}
+        pub pixels: ::planus::alloc::vec::Vec<u8>,
+        /// The field `source_encoding` in the table `Image`
+        pub source_encoding: self::ImageSourceEncoding,
+        /// The field `source` in the table `Image`
+        pub source: ::core::option::Option<::planus::alloc::vec::Vec<u8>>,}
 
 
 #[allow(clippy::derivable_impls)]
@@ -2870,6 +3021,8 @@ impl ::core::default::Default for Image {
         height: 0,
         format: self::PixelFormat::Rgb,
         pixels: ::core::default::Default::default(),
+        source_encoding: self::ImageSourceEncoding::None,
+        source: ::core::default::Default::default(),
         
         }
     }
@@ -2892,14 +3045,16 @@ impl Image {
         field_height: impl ::planus::WriteAsDefault<u32, u32>,
         field_format: impl ::planus::WriteAsDefault<self::PixelFormat, self::PixelFormat>,
         field_pixels: impl ::planus::WriteAs<::planus::Offset<[u8]>>,
+        field_source_encoding: impl ::planus::WriteAsDefault<self::ImageSourceEncoding, self::ImageSourceEncoding>,
+        field_source: impl ::planus::WriteAsOptional<::planus::Offset<[u8]>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_id = field_id.prepare(builder, &0);let prepared_generation = field_generation.prepare(builder, &0);let prepared_width = field_width.prepare(builder, &0);let prepared_height = field_height.prepare(builder, &0);let prepared_format = field_format.prepare(builder, &self::PixelFormat::Rgb);let prepared_pixels = field_pixels.prepare(builder);
+    ) -> ::planus::Offset<Self> {let prepared_id = field_id.prepare(builder, &0);let prepared_generation = field_generation.prepare(builder, &0);let prepared_width = field_width.prepare(builder, &0);let prepared_height = field_height.prepare(builder, &0);let prepared_format = field_format.prepare(builder, &self::PixelFormat::Rgb);let prepared_pixels = field_pixels.prepare(builder);let prepared_source_encoding = field_source_encoding.prepare(builder, &self::ImageSourceEncoding::None);let prepared_source = field_source.prepare(builder);
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<16> = ::core::default::Default::default();
-        if prepared_generation.is_some() {table_writer.write_entry::<u64>(1);}if prepared_id.is_some() {table_writer.write_entry::<u32>(0);}if prepared_width.is_some() {table_writer.write_entry::<u32>(2);}if prepared_height.is_some() {table_writer.write_entry::<u32>(3);}table_writer.write_entry::<::planus::Offset<[u8]>>(5);if prepared_format.is_some() {table_writer.write_entry::<self::PixelFormat>(4);}
+        let mut table_writer: ::planus::table_writer::TableWriter::<20> = ::core::default::Default::default();
+        if prepared_generation.is_some() {table_writer.write_entry::<u64>(1);}if prepared_id.is_some() {table_writer.write_entry::<u32>(0);}if prepared_width.is_some() {table_writer.write_entry::<u32>(2);}if prepared_height.is_some() {table_writer.write_entry::<u32>(3);}table_writer.write_entry::<::planus::Offset<[u8]>>(5);if prepared_source.is_some() {table_writer.write_entry::<::planus::Offset<[u8]>>(7);}if prepared_format.is_some() {table_writer.write_entry::<self::PixelFormat>(4);}if prepared_source_encoding.is_some() {table_writer.write_entry::<self::ImageSourceEncoding>(6);}
 
         unsafe {
-            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_generation) = prepared_generation {object_writer.write::<_, _, 8>(&prepared_generation);}if let ::core::option::Option::Some(prepared_id) = prepared_id {object_writer.write::<_, _, 4>(&prepared_id);}if let ::core::option::Option::Some(prepared_width) = prepared_width {object_writer.write::<_, _, 4>(&prepared_width);}if let ::core::option::Option::Some(prepared_height) = prepared_height {object_writer.write::<_, _, 4>(&prepared_height);}object_writer.write::<_, _, 4>(&prepared_pixels);if let ::core::option::Option::Some(prepared_format) = prepared_format {object_writer.write::<_, _, 1>(&prepared_format);}
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_generation) = prepared_generation {object_writer.write::<_, _, 8>(&prepared_generation);}if let ::core::option::Option::Some(prepared_id) = prepared_id {object_writer.write::<_, _, 4>(&prepared_id);}if let ::core::option::Option::Some(prepared_width) = prepared_width {object_writer.write::<_, _, 4>(&prepared_width);}if let ::core::option::Option::Some(prepared_height) = prepared_height {object_writer.write::<_, _, 4>(&prepared_height);}object_writer.write::<_, _, 4>(&prepared_pixels);if let ::core::option::Option::Some(prepared_source) = prepared_source {object_writer.write::<_, _, 4>(&prepared_source);}if let ::core::option::Option::Some(prepared_format) = prepared_format {object_writer.write::<_, _, 1>(&prepared_format);}if let ::core::option::Option::Some(prepared_source_encoding) = prepared_source_encoding {object_writer.write::<_, _, 1>(&prepared_source_encoding);}
                 
             });
         }builder.current_offset()
@@ -2952,6 +3107,14 @@ impl ::planus::WriteAsOffset<Image> for Image {
         
             
             &self.pixels,
+            
+        
+            
+            self.source_encoding,
+            
+        
+            
+            &self.source,
             
         
         )
@@ -3385,6 +3548,250 @@ impl<
     
 }
 
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+> ImageBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+    )
+>
+{
+    /// Setter for the [`source_encoding` field](Image#structfield.source_encoding).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn source_encoding<T6>(self, value: T6) -> ImageBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+    )>
+    where T6: ::planus::WriteAsDefault<self::ImageSourceEncoding, self::ImageSourceEncoding>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+        ) = self.0;ImageBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`source_encoding` field](Image#structfield.source_encoding) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn source_encoding_as_default(self) -> ImageBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+            T5,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.source_encoding(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+> ImageBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+    )
+>
+{
+    /// Setter for the [`source` field](Image#structfield.source).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn source<T7>(self, value: T7) -> ImageBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+    )>
+    where T7: ::planus::WriteAsOptional<::planus::Offset<[u8]>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+        ) = self.0;ImageBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`source` field](Image#structfield.source) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn source_as_null(self) -> ImageBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+            T5,
+        
+            T6,
+        
+        (),
+    )>
+    {
+        self.source(())
+    }
+    
+}
+
 
 
 impl<
@@ -3401,6 +3808,10 @@ impl<
     
         T5,
     
+        T6,
+    
+        T7,
+    
 > ImageBuilder<(
     
         T0,
@@ -3414,6 +3825,10 @@ impl<
         T4,
     
         T5,
+    
+        T6,
+    
+        T7,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [Image].
@@ -3439,6 +3854,10 @@ impl<
     
         T5: ::planus::WriteAs<::planus::Offset<[u8]>>,
     
+        T6: ::planus::WriteAsDefault<self::ImageSourceEncoding, self::ImageSourceEncoding>,
+    
+        T7: ::planus::WriteAsOptional<::planus::Offset<[u8]>>,
+    
 > ::planus::WriteAs<::planus::Offset<Image>> for ImageBuilder<(
     
         T0,
@@ -3452,6 +3871,10 @@ impl<
         T4,
     
         T5,
+    
+        T6,
+    
+        T7,
     
 )> {
     type Prepared = ::planus::Offset<Image>;
@@ -3476,6 +3899,10 @@ impl<
     
         T5: ::planus::WriteAs<::planus::Offset<[u8]>>,
     
+        T6: ::planus::WriteAsDefault<self::ImageSourceEncoding, self::ImageSourceEncoding>,
+    
+        T7: ::planus::WriteAsOptional<::planus::Offset<[u8]>>,
+    
 > ::planus::WriteAsOptional<::planus::Offset<Image>> for ImageBuilder<(
     
         T0,
@@ -3489,6 +3916,10 @@ impl<
         T4,
     
         T5,
+    
+        T6,
+    
+        T7,
     
 )> {
     type Prepared = ::planus::Offset<Image>;
@@ -3513,6 +3944,10 @@ impl<
     
         T5: ::planus::WriteAs<::planus::Offset<[u8]>>,
     
+        T6: ::planus::WriteAsDefault<self::ImageSourceEncoding, self::ImageSourceEncoding>,
+    
+        T7: ::planus::WriteAsOptional<::planus::Offset<[u8]>>,
+    
 > ::planus::WriteAsOffset<Image> for ImageBuilder<(
     
         T0,
@@ -3526,6 +3961,10 @@ impl<
         T4,
     
         T5,
+    
+        T6,
+    
+        T7,
     
 )> {
     #[inline]
@@ -3545,6 +3984,10 @@ impl<
             
                 v5,
             
+                v6,
+            
+                v7,
+            
         ) = &self.0;Image::create(
             builder,
             
@@ -3559,6 +4002,10 @@ impl<
                 v4,
             
                 v5,
+            
+                v6,
+            
+                v7,
             
         )
     }
@@ -3651,12 +4098,40 @@ impl<'a> ImageRef<'a> {
             
         }
     
+        /// Getter for the [`source_encoding` field](Image#structfield.source_encoding).
+        #[inline]
+        pub fn source_encoding(&self) -> ::planus::Result<self::ImageSourceEncoding> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(6, "Image", "source_encoding")
+              
+            
+            ?.unwrap_or(self::ImageSourceEncoding::None))
+            
+        }
+    
+        /// Getter for the [`source` field](Image#structfield.source).
+        #[inline]
+        pub fn source(&self) -> ::planus::Result<::core::option::Option<&'a [u8]>> {
+            
+            
+              
+              self.0.access(7, "Image", "source")
+              
+            
+            
+            
+        }
+    
 }
 
 impl<'a> ::core::fmt::Debug for ImageRef<'a> {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         let mut f = f.debug_struct("ImageRef");
-        f.field("id", &self.id());f.field("generation", &self.generation());f.field("width", &self.width());f.field("height", &self.height());f.field("format", &self.format());f.field("pixels", &self.pixels());
+        f.field("id", &self.id());f.field("generation", &self.generation());f.field("width", &self.width());f.field("height", &self.height());f.field("format", &self.format());f.field("pixels", &self.pixels());f.field("source_encoding", &self.source_encoding());if let ::core::option::Option::Some(field_source) = self.source().transpose() {
+                f.field("source", &field_source);
+            }
         f.finish()
     }
 }
@@ -3669,7 +4144,7 @@ impl<'a> ::core::convert::TryFrom<ImageRef<'a>> for Image {
     fn try_from(value: ImageRef<'a>) -> ::planus::Result<Self> {
 
         ::core::result::Result::Ok(Self {
-            id: ::core::convert::TryInto::try_into(value.id()?)?,generation: ::core::convert::TryInto::try_into(value.generation()?)?,width: ::core::convert::TryInto::try_into(value.width()?)?,height: ::core::convert::TryInto::try_into(value.height()?)?,format: ::core::convert::TryInto::try_into(value.format()?)?,pixels: value.pixels()?.to_vec(),
+            id: ::core::convert::TryInto::try_into(value.id()?)?,generation: ::core::convert::TryInto::try_into(value.generation()?)?,width: ::core::convert::TryInto::try_into(value.width()?)?,height: ::core::convert::TryInto::try_into(value.height()?)?,format: ::core::convert::TryInto::try_into(value.format()?)?,pixels: value.pixels()?.to_vec(),source_encoding: ::core::convert::TryInto::try_into(value.source_encoding()?)?,source: value.source()?.map(|v| v.to_vec()),
         })
     }
 }
@@ -3739,7 +4214,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageRef<'a> {
 /// The table `ImageDescriptor` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `ImageDescriptor` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:76`
+/// * Table `ImageDescriptor` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:81`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -4660,7 +5135,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageDescriptorRef<'a> {
 /// The table `Frame` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `Frame` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:85`
+/// * Table `Frame` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:90`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -6399,7 +6874,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for FrameRef<'a> {
 /// The table `Run` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `Run` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:99`
+/// * Table `Run` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:104`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -7139,7 +7614,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RunRef<'a> {
 /// The table `Row` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `Row` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:107`
+/// * Table `Row` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:112`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -7539,7 +8014,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RowRef<'a> {
 /// The table `Scene` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `Scene` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:112`
+/// * Table `Scene` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:117`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize

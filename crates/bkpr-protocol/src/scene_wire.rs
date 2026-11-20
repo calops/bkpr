@@ -71,7 +71,35 @@ pub fn encode(
     frame_after: u64,
     resources: &[ImageKey],
 ) -> Result<Vec<u8>> {
-    encode_inner(frame, revision, baseline, frame_after, resources, false)
+    encode_inner(
+        frame,
+        revision,
+        baseline,
+        frame_after,
+        resources,
+        false,
+        false,
+    )
+}
+
+/// Like [`encode`], but images with a retained original PNG/zlib payload carry that
+/// payload instead of pixels (`planus_v1_sources`); the decoder reconstructs pixels.
+pub fn encode_with_sources(
+    frame: &Frame,
+    revision: u64,
+    baseline: Option<&(u64, Arc<Frame>)>,
+    frame_after: u64,
+    resources: &[ImageKey],
+) -> Result<Vec<u8>> {
+    encode_inner(
+        frame,
+        revision,
+        baseline,
+        frame_after,
+        resources,
+        false,
+        true,
+    )
 }
 
 /// Encode text and a complete validated descriptor manifest without image pixel bodies.
@@ -83,7 +111,15 @@ pub fn encode_progressive(
     frame_after: u64,
     resources: &[ImageKey],
 ) -> Result<Vec<u8>> {
-    encode_inner(frame, revision, baseline, frame_after, resources, true)
+    encode_inner(
+        frame,
+        revision,
+        baseline,
+        frame_after,
+        resources,
+        true,
+        false,
+    )
 }
 
 fn encode_inner(
@@ -93,6 +129,7 @@ fn encode_inner(
     frame_after: u64,
     resources: &[ImageKey],
     progressive: bool,
+    sources: bool,
 ) -> Result<Vec<u8>> {
     crate::valid_size(frame.size)?;
     let cols = usize::from(frame.size.cols);
@@ -148,11 +185,13 @@ fn encode_inner(
         resources.iter().copied().collect()
     };
     let include = |image: &&Arc<Image>| !progressive && !known.contains(&image.key());
+    let source_of = |image| sent_source(image, sources);
     let mut image_count = 0usize;
     let mut image_bytes = 0usize;
     for image in frame.images.iter().filter(include) {
         image_count += 1;
-        image_bytes = image_bytes.saturating_add(image.pixels.len());
+        image_bytes = image_bytes
+            .saturating_add(source_of(image).map_or(image.pixels.len(), |(_, bytes)| bytes.len()));
         ensure!(
             image_count <= MAX_IMAGES && image_bytes <= MAX_IMAGE_BYTES,
             "scene image resource limit"
@@ -223,7 +262,22 @@ fn encode_inner(
     let placements = builder.create_vector(placements.as_slice());
     let mut images = Vec::with_capacity(image_count);
     for image in frame.images.iter().filter(include) {
-        let pixels = builder.create_vector(image.pixels.as_slice());
+        let source = source_of(image);
+        let pixels = builder.create_vector(if source.is_some() {
+            &[][..]
+        } else {
+            image.pixels.as_slice()
+        });
+        let (encoding, source) = match source {
+            Some((encoding, bytes)) => (
+                match encoding {
+                    crate::ImageSourceEncoding::Png => g::ImageSourceEncoding::Png,
+                    crate::ImageSourceEncoding::Zlib => g::ImageSourceEncoding::Zlib,
+                },
+                Some(builder.create_vector(bytes)),
+            ),
+            None => (g::ImageSourceEncoding::None, None),
+        };
         images.push(g::Image::create(
             &mut builder,
             image.id,
@@ -232,6 +286,8 @@ fn encode_inner(
             image.height,
             write_format(image.format),
             pixels,
+            encoding,
+            source,
         ));
     }
     let images = builder.create_vector(images.as_slice());
@@ -332,6 +388,10 @@ impl DecodedScene {
     pub fn image_keys(&self) -> impl Iterator<Item = ImageKey> + '_ {
         self.frame.images.iter().map(|image| image.key())
     }
+    /// Images supplied by this update, shared without copying their pixels.
+    pub fn images(&self) -> &[Arc<Image>] {
+        &self.frame.images
+    }
     /// Replace metadata and changed rows, requiring a delta's baseline revision and geometry.
     /// Errors leave both arguments unchanged. Known image generations are not merged into the frame.
     pub fn apply(self, revision: &mut u64, frame: &mut Option<Frame>) -> Result<()> {
@@ -359,6 +419,25 @@ impl DecodedScene {
         *revision = self.revision;
         Ok(())
     }
+}
+
+/// The original payload sent instead of pixels: only for `planus_v1_sources`, and only
+/// when it is no larger than the pixels.
+fn sent_source(image: &Image, sources: bool) -> Option<(crate::ImageSourceEncoding, &[u8])> {
+    if !sources {
+        return None;
+    }
+    let (_, bytes) = crate::original_body(image)?;
+    Some((image.source.as_deref()?.encoding, bytes))
+}
+
+/// Exact packed pixel length of an image, bounded before any decode allocation.
+fn expected_len(width: u32, height: u32, format: crate::PixelFormat) -> Result<usize> {
+    (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(format.bytes_per_pixel()))
+        .filter(|length| *length <= crate::IMAGE_MAX_BYTES)
+        .context("scene image dimensions exceed the decoded limit")
 }
 
 fn check_image(width: u32, height: u32, format: crate::PixelFormat, length: usize) -> Result<()> {
@@ -541,13 +620,35 @@ fn validate(bytes: &[u8]) -> Result<g::SceneRef<'_>> {
         image.id()?;
         image.generation()?;
         let pixels = image.pixels()?;
+        let decoded = match image.source_encoding()? {
+            g::ImageSourceEncoding::None => {
+                ensure!(
+                    image.source()?.is_none(),
+                    "scene image source without encoding"
+                );
+                pixels.len()
+            }
+            _ => {
+                let source = image.source()?.context("scene image source missing")?;
+                let expected = expected_len(
+                    image.width()?,
+                    image.height()?,
+                    read_format(image.format()?),
+                )?;
+                ensure!(
+                    pixels.is_empty() && !source.is_empty() && source.len() <= expected,
+                    "scene image source bounds"
+                );
+                expected
+            }
+        };
         check_image(
             image.width()?,
             image.height()?,
             read_format(image.format()?),
-            pixels.len(),
+            decoded,
         )?;
-        image_bytes = image_bytes.saturating_add(pixels.len());
+        image_bytes = image_bytes.saturating_add(decoded);
         ensure!(image_bytes <= MAX_IMAGE_BYTES, "scene image byte limit");
     }
     for placement in placements {
@@ -643,14 +744,53 @@ fn read_metadata(frame: g::FrameRef<'_>) -> Result<Frame> {
         .iter()
         .map(|image| {
             let image = image?;
-            Ok(Arc::new(Image {
-                id: image.id()?,
-                generation: image.generation()?,
+            let descriptor = crate::ImageDescriptor {
+                key: crate::ImageKey {
+                    id: image.id()?,
+                    generation: image.generation()?,
+                },
                 width: image.width()?,
                 height: image.height()?,
                 format: read_format(image.format()?),
-                pixels: image.pixels()?.to_vec(),
-                source: None,
+                decoded_len: expected_len(
+                    image.width()?,
+                    image.height()?,
+                    read_format(image.format()?),
+                )? as u64,
+            };
+            let (pixels, source) = match image.source_encoding()? {
+                g::ImageSourceEncoding::None => (image.pixels()?.to_vec(), None),
+                encoding => {
+                    let bytes = image.source()?.context("scene image source missing")?;
+                    let (encoding, pixels) = match encoding {
+                        g::ImageSourceEncoding::Png => (
+                            crate::ImageSourceEncoding::Png,
+                            crate::image_resource::decode_png_rgba(bytes, &descriptor)?,
+                        ),
+                        _ => (
+                            crate::ImageSourceEncoding::Zlib,
+                            crate::image_resource::inflate_exact(
+                                bytes,
+                                descriptor.decoded_len as usize,
+                                &|| false,
+                            )?,
+                        ),
+                    };
+                    let source = crate::ImageSource {
+                        encoding,
+                        bytes: bytes.to_vec(),
+                    };
+                    (pixels, Some(Arc::new(source)))
+                }
+            };
+            Ok(Arc::new(Image {
+                id: descriptor.key.id,
+                generation: descriptor.key.generation,
+                width: descriptor.width,
+                height: descriptor.height,
+                format: descriptor.format,
+                pixels,
+                source,
             }))
         })
         .collect::<Result<_>>()?;
