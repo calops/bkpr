@@ -1015,6 +1015,10 @@ pub(crate) fn sidebar_content_rows(sidebar: Rect, guide_rows: u16) -> usize {
     usize::from(sidebar.height.saturating_sub(guide_rows).saturating_sub(2))
 }
 
+fn sidebar_scrollbar(tree: &crate::tree::Tree, visible: usize) -> Option<std::ops::Range<u16>> {
+    bkpr_tui_framework::scrollbar_thumb(visible as u16, tree.rows.len(), visible, tree.scroll)
+}
+
 /// Shared native formatting: the registry and row list always belong to one owner.
 fn native_row_label(
     kind: SidebarRowKind,
@@ -1301,11 +1305,13 @@ fn render_chrome<'a>(
             lines.push(line(sidebar.width - width, 1, width, label, false));
         }
     }
+    let available = sidebar_content_rows(sidebar, guide_rows);
+    let scrollbar = sidebar_scrollbar(tree, available);
     for (index, entry) in tree
         .rows
         .iter()
         .skip(tree.scroll)
-        .take(sidebar_content_rows(sidebar, guide_rows))
+        .take(available)
         .enumerate()
     {
         let Some(session) = tree.session(entry.owner) else {
@@ -1372,13 +1378,22 @@ fn render_chrome<'a>(
                 usize::from(sidebar.width.saturating_sub(1)).saturating_sub(columns),
             ));
         }
-        lines.push(line(
-            1,
-            row,
-            sidebar.width.saturating_sub(1),
-            label,
-            row_selected,
-        ));
+        let x = if let Some(thumb) = &scrollbar {
+            // Both glyphs stay at the outer edge of the existing padding cell,
+            // clear of the joined sidebar-item material's inset left edge.
+            label.insert(
+                0,
+                if thumb.contains(&(index as u16)) {
+                    '▎'
+                } else {
+                    '▏'
+                },
+            );
+            0
+        } else {
+            1
+        };
+        lines.push(line(x, row, sidebar.width - x, label, row_selected));
         if let Some(target) = &entry.target {
             hit(target.node.clone(), target.owner, row);
         }
@@ -1564,6 +1579,28 @@ fn render_theme_chrome<'a>(
         });
     }
     let available = sidebar_content_rows(sidebar, guide_rows);
+    if let Some(thumb) = sidebar_scrollbar(tree, available) {
+        spans.extend([
+            RoleSpan {
+                rect: Rect {
+                    x: 0,
+                    y: 2,
+                    width: 1,
+                    height: available as u16,
+                },
+                role: Role::Muted,
+            },
+            RoleSpan {
+                rect: Rect {
+                    x: 0,
+                    y: 2 + thumb.start,
+                    width: 1,
+                    height: thumb.end - thumb.start,
+                },
+                role: Role::Base,
+            },
+        ]);
+    }
     let focus_edges = tree.focus_edges();
     let inactive_guide_ink = crate::appearance::inactive_tree_guide_ink(theme);
     for index in 0..available {

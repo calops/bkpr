@@ -3,6 +3,29 @@
 //! selection, viewport reveal, scrolling, hover and click sequencing.
 use std::time::{Duration, Instant};
 
+/// Resize a scrollbar thumb to the visible fraction and place it on a cell track.
+///
+/// Returns offsets relative to the start of `track`, or `None` for an empty or
+/// non-overflowing viewport. The offset is clamped, and the first and last scroll
+/// positions reach the track ends. On tracks with room, at least one cell remains
+/// outside the thumb so overflow is visible even when only one row is hidden.
+pub fn scrollbar_thumb(
+    track: u16,
+    total: usize,
+    visible: usize,
+    offset: usize,
+) -> Option<std::ops::Range<u16>> {
+    if track == 0 || visible == 0 || visible >= total {
+        return None;
+    }
+    let length = ((u128::from(track) * visible as u128 / total as u128) as u16)
+        .clamp(1, track.saturating_sub(1).max(1));
+    let end_offset = total - visible;
+    let start =
+        (u128::from(track - length) * offset.min(end_offset) as u128 / end_offset as u128) as u16;
+    Some(start..start + length)
+}
+
 /// Stable selection identity supplied by an application-owned row.
 pub trait NavigationRow<T> {
     /// Returns the selectable identity, or `None` for a non-selectable row.
@@ -160,5 +183,31 @@ impl<T: Clone + Eq, R: NavigationRow<T>> Navigation<T, R> {
             .saturating_add_signed(delta)
             .min(self.rows.len().saturating_sub(self.height));
         self.reveal = false;
+    }
+}
+
+#[cfg(test)]
+mod scrollbar_tests {
+    use super::scrollbar_thumb;
+
+    #[test]
+    fn thumb_tracks_viewport_extent_and_both_scroll_limits() {
+        assert_eq!(scrollbar_thumb(12, 48, 12, 0), Some(0..3));
+        assert_eq!(scrollbar_thumb(12, 48, 12, 18), Some(4..7));
+        assert_eq!(scrollbar_thumb(12, 48, 12, 36), Some(9..12));
+        assert_eq!(scrollbar_thumb(12, 24, 12, 12), Some(6..12));
+        assert_eq!(scrollbar_thumb(12, 12, 12, 12), None);
+    }
+
+    #[test]
+    fn tiny_tracks_and_large_counts_keep_the_thumb_on_screen() {
+        assert_eq!(scrollbar_thumb(0, 12, 2, 1), None);
+        assert_eq!(scrollbar_thumb(12, 12, 0, 1), None);
+        assert_eq!(scrollbar_thumb(1, 2, 1, 1), Some(0..1));
+        assert_eq!(scrollbar_thumb(12, 13, 12, 1), Some(1..12));
+        assert_eq!(
+            scrollbar_thumb(u16::MAX, usize::MAX, 1, usize::MAX),
+            Some(u16::MAX - 1..u16::MAX)
+        );
     }
 }

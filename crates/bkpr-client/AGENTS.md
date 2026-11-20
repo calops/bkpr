@@ -20,6 +20,7 @@
 ## Presentation and authority
 
 - `tree.rs`, `finder.rs` and popup models consume published backend facts. `metadata.rs`/`ci.rs` format supplied metadata; provider/Git/process acquisition belongs to the backend. Client annotations cannot overwrite authoritative status or membership.
+- The sidebar scrollbar uses the same display-row viewport as text, artwork and hit testing, including detail rows and the key-guide reservation. Its left gutter is existing padding, not additional layout or pointer state.
 - Finder invalidation includes terminal diagnostics even when the registry revision is unchanged. Its semantic key avoids rebuilding the index for unrelated view/lease metadata; keep query and selected pane identity through refresh.
 - Finder, recovery and theme pickers share the framework's `PickerLayout` for section bounds, clipping, pointer coordinates and rounded Unicode borders. Geometry never depends on material readiness. `appearance::picker_backgrounds` owns the input tint and raised body colors; `app.rs` requests existing cached materials for every card without serial readiness gating.
 - `recovery_picker.rs` validates owner-local recovery lists and exact descriptors, then performs one worker-only native resume with current configuration. Revalidate eligibility before invocation; cancellation before admission differs from draining an invoked mutation. Never replay unknown outcomes or substitute a fresh conversation.

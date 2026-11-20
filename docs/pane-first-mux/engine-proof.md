@@ -2838,6 +2838,24 @@ transitive helpers, verification metadata and the 197 source inputs. These are
 functional software-rendered checks, not WAN, hardware-GPU, full-screen-editor
 or comparative latency acceptance.
 
+### Sidebar overflow scrollbar
+
+`target/smoke/sidebar-scrollbar/actual-2/acceptance.json` records actual Kitty
+0.48.2 screenshots and screen cells for two local sessions, 24 panes and 55
+display rows, including branch details. At 140×44, keyboard reveal reaches both
+track ends and wheel input moves the thumb without changing keyboard selection.
+After shrinking the sidebar to 18 columns and the terminal to 100×33, plain
+chrome shows a four-row thumb on a sixteen-row track. Folding both sessions
+removes the track; unfolding restores it. The mouse-aware pane receives only
+the explicit `z` typed after leaving the sidebar. No live sessions or network
+providers participate; both cleanup receipts have no survivors.
+
+Checked incremental debug pair:
+`target/smoke/harness-integrations/build/compiled-877771619764188/executables/`.
+Host-UID checks in `checks-877824768908518/result.json` pass 1,553 tests with
+20 ignored. Formatting, strict all-target Clippy, doctests and warnings-denied
+rustdoc pass. The run retains the exact controller archive.
+
 ## Lost keyboard releases and view retirement
 
 Evidence: `target/smoke/lost-key-release/fix/acceptance.json` and
