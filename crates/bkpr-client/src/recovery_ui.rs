@@ -143,7 +143,7 @@ impl State {
         let enabled = self.can_resume();
         let busy = self.mutation.is_some();
         let Some(view) = &mut self.view else { return };
-        let sections = PickerLayout::new(size, true);
+        let sections = PickerLayout::stacked(size);
         let list_height = if size.rows <= 4 {
             size.rows.min(2)
         } else {
@@ -170,18 +170,9 @@ impl State {
             .map(|layout| crate::appearance::picker_backgrounds(host, layout, false));
         if let Some(picker) = &mut view.picker {
             picker.list.set_title(&view.owner_label);
+            picker.prepare_rows(local);
             picker.list.paint(list, local);
-            view.foregrounds.clear();
-            view.foregrounds
-                .extend(
-                    picker
-                        .list
-                        .visible_items(local)
-                        .map(|(rect, key)| ForegroundSpan {
-                            rect,
-                            foreground: theme.ink(picker.row_status(key), false),
-                        }),
-                );
+            picker.row_foregrounds(local, theme, &mut view.foregrounds);
             let compact_background = [BackgroundSpan {
                 rect: picker.list.content_layout(local).input,
                 background: crate::appearance::region_background(host, Some(6))

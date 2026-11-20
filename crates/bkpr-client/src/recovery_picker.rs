@@ -1,10 +1,12 @@
 //! Owner-scoped recovery facts and worker-only native resume admission.
 use super::*;
-use crate::metadata::{self, Paragraph};
+use crate::metadata::Paragraph;
 use bkpr_tui_framework::search_list::{MouseActivation, SearchList};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
+#[path = "recovery_rows.rs"]
+mod rows;
 
 /// Exact retained pane and raw native intent, never a title or a live capability.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -314,21 +316,12 @@ pub(super) fn status_role(status: RecoveryStatus) -> Role {
     }
 }
 
-fn label(candidate: &RecoveryCandidate) -> String {
-    metadata::clean(&format!(
-        "{}  ·  {}  ·  {}  ·  {}",
-        candidate.title,
-        candidate.harness.kind.display_name(),
-        status_label(candidate.status),
-        candidate.harness.conversation_id,
-    ))
-}
-
 /// Retained owner-independent search and cached selected details. No I/O occurs here.
 pub(super) struct Picker {
     /// Generic list mechanics; row pointers select but never submit a resume.
     pub(super) list: SearchList<Key>,
     listing: Listing,
+    rows: rows::Rows,
     readonly: bool,
     detail_key: Option<Key>,
     details: Vec<Paragraph>,
@@ -338,19 +331,15 @@ pub(super) struct Picker {
 impl Picker {
     /// Create an empty-safe picker; read-only attachments can inspect but not resume.
     pub(super) fn new(listing: Listing, readonly: bool) -> Self {
-        let mut list = SearchList::new(
-            listing
-                .recoveries
-                .iter()
-                .map(|candidate| (Key::from(candidate), label(candidate))),
-            None,
-        );
+        let rows = rows::Rows::new(&listing.recoveries);
+        let mut list = SearchList::new(rows.items(), None);
         list.set_mouse_activation(MouseActivation::Select);
         list.set_select_on_hover(false);
-        list.set_layout(bkpr_tui_framework::search_list::ListLayout::Cards { details: true });
+        list.set_layout(bkpr_tui_framework::search_list::ListLayout::StackedCards);
         Self {
             list,
             listing,
+            rows,
             readonly,
             detail_key: None,
             details: Vec::new(),
@@ -363,11 +352,20 @@ impl Picker {
         self.listing.candidate(self.list.selected()?)
     }
 
-    /// Cached admission ink for an exact visible identity; stale keys remain muted.
-    pub(super) fn row_status(&self, key: &Key) -> Role {
-        self.listing
-            .candidate(key)
-            .map_or(Role::Muted, |candidate| status_role(candidate.status))
+    /// Prepare retained columns without changing query, ranking or selected identity.
+    pub(super) fn prepare_rows(&mut self, size: Size) {
+        self.rows.prepare(&mut self.list, size);
+    }
+
+    /// Reuse harness/status column styling without changing match or selection emphasis.
+    pub(super) fn row_foregrounds(
+        &self,
+        size: Size,
+        theme: &Theme,
+        output: &mut Vec<ForegroundSpan>,
+    ) {
+        self.rows
+            .foregrounds(&self.list, size, theme, &self.listing.panes, output);
     }
 
     /// Local button eligibility only; the worker must still fetch fresh admission facts.
@@ -380,12 +378,8 @@ impl Picker {
 
     /// Replace published facts while preserving query and exact selected native intent.
     pub(super) fn replace(&mut self, listing: Listing) {
-        self.list.replace_items(
-            listing
-                .recoveries
-                .iter()
-                .map(|candidate| (Key::from(candidate), label(candidate))),
-        );
+        self.rows = rows::Rows::new(&listing.recoveries);
+        self.list.replace_items(self.rows.items());
         self.listing = listing;
         self.details_valid = false;
     }
@@ -411,10 +405,13 @@ impl Picker {
 
 fn detail_paragraphs(candidate: &RecoveryCandidate, readonly: bool) -> Vec<Paragraph> {
     let mut rows = vec![
-        Paragraph::new(&candidate.title, Role::Title),
         Paragraph::new(
-            format!("Harness: {}", candidate.harness.kind.display_name()),
-            Role::Panel,
+            format!(
+                "{} {} conversation",
+                crate::controller::harness_icon(candidate.harness.kind),
+                candidate.harness.kind.display_name(),
+            ),
+            crate::controller::harness_role(candidate.harness.kind),
         ),
         Paragraph::new(
             format!("Conversation: {}", candidate.harness.conversation_id),
@@ -423,6 +420,10 @@ fn detail_paragraphs(candidate: &RecoveryCandidate, readonly: bool) -> Vec<Parag
         Paragraph::new(
             format!("Saved CWD: {}", candidate.harness.cwd.display()),
             Role::Panel,
+        ),
+        Paragraph::new(
+            format!("Saved pane title: {}", candidate.title),
+            Role::Muted,
         ),
         Paragraph::new(format!("Source pane: {}", candidate.pane_id), Role::Muted),
         Paragraph::new(
@@ -775,5 +776,48 @@ mod tests {
         let readonly = Picker::new(Listing::parse(listing(&[source])).unwrap(), true);
         assert!(readonly.selected().is_some());
         assert!(!readonly.can_resume());
+    }
+
+    #[test]
+    fn shell_titles_and_clipped_unicode_ids_retain_exact_search_and_selection() {
+        let mut source = candidate(RecoveryStatus::Recoverable);
+        source.title = "fish".into();
+        source.harness.conversation_id = "native-会話-e\u{301}-👩‍💻-exact".into();
+        source.harness.cwd = "/work/日本語".into();
+        let mut other = source.clone();
+        other.pane_id = "other-source".into();
+        other.harness.conversation_id = "different-native-conversation".into();
+        let candidates = [source.clone(), other.clone()];
+        let mut picker = Picker::new(Listing::parse(listing(&candidates)).unwrap(), false);
+        picker.list.paste(&source.harness.conversation_id);
+        let key = Key::from(&source);
+        assert_eq!(picker.list.selected(), Some(&key));
+        for cols in [160, 24, 80, 1, 120] {
+            picker.prepare_rows(Size {
+                cols,
+                rows: 24,
+                cell_width: 8,
+                cell_height: 16,
+            });
+            assert_eq!(picker.list.selected(), Some(&key));
+        }
+        picker.replace(Listing::parse(listing(&[other, source])).unwrap());
+        assert_eq!(picker.list.selected(), Some(&key));
+        assert!(
+            picker
+                .details()
+                .iter()
+                .any(|row| row.text == "Saved pane title: fish")
+        );
+
+        let mut saved_title = Picker::new(
+            Listing::parse(listing(&[candidate(RecoveryStatus::Recoverable)])).unwrap(),
+            true,
+        );
+        saved_title.list.paste("retained title");
+        assert!(saved_title.selected().is_some());
+        let mut cwd = Picker::new(Listing::parse(listing(&candidates)).unwrap(), true);
+        cwd.list.paste("日本語");
+        assert!(cwd.selected().is_some());
     }
 }

@@ -637,6 +637,11 @@ rendering keeps the same layout with rounded Unicode borders. Shortcuts stay in
 the bottom-left key hint popup, above the active overlay, and follow its current
 focus and available actions rather than repeating inside the dialog.
 
+Recovery keeps the list full-width and places its details below it. Rows align
+harness identity, admission status, directory and conversation ID, using the same
+colored harness icons as the sidebar. Saved pane titles remain searchable and
+appear explicitly in details; they are not conversation names.
+
 `Ctrl-r` refreshes while keeping the query and exact surviving selection.
 Tab switches between the list and scrollable details; arrows, PageUp/PageDown
 and Home/End navigate the focused area. Esc closes the picker. Closing before
@@ -1103,7 +1108,7 @@ atlas. Its opaque outer mask supplies the sidebar matte, while the opened parts
 of horizontal border cells retain the pane color instead of exposing a dark strip.
 
 Transient TUI notices appear as top-center toast cards rather than sidebar status
-text. Clipboard notices, operation results, input errors, resize results and
+text. Clipboard notices, operation results, input errors, resize errors and
 rendering-mode changes share the framework's bounded stack of three cards.
 Each expires after five seconds; click its `[x]` button to dismiss it sooner.
 Toasts do not take keyboard focus, and clicking a card never clicks the pane

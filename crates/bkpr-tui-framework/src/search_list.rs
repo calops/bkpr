@@ -47,6 +47,9 @@ pub enum ListLayout {
         /// Reserve responsive details geometry for caller-owned content.
         details: bool,
     },
+    /// Full-width search/results cards with details always below the results.
+    /// Uses compact content only when the stacked cards cannot fit.
+    StackedCards,
 }
 
 /// Current content rectangles in the same coordinates as paint and pointer input.
@@ -67,6 +70,7 @@ struct Item<T> {
     label: String,
     // Nucleo indexes graphemes, rather than UTF-8 bytes or terminal columns.
     chars: Vec<char>,
+    presentation: Option<(String, Vec<Option<u32>>)>,
 }
 
 impl<T> Item<T> {
@@ -80,6 +84,7 @@ impl<T> Item<T> {
             value,
             label,
             chars,
+            presentation: None,
         }
     }
 }
@@ -172,11 +177,34 @@ impl<T: Clone + Eq> SearchList<T> {
         self.layout = layout;
     }
 
+    /// Override visible rows in original choice order without changing search or rank.
+    ///
+    /// `source_graphemes` maps each extended grapheme of sanitized `text` to an
+    /// extended-grapheme index in the original sanitized search label. `None`,
+    /// missing entries and out-of-range indices receive no fuzzy emphasis.
+    /// Replacing choices clears these presentations. Query, caret, selection
+    /// and pointer geometry are unchanged.
+    /// Missing rows clear their override; excess rows are ignored.
+    pub fn set_row_presentations(
+        &mut self,
+        rows: impl IntoIterator<Item = (String, Vec<Option<u32>>)>,
+    ) {
+        let mut rows = rows.into_iter();
+        for item in &mut self.items {
+            item.presentation = rows
+                .next()
+                .map(|(text, sources)| (window::clean(&text), sources));
+        }
+    }
+
     /// Derive content from current dimensions, including before the first paint.
     pub fn content_layout(&self, size: Size) -> ContentLayout {
-        if let ListLayout::Cards { details } = self.layout
-            && let Some(layout) = crate::picker::PickerLayout::new(size, details)
-        {
+        let cards = match self.layout {
+            ListLayout::Inline => None,
+            ListLayout::Cards { details } => crate::picker::PickerLayout::new(size, details),
+            ListLayout::StackedCards => crate::picker::PickerLayout::stacked(size),
+        };
+        if let Some(layout) = cards {
             let mut results = layout.results;
             if self.input.error().is_some() {
                 results.y += 1;
@@ -430,7 +458,11 @@ impl<T: Clone + Eq> SearchList<T> {
                 let rect = self.row_rect(size, visible);
                 let y = rect.y;
                 let item = &self.items[result.item];
-                let mut label = window::fit(&item.label, rect.width);
+                let display = item
+                    .presentation
+                    .as_ref()
+                    .map_or(item.label.as_str(), |(text, _)| text.as_str());
+                let mut label = window::fit(display, rect.width);
                 let used = display_width(&label);
                 label.extend(std::iter::repeat_n(' ', usize::from(rect.width) - used));
                 lines.push((
@@ -439,12 +471,18 @@ impl<T: Clone + Eq> SearchList<T> {
                     self.scroll + visible == self.selected,
                 ));
                 let mut x = usize::from(rect.x);
-                for (index, grapheme) in item.label.graphemes(true).enumerate() {
+                for (index, grapheme) in display.graphemes(true).enumerate() {
                     let width = unicode_width::UnicodeWidthStr::width(grapheme);
                     if x + width > usize::from(rect.x + rect.width) {
                         break;
                     }
-                    if result.matches.binary_search(&(index as u32)).is_ok() {
+                    let source = item
+                        .presentation
+                        .as_ref()
+                        .map_or(Some(index as u32), |(_, map)| {
+                            map.get(index).copied().flatten()
+                        });
+                    if source.is_some_and(|source| result.matches.binary_search(&source).is_ok()) {
                         self.match_cells
                             .extend((x..x + width).map(|column| (column as u16, y)));
                     }
@@ -612,6 +650,21 @@ mod tests {
     }
 
     #[test]
+    fn row_presentation_maps_emphasis_without_changing_search_identity() {
+        let mut list = SearchList::new([(0, "abc".to_owned())], Some(&0));
+        list.paste("b");
+        list.set_row_presentations([("界 b".to_owned(), vec![None, None, Some(1)])]);
+        let mut surface = UiSurface::new(size(12, 4));
+        list.paint(&mut surface, size(12, 4));
+        assert_eq!(list.selected(), Some(&0));
+        assert_eq!(list.input.value, "b");
+        assert_eq!(list.match_cells, vec![(3, 1)]);
+        list.replace_items([(0, "abc".to_owned())]);
+        list.paint(&mut surface, size(12, 4));
+        assert_eq!(list.match_cells, vec![(1, 1)]);
+    }
+
+    #[test]
     fn cards_use_exact_painted_rows_and_ignore_borders_after_resize() {
         let mut list = list();
         list.set_title("Choose");
@@ -621,11 +674,17 @@ mod tests {
         let caret = list.input.cursor;
         let selected = list.selected().copied();
         let mut surface = UiSurface::new(size(100, 24));
-        for details in [false, true] {
-            list.set_layout(ListLayout::Cards { details });
+        for presentation in [
+            ListLayout::Cards { details: false },
+            ListLayout::Cards { details: true },
+            ListLayout::StackedCards,
+        ] {
+            list.set_layout(presentation);
             for dimensions in [
                 size(100, 24),
                 size(60, 18),
+                size(8, 14),
+                size(84, 14),
                 size(39, 7),
                 size(1, 1),
                 size(0, 0),
@@ -647,7 +706,14 @@ mod tests {
                             .any(|cell| !cell.text.trim().is_empty())
                     );
                 }
-                if let Some(cards) = crate::picker::PickerLayout::new(dimensions, details) {
+                let cards = match presentation {
+                    ListLayout::Cards { details } => {
+                        crate::picker::PickerLayout::new(dimensions, details)
+                    }
+                    ListLayout::StackedCards => crate::picker::PickerLayout::stacked(dimensions),
+                    ListLayout::Inline => None,
+                };
+                if let Some(cards) = cards {
                     let border = cards.cards()[1].0;
                     assert_eq!(
                         list.handle_mouse(

@@ -954,6 +954,36 @@ replies; outbound bulk-image logs use bounded linear summarization. Both owned
 cleanup survivor lists are empty. Earlier actual-5/6 runs remain classified as
 postprocessing timeouts, not successful acceptance or complete device evidence.
 
+### Recovery rows and stable sidebar hints
+
+Recovery uses full-width stacked list/details cards, cached aligned
+harness/status/directory/conversation columns and the shared colored harness
+icons. Saved pane titles remain explicit searchable metadata rather than
+conversation names. Framework row presentations map visible graphemes back to
+the full fuzzy-search label without re-ranking on resize; batch updates are
+linear in the number of retained choices. Border caches include full section
+geometry so switching between Finder and recovery cannot reuse the wrong layout.
+
+`target/smoke/recovery-rows/actual-2/acceptance.json` records isolated real
+Kitty/Xvfb rich/plain screenshots and genuine Pi 1.5.2 local/private-SSH recovery.
+The fixture uses separate private Git worktrees and a credential-free fake
+GitHub CLI; only two initial prompts reach the loopback text provider. Twelve
+unrelated registry mutations produce 36 screen samples with the refresh-checks
+hint retained at the same row. Hint eligibility follows the exact CI source
+instead of an incidental paint revision; dispatched refresh and clipboard
+actions retain their strict painted-source validation. A deterministic
+pre-repaint regression covers that distinction. Owned cleanup has no survivors.
+
+The incremental debug pair is
+`target/smoke/harness-integrations/build/compiled-868297472347800/executables/`,
+client SHA-256 `54689a5ada0c6b4218f203f5ebc3ddd7a482ce552ffb0987173ae33e88ac55ae`
+and unchanged server `b82165d6f4def61d8535320cc5b2e80ad562257dc25f0aed6df3bd2d5415f11d`.
+Host-UID workspace checks in `checks-868457418977430/result.json` pass 1,551
+top-level tests with 20 ignored, plus two isolated subprocess executions.
+Formatting, strict all-target Clippy, doctests and warnings-denied rustdoc pass.
+Public live executable paths remain unchanged. Exact controllers and device
+evidence are archived with the run; native and remote wire families are unchanged.
+
 ## Native pane context
 
 The prior native executable reproduced both gaps in
