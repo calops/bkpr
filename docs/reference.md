@@ -978,6 +978,12 @@ Arrows or `j`/`k` move, Home/End and PageUp/PageDown reveal other rows, Left/Rig
 fold or unfold a workspace or window, and Enter activates the selected workspace,
 window or terminal. Esc returns to the original application. The mouse supports
 activation, wheel scrolling and double-click folding.
+
+When the tree overflows, a scrollbar in the left gutter shows the visible
+fraction and scroll position. It counts every display row, including branch
+detail lines. The indicator works with plain or fancy chrome and doesn't take
+any width from labels or change how the sidebar handles input.
+
 The terminal cursor stays hidden but is positioned on the highlighted item,
 including after arrow navigation. Passive metadata cards do not move that
 logical focus position; native applications and focused forms regain their own

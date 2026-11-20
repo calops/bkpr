@@ -19,7 +19,7 @@ pub mod joined;
 mod joined_contour;
 pub mod loading;
 mod navigation;
-pub use navigation::{Navigation, NavigationRow};
+pub use navigation::{Navigation, NavigationRow, scrollbar_thumb};
 pub mod notification;
 pub mod overlay;
 pub mod picker;
