@@ -524,6 +524,15 @@ mod tests {
                 .unwrap();
             assert!(attached.images.is_empty());
             assert!(attached.frame.as_ref().unwrap().images.is_empty());
+            // The previous generation stays presented, under its own key, until the
+            // replacement arrives; it never stands in as the new generation's pixels.
+            let stand_in = attached
+                .image_manifest
+                .as_ref()
+                .unwrap()
+                .stand_in(image(generation).key())
+                .map(|image| image.key());
+            assert_eq!(stand_in, (generation == 2).then(|| image(1).key()));
             let descriptors = attached.image_manifest.as_ref().unwrap().descriptors();
             resources
                 .sync_view("focused-pane", "focused-view", descriptors, |_| None)
@@ -555,6 +564,8 @@ mod tests {
                 [retained.key()]
             );
             assert_eq!(actual.images[0].pixels, image(generation).pixels);
+            let manifest = attached.image_manifest.as_ref().unwrap();
+            assert!(manifest.stand_in(retained.key()).is_none());
             assert!(!attached.sync_resources(&resources).unwrap());
         }
         server.join().unwrap();
