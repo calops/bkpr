@@ -624,6 +624,20 @@ terms prompts remain the user's responsibility; Bkpr does not approve them.
 
 ### Explicit harness recovery
 
+In the TUI, `Ctrl-b r` opens a searchable recovery overlay for the selected
+sidebar session, including SSH attachments; otherwise it uses the current
+session. Search by title, harness, status or native conversation ID. Rows only
+select: Enter or the Resume button explicitly starts an eligible candidate.
+Live and unavailable candidates retain their reason, and read-only attachments
+can inspect but never resume.
+
+`Ctrl-r` refreshes while keeping the query and exact surviving selection.
+Tab switches between the list and scrollable details; arrows, PageUp/PageDown
+and Home/End navigate the focused area. Esc closes the picker. Closing before
+submission cancels the attempt, but hiding an already submitted start doesn't
+undo it. Unknown outcomes aren't replayed. A late receipt can't steal focus from
+a newer overlay. `Ctrl-b R` remains the separate explicit shell-replacement action.
+
 Start or attach to the named session normally, then inspect its saved native
 conversations without starting a TUI or executing anything:
 
@@ -660,7 +674,7 @@ automatic-resume intent from historical native descriptors. Terminal contents,
 old argv, live grants and native settings are not recovery records. Explicit
 pane/workspace destruction removes intent. Older records retain explicit native
 descriptors, but unknown historical activity is not guessed: their cold restart
-uses shells. Native recovery is not process resurrection or a frontend picker.
+uses shells. Native recovery isn't process resurrection.
 See [native runtime evidence and remaining harness gates](pane-first-mux/engine-proof.md#explicit-native-recovery).
 
 ### Discoverable control

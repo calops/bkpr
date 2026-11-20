@@ -13,13 +13,17 @@ use unicode_width::UnicodeWidthStr;
 pub enum Context {
     Application,
     CommandPrefix,
-    Sidebar { selected: bool },
+    Sidebar {
+        selected: bool,
+    },
     Sessions,
     Create,
     Edit,
     Confirmation,
     Finder,
     Theme,
+    /// Exact native recovery selection, with local list/details navigation.
+    Recovery,
     Chooser,
     Details,
     ClipboardConsent,
@@ -35,6 +39,8 @@ pub enum ModalContext {
     Confirmation,
     Finder,
     Theme,
+    /// Owner-scoped native recovery without replaying saved commands.
+    Recovery,
     Chooser,
     Details,
     ClipboardConsent,
@@ -62,6 +68,7 @@ impl ContextState {
                 ModalContext::Confirmation => Context::Confirmation,
                 ModalContext::Finder => Context::Finder,
                 ModalContext::Theme => Context::Theme,
+                ModalContext::Recovery => Context::Recovery,
                 ModalContext::Chooser => Context::Chooser,
                 ModalContext::Details => Context::Details,
                 ModalContext::ClipboardConsent => Context::ClipboardConsent,
@@ -148,6 +155,10 @@ pub enum Action {
     CloseSelected,
     OpenFinder,
     OpenThemes,
+    /// Inspect and explicitly resume saved native conversations on their owner.
+    OpenRecovery,
+    /// Refresh eligibility without retrying a native resume.
+    RefreshRecovery,
     /// Inspect retained failure details without retrying an operation.
     ShowDiagnostics,
     Submit,
@@ -204,6 +215,7 @@ impl Action {
             }
             Self::Navigate(Navigation::PagePrevious) => "previous page",
             Self::Navigate(Navigation::PageNext) => "next page",
+            Self::CycleView if context == Context::Recovery => "list / details",
             Self::CycleView => "cycle input / list / preview",
             Self::CycleField => "next field",
             Self::FoldSidebar => "fold workspace",
@@ -216,13 +228,17 @@ impl Action {
             Self::CloseSelected => "close",
             Self::OpenFinder => "find panes",
             Self::OpenThemes => "themes",
+            Self::OpenRecovery => "resume conversation",
+            Self::RefreshRecovery => "refresh saved conversations",
             Self::ShowDiagnostics => "diagnostics",
             Self::Submit => match context {
                 Context::Create => "create",
                 Context::Edit => "save",
+                Context::Recovery => "resume",
                 Context::Finder => "open",
                 _ => "confirm",
             },
+            Self::Cancel if context == Context::Recovery => "close picker",
             Self::Cancel => match context {
                 Context::Finder => "close finder",
                 Context::Search => "close search",
@@ -235,6 +251,8 @@ impl Action {
             Self::Edit(EditAction::Right) => "cursor right",
             Self::Edit(EditAction::Home) if context == Context::Finder => "start of query",
             Self::Edit(EditAction::End) if context == Context::Finder => "end of query",
+            Self::Edit(EditAction::Home) if context == Context::Recovery => "jump to start",
+            Self::Edit(EditAction::End) if context == Context::Recovery => "jump to end",
             Self::Edit(EditAction::Home) => "start of field",
             Self::Edit(EditAction::End) => "end of field",
             Self::Edit(EditAction::Backspace) => "erase previous",
@@ -300,6 +318,7 @@ const DETAILS: u16 = 1 << 11;
 const CLIPBOARD_CONSENT: u16 = 1 << 12;
 const THEME: u16 = 1 << 13;
 const SESSIONS: u16 = 1 << 14;
+const RECOVERY: u16 = 1 << 15;
 const SHIFT: u16 = 1;
 const CTRL: u16 = 2;
 const LOCKS: u16 = 16 | 32;
@@ -338,6 +357,7 @@ impl Context {
             Self::Confirmation => CONFIRM,
             Self::Finder => FINDER,
             Self::Theme => THEME,
+            Self::Recovery => RECOVERY,
             Self::History => HISTORY,
             Self::Search => SEARCH,
             Self::Resize => RESIZE,
@@ -358,6 +378,7 @@ impl Context {
             Self::Confirmation => "Confirm",
             Self::Finder => "Find panes",
             Self::Theme => "Choose theme",
+            Self::Recovery => "Resume conversations",
             Self::History => "History",
             Self::Search => "Search",
             Self::Resize => "Resize",
@@ -521,6 +542,8 @@ static BINDINGS: &[Binding] = &[
     text(PREFIX, "i", A::ProjectDetails, 30),
     text(PREFIX, "g", A::ToggleChrome, 31),
     text(PREFIX, "t", A::OpenThemes, 32),
+    text(PREFIX, "r", A::OpenRecovery, 34),
+    physical(RECOVERY, "KeyR", CTRL, "r", A::RefreshRecovery, 3, false),
     text(PREFIX, "!", A::ShowDiagnostics, 33),
     text(PREFIX, "R", A::ReopenPane, 42),
     text(PREFIX, "n", A::SplitHorizontal, 21),
@@ -582,7 +605,7 @@ static BINDINGS: &[Binding] = &[
     ),
     text(SIDEBAR, "/", A::OpenFinder, 5),
     physical(
-        SIDEBAR | SESSIONS | FINDER | CHOOSER | DETAILS | THEME,
+        SIDEBAR | SESSIONS | FINDER | CHOOSER | DETAILS | THEME | RECOVERY,
         "ArrowUp",
         0,
         "↑",
@@ -591,7 +614,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        SIDEBAR | SESSIONS | FINDER | CHOOSER | DETAILS | THEME,
+        SIDEBAR | SESSIONS | FINDER | CHOOSER | DETAILS | THEME | RECOVERY,
         "ArrowDown",
         0,
         "↓",
@@ -602,7 +625,7 @@ static BINDINGS: &[Binding] = &[
     repeating(text(SIDEBAR | SESSIONS, "k", A::Navigate(N::Previous), 10)),
     repeating(text(SIDEBAR | SESSIONS, "j", A::Navigate(N::Next), 11)),
     physical(
-        SIDEBAR | SESSIONS | FINDER | DETAILS | THEME,
+        SIDEBAR | SESSIONS | FINDER | DETAILS | THEME | RECOVERY,
         "PageUp",
         0,
         "PgUp",
@@ -611,7 +634,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        SIDEBAR | SESSIONS | FINDER | DETAILS | THEME,
+        SIDEBAR | SESSIONS | FINDER | DETAILS | THEME | RECOVERY,
         "PageDown",
         0,
         "PgDn",
@@ -689,7 +712,7 @@ static BINDINGS: &[Binding] = &[
         false,
     )),
     physical(
-        CREATE | EDIT | CONFIRM | FINDER | SEARCH | CHOOSER | DETAILS | THEME,
+        CREATE | EDIT | CONFIRM | FINDER | SEARCH | CHOOSER | DETAILS | THEME | RECOVERY,
         "Escape",
         0,
         "Esc",
@@ -702,7 +725,7 @@ static BINDINGS: &[Binding] = &[
     text(CONFIRM, "n", A::Cancel, 0),
     text(CONFIRM, "N", A::Cancel, 0),
     physical(
-        CREATE | EDIT | CONFIRM | FINDER | CHOOSER | THEME,
+        CREATE | EDIT | CONFIRM | FINDER | CHOOSER | THEME | RECOVERY,
         "Enter",
         0,
         "Enter",
@@ -716,7 +739,7 @@ static BINDINGS: &[Binding] = &[
     text(CLIPBOARD_CONSENT, "y", A::AllowClipboard, 1),
     text(CLIPBOARD_CONSENT, "Y", A::AllowClipboard, 1),
     physical(
-        CREATE | EDIT | FINDER | SEARCH | THEME,
+        CREATE | EDIT | FINDER | SEARCH | THEME | RECOVERY,
         "Backspace",
         0,
         "Backspace",
@@ -725,7 +748,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CREATE | EDIT | FINDER | SEARCH | THEME,
+        CREATE | EDIT | FINDER | SEARCH | THEME | RECOVERY,
         "KeyU",
         CTRL,
         "u",
@@ -735,9 +758,9 @@ static BINDINGS: &[Binding] = &[
     ),
     physical(CREATE, "Tab", 0, "Tab", A::CycleField, 10, false),
     physical(CREATE, "Tab", SHIFT, "Tab", A::CycleField, 10, false),
-    physical(FINDER, "Tab", 0, "Tab", A::CycleView, 12, false),
+    physical(FINDER | RECOVERY, "Tab", 0, "Tab", A::CycleView, 12, false),
     physical(
-        FINDER | THEME,
+        FINDER | THEME | RECOVERY,
         "KeyP",
         CTRL,
         "p",
@@ -746,7 +769,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        FINDER | THEME,
+        FINDER | THEME | RECOVERY,
         "KeyN",
         CTRL,
         "n",
@@ -755,7 +778,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CREATE | EDIT | FINDER | THEME,
+        CREATE | EDIT | FINDER | THEME | RECOVERY,
         "ArrowLeft",
         0,
         "←",
@@ -764,7 +787,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CREATE | EDIT | FINDER | THEME,
+        CREATE | EDIT | FINDER | THEME | RECOVERY,
         "ArrowRight",
         0,
         "→",
@@ -773,7 +796,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CREATE | EDIT | FINDER | THEME,
+        CREATE | EDIT | FINDER | THEME | RECOVERY,
         "Home",
         0,
         "Home",
@@ -782,7 +805,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CREATE | EDIT | FINDER | THEME,
+        CREATE | EDIT | FINDER | THEME | RECOVERY,
         "End",
         0,
         "End",
@@ -791,7 +814,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CREATE | EDIT | FINDER | THEME,
+        CREATE | EDIT | FINDER | THEME | RECOVERY,
         "Delete",
         0,
         "Del",
@@ -1095,6 +1118,12 @@ static PRESENTATION_GROUPS: &[PresentationGroup] = &[
         priority: 20,
     },
     PresentationGroup {
+        contexts: RECOVERY,
+        actions: &[A::Navigate(N::Previous), A::Navigate(N::Next)],
+        description: "navigate list / details",
+        priority: 10,
+    },
+    PresentationGroup {
         contexts: SIDEBAR | SESSIONS | FINDER | CHOOSER | DETAILS | THEME,
         actions: &[A::Navigate(N::Previous), A::Navigate(N::Next)],
         description: "select item",
@@ -1107,7 +1136,7 @@ static PRESENTATION_GROUPS: &[PresentationGroup] = &[
         priority: 33,
     },
     PresentationGroup {
-        contexts: SIDEBAR | SESSIONS | DETAILS | THEME,
+        contexts: SIDEBAR | SESSIONS | DETAILS | THEME | RECOVERY,
         actions: &[A::Navigate(N::PagePrevious), A::Navigate(N::PageNext)],
         description: "change page",
         priority: 35,

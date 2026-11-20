@@ -10,7 +10,7 @@ pub(super) struct Picker {
 
 impl App {
     pub(super) fn picker_open(&self) -> bool {
-        self.finder.is_some() || self.theme_picker.is_some()
+        self.finder.is_some() || self.theme_picker.is_some() || self.recovery.open()
     }
 
     pub(super) fn restore_theme_preview(&mut self) {
@@ -30,7 +30,7 @@ impl App {
         self.theme_picker = Some(Picker {
             list: SearchList::new(
                 THEMES.iter().map(|(id, _)| (*id, id.name().to_owned())),
-                &self.theme,
+                Some(&self.theme),
             ),
             original: self.theme,
         });
