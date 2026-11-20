@@ -135,6 +135,10 @@ mod identity_copy;
 mod jobs;
 #[path = "management.rs"]
 mod management;
+#[path = "recovery_picker.rs"]
+mod recovery_picker;
+#[path = "recovery_ui.rs"]
+mod recovery_ui;
 #[path = "resizing.rs"]
 mod resizing;
 #[path = "resource_scene.rs"]
@@ -157,6 +161,7 @@ enum Background {
     Management(management::Completion),
     Resize(management::Completion),
     SessionStop(Result<()>),
+    Recovery(Box<recovery_ui::Completion>),
     CiRefresh {
         owner: TreeOwner,
         target: bkpr_protocol::CiRefreshTarget,
@@ -531,6 +536,7 @@ struct App {
     finder: Option<crate::finder::Finder>,
     theme: crate::themes::ThemeId,
     theme_picker: Option<theme_switcher::Picker>,
+    recovery: recovery_ui::State,
     image_viewer: Option<image_viewer::ImageViewer>,
     popover: crate::popover::Popover,
     overlays: OverlayStack<OverlayFocus>,
@@ -746,6 +752,7 @@ impl App {
     }
 
     fn begin_modal(&mut self) {
+        self.cancel_recovery();
         self.restore_theme_preview();
         if self.state.form.is_none() && !self.picker_open() {
             self.overlays.remove("ui:modal");
@@ -777,6 +784,7 @@ impl App {
         {
             return;
         }
+        self.cancel_recovery();
         self.state.cancel();
         self.restore_theme_preview();
         self.finder = None;
@@ -936,6 +944,25 @@ impl App {
         if self.diagnostic_active() {
             return matches!(action, Action::Navigate(_) | Action::Cancel);
         }
+        if self.recovery.open() && action == Action::Submit {
+            return !self.options.read_only && self.recovery.can_resume();
+        } else if self.recovery.open() && action == Action::RefreshRecovery {
+            return !self.recovery.starting();
+        } else if self.recovery.open()
+            && !self.recovery.list_focused()
+            && matches!(
+                action,
+                Action::Edit(
+                    EditAction::Left
+                        | EditAction::Right
+                        | EditAction::Backspace
+                        | EditAction::Delete
+                        | EditAction::Clear
+                )
+            )
+        {
+            return false;
+        }
         let backend_available = if self.state.sidebar.active {
             self.sidebar_backend_available
         } else {
@@ -1078,6 +1105,8 @@ impl App {
             Some(ModalContext::Finder)
         } else if self.theme_picker.is_some() {
             Some(ModalContext::Theme)
+        } else if self.recovery.open() {
+            Some(ModalContext::Recovery)
         } else {
             None
         };
@@ -1271,6 +1300,8 @@ impl App {
             )
         } else if self.theme_picker.is_some() {
             (64, (crate::themes::THEMES.len() as u16).saturating_add(6))
+        } else if self.recovery.open() {
+            (100, screen.rows.saturating_sub(4).min(36))
         } else {
             match self.state.form.as_ref().map(|form| &form.kind) {
                 Some(FormKind::CreateWorkspace | FormKind::CreateWindow) => (76, 12),
@@ -1554,6 +1585,10 @@ impl App {
     }
     fn complete_background(&mut self) -> Result<()> {
         for completion in self.jobs.latest()? {
+            if completion.key.starts_with("recovery:") {
+                self.complete_recovery(completion);
+                continue;
+            }
             if self.owns_resize_job(&completion.key) {
                 let result = completion.result.and_then(|background| match background {
                     Background::Resize(result) => Ok(result),
@@ -1603,6 +1638,7 @@ impl App {
                 Ok(Background::SessionStop(_)) => {
                     bail!("session stop receipt escaped its coordinator")
                 }
+                Ok(Background::Recovery(_)) => bail!("recovery receipt escaped its owner"),
                 Ok(Background::Attached { pane, attached }) => {
                     if self.views.contains_key(&pane) || attached.retirement_requested {
                         self.retiring_candidates.push(RetiringCandidate {
@@ -1744,6 +1780,7 @@ impl App {
             let error = error.context(format!("pane {pane} view {view} poll failed"));
             self.fail_view(pane, "The pane's display connection stopped.", &error);
         }
+        self.observe_recovery_bindings();
     }
     fn barrier_target(&self) -> Option<(&str, &str)> {
         self.consent
@@ -3452,6 +3489,7 @@ impl App {
                 | Action::NextPane
                 | Action::StartResize
                 | Action::OpenFinder
+                | Action::OpenRecovery
                 | Action::ProjectDetails
                 | Action::ReconnectSession
         )
@@ -3518,6 +3556,7 @@ impl App {
             Action::CreateWorkspace => self.open_form(FormKind::CreateWorkspace, String::new())?,
             Action::CreateTerminal => self.open_form(FormKind::CreateWindow, String::new())?,
             Action::ProjectDetails => self.open_form(FormKind::ProjectDetails, String::new())?,
+            Action::OpenRecovery => self.begin_recovery(size),
             Action::ReopenPane => self.confirm_reopen()?,
             Action::SplitHorizontal => self.spawn(size, Axis::Horizontal)?,
             Action::SplitVertical => self.spawn(size, Axis::Vertical)?,
@@ -3941,6 +3980,12 @@ impl App {
             }
             return Ok(false);
         }
+        if self.recovery.open() {
+            let local = self.modal_geometry(size).1.size(size);
+            self.state.suppressed.insert(event.key.clone());
+            self.recovery_key(&event, local);
+            return Ok(false);
+        }
         if self.theme_picker.is_some() {
             let local = self.modal_geometry(size).1.size(size);
             let intent = self
@@ -4036,6 +4081,7 @@ impl App {
                 Some(Action::ToggleChrome) => self.toggle_chrome(),
                 Some(Action::EnterSessions) => self.enter_sessions(),
                 Some(Action::OpenThemes) => self.begin_theme_picker(),
+                Some(Action::OpenRecovery) => self.begin_recovery(size),
                 Some(Action::StartSearch) => self.begin_search()?,
                 Some(Action::StartHistory) => self.enter_history(rects)?,
                 Some(Action::StartResize) => self.begin_keyboard_resize(size)?,
@@ -4380,6 +4426,28 @@ impl App {
                 }
                 PointerRoute::Dismiss("ui:modal") => {
                     self.cancel_modal();
+                    return Ok(());
+                }
+                PointerRoute::Target {
+                    id: "ui:modal",
+                    content: true,
+                } if self.recovery.open()
+                    && !self
+                        .consent
+                        .as_ref()
+                        .is_some_and(|consent| !consent.state.allowed && !consent.state.sent) =>
+                {
+                    let rect = self.overlays.layer("ui:modal").unwrap().placement.content;
+                    self.recovery_mouse(
+                        &MouseEvent {
+                            x: f32::from(mouse.x - rect.x),
+                            y: f32::from(mouse.y - rect.y),
+                            button: event_button,
+                            action,
+                            modifiers: u16::from(selection::mouse_modifiers(mouse.modifiers)),
+                        },
+                        rect.size(size),
+                    );
                     return Ok(());
                 }
                 PointerRoute::Target {
@@ -4986,6 +5054,7 @@ impl App {
             finder: None,
             theme: crate::themes::ThemeId::default(),
             theme_picker: None,
+            recovery: recovery_ui::State::default(),
             image_viewer: None,
             popover: crate::popover::Popover::new(initial_size),
             overlays: OverlayStack::default(),
@@ -5602,7 +5671,9 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         "Themes · RGB unavailable; using terminal colors"
                     });
                     picker.list.paint(&mut popup_surface, local);
-                    picker.list.apply_theme(&mut popup_surface, &theme);
+                    picker.list.apply_theme(&mut popup_surface, &theme, &[]);
+                } else if app.recovery.open() {
+                    app.recovery.paint(&mut popup_surface, local, &theme);
                 } else if let Some(finder) = &mut app.finder {
                     finder.paint(&mut popup_surface, local);
                     finder.apply_theme(&mut popup_surface, &theme, ui_colors, &project_palette);
@@ -6435,7 +6506,11 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                                 }
                                 (
                                     &popup_surface.frame,
-                                    layer.placement.content,
+                                    if consent_open {
+                                        layer.placement.content
+                                    } else {
+                                        app.recovery.list_rect(layer.placement.content)
+                                    },
                                     SurfaceContent::All,
                                 )
                             }
@@ -6450,8 +6525,29 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             frame,
                             selection: &[],
                             search: &[],
-                            focused: app.overlays.keyboard_owner() == Some(layer.id),
+                            focused: app.overlays.keyboard_owner() == Some(layer.id)
+                                && (layer.id != "ui:modal"
+                                    || consent_open
+                                    || app.recovery.list_focused()),
                             faint: faint_background && !layer.policy.modal,
+                        });
+                    }
+                    if layer.id == "ui:modal"
+                        && !consent_open
+                        && let Some((frame, rect, focused)) =
+                            app.recovery.details(layer.placement.content)
+                    {
+                        surfaces.push(Surface {
+                            image_manifest: None,
+                            palette: None,
+                            id: "ui:recovery:details",
+                            content: SurfaceContent::All,
+                            rect,
+                            frame,
+                            selection: &[],
+                            search: &[],
+                            focused: focused && app.overlays.keyboard_owner() == Some(layer.id),
+                            faint: false,
                         });
                     }
                     let (effects, effects_id) = match layer.id {
@@ -6689,6 +6785,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
 }
 
 fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
+    app.cancel_recovery();
     let endpoint = app.socket.clone();
     let socket = &endpoint;
     let result = Ok(());
@@ -6786,6 +6883,19 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
                         accumulate_cleanup(&mut cleanup, result.context(completion.key));
                     }
                     Ok(Background::Management(_) | Background::Resize(_)) => {}
+                    Ok(Background::Recovery(result)) => {
+                        if let recovery_ui::Completion::Resumed {
+                            result: Err(failure),
+                            ..
+                        } = *result
+                            && failure.attempted
+                        {
+                            accumulate_cleanup(
+                                &mut cleanup,
+                                Err(failure.error.context("native conversation resume")),
+                            );
+                        }
+                    }
                     Ok(Background::SessionStop(_)) => accumulate_cleanup(
                         &mut cleanup,
                         Err(anyhow::anyhow!(
@@ -7015,6 +7125,7 @@ pub(super) mod tests {
                 finder: None,
                 theme: crate::themes::ThemeId::default(),
                 theme_picker: None,
+                recovery: recovery_ui::State::default(),
                 image_viewer: None,
                 popover: crate::popover::Popover::new(size()),
                 overlays: OverlayStack::default(),

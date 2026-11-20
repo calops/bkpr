@@ -125,6 +125,10 @@ impl App {
         if self.state.prefix {
             return Ok(());
         }
+        if self.recovery.open() {
+            self.recovery_paste(&text);
+            return Ok(());
+        }
         if let Some(picker) = &mut self.theme_picker {
             picker.list.paste(&text);
             self.preview_theme();

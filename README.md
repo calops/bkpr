@@ -166,7 +166,12 @@ for capabilities, policy and limits.
 Cold named-session startup restores saved layouts with current shells or verified
 active native conversations. It doesn't replay arbitrary old commands.
 
-To inspect saved conversations explicitly:
+Press `Ctrl-b r` to search saved conversations for the selected sidebar session
+(or the current session). Select a row, then press Enter or click Resume.
+Live and unavailable entries explain why they can't be resumed. Read-only
+attachments can inspect the list without starting anything.
+
+To inspect saved conversations from the CLI:
 
 ```sh
 bkpr --session work resume
@@ -199,6 +204,7 @@ See [recovery](docs/reference.md#explicit-harness-recovery).
 | Sidebar `/` | Find panes by metadata |
 | `Ctrl-b i` | Inspect the focused pane's local Git/project facts |
 | `Ctrl-b g` / `t` | Toggle decorative graphics / choose theme |
+| `Ctrl-b r` / `R` | Resume a saved conversation / explicitly reopen with a shell |
 | Alt+left-click an image | Open the full image; Esc or × closes the viewer |
 | `Ctrl-b d` | Detach without stopping programs |
 | `Ctrl-b Ctrl-b` | Send literal Ctrl-b to the live application |

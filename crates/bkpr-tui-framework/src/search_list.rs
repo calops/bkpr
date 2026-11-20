@@ -1,7 +1,9 @@
 //! Retained fuzzy single-list content, independent of application identities and palettes.
 //! The caller owns the outer window, title, placement, and cancellation rollback.
 
-use crate::{EditAction, Rect, Role, RoleSpan, TextInput, Theme, UiSurface, window};
+use crate::{
+    EditAction, ForegroundSpan, Rect, Role, RoleSpan, TextInput, Theme, UiSurface, window,
+};
 use bkpr_protocol::{
     Cursor, CursorShape, KeyAction, KeyEvent, MouseAction, MouseButton, MouseEvent, Size,
 };
@@ -23,11 +25,36 @@ pub enum SearchListIntent {
     Accept,
 }
 
+/// Whether a pointer press only selects a row or also requests acceptance.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MouseActivation {
+    /// Select without accepting; the owner supplies a separate submit action.
+    Select,
+    /// Select and accept on a left press.
+    #[default]
+    Accept,
+}
+
 struct Item<T> {
     value: T,
     label: String,
     // Nucleo indexes graphemes, rather than UTF-8 bytes or terminal columns.
     chars: Vec<char>,
+}
+
+impl<T> Item<T> {
+    fn new(value: T, label: String) -> Self {
+        let label = window::clean(&label);
+        let chars = label
+            .graphemes(true)
+            .filter_map(|grapheme| grapheme.chars().next())
+            .collect();
+        Self {
+            value,
+            label,
+            chars,
+        }
+    }
 }
 
 struct ResultRow {
@@ -51,30 +78,20 @@ pub struct SearchList<T> {
     scroll: usize,
     roles: Vec<RoleSpan>,
     match_cells: Vec<(u16, u16)>,
+    mouse_activation: MouseActivation,
+    select_on_hover: bool,
 }
 
 impl<T: Clone + Eq> SearchList<T> {
-    /// Builds choices in input order, selecting `initial` or the first choice.
-    /// Labels are sanitized for terminal display.
-    pub fn new(items: impl IntoIterator<Item = (T, String)>, initial: &T) -> Self {
+    /// Builds choices in input order, selecting `initial` when present or the first choice.
+    /// Labels are sanitized for terminal display; an empty list needs no placeholder value.
+    pub fn new(items: impl IntoIterator<Item = (T, String)>, initial: Option<&T>) -> Self {
         let items: Vec<_> = items
             .into_iter()
-            .map(|(value, label)| {
-                let label = window::clean(&label);
-                let chars = label
-                    .graphemes(true)
-                    .filter_map(|grapheme| grapheme.chars().next())
-                    .collect();
-                Item {
-                    value,
-                    label,
-                    chars,
-                }
-            })
+            .map(|(value, label)| Item::new(value, label))
             .collect();
-        let selected = items
-            .iter()
-            .position(|item| &item.value == initial)
+        let selected = initial
+            .and_then(|initial| items.iter().position(|item| &item.value == initial))
             .unwrap_or(0);
         let mut list = Self {
             items,
@@ -86,9 +103,56 @@ impl<T: Clone + Eq> SearchList<T> {
             scroll: 0,
             roles: Vec::new(),
             match_cells: Vec::new(),
+            mouse_activation: MouseActivation::default(),
+            select_on_hover: true,
         };
         list.rank();
         list
+    }
+
+    /// Replace choices without changing query text or the selected matching identity.
+    /// If that identity disappears or stops matching, select the first result.
+    pub fn replace_items(&mut self, items: impl IntoIterator<Item = (T, String)>) {
+        let items: Vec<_> = items
+            .into_iter()
+            .map(|(value, label)| Item::new(value, label))
+            .collect();
+        let selected = self
+            .selected()
+            .and_then(|selected| items.iter().position(|item| &item.value == selected));
+        self.items = items;
+        self.rank();
+        self.selected = selected
+            .and_then(|item| self.results.iter().position(|result| result.item == item))
+            .unwrap_or(0);
+        self.scroll = self.scroll.min(self.results.len().saturating_sub(1));
+    }
+
+    /// Set pointer acceptance independently of keyboard Enter submission.
+    pub fn set_mouse_activation(&mut self, activation: MouseActivation) {
+        self.mouse_activation = activation;
+    }
+
+    /// Choose whether motion changes selection; disable for explicit-action lists.
+    pub fn set_select_on_hover(&mut self, enabled: bool) {
+        self.select_on_hover = enabled;
+    }
+
+    /// Borrow visible values and row rectangles for caller-owned semantic annotations.
+    /// Use the same dimensions as the preceding paint; rectangles are content-local.
+    pub fn visible_items(&self, size: Size) -> impl Iterator<Item = (Rect, &T)> {
+        self.results
+            .iter()
+            .skip(self.scroll)
+            .take(if size.cols == 0 {
+                0
+            } else {
+                self.capacity(size)
+            })
+            .enumerate()
+            .map(move |(visible, result)| {
+                (self.row_rect(size, visible), &self.items[result.item].value)
+            })
     }
 
     /// A content heading, visible with either graphical or cell-based frames.
@@ -165,7 +229,7 @@ impl<T: Clone + Eq> SearchList<T> {
     }
 
     /// Coordinates are local CONTENT cells, excluding the caller's frame/title.
-    /// Motion selects immediately; a left press selects and accepts a valid row.
+    /// Motion follows `set_select_on_hover`; left presses follow `set_mouse_activation`.
     /// Wheel events navigate results only while the pointer is in the list area.
     pub fn handle_mouse(&mut self, event: &MouseEvent, size: Size) -> SearchListIntent {
         if !event.x.is_finite()
@@ -193,11 +257,13 @@ impl<T: Clone + Eq> SearchList<T> {
         }
         let index = self.scroll + usize::from(event.y as u16 - self.list_start(size));
         if index < self.results.len()
-            && (event.action == MouseAction::Motion
+            && ((event.action == MouseAction::Motion && self.select_on_hover)
                 || (event.action == MouseAction::Press && event.button == MouseButton::Left))
         {
             self.selected = index;
-            if event.action == MouseAction::Press {
+            if event.action == MouseAction::Press
+                && self.mouse_activation == MouseActivation::Accept
+            {
                 return SearchListIntent::Accept;
             }
         }
@@ -300,12 +366,7 @@ impl<T: Clone + Eq> SearchList<T> {
                 // Pad selection through the full row even without an RGB theme.
                 label.extend(std::iter::repeat_n(' ', usize::from(size.cols) - used));
                 lines.push((
-                    Rect {
-                        x: 0,
-                        y,
-                        width: size.cols,
-                        height: 1,
-                    },
+                    self.row_rect(size, visible),
                     label,
                     self.scroll + visible == self.selected,
                 ));
@@ -331,11 +392,25 @@ impl<T: Clone + Eq> SearchList<T> {
         }
     }
 
-    /// Applies semantic styling from the most recent paint to the same surface.
-    pub fn apply_theme(&self, surface: &mut UiSurface, theme: &Theme) {
-        surface.apply_theme(theme, Role::Panel, &self.roles);
+    /// Apply retained semantic styling and caller-owned visible-ink annotations.
+    /// Foreground spans preserve row selection backgrounds and matching attributes.
+    pub fn apply_theme(
+        &self,
+        surface: &mut UiSurface,
+        theme: &Theme,
+        foregrounds: &[ForegroundSpan],
+    ) {
+        surface.apply_theme_with_colors(theme, Role::Panel, &self.roles, foregrounds, &[]);
     }
 
+    fn row_rect(&self, size: Size, visible: usize) -> Rect {
+        Rect {
+            x: 0,
+            y: self.list_start(size) + visible as u16,
+            width: size.cols,
+            height: 1,
+        }
+    }
     fn input_row(&self, size: Size) -> u16 {
         u16::from(self.title.is_some() && size.rows > 1)
     }
@@ -455,7 +530,7 @@ mod tests {
                 (3, "Amber".to_owned()),
                 (4, "Forest Dark".to_owned()),
             ],
-            &1,
+            Some(&1),
         )
     }
 
@@ -521,7 +596,7 @@ mod tests {
     }
     #[test]
     fn joined_grapheme_labels_keep_match_underlines_and_selection_padding_aligned() {
-        let mut list = SearchList::new([(0, "👩‍💻x".to_owned())], &0);
+        let mut list = SearchList::new([(0, "👩‍💻x".to_owned())], Some(&0));
         list.paste("x");
         let mut surface = UiSurface::new(size(4, 2));
         list.paint(&mut surface, size(4, 2));
@@ -573,7 +648,7 @@ mod tests {
 
     #[test]
     fn unicode_editing_paste_bound_and_input_cursor_are_safe() {
-        let mut list = SearchList::new([(0, "界e\u{301}".to_owned())], &0);
+        let mut list = SearchList::new([(0, "界e\u{301}".to_owned())], Some(&0));
         list.paste("界e\u{301}");
         assert_eq!(list.selected(), Some(&0));
         list.handle_key(&key("Backspace", 0, ""), size(8, 3));
@@ -665,21 +740,21 @@ mod tests {
 
     #[test]
     fn retained_repaints_keep_and_clear_only_current_match_emphasis() {
-        let mut list = SearchList::new([(0, "Ocean".to_owned())], &0);
+        let mut list = SearchList::new([(0, "Ocean".to_owned())], Some(&0));
         let dimensions = size(12, 3);
         let mut surface = UiSurface::new(dimensions);
         let theme = Theme::default();
         list.paste("oc");
         for _ in 0..2 {
             list.paint(&mut surface, dimensions);
-            list.apply_theme(&mut surface, &theme);
+            list.apply_theme(&mut surface, &theme, &[]);
             assert_eq!(surface.frame.rows[1].cells[0].style.underline, 1);
             assert_eq!(surface.frame.rows[1].cells[1].style.underline, 1);
             assert_eq!(surface.frame.rows[1].cells[2].style.underline, 0);
         }
         list.handle_key(&key("KeyU", 2, ""), dimensions);
         list.paint(&mut surface, dimensions);
-        list.apply_theme(&mut surface, &theme);
+        list.apply_theme(&mut surface, &theme, &[]);
         assert!(
             surface.frame.rows[1]
                 .cells
@@ -690,7 +765,7 @@ mod tests {
 
     #[test]
     fn empty_rows_and_key_releases_do_not_accept() {
-        let mut list = SearchList::<u8>::new([], &0);
+        let mut list = SearchList::<u8>::new([], None);
         assert_eq!(list.selected(), None);
         assert_eq!(
             list.handle_mouse(
@@ -707,5 +782,76 @@ mod tests {
         list.paint(&mut surface, size(1, 1));
         assert!(surface.frame.cursor.visible);
         assert_eq!(surface.frame.cursor.x, 0);
+    }
+
+    #[test]
+    fn replacing_choices_keeps_query_and_exact_selection_across_reorder_and_rename() {
+        let mut list = list();
+        let dimensions = size(40, 6);
+        list.paste("forest");
+        list.handle_key(&key("ArrowDown", 0, ""), dimensions);
+        assert_eq!(list.selected(), Some(&4));
+        list.replace_items([
+            (5, "Ocean new".into()),
+            (4, "Forest Dark renamed".into()),
+            (1, "Forest Light".into()),
+        ]);
+        let mut surface = UiSurface::new(dimensions);
+        list.paint(&mut surface, dimensions);
+        assert_eq!(list.selected(), Some(&4));
+        assert!(list.visible_items(dimensions).all(|(_, value)| *value != 5));
+        list.replace_items([(5, "Forest new".into()), (0, "Ocean".into())]);
+        list.paint(&mut surface, dimensions);
+        assert_eq!(list.selected(), Some(&5));
+        assert_eq!(
+            list.visible_items(dimensions)
+                .map(|(_, value)| *value)
+                .collect::<Vec<_>>(),
+            [5]
+        );
+    }
+
+    #[test]
+    fn selection_only_pointer_rows_use_painted_geometry_but_enter_still_accepts() {
+        let mut list = list();
+        list.set_title("Recover");
+        list.set_mouse_activation(MouseActivation::Select);
+        list.set_select_on_hover(false);
+        let dimensions = size(25, 4);
+        let mut surface = UiSurface::new(dimensions);
+        list.paint(&mut surface, dimensions);
+        let (rect, value) = list.visible_items(dimensions).next().unwrap();
+        let expected = *value;
+        assert_eq!(rect.y, 2);
+        assert_eq!(
+            list.handle_mouse(
+                &mouse(
+                    f32::from(rect.x),
+                    f32::from(rect.y),
+                    MouseAction::Motion,
+                    MouseButton::None
+                ),
+                dimensions
+            ),
+            SearchListIntent::None
+        );
+        assert_eq!(list.selected(), Some(&1));
+        assert_eq!(
+            list.handle_mouse(
+                &mouse(
+                    f32::from(rect.x),
+                    f32::from(rect.y),
+                    MouseAction::Press,
+                    MouseButton::Left
+                ),
+                dimensions
+            ),
+            SearchListIntent::None
+        );
+        assert_eq!(list.selected(), Some(&expected));
+        assert_eq!(
+            list.handle_key(&key("Enter", 0, ""), dimensions),
+            SearchListIntent::Accept
+        );
     }
 }

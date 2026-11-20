@@ -877,9 +877,43 @@ Final coordinated formatting, workspace tests and strict all-target Clippy pass:
 **569 top-level tests**, nine ignored subprocess fixtures. Native runtime
 acceptance is Linux Omp/Codex only. Claude's offline first-run preflight and
 Antigravity's unapproved Terms/native receiver remain the existing genuine
-acceptance gates. This does not implement a frontend recovery picker, process
-resurrection, persisted terminal contents, remote endpoints or sustained-animation
-CPU-efficiency improvements.
+acceptance gates. That backend-only snapshot did not implement a frontend
+recovery picker, process resurrection, persisted terminal contents, remote
+endpoints or sustained-animation CPU-efficiency improvements.
+
+### Frontend recovery picker
+
+`Ctrl-b r` now exposes owner-scoped native recovery through the existing
+framework overlay, fuzzy list/input and rich/plain composition. Rows select
+without starting; Enter or Resume admits one exact descriptor after a fresh
+worker-side eligibility check. Read-only attachments inspect only. Current
+native configuration, unavailable reasons, cancellation before submission,
+unknown outcomes and pending authenticated binding remain distinct. Accepted
+late results cannot close a newer overlay or steal its pane focus.
+
+`target/smoke/recovery-picker/integrated-3/acceptance.json` records actual Kitty
+keyboard/pointer acceptance with genuine Pi 1.5.2, local and private OpenSSH
+attachments, and a loopback-only text provider. It covers live/unavailable
+refusal, read-only inspection, query/selection-preserving refresh, select-only
+row clicks, cancellation, double Enter, exact resumed native binding, unrelated
+owner isolation, missing native state without fresh-conversation fallback and
+a visibly preserved missing-history refusal. Rounded plain and rich screenshots
+have unique immutable names. Both owner scopes exit missing-state attempts with
+code 1 and no binding; only the two initial prompts reach the fake provider.
+No real provider, consent seed, approval change or live conversation participates.
+Owned cleanup reports no survivors.
+
+The incremental debug pair is frozen under
+`target/smoke/harness-integrations/build/compiled-836585850298863/executables/`:
+client SHA-256 `94b808069759c975f21f5b379199e5d2a6111ba895041ace94dff73b162d87d9`,
+server `b82165d6f4def61d8535320cc5b2e80ad562257dc25f0aed6df3bd2d5415f11d`.
+Host-UID workspace checks pass 1,531 top-level tests with 20 ignored; two
+additional isolated subprocess executions also pass. Strict all-target Clippy,
+formatting, doctests and warnings-denied rustdoc pass. The protected build retains
+live public executable hashes and inodes. Controllers, raw device output,
+screenshots and manifests remain under `target/smoke/recovery-picker/`.
+Native and remote wire families are unchanged. This adds frontend acceptance
+for genuine Pi on Linux, not new genuine Claude/Antigravity or macOS acceptance.
 
 ## Native pane context
 
