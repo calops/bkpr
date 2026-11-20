@@ -8,11 +8,20 @@
   darwin,
   xcbuild,
   zig_0_17 ? null,
+  # Bkpr's retained Kitty image source contribution. The flake passes the
+  # checkout's copy; the default is the exact reviewed file at an immutable
+  # commit, so a copied recipe needs no repository-relative path.
+  imageSourcePatch ? fetchurl {
+    url = "https://raw.githubusercontent.com/calops/bkpr/d45abebebd190a2f765db0ee4d0802e418d033e4/vendor/libghostty-rs/crates/libghostty-vt-sys/native/kitty-image-source.patch";
+    sha256 = "847d2d2ea94d65ebc66a1578de3dfc170b15c031ef0083898b44d957b9075e8c";
+  },
 }:
 let
   revision = "93967b7f9478e94dcbb42125c8a90f34feb40d75";
   sourceSha256 = "af551aa496cf54ff734e11563d45fe2c49739ee754d1740d1ac984a67a42dc70";
   patchSha256 = "196b39997c6552d9158f763555a72784aae2dbf4fa61aa500554bfd07e28d32c";
+  imageSourcePatchSha256 = "847d2d2ea94d65ebc66a1578de3dfc170b15c031ef0083898b44d957b9075e8c";
+  profile = "ReleaseSafe-simd-libc-baseline-offer-source-v1";
   targets = {
     x86_64-linux = "x86_64-linux-gnu";
     aarch64-linux = "aarch64-linux-gnu";
@@ -38,19 +47,24 @@ let
 in
 stdenv.mkDerivation {
   pname = "libghostty-vt";
-  version = "0-93967b7-offer-v1";
+  version = "0-93967b7-offer-source-v1";
   src = fetchurl {
     name = "ghostty-${revision}.tar.gz";
     url = "https://codeload.github.com/ghostty-org/ghostty/tar.gz/${revision}";
     sha256 = sourceSha256;
   };
-  patches = [ clipboardOfferPatch ];
+  # Order matters: the image source contribution applies on top of the offer patch.
+  patches = [
+    clipboardOfferPatch
+    imageSourcePatch
+  ];
   patchFlags = [
     "-p1"
     "--fuzz=0"
   ];
   prePatch = ''
     printf '%s  %s\n' '${patchSha256}' '${clipboardOfferPatch}' | sha256sum --check --status
+    printf '%s  %s\n' '${imageSourcePatchSha256}' '${imageSourcePatch}' | sha256sum --check --status
   '';
   nativeBuildInputs = [
     git
@@ -100,7 +114,8 @@ stdenv.mkDerivation {
     printf '%s\n' '${revision}' > "$out/ghostty-source-revision"
     printf '%s\n' '${sourceSha256}' > "$out/bkpr-source-sha256"
     printf '%s\n' '${patchSha256}' > "$out/bkpr-source-patch-sha256"
-    printf '%s\n' 'ReleaseSafe-simd-libc-baseline-offer-v1' > "$out/bkpr-build-profile"
+    printf '%s\n' '${imageSourcePatchSha256}' > "$out/bkpr-source-image-patch-sha256"
+    printf '%s\n' '${profile}' > "$out/bkpr-build-profile"
     runHook postInstall
   '';
   postFixup = ''
@@ -109,7 +124,7 @@ stdenv.mkDerivation {
   '';
   passthru = { inherit zig dependencies revision; };
   meta = {
-    description = "Pinned Ghostty VT static SDK with Bkpr paste-offer correlation";
+    description = "Pinned Ghostty VT static SDK with Bkpr paste-offer correlation and retained image sources";
     homepage = "https://ghostty.org";
     license = with lib.licenses; [
       mit

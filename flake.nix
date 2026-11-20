@@ -62,7 +62,10 @@
         system:
         let
           pkgs = pkgsFor system;
-          libghostty-vt = pkgs.callPackage ./nix/packages/libghostty-vt/package.nix { };
+          libghostty-vt = pkgs.callPackage ./nix/packages/libghostty-vt/package.nix {
+            # Build exactly the checkout's contribution rather than the published copy.
+            imageSourcePatch = ./vendor/libghostty-rs/crates/libghostty-vt-sys/native/kitty-image-source.patch;
+          };
           bkpr =
             (pkgs.callPackage ./nix/packages/bkpr/package.nix {
               inherit libghostty-vt;
