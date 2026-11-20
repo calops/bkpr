@@ -1394,9 +1394,9 @@ fn render_chrome<'a>(
         ));
         if let Some(thumb) = &scrollbar {
             let glyph = if thumb.contains(&(index as u16)) {
-                "▎"
+                "▍"
             } else {
-                "▏"
+                "▎"
             };
             lines.push(line(row_width, row, 1, glyph, false));
         }
@@ -1588,26 +1588,32 @@ fn render_theme_chrome<'a>(
     let scrollbar = sidebar_scrollbar(tree, available);
     let row_width = sidebar.width - u16::from(scrollbar.is_some());
     if let Some(thumb) = scrollbar {
-        spans.extend([
-            RoleSpan {
-                rect: Rect {
-                    x: row_width,
-                    y: 2,
-                    width: 1,
-                    height: available as u16,
-                },
-                role: Role::Muted,
-            },
-            RoleSpan {
-                rect: Rect {
-                    x: row_width,
-                    y: 2 + thumb.start,
-                    width: 1,
-                    height: thumb.end - thumb.start,
-                },
-                role: Role::Base,
-            },
-        ]);
+        let track = Rect {
+            x: row_width,
+            y: 2,
+            width: 1,
+            height: available as u16,
+        };
+        let thumb = Rect {
+            y: track.y + thumb.start,
+            height: thumb.end - thumb.start,
+            ..track
+        };
+        spans.push(RoleSpan {
+            rect: track,
+            role: Role::Muted,
+        });
+        if let (ColorSource::Rgb(ink), ColorSource::Rgb(matte)) = (
+            theme.ink(Role::Base, false),
+            theme.background(Role::Base, false),
+        ) {
+            foregrounds.extend(
+                [(track, 20), (thumb, 40)].map(|(rect, weight)| ForegroundSpan {
+                    rect,
+                    foreground: ColorSource::Rgb(crate::appearance::blend(ink, matte, weight)),
+                }),
+            );
+        }
     }
     let focus_edges = tree.focus_edges();
     let inactive_guide_ink = crate::appearance::inactive_tree_guide_ink(theme);
