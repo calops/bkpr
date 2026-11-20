@@ -35,7 +35,7 @@
 * **client:** widen working-title waves without changing their spacing or speed.
 * **client:** add `Ctrl-b r` native conversation recovery with fuzzy search, live/recoverable/unavailable reasons, read-only inspection and exact local/SSH owner routing. Resume uses current native configuration and distinguishes process start from authenticated binding without replaying unknown outcomes.
 * **client:** double-click pane dividers to balance their two sides, including both axes at a corner, while preserving nested minimum sizes and unrelated layout ratios.
-* **client:** show the current position and visible extent of overflowing sidebar trees in a muted right-edge scrollbar with a wider thumb.
+* **client:** show the current position and visible extent of overflowing sidebar trees in a muted right-edge scrollbar with a thicker thumb centered on its track.
 
 ### Bug Fixes
 
