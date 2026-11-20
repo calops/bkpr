@@ -1,3 +1,27 @@
+## [0.9.0](https://github.com/calops/bkpr/compare/v0.8.0...v0.9.0) (2026-11-20)
+
+### ⚠ BREAKING CHANGES
+
+* **client:** `ListLayout` adds `StackedCards`; exhaustive Rust matches must handle it. Native family 11 and remote control 2 are unchanged.
+* **tui:** `SearchList::apply_theme` takes foreground and background spans. Overlay `Policy` adds `above_modal`. Native family 11 and remote control 2 are unchanged.
+* **client:** SearchList::new takes Option<&T> for initial selection. SearchList::apply_theme takes explicit foreground annotations. Native wire family 11 and remote control 2 are unchanged.
+
+### Features
+
+* **client:** add native conversation recovery picker ([6852e6d](https://github.com/calops/bkpr/commit/6852e6d683d60e520759530d69de4fc7a28827bb)), closes [#14](https://github.com/calops/bkpr/issues/14)
+* **client:** redraw the logo bee and r ([bc2ceab](https://github.com/calops/bkpr/commit/bc2ceabb4d91ae3affc698f5ae3123920b2b27d5))
+* **client:** show a scrollbar for overflowing sidebars ([54f04ac](https://github.com/calops/bkpr/commit/54f04ac5b12f384338ca05d350d85a3f1ab74e5c)), closes [#3](https://github.com/calops/bkpr/issues/3)
+
+### Bug Fixes
+
+* **agents:** accept scoped conversation recipients ([744a572](https://github.com/calops/bkpr/commit/744a572a54b9cc2f5b0ac5c414778e20100194a6)), closes [#27](https://github.com/calops/bkpr/issues/27)
+* **client:** center the scrollbar thumb on its track ([01691b7](https://github.com/calops/bkpr/commit/01691b7dba15ddb277b36fea879cb34320bcd496))
+* **client:** clarify recovery rows and stabilize sidebar hints ([5b1c273](https://github.com/calops/bkpr/commit/5b1c273772baa0e7f4081385b225c15edd58492c))
+* **client:** move the sidebar scrollbar to the right ([674251e](https://github.com/calops/bkpr/commit/674251e47a9cdb4640b58084ad0b98ccf978f346))
+* **client:** soften the sidebar scrollbar ([4573b7d](https://github.com/calops/bkpr/commit/4573b7d4394dc85bf714a93f09baad8cfe9e7eeb))
+* **tui:** keep default pane cells native over below-background images ([60adc5f](https://github.com/calops/bkpr/commit/60adc5f420ed4a2efaf25cd6febcfc2aaa5641e1))
+* **tui:** unify picker presentation and divider gestures ([5cabf66](https://github.com/calops/bkpr/commit/5cabf669485af97961dd13175e84506652360b5e))
+
 ## [0.8.0](https://github.com/calops/bkpr/compare/v0.7.1...v0.8.0) (2026-11-19)
 
 ### ⚠ BREAKING CHANGES
