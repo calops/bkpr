@@ -608,7 +608,7 @@ fn draw(
     host: &ColorProbe,
     graphics: &mut GraphicsState,
 ) -> Result<()> {
-    let prepared = geometry::prepare_with_manifest(frame, viewport, None)?;
+    let prepared = geometry::prepare(frame, viewport)?;
     draw_prepared(
         out,
         frame,
@@ -2758,7 +2758,6 @@ mod material_cache_tests {
         let mut scene = Scene {
             size: frame.size,
             surfaces: vec![Surface {
-                image_manifest: None,
                 id: "material",
                 rect: Rect {
                     x: 0,
@@ -2777,7 +2776,6 @@ mod material_cache_tests {
         };
         if let Some(rect) = cover {
             scene.surfaces.push(Surface {
-                image_manifest: None,
                 id: "cover",
                 rect,
                 frame: &popup,

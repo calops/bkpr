@@ -4214,7 +4214,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageRef<'a> {
 /// The table `ImageDescriptor` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `ImageDescriptor` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:81`
+/// * Table `ImageDescriptor` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:82`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -5135,7 +5135,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageDescriptorRef<'a> {
 /// The table `Frame` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `Frame` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:90`
+/// * Table `Frame` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:91`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -6874,7 +6874,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for FrameRef<'a> {
 /// The table `Run` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `Run` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:104`
+/// * Table `Run` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:105`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -7614,7 +7614,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RunRef<'a> {
 /// The table `Row` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `Row` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:112`
+/// * Table `Row` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:113`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -8014,7 +8014,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RowRef<'a> {
 /// The table `Scene` in the namespace `scene`
 /// 
 /// Generated from these locations:
-/// * Table `Scene` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:117`
+/// * Table `Scene` in the file `crates/bkpr-protocol/src/scene_wire/scene.fbs:118`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize

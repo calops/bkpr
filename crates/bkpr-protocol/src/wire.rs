@@ -13,7 +13,6 @@ mod operations;
 mod pane;
 mod paths;
 mod push;
-mod resources;
 #[cfg(test)]
 mod tests;
 mod types;
@@ -164,12 +163,6 @@ impl Codec {
                         let payload = g::PanePayload::create(&mut self.builder, metadata, scene);
                         g::Payload::create_pane_payload(&mut self.builder, payload)
                     }
-                    Payload::ImageResource(resource) => {
-                        let value =
-                            resources::write_resource(&mut self.builder, resource, &mut budget)?;
-                        let payload = g::ImageResourcePayload::create(&mut self.builder, value);
-                        g::Payload::create_image_resource_payload(&mut self.builder, payload)
-                    }
                 };
                 Ok(g::OptionalPayload::create(&mut self.builder, value))
             })
@@ -311,9 +304,9 @@ fn decode_response_inner(bytes: &[u8], owner: Option<&bytes::Bytes>) -> Result<R
                         .transpose()?;
                     Payload::Pane(PanePayload { metadata, scene })
                 }
-                g::PayloadRef::ImageResourcePayload(payload) => Payload::ImageResource(
-                    resources::read_resource(payload.value()?, owner, &mut budget)?,
-                ),
+                g::PayloadRef::ImageResourcePayload(_) => {
+                    anyhow::bail!("retired image resource payload")
+                }
             })
         })
         .transpose()?;

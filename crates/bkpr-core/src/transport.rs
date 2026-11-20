@@ -6,7 +6,6 @@ use crate::registry::{Registry, RegistryBusy, SessionClosing};
 mod administration;
 mod capacity;
 mod clients;
-mod resources;
 mod status;
 use anyhow::{Context, Result, bail};
 #[cfg(test)]
@@ -652,7 +651,6 @@ impl BoundSocket {
                     let mut subscription = None;
                     let mut lifetime = None;
                     let mut status_stream = None;
-                    let mut image_stream = None;
                     let mut pending_response = None;
                     let mut dispatched = false;
                     let mut diagnostic = None;
@@ -723,14 +721,7 @@ impl BoundSocket {
                                 Payload::Control(response)
                             }
                             Operation::Client { authority, request: operation } => {
-                                if matches!(operation.as_ref(), Operation::Pane { request: bkpr_protocol::PaneRequest::ImageResource { .. }, .. }) {
-                                    let admitted = resources::admit(registry, &authority, *operation, &stream)?;
-                                    let descriptor = admitted.observation.descriptor;
-                                    image_stream = Some(admitted);
-                                    Payload::ImageResource(bkpr_protocol::ImageResource::Preparing { descriptor })
-                                } else {
-                                    registry.client_request(authority, *operation, &stream)?
-                                }
+                                registry.client_request(authority, *operation, &stream)?
                             }
                             operation @ Operation::HarnessEvent {
                                 event: bkpr_protocol::CaptureEvent::StatusEnroll { .. }, ..
@@ -838,9 +829,6 @@ impl BoundSocket {
                         } else {
                             service.as_ref().and_then(|service| service.registry()).expect("session client").detach_client(&client, "disconnected");
                         }
-                    }
-                    if let Some(admitted) = image_stream && sent.is_ok() {
-                        resources::serve(&mut stream, admitted, &shutdown);
                     }
                     drop(service);
                     drop(pending_response);

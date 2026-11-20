@@ -13,17 +13,6 @@ pub(super) fn write_pane_request(
 ) -> Result<UnionOffset<g::PaneRequest>> {
     budget.node(depth)?;
     Ok(match value {
-        PaneRequest::ImageResource {
-            view_id,
-            key,
-            original_encodings,
-        } => {
-            let view_id = write_text(builder, view_id, budget)?;
-            let key = write_image_key(builder, key, budget, depth + 1)?;
-            let value =
-                g::PaneRequestImageResource::create(builder, view_id, key, *original_encodings);
-            g::PaneRequest::create_pane_request_image_resource(builder, value)
-        }
         PaneRequest::Inspect => {
             let offset = g::PaneRequestInspect::create(builder);
             g::PaneRequest::create_pane_request_inspect(builder, offset)
@@ -319,11 +308,9 @@ pub(super) fn read_pane_request(
 ) -> Result<PaneRequest> {
     budget.node(depth)?;
     Ok(match value {
-        g::PaneRequestRef::PaneRequestImageResource(value) => PaneRequest::ImageResource {
-            view_id: read_text(value.view_id()?, budget)?,
-            key: read_image_key(value.key()?, budget, depth + 1)?,
-            original_encodings: value.original_encodings()?,
-        },
+        g::PaneRequestRef::PaneRequestImageResource(_) => {
+            anyhow::bail!("retired image resource request")
+        }
         g::PaneRequestRef::PaneRequestInspect(_value) => PaneRequest::Inspect,
         g::PaneRequestRef::PaneRequestAttach(value) => PaneRequest::Attach {
             spec: read_view_spec(value.spec()?, budget, depth + 1)?,

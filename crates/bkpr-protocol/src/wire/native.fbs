@@ -482,11 +482,10 @@ table PaneRequestTerminate {
 table PaneRequestShutdown {
 
 }
+// Retired: asynchronous image resource requests. Kept for union slot stability; rejected.
 table PaneRequestImageResource {
   view_id:string (required);
   key:ImageKey (required);
-  // Appended: the requester decodes Png/Zlib bodies; older daemons ignore it.
-  original_encodings:bool;
 }
 union PaneRequest { PaneRequestInspect, PaneRequestAttach, PaneRequestUpdate, PaneRequestDetach, PaneRequestPoll, PaneRequestPin, PaneRequestInput, PaneRequestPaste, PaneRequestPasteContents, PaneRequestKey, PaneRequestMouse, PaneRequestFocus, PaneRequestScroll, PaneRequestSelect, PaneRequestCopySelection, PaneRequestSearch, PaneRequestClipboard, PaneRequestColors, PaneRequestTerminate, PaneRequestShutdown, PaneRequestImageResource }
 table SearchActionQuery {
@@ -679,8 +678,8 @@ table Value { body:ValueBody (required); }
 table ControlPayload { value:Value (required); }
 table PanePayload { metadata:Value (required); scene:[ubyte]; }
 enum ImagePixelFormat : ubyte { Rgb, Rgba, GrayAlpha, Gray }
-// Png and Zlib carry the program's original Kitty payload; sent only to requesters that opt in.
-enum ImageEncoding : ubyte { Raw, Zstd, Png, Zlib }
+// Retired with image resource streams; pane images travel inline in scenes.
+enum ImageEncoding : ubyte { Raw, Zstd }
 table ImageDescriptor {
   key:ImageKey (required);
   width:uint;
@@ -696,6 +695,7 @@ table ImageStart {
 }
 table ImageData { key:ImageKey (required); offset:ulong; data:[ubyte] (required); }
 table ImageEnd { key:ImageKey (required); encoded_len:ulong; }
+// Retired: never produced; decoders reject ImageResourcePayload.
 union ImageResource { ImagePreparing, ImageStart, ImageData, ImageEnd }
 table ImageResourcePayload { value:ImageResource (required); }
 union Payload { ControlPayload, PanePayload, ImageResourcePayload }

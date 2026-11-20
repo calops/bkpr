@@ -20,11 +20,11 @@ pub mod notifications;
 pub use notifications::*;
 mod project;
 pub use project::*;
-/// Validated image manifests, streamed resources and bounded lossless pixel decoding.
-pub mod image_resource;
+/// Original program image payloads carried inline by scenes, with bounded decoding.
+pub mod image_source;
 mod registry;
 pub mod scene_wire;
-pub use image_resource::*;
+pub use image_source::*;
 pub use registry::*;
 mod recovery;
 pub use recovery::*;
@@ -127,16 +127,6 @@ pub enum PaneRequest {
         #[serde(default)]
         /// Requested scene representation, validated by the backend.
         scene_encoding: Option<String>,
-    },
-    /// Stream one exact immutable image generation through a live view.
-    ImageResource {
-        /// Attachment authorized to observe the generation.
-        view_id: String,
-        /// Exact pane-scoped image generation from its descriptor manifest.
-        key: ImageKey,
-        /// Requester decodes [`ImageEncoding::Png`]/[`ImageEncoding::Zlib`] bodies,
-        /// letting the backend forward the program's original payload unchanged.
-        original_encodings: bool,
     },
     /// Accept the desired size lease; actual frame geometry converges asynchronously.
     Pin {

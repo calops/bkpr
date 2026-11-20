@@ -3,7 +3,7 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-/// Reply metadata, pane scenes or bounded streamed image-resource frames.
+/// Reply metadata or pane scenes.
 /// Serde emits diagnostic JSON; deserialization always produces [`Self::Control`].
 #[derive(Clone, Debug)]
 pub enum Payload {
@@ -17,8 +17,6 @@ pub enum Payload {
         /// Pane reply with optional binary scene bytes.
         PanePayload,
     ),
-    /// One bounded binary frame in an explicitly requested image stream.
-    ImageResource(crate::ImageResource),
 }
 /// Pane reply whose binary scene is kept outside its metadata object.
 #[derive(Clone, Debug)]
@@ -45,7 +43,6 @@ impl Payload {
     pub fn into_json(self) -> Result<Value> {
         match self {
             Self::Control(value) => Ok(value),
-            Self::ImageResource(resource) => Ok(resource.diagnostic()),
             Self::Pane(mut pane) => {
                 ensure!(pane.metadata.is_object(), "pane metadata must be an object");
                 ensure!(
@@ -64,7 +61,6 @@ impl Serialize for Payload {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         match self {
             Self::Control(value) => value.serialize(serializer),
-            Self::ImageResource(resource) => resource.diagnostic().serialize(serializer),
             Self::Pane(pane) => {
                 let mut value = pane.metadata.clone();
                 if !value.is_object() || value.get("scene").is_some() {
