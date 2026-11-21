@@ -4231,6 +4231,7 @@ mod tests {
             event_sequence: 0,
             size_owner: None,
             lease_generation: 0,
+            color_overrides: None,
             views: Vec::new(),
             clipboard: None,
             selection: None,

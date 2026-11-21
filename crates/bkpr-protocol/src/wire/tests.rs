@@ -1020,11 +1020,12 @@ fn every_nested_request_variant_roundtrips() {
         pane_id: "pane".into(),
         request: PaneRequest::Colors {
             view_id: "日本語\0🦀".into(),
-            foreground: [0, 127, 255],
-            background: [0, 127, 255],
+            foreground: Some([0, 127, 255]),
+            background: Some([255, 127, 0]),
             cursor: Some([0, 127, 255]),
             palette: Some((0..=255).map(|value| [value, 127, 255]).collect()),
             ansi: Some(std::array::from_fn(|index| [255, 0, index as u8])),
+            observed_ansi: Some(std::array::from_fn(|index| [0, index as u8, 255])),
         },
     });
     assert_request(Operation::Pane {
@@ -2062,11 +2063,12 @@ fn invalid_utf8_and_empty_palette_presence_are_not_silently_normalized() {
             pane_id: String::new(),
             request: PaneRequest::Colors {
                 view_id: String::new(),
-                foreground: [0; 3],
-                background: [255; 3],
+                foreground: None,
+                background: Some([0; 3]),
                 cursor: None,
                 palette,
                 ansi: None,
+                observed_ansi: None,
             },
         });
     }
@@ -2084,7 +2086,12 @@ fn ansi_override_does_not_require_an_observed_palette() {
     });
     let request: PaneRequest = serde_json::from_value(json.clone()).unwrap();
     assert_eq!(serde_json::to_value(&request).unwrap(), json);
-    let PaneRequest::Colors { ansi: None, .. } = request else {
+    let PaneRequest::Colors {
+        ansi: None,
+        observed_ansi: None,
+        ..
+    } = request
+    else {
         panic!("no ANSI override was sent");
     };
 
@@ -2092,41 +2099,141 @@ fn ansi_override_does_not_require_an_observed_palette() {
         pane_id: "pane".into(),
         request: PaneRequest::Colors {
             view_id: "view".into(),
-            foreground: [0; 3],
-            background: [255; 3],
+            foreground: Some([0; 3]),
+            background: None,
             cursor: None,
             palette: None,
             ansi: Some(std::array::from_fn(|index| [index as u8, 127, 255])),
+            observed_ansi: None,
         },
     });
 }
 
 #[test]
-fn native_ansi_override_rejects_invalid_vector_lengths() {
+fn omitted_defaults_and_independent_ansi_observations_round_trip() {
+    let observed_ansi = std::array::from_fn::<_, 16, _>(|index| [0, index as u8, 127]);
+    let json = serde_json::json!({
+        "op": "colors",
+        "view_id": "view",
+        "cursor": null,
+        "palette": null,
+        "observed_ansi": observed_ansi,
+    });
+    let request: PaneRequest = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&request).unwrap(), json);
+    let PaneRequest::Colors {
+        foreground: None,
+        background: None,
+        ansi: None,
+        observed_ansi: Some(decoded),
+        ..
+    } = &request
+    else {
+        panic!("only observed ANSI colors were sent");
+    };
+    assert_eq!(*decoded, observed_ansi);
+    assert_request(Operation::Pane {
+        pane_id: "pane".into(),
+        request,
+    });
+}
+
+#[test]
+fn native_ansi_palettes_reject_invalid_vector_lengths() {
     let rgb = g::Rgb { r: 1, g: 2, b: 3 };
-    for length in [0, 15, 17] {
-        let mut builder = Builder::new();
-        let pane_id = builder.create_string("pane");
-        let view_id = builder.create_string("view");
-        let ansi = builder.create_vector(&[rgb; 17][..length]);
-        let colors = g::PaneRequestColors::create(
-            &mut builder,
-            view_id,
-            rgb,
-            rgb,
-            None::<g::Rgb>,
-            None::<planus::Offset<g::OptionalPalette>>,
-            Some(ansi),
-        );
-        let pane_request = g::PaneRequest::create_pane_request_colors(&mut builder, colors);
-        let pane = g::OperationPane::create(&mut builder, pane_id, pane_request);
-        let operation = g::Operation::create_operation_pane(&mut builder, pane);
-        let root = g::Request::create(&mut builder, PROTOCOL_VERSION, operation);
-        let bytes = builder.finish(root, None);
-        assert_eq!(
-            decode_request(bytes).unwrap_err().to_string(),
-            "ANSI override must contain 16 colors"
-        );
+    for observed in [false, true] {
+        for length in [0, 15, 17] {
+            let mut builder = Builder::new();
+            let pane_id = builder.create_string("pane");
+            let view_id = builder.create_string("view");
+            let vector = builder.create_vector(&[rgb; 17][..length]);
+            let colors = g::PaneRequestColors::create(
+                &mut builder,
+                view_id,
+                Some(rgb),
+                Some(rgb),
+                None::<g::Rgb>,
+                None::<planus::Offset<g::OptionalPalette>>,
+                (!observed).then_some(vector),
+                observed.then_some(vector),
+            );
+            let pane_request = g::PaneRequest::create_pane_request_colors(&mut builder, colors);
+            let pane = g::OperationPane::create(&mut builder, pane_id, pane_request);
+            let operation = g::Operation::create_operation_pane(&mut builder, pane);
+            let root = g::Request::create(&mut builder, PROTOCOL_VERSION, operation);
+            let bytes = builder.finish(root, None);
+            assert_eq!(
+                decode_request(bytes).unwrap_err().to_string(),
+                if observed {
+                    "Observed ANSI palette must contain 16 colors"
+                } else {
+                    "ANSI override must contain 16 colors"
+                },
+            );
+        }
+    }
+}
+
+#[test]
+fn snapshot_reports_color_support_even_without_application_overrides() {
+    let mut snapshot: PaneSnapshot = serde_json::from_value(serde_json::json!({
+        "pane_id": "pane",
+        "revision": 1,
+        "snapshot_revision": 1,
+        "image_refs": [],
+        "resource_protocol": 1,
+        "lifecycle": "running",
+        "program_status": [],
+        "events": [],
+        "event_sequence": 0,
+        "lease_generation": 0,
+        "views": [],
+        "clipboard_pending": false,
+        "capabilities": {
+            "sixel": false,
+            "normalized_frames": true,
+            "clipboard_timeout_ms": 0,
+            "view_timeout_ms": 0,
+            "poll_wait_max_ms": 0,
+            "row_deltas": false,
+            "scene_encodings": [],
+        },
+    }))
+    .unwrap();
+    assert_eq!(snapshot.color_overrides, None);
+    assert!(
+        serde_json::to_value(&snapshot)
+            .unwrap()
+            .get("color_overrides")
+            .is_none()
+    );
+
+    let mut codec = Codec::new();
+    for color_overrides in [
+        PaneColorOverrides::default(),
+        PaneColorOverrides {
+            foreground: true,
+            background: false,
+            ansi_mask: 0x8001,
+        },
+    ] {
+        snapshot.color_overrides = Some(color_overrides);
+        let response = Response {
+            version: PROTOCOL_VERSION,
+            ok: true,
+            result: Some(Payload::Pane(PanePayload {
+                metadata: serde_json::to_value(&snapshot).unwrap(),
+                scene: None,
+            })),
+            error: None,
+            failure: None,
+        };
+        let decoded = decode_response(codec.encode_response(&response).unwrap()).unwrap();
+        let Some(Payload::Pane(payload)) = decoded.result else {
+            panic!("wrong payload domain");
+        };
+        let metadata: PaneSnapshot = serde_json::from_value(payload.metadata).unwrap();
+        assert_eq!(metadata.color_overrides, Some(color_overrides));
     }
 }
 

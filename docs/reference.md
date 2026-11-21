@@ -1154,14 +1154,15 @@ Dark/Light, Tokyo Night/Storm/Day and PaperColor Light/Dark. Muted, blended and
 semantic styles continue to use Bkpr's appearance recipe.
 
 Previews only change what this client draws. The pane's current size owner
-also publishes its committed default foreground/background and ANSI16 palette
-to the virtual terminal, so programs can query them with OSC 4, 10 and 11.
-Programs can query light/dark with CSI `?996n`; those that enable mode 2031
-receive a report when the scheme changes. A palette change within the same
-scheme updates query answers without sending another report. Bkpr does not
-recolor explicit RGB, higher indexed colors or images as part of a preset.
-Other clients can still choose a different presentation preset. A new client
-starts with inferred terminal colors; there is no config persistence yet.
+publishes its committed defaults and ANSI16 palette to the virtual terminal.
+OSC 4, 10 and 11 queries return effective colors, including any application
+overrides. These overrides survive theme commits until the app resets them.
+CSI `?996n` reports light/dark based on the published default background.
+Programs that enable mode 2031 receive a report when that scheme changes.
+A palette change within the same scheme needs another query, not another
+notification. Presets do not recolor explicit RGB, higher indexed colors, or
+images. Other clients can still choose a different presentation preset. A new
+client starts with inferred terminal colors; there is no config persistence yet.
 
 Supporting hosts notify live terminal color changes through mode 2031; Bkpr
 re-queries without polling and restores the original confirmed notification

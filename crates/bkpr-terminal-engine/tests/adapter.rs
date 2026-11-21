@@ -13,6 +13,17 @@ fn size() -> Size {
 fn terminal() -> Terminal {
     Terminal::new(size()).unwrap()
 }
+fn theme(
+    term: &mut Terminal,
+    foreground: Option<[u8; 3]>,
+    background: Option<[u8; 3]>,
+    cursor: Option<[u8; 3]>,
+    palette: Option<&[[u8; 3]; 256]>,
+) -> Option<Vec<u8>> {
+    term.set_theme_colors(foreground, background, cursor, palette, Ok::<_, Error>)
+        .unwrap()
+        .1
+}
 fn replies(effects: Vec<Effect>) -> Vec<u8> {
     effects
         .into_iter()
@@ -38,8 +49,13 @@ fn text(frame: &Frame) -> String {
 #[test]
 fn unicode_styles_links_and_owned_frame_survive_mutation() {
     let mut term = terminal();
-    term.set_default_colors([201, 202, 203], [1, 2, 3], Some([9, 8, 7]))
-        .unwrap();
+    theme(
+        &mut term,
+        Some([201, 202, 203]),
+        Some([1, 2, 3]),
+        Some([9, 8, 7]),
+        None,
+    );
     term.feed("\x1b[1;3;4:3;38;2;12;34;56m界e\u{301}\x1b[0m\x1b]8;;https://example.test/\x1b\\X\x1b]8;;\x1b\\".as_bytes()).unwrap();
     let frame = term.snapshot().unwrap();
     assert_eq!(frame.rows[0].cells[0].text, "界");
@@ -63,7 +79,7 @@ fn empty_cell_background_and_palette_override_are_not_lost() {
     let mut term = terminal();
     let mut palette = [[0, 0, 0]; 256];
     palette[1] = [7, 8, 9];
-    term.set_palette(&palette).unwrap();
+    theme(&mut term, None, None, None, Some(&palette));
     term.feed(b"\x1b[41m\x1b[2K\x1b[0m\x1b]4;1;rgb:aa/bb/cc\x1b\\\x1b[31mX")
         .unwrap();
     let frame = term.snapshot().unwrap();
@@ -77,26 +93,31 @@ fn scheme_queries_and_subscriptions_report_only_known_changes() {
     let mut term = terminal();
     assert!(replies(term.feed(b"\x1b[?996n\x1b[?2031h").unwrap()).is_empty());
 
-    let foreground = [231, 232, 233];
-    term.set_theme_colors(foreground, [127; 3], None, None, None)
-        .unwrap();
-    assert_eq!(term.encode_paste(b"literal").unwrap(), b"literal");
-    assert_eq!(replies(term.drain_effects().unwrap()), b"\x1b[?997;1n");
+    let foreground = Some([231, 232, 233]);
+    assert_eq!(
+        theme(&mut term, foreground, Some([127; 3]), None, None).as_deref(),
+        Some(b"\x1b[?997;1n".as_slice())
+    );
+    assert!(term.drain_effects().unwrap().is_empty());
     assert_eq!(replies(term.feed(b"\x1b[?996n").unwrap()), b"\x1b[?997;1n");
 
-    term.set_theme_colors(foreground, [18; 3], None, None, None)
-        .unwrap();
-    assert!(term.drain_effects().unwrap().is_empty());
-    term.set_theme_colors(foreground, [128; 3], None, None, None)
-        .unwrap();
-    assert_eq!(replies(term.drain_effects().unwrap()), b"\x1b[?997;2n");
+    assert!(theme(&mut term, foreground, Some([18; 3]), None, None).is_none());
+    assert_eq!(
+        theme(&mut term, foreground, Some([128; 3]), None, None).as_deref(),
+        Some(b"\x1b[?997;2n".as_slice())
+    );
 
     assert!(term.feed(b"\x1b[?2031l").unwrap().is_empty());
-    term.set_theme_colors(foreground, [0; 3], None, None, None)
-        .unwrap();
-    assert!(term.drain_effects().unwrap().is_empty());
+    assert!(theme(&mut term, foreground, Some([0; 3]), None, None).is_none());
     assert_eq!(replies(term.feed(b"\x1b[?996n").unwrap()), b"\x1b[?997;1n");
     assert!(term.feed(b"\x1b[?2031h").unwrap().is_empty());
+
+    assert!(theme(&mut term, None, None, None, None).is_none());
+    assert!(replies(term.feed(b"\x1b[?996n\x1b]10;?\x07\x1b]11;?\x07").unwrap()).is_empty());
+    assert_eq!(
+        theme(&mut term, foreground, Some([0; 3]), None, None).as_deref(),
+        Some(b"\x1b[?997;1n".as_slice())
+    );
 }
 
 #[test]
@@ -106,17 +127,11 @@ fn native_color_queries_keep_app_overrides_and_the_extended_palette() {
     let mut observed = [[0; 3]; 256];
     observed[1] = [1, 2, 3];
     observed[16] = [40, 41, 42];
-    let mut ansi = [[0; 3]; 16];
-    ansi[1] = [7, 8, 9];
-    term.set_theme_colors(
-        [10, 11, 12],
-        [21, 22, 23],
-        None,
-        Some(&observed),
-        Some(&ansi),
-    )
-    .unwrap();
-    assert!(term.drain_effects().unwrap().is_empty());
+    let mut preset = observed;
+    preset[1] = [7, 8, 9];
+    let foreground = Some([10, 11, 12]);
+    let background = Some([21, 22, 23]);
+    assert!(theme(&mut term, foreground, background, None, Some(&preset)).is_none());
     assert_eq!(
         replies(
             term.feed(b"\x1b]4;1;?;16;?\x07\x1b]10;?\x07\x1b]11;?\x07")
@@ -127,8 +142,7 @@ fn native_color_queries_keep_app_overrides_and_the_extended_palette() {
     );
     term.feed(b"\x1b]4;1;rgb:aa/bb/cc\x07\x1b]10;rgb:dd/ee/ff\x07\x1b]11;rgb:ff/ff/ff\x07")
         .unwrap();
-    term.set_theme_colors([10, 11, 12], [21, 22, 23], None, Some(&observed), None)
-        .unwrap();
+    theme(&mut term, foreground, background, None, Some(&observed));
     assert_eq!(
         replies(
             term.feed(b"\x1b]4;1;?;16;?\x07\x1b]10;?\x07\x1b]11;?\x07\x1b[?996n")
@@ -148,14 +162,68 @@ fn native_color_queries_keep_app_overrides_and_the_extended_palette() {
           \x1b]11;rgb:1515/1616/1717\x07"
     );
 
-    term.set_theme_colors([10, 11, 12], [21, 22, 23], None, None, Some(&ansi))
-        .unwrap();
+    preset[16..].copy_from_slice(&factory[16..]);
+    theme(&mut term, foreground, background, None, Some(&preset));
     let frame = term.snapshot().unwrap();
-    assert_eq!(frame.palette[1], ansi[1]);
+    assert_eq!(frame.palette[1], preset[1]);
     assert_eq!(frame.palette[16..], factory[16..]);
-    term.set_theme_colors([10, 11, 12], [21, 22, 23], None, None, None)
-        .unwrap();
+    theme(
+        &mut term,
+        foreground,
+        background,
+        None,
+        Some(Terminal::factory_palette()),
+    );
     assert_eq!(term.snapshot().unwrap().palette, factory);
+}
+
+#[test]
+fn detectable_osc_overrides_follow_the_rendered_scene_without_rewriting_native_colors() {
+    let mut term = terminal();
+    let mut palette = *Terminal::factory_palette();
+    palette[1] = [7, 8, 9];
+    theme(
+        &mut term,
+        Some([10, 11, 12]),
+        Some([21, 22, 23]),
+        None,
+        Some(&palette),
+    );
+    term.feed(b"\x1b]4;1;rgb:07/08/09\x07\x1b]10;rgb:0a/0b/0c\x07\x1b]11;rgb:15/16/17\x07")
+        .unwrap();
+    let (_, overrides) = term.snapshot_with_color_overrides().unwrap();
+    assert_eq!(overrides, PaneColorOverrides::default());
+
+    theme(
+        &mut term,
+        None,
+        None,
+        None,
+        Some(Terminal::factory_palette()),
+    );
+    let (frame, overrides) = term.snapshot_with_color_overrides().unwrap();
+    assert_eq!(
+        overrides,
+        PaneColorOverrides {
+            foreground: true,
+            background: true,
+            ansi_mask: 1 << 1,
+        }
+    );
+    assert_eq!(frame.foreground, [10, 11, 12]);
+    assert_eq!(frame.background, [21, 22, 23]);
+    assert_eq!(frame.palette[1], palette[1]);
+
+    term.feed(b"\x1b[?2026h\x1b]104;1\x07\x1b]110\x07\x1b]111\x07")
+        .unwrap();
+    let (held, held_overrides) = term.snapshot_with_color_overrides().unwrap();
+    assert_eq!(held.palette[1], frame.palette[1]);
+    assert_eq!(held_overrides, overrides);
+    term.feed(b"\x1b[?2026l").unwrap();
+    let (live, live_overrides) = term.snapshot_with_color_overrides().unwrap();
+    assert_eq!(live.palette[1], Terminal::factory_palette()[1]);
+    assert_eq!(live_overrides, PaneColorOverrides::default());
+    assert!(replies(term.feed(b"\x1b]10;?\x07\x1b]11;?\x07").unwrap()).is_empty());
 }
 
 #[test]
@@ -678,8 +746,13 @@ fn enhanced_paste_is_native_event_and_callback_panic_is_denied() {
 #[test]
 fn explicit_rgb_equal_to_default_and_palette_sources_remain_distinct() {
     let mut term = terminal();
-    term.set_default_colors([11, 22, 33], [44, 55, 66], None)
-        .unwrap();
+    theme(
+        &mut term,
+        Some([11, 22, 33]),
+        Some([44, 55, 66]),
+        None,
+        None,
+    );
     term.feed(b"A\x1b[38;2;11;22;33mB\x1b[31mC\x1b[48;2;44;55;66m\x1b[K")
         .unwrap();
     let frame = term.snapshot().unwrap();

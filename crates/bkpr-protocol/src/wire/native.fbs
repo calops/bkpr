@@ -471,11 +471,12 @@ table PaneRequestClipboard {
 }
 table PaneRequestColors {
   view_id:string (required);
-  foreground:Rgb (required);
-  background:Rgb (required);
+  foreground:Rgb;
+  background:Rgb;
   cursor:Rgb;
   palette:OptionalPalette;
   ansi:[Rgb];
+  observed_ansi:[Rgb];
 }
 table PaneRequestTerminate {
   view_id:string (required);

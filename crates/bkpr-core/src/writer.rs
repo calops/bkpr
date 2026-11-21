@@ -31,6 +31,41 @@ pub struct Queue {
     wake: Condvar,
     changed: Box<dyn Fn() + Send + Sync>,
 }
+/// A checked FIFO admission that remains invisible until committed.
+pub(super) struct Reservation<'a> {
+    queue: &'a Queue,
+    state: std::sync::MutexGuard<'a, State>,
+    bytes: Vec<u8>,
+}
+impl Reservation<'_> {
+    /// Publish the reserved packet; dropping the reservation aborts it instead.
+    pub(super) fn commit(self) -> u64 {
+        let Self {
+            queue,
+            mut state,
+            bytes,
+        } = self;
+        if state.receipts.len() >= 128 {
+            state.receipts.pop_front();
+        }
+        state.next += 1;
+        let id = state.next;
+        let total = bytes.len();
+        state.bytes += total;
+        state.active += 1;
+        state.receipts.push_back(WriteReceipt {
+            id,
+            state: "queued",
+            total,
+            written: 0,
+        });
+        state.queue.push_back(Packet { id, bytes });
+        drop(state);
+        queue.wake.notify_one();
+        (queue.changed)();
+        id
+    }
+}
 /// Owning writer-thread lifetime; drop requests stop and joins the thread.
 pub struct Worker {
     queue: Arc<Queue>,
@@ -172,7 +207,14 @@ impl Queue {
     }
     /// Admit bytes once or reject without enqueueing; internal replies have a reserved budget.
     pub fn enqueue(&self, bytes: Vec<u8>, internal: bool) -> Result<u64> {
-        let mut state = self.state.lock().unwrap();
+        Ok(self.reserve(bytes, internal)?.commit())
+    }
+    /// Reserve ordered capacity for an internal report without exposing it to the writer.
+    pub(super) fn reserve_internal(&self, bytes: Vec<u8>) -> Result<Reservation<'_>> {
+        self.reserve(bytes, true)
+    }
+    fn reserve(&self, bytes: Vec<u8>, internal: bool) -> Result<Reservation<'_>> {
+        let state = self.state.lock().unwrap();
         if state.stopping {
             bail!("PTY writer is stopped; input was not accepted");
         }
@@ -186,32 +228,19 @@ impl Queue {
                 "PTY input queue full; input was not accepted or dispatched; retry only this rejected request"
             );
         }
-        if state.receipts.len() >= 128 {
-            if state
+        if state.receipts.len() >= 128
+            && state
                 .receipts
                 .front()
                 .is_some_and(|r| matches!(r.state, "queued" | "writing"))
-            {
-                bail!("PTY receipt capacity exhausted; input was not accepted");
-            }
-            state.receipts.pop_front();
+        {
+            bail!("PTY receipt capacity exhausted; input was not accepted");
         }
-        state.next += 1;
-        let id = state.next;
-        let total = bytes.len();
-        state.bytes += total;
-        state.active += 1;
-        state.receipts.push_back(WriteReceipt {
-            id,
-            state: "queued",
-            total,
-            written: 0,
-        });
-        state.queue.push_back(Packet { id, bytes });
-        self.wake.notify_one();
-        drop(state);
-        (self.changed)();
-        Ok(id)
+        Ok(Reservation {
+            queue: self,
+            state,
+            bytes,
+        })
     }
     /// Whether unfinished bytes have reached the user-input budget.
     pub fn congested(&self) -> bool {
@@ -245,6 +274,124 @@ impl Queue {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+
+    #[test]
+    fn saturated_scheme_report_leaves_native_colors_and_scheme_retryable() {
+        use crate::{AppliedColors, ColorUpdate, Terminal};
+        use bkpr_protocol::{Effect, Size};
+
+        struct GatedOutput {
+            gate: Option<mpsc::Receiver<()>>,
+            writes: mpsc::Sender<Vec<u8>>,
+        }
+        impl Write for GatedOutput {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if let Some(gate) = self.gate.take() {
+                    let _ = gate.recv();
+                }
+                self.writes.send(bytes.to_vec()).unwrap();
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let (release, gate) = mpsc::channel();
+        let (writes, written) = mpsc::channel();
+        let (changed, changes) = mpsc::channel();
+        let (queue, worker) = Queue::start(
+            Box::new(GatedOutput {
+                gate: Some(gate),
+                writes,
+            }),
+            Box::new(move || {
+                let _ = changed.send(());
+            }),
+        )
+        .unwrap();
+        // Release the output gate before the writer joins, including on unwind.
+        let release_output = release;
+        let mut terminal = Terminal::new(Size {
+            cols: 6,
+            rows: 2,
+            cell_width: 8,
+            cell_height: 16,
+        })
+        .unwrap();
+        let mut colors = AppliedColors::default();
+        let theme = |foreground, background, ansi| ColorUpdate {
+            view_id: "owner".into(),
+            foreground: Some(foreground),
+            background: Some(background),
+            cursor: None,
+            palette: None,
+            ansi,
+            observed_ansi: None,
+        };
+        let dark = theme([200; 3], [0; 3], None);
+        let (_, report) = colors.apply(&mut terminal, &queue, dark, None).unwrap();
+        assert!(report.is_none());
+        terminal.feed(b"\x1b[?2031h").unwrap();
+        for _ in 0..128 {
+            queue.enqueue(b"x".to_vec(), true).unwrap();
+        }
+
+        let light = || theme([10; 3], [255; 3], Some([[33; 3]; 16]));
+        let target = colors.target_palette(&light());
+        let Err(rejection) = colors.apply(&mut terminal, &queue, light(), target.as_ref()) else {
+            panic!("saturated writer accepted the theme");
+        };
+        release_output.send(()).unwrap();
+        assert!(rejection.to_string().contains("queue full"));
+        let frame = terminal.snapshot().unwrap();
+        assert_eq!(frame.foreground, [200; 3]);
+        assert_eq!(frame.background, [0; 3]);
+        assert_eq!(frame.palette.as_slice(), Terminal::factory_palette());
+        assert!(matches!(
+            terminal.feed(b"\x1b[?996n").unwrap().as_slice(),
+            [Effect::PtyWrite(bytes)] if bytes.as_slice() == b"\x1b[?997;1n"
+        ));
+
+        for _ in 0..128 {
+            assert_eq!(
+                written
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .as_slice(),
+                b"x"
+            );
+        }
+        while queue.snapshot().active != 0 {
+            changes.recv_timeout(Duration::from_secs(3)).unwrap();
+        }
+        queue.enqueue(b"earlier".to_vec(), false).unwrap();
+        let target = colors.target_palette(&light());
+        let (changed, report) = colors
+            .apply(&mut terminal, &queue, light(), target.as_ref())
+            .unwrap();
+        assert!(changed);
+        report.unwrap().commit();
+        queue.enqueue(b"later".to_vec(), false).unwrap();
+        for expected in [b"earlier".as_slice(), b"\x1b[?997;2n", b"later"] {
+            assert_eq!(
+                written
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .as_slice(),
+                expected
+            );
+        }
+        assert!(matches!(
+            terminal.feed(b"\x1b[?996n").unwrap().as_slice(),
+            [Effect::PtyWrite(bytes)] if bytes.as_slice() == b"\x1b[?997;2n"
+        ));
+        let current = terminal.snapshot().unwrap();
+        assert_eq!(current.foreground, [10; 3]);
+        assert_eq!(current.background, [255; 3]);
+        assert_eq!(current.palette[..16], [[33; 3]; 16]);
+        worker.join().unwrap();
+    }
 
     #[test]
     fn receipt_completion_and_stop_notify_without_holding_writer_state() {

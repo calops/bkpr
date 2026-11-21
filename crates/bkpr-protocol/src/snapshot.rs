@@ -56,7 +56,23 @@ pub struct PaneSnapshot<Id = String, State = String, Encodings = Vec<String>> {
     /// View-local search progress and visible match spans.
     #[serde(default)]
     pub search: Option<SearchSnapshot>,
+    /// Detectable application overrides; presence also signals support for omitted virtual defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_overrides: Option<PaneColorOverrides>,
 }
+
+/// Application color overrides distinguishable from native defaults.
+/// An override equal to the native default may not be observable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneColorOverrides {
+    /// The effective foreground (OSC 10) differs from its native default.
+    pub foreground: bool,
+    /// The effective background (OSC 11) differs from its native default.
+    pub background: bool,
+    /// Bit `n` means effective indexed color `n` (OSC 4) differs from its native default.
+    pub ansi_mask: u16,
+}
+
 /// Sequenced terminal effect retained in the bounded pane event history.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Event {

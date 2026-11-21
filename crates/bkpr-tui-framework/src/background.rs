@@ -327,8 +327,14 @@ mod late_theme_tests {
             cell_height: 16,
         };
         let mut host = bkpr_terminal_engine::Terminal::new(size).unwrap();
-        host.set_default_colors([255, 255, 255], [17, 34, 51], None)
-            .unwrap();
+        host.set_theme_colors(
+            Some([255, 255, 255]),
+            Some([17, 34, 51]),
+            None,
+            None,
+            |_| Ok::<_, bkpr_terminal_engine::Error>(()),
+        )
+        .unwrap();
         let mut owner = Background::default();
         let mut logical = ColorProbe::default();
         let mut out = Vec::new();
