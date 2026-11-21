@@ -920,6 +920,21 @@ impl App {
                 actions.push(item("󰏫", "Rename", Action::RenameSelected));
             }
         }
+        if self.options.read_only
+            && matches!(target.node, TreeNode::Native(SidebarTarget::Pane { .. }))
+            && tree.rows.iter().any(|row| {
+                row.target.as_ref() == Some(&target)
+                    && matches!(
+                        row.kind,
+                        crate::tree::Kind::Native(crate::controller::SidebarRowKind::Pane {
+                            projected: false,
+                            ..
+                        })
+                    )
+            })
+        {
+            return;
+        }
         if !empty && let Some(collapse) = tree.menu_fold(&target) {
             let (icon, label) = if collapse {
                 ("󰅀", "Collapse")
@@ -930,7 +945,7 @@ impl App {
         }
         if !self.options.read_only {
             match &target.node {
-                TreeNode::Session => {
+                TreeNode::Session if session.group.status == SessionStatus::Online => {
                     actions.push(item("󰉕", "New workspace", Action::CreateWorkspace))
                 }
                 TreeNode::Native(SidebarTarget::Workspace(_)) => {
@@ -941,7 +956,7 @@ impl App {
             if native {
                 actions.push(item("󰅖", "Close", Action::CloseSelected));
             } else if !empty && session.can_stop {
-                actions.push(item("󰅖", "Close session", Action::StopSession));
+                actions.push(item("󰅖", "Stop session", Action::StopSession));
             }
         }
         drop(tree);
@@ -1176,6 +1191,8 @@ impl App {
             Some(ModalContext::ImageViewer)
         } else if self.diagnostic_active() {
             Some(ModalContext::Details)
+        } else if self.sidebar_menu.is_some() {
+            Some(ModalContext::Menu)
         } else if self
             .consent
             .as_ref()
@@ -2608,6 +2625,7 @@ impl App {
             && self.image_viewer.is_none()
             && self.diagnostic_view.is_none()
             && !self.state.sidebar.active
+            && self.sidebar_menu.is_none()
             && !self.search_open()
             && !self
                 .consent
@@ -3146,7 +3164,11 @@ impl App {
                 });
             }
             Ok(None) if !listing && self.paste_offer.is_some() => {
-                if self.options.read_only || self.state.sidebar.active || self.picker_open() {
+                if self.options.read_only
+                    || self.state.sidebar.active
+                    || self.picker_open()
+                    || self.sidebar_menu.is_some()
+                {
                     self.paste_offer = None;
                     return Ok(());
                 }
@@ -3842,12 +3864,15 @@ impl App {
             return Ok(false);
         }
         if let Some(menu) = &mut self.sidebar_menu {
-            self.state.suppressed.insert(event.key.clone());
-            match event.key.as_str() {
-                "Escape" => self.close_sidebar_menu(),
-                "ArrowUp" => menu.widget.navigate(false),
-                "ArrowDown" => menu.widget.navigate(true),
-                "Enter" if event.action == KeyAction::Press => {
+            if !self.held.contains_key(&event.key) {
+                self.state.suppressed.insert(event.key.clone());
+            }
+            use crate::keyguide::{self, Action, Context, Navigation};
+            match keyguide::lookup(Context::Menu, &event) {
+                Some(Action::Cancel) => self.close_sidebar_menu(),
+                Some(Action::Navigate(Navigation::Previous)) => menu.widget.navigate(false),
+                Some(Action::Navigate(Navigation::Next)) => menu.widget.navigate(true),
+                Some(Action::Submit) => {
                     if let Some(action) = menu.widget.selected().copied() {
                         self.choose_sidebar_menu(action, size);
                     }
@@ -4723,6 +4748,7 @@ impl App {
             if event_button == MouseButton::Right
                 && action == MouseAction::Press
                 && captured.is_none()
+                && !self.resize_capturing()
             {
                 self.open_sidebar_menu(target.cloned(), (mouse.x, mouse.y), size);
                 return Ok(());
@@ -5261,7 +5287,11 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             ..initial_size
         });
         let mut diagnostic_effects = graphics_frame(initial_size);
-        let mut sidebar_menu_surface = UiSurface::new(initial_size);
+        let mut sidebar_menu_surface = UiSurface::new(Size {
+            cols: 1,
+            rows: 1,
+            ..initial_size
+        });
         let mut sidebar_menu_effects = graphics_frame(initial_size);
         let mut window_surface = UiSurface::new(Size {
             cols: 1,
@@ -5327,6 +5357,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 &mut popover_effects,
                 &mut image_effects,
                 &mut diagnostic_effects,
+                &mut sidebar_menu_effects,
                 &mut guide_effects,
                 &mut artwork_effects,
                 &mut toast_effects,
@@ -5408,7 +5439,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     .consent
                     .as_ref()
                     .is_some_and(|consent| consent.state.paste);
-            let local = app.guide_context() != crate::keyguide::Context::Application;
+            let local = app.sidebar_menu.is_some()
+                || app.guide_context() != crate::keyguide::Context::Application;
             terminal.set_enhanced_paste(
                 &mut out,
                 transfer
@@ -5842,7 +5874,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     placement.outer.size(size),
                     &menu_theme,
                 );
-                sidebar_menu_effects = graphics_frame(size);
                 sidebar_menu_graphical = graphics.decorate_region(
                     &mut sidebar_menu_effects,
                     placement.outer,
@@ -6100,7 +6131,11 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 app.overlays.present(
                     "ui:guide",
                     OverlayPlacement::framed(rect, size),
-                    OverlayPolicy::COMPANION,
+                    if app.sidebar_menu.is_some() {
+                        OverlayPolicy::PASSIVE
+                    } else {
+                        OverlayPolicy::COMPANION
+                    },
                     None,
                 );
             } else {
@@ -6369,7 +6404,11 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     frame: &chrome_surface.frame,
                     selection: &[],
                     search: &[],
-                    focused: app.host_focused && sidebar_active && !popup && !searching,
+                    focused: app.host_focused
+                        && sidebar_active
+                        && !popup
+                        && !searching
+                        && app.sidebar_menu.is_none(),
                     faint: faint_background,
                 }];
                 for (id, rect) in &rects {
@@ -6393,6 +6432,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             search: app.search_spans(id),
                             faint: faint_background,
                             focused: !popup
+                                && app.sidebar_menu.is_none()
                                 && !searching
                                 && !sidebar_active
                                 && app.state.focused.as_ref() == Some(id)

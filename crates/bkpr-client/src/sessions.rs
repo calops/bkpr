@@ -2073,6 +2073,7 @@ fn transfer_terminal(from: &mut App, to: &mut App) {
     to.chrome_graphics_enabled = from.chrome_graphics_enabled;
     to.host_focused = from.host_focused;
     to.last_button = from.last_button;
+    std::mem::swap(&mut from.state.suppressed, &mut to.state.suppressed);
     to.state.sidebar.preferred_columns = from.state.sidebar.preferred_columns;
     if from.theme_picker.is_some() {
         to.begin_modal();
@@ -2133,6 +2134,7 @@ impl App {
 
     pub(super) fn session_navigation_allowed(&self) -> bool {
         self.state.form.is_none()
+            && self.sidebar_menu.is_none()
             && !self.picker_open()
             && self
                 .consent
