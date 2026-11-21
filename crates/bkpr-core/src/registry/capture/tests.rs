@@ -218,7 +218,9 @@ fn managed_peer_fixture() {
             id == "native-two"
         );
     }
-    fs::write(home.join("ready.json"), serde_json::to_vec(&json!({"launch_id":grant.launch_id,"native_pid":child.0.id(),"context":context()["result"]})).unwrap()).unwrap();
+    let ready = home.join("ready.tmp");
+    fs::write(&ready, serde_json::to_vec(&json!({"launch_id":grant.launch_id,"native_pid":child.0.id(),"context":context()["result"]})).unwrap()).unwrap();
+    fs::rename(ready, home.join("ready.json")).unwrap();
     if home.join("test-rebind-enabled").exists() {
         await_file(&home.join("rebind"));
         assert_eq!(

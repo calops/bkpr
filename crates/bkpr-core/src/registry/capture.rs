@@ -849,20 +849,42 @@ impl Registry {
                 captures.version,
             )
         };
-        // Lifecycle retirement requires a sample admitted after the launch list.
-        // Cache-only absence is not evidence that a newly authenticated root died.
-        let table = match proc::fresh_snapshot() {
-            Ok(table) => table,
-            Err(_) => {
-                for (id, pane, _) in panes {
-                    let _ = self.publish_facts(&id, &pane, None, None, Some(version));
-                }
-                return;
+        let clear_facts = |version| {
+            for (id, pane, _) in &panes {
+                let _ = self.publish_facts(id, pane, None, None, Some(version));
             }
+        };
+        #[cfg(target_os = "linux")]
+        let scoped = proc::pane_snapshot(panes.iter().map(|(_, _, root)| root)).ok();
+        #[cfg(not(target_os = "linux"))]
+        let scoped = None;
+        let shared;
+        let table: &HashMap<i32, Process> = if let Some(table) = &scoped {
+            table
+        } else {
+            shared = match proc::fresh_snapshot() {
+                Ok(table) => table,
+                Err(_) => {
+                    clear_facts(version);
+                    return;
+                }
+            };
+            &shared
         };
         let mut valid_launches = Vec::new();
         let mut stale = Vec::new();
         for launch in launches {
+            // Discovery can miss children during concurrent exits. Only an
+            // independent inspection after this launch list can retire authority.
+            #[cfg(target_os = "linux")]
+            let valid = match proc::launch_in_pane(&launch.root, &launch.pane_root) {
+                Ok(valid) => valid,
+                Err(_) => {
+                    clear_facts(version);
+                    return;
+                }
+            };
+            #[cfg(not(target_os = "linux"))]
             let valid = table.get(&launch.root.pid).is_some_and(|p| {
                 p.identity == launch.root.identity
                     && p.parent == launch.root.parent
@@ -870,7 +892,7 @@ impl Registry {
                     && table
                         .get(&launch.pane_root.pid)
                         .is_some_and(|r| r.identity == launch.pane_root.identity)
-                    && proc::lineage(p, &launch.pane_root, &table).is_some()
+                    && proc::lineage(p, &launch.pane_root, table).is_some()
             });
             if valid {
                 valid_launches.push(launch);
@@ -912,7 +934,7 @@ impl Registry {
             let mut selected: Option<(usize, &Process, HarnessKind)> = None;
             let mut generic: Option<(usize, &Process)> = None;
             for candidate in foreground.get(&current_root.tty).into_iter().flatten() {
-                let Some(chain) = proc::lineage(candidate, current_root, &table) else {
+                let Some(chain) = proc::lineage(candidate, current_root, table) else {
                     continue;
                 };
                 let depth = chain.len();
@@ -940,7 +962,7 @@ impl Registry {
                     .find(|l| {
                         l.grant.pane_id == id
                             && l.grant.kind == kind
-                            && proc::lineage(process, &l.root, &table).is_some_and(|chain| {
+                            && proc::lineage(process, &l.root, table).is_some_and(|chain| {
                                 // A foreground nested job must not borrow an outer/background
                                 // harness's exact conversation merely because it is a descendant.
                                 chain
@@ -952,9 +974,9 @@ impl Registry {
                     .cloned();
             } else if let Some(launch) = valid_launches.iter().find(|l| {
                 l.grant.pane_id == id
-                    && table
-                        .get(&l.root.pid)
-                        .is_some_and(|p| proc::foreground(p, current_root))
+                    && table.get(&l.root.pid).is_some_and(|p| {
+                        p.identity == l.root.identity && proc::foreground(p, current_root)
+                    })
             }) {
                 selected = table
                     .get(&launch.root.pid)
@@ -970,8 +992,8 @@ impl Registry {
                 continue;
             };
             let cwd = proc::cwd(process.pid).ok().flatten();
-            let live = proc::lineage(process, current_root, &table)
-                .is_some_and(|chain| proc::live(&chain));
+            let live =
+                proc::lineage(process, current_root, table).is_some_and(|chain| proc::live(&chain));
             if !live {
                 let _ = self.publish_facts(&id, &pane, None, None, Some(version));
                 continue;

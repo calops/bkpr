@@ -64,6 +64,7 @@
 
 ### Bug Fixes
 
+* **core:** scope periodic Linux process discovery and cleanup tracking to pane and daemon descendants instead of scanning the host. Preserve full process snapshots at explicit lifecycle barriers.
 * **client:** deduplicate transfer-failure notifications and keep technical diagnostics behind Details instead of repeating protocol errors.
 * **client:** keep working-title waves vivid across project hues by maximizing in-gamut chroma at a shared sidebar contrast target instead of fixing every hue to the same lightness.
 * **agents:** resolve message recipients by launch or uniquely matching live conversation ID within scope, pin retries to their original launch, and distinguish copyable launch/conversation identities in the TUI.
