@@ -1856,8 +1856,10 @@ native clipboard patch and maintainer metadata still need upstream review.
 
 ### Standalone macOS installer
 
-Apple Silicon releases can include `bkpr-macos-arm64.pkg`. Open it in Finder
-and follow Installer's prompts. It installs both commands under `/usr/local/bin`,
+Apple Silicon releases include `bkpr-macos-arm64-unsigned.pkg`. It is not
+Developer ID signed or notarized. If Gatekeeper blocks it, verify the download
+source before approving it in System Settings → Privacy & Security, or use
+Nix instead. It installs both commands under `/usr/local/bin`,
 with the actual executables, terminfo and runtime libraries under
 `/usr/local/lib/bkpr`. Completions and licenses are under `/usr/local/share`.
 The installer doesn't edit shell profiles or register a system service.
@@ -1872,22 +1874,8 @@ Cargo build or third-party bundler is needed. Dispatch **Build, cache and
 publish** with `macos_installer_smoke` checked to build an unsigned installer
 and test it on a second Mac runner without Nix. That run doesn't publish a release.
 
-For release tags, configure these repository Actions settings before merging:
-
-| Setting | Type | Value |
-| --- | --- | --- |
-| `MACOS_CERTIFICATES_P12` | Secret | Base64-encoded password-protected PKCS#12 export containing both Developer ID identities and private keys |
-| `MACOS_CERTIFICATES_PASSWORD` | Secret | Password used for the PKCS#12 export |
-| `MACOS_APPLICATION_IDENTITY` | Variable | Full `Developer ID Application: … (TEAMID)` identity name |
-| `MACOS_INSTALLER_IDENTITY` | Variable | Full `Developer ID Installer: … (TEAMID)` identity name |
-| `MACOS_NOTARY_KEY_P8` | Secret | App Store Connect team API private key contents, including PEM boundaries |
-| `MACOS_NOTARY_KEY_ID` | Variable | Key ID for the notarization API key |
-| `MACOS_NOTARY_ISSUER_ID` | Variable | App Store Connect issuer UUID |
-
-The release job uploads only the package that passed notarization, ticket
-stapling, Gatekeeper assessment and the installed CLI/daemon smoke. Missing
-credentials or failed checks block publication rather than shipping an unsigned
-package. Older releases and their assets are left unchanged.
+Tagged releases upload the same installer that passed the clean Mac install
+and CLI/daemon smoke. Older releases and their assets are left unchanged.
 
 ### Upgrade and publication policy
 

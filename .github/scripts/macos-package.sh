@@ -69,16 +69,8 @@ if compgen -G "$runtime/lib/*.dylib" > /dev/null; then
   install -m644 "$work/openssl/LICENSE.txt" "$root/share/licenses/openssl/LICENSE.txt"
 fi
 
-if [[ ${MACOS_KEYCHAIN:-} ]]; then
-  : "${MACOS_APPLICATION_IDENTITY:?Missing Developer ID Application identity}"
-fi
 while IFS= read -r -d '' file; do
-  if [[ ${MACOS_KEYCHAIN:-} ]]; then
-    codesign --force --options runtime --timestamp --keychain "$MACOS_KEYCHAIN" \
-      --sign "$MACOS_APPLICATION_IDENTITY" "$file"
-  else
-    codesign --force --sign - "$file"
-  fi
+  codesign --force --sign - "$file"
   codesign --verify --strict "$file"
 done < <(find "$runtime/bin" "$runtime/lib" -type f -print0)
 

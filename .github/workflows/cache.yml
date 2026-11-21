@@ -78,35 +78,16 @@ jobs:
           "$package/bin/bkprd" --help
       - name: Build standalone Apple Silicon installer
         if: matrix.system == 'aarch64-darwin' && (needs.prepare.outputs.release == 'true' || inputs.macos_installer_smoke)
-        env:
-          RELEASE: ${{ needs.prepare.outputs.release }}
         run: |
           openssl_source=$(nix build --no-link --print-out-paths .#bkpr.opensslSource)
-          printf 'OPENSSL_SOURCE=%s\n' "$openssl_source" >> "$GITHUB_ENV"
-          if [[ "$RELEASE" != true ]]; then
-            bash .github/scripts/macos-package.sh \
-              "$(nix path-info .#bkpr.binaries)" "$(nix path-info .#bkpr.terminfo)" \
-              "$openssl_source" "$RUNNER_TEMP/bkpr-macos-arm64.pkg"
-          fi
-      - name: Sign and notarize Apple Silicon installer
-        if: matrix.system == 'aarch64-darwin' && needs.prepare.outputs.release == 'true'
-        env:
-          MACOS_CERTIFICATES_P12: ${{ secrets.MACOS_CERTIFICATES_P12 }}
-          MACOS_CERTIFICATES_PASSWORD: ${{ secrets.MACOS_CERTIFICATES_PASSWORD }}
-          MACOS_APPLICATION_IDENTITY: ${{ vars.MACOS_APPLICATION_IDENTITY }}
-          MACOS_INSTALLER_IDENTITY: ${{ vars.MACOS_INSTALLER_IDENTITY }}
-          MACOS_NOTARY_KEY_P8: ${{ secrets.MACOS_NOTARY_KEY_P8 }}
-          MACOS_NOTARY_KEY_ID: ${{ vars.MACOS_NOTARY_KEY_ID }}
-          MACOS_NOTARY_ISSUER_ID: ${{ vars.MACOS_NOTARY_ISSUER_ID }}
-        run: |
-          bash .github/scripts/sign-macos-package.sh \
+          bash .github/scripts/macos-package.sh \
             "$(nix path-info .#bkpr.binaries)" "$(nix path-info .#bkpr.terminfo)" \
-            "$OPENSSL_SOURCE" "$RUNNER_TEMP/bkpr-macos-arm64.pkg"
+            "$openssl_source" "$RUNNER_TEMP/bkpr-macos-arm64-unsigned.pkg"
       - uses: actions/upload-artifact@v4
         if: matrix.system == 'aarch64-darwin' && (needs.prepare.outputs.release == 'true' || inputs.macos_installer_smoke)
         with:
           name: bkpr-macos-arm64
-          path: ${{ runner.temp }}/bkpr-macos-arm64.pkg
+          path: ${{ runner.temp }}/bkpr-macos-arm64-unsigned.pkg
           if-no-files-found: error
           overwrite: true
   verify-macos-installer:
@@ -122,16 +103,9 @@ jobs:
           name: bkpr-macos-arm64
           path: ${{ runner.temp }}
       - name: Install and run on a Mac without Nix
-        env:
-          RELEASE: ${{ needs.prepare.outputs.release }}
         run: |
           test ! -d /nix/store
-          package="$RUNNER_TEMP/bkpr-macos-arm64.pkg"
-          if [[ "$RELEASE" == true ]]; then
-            xcrun stapler validate "$package"
-            spctl --assess --type install --verbose "$package"
-          fi
-          sudo installer -pkg "$package" -target /
+          sudo installer -pkg "$RUNNER_TEMP/bkpr-macos-arm64-unsigned.pkg" -target /
           python3 .github/scripts/smoke-macos-package.py
   promote-unstable:
     if: >-
@@ -177,11 +151,13 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
           GH_TOKEN: ${{ github.token }}
-        run: node .github/scripts/release-notes.mjs "$TAG" > release-notes.md
+        run: |
+          node .github/scripts/release-notes.mjs "$TAG" > release-notes.md
+          printf '\nThe macOS installer is unsigned and not notarized. Gatekeeper may require manual approval. Nix remains available.\n' >> release-notes.md
       - uses: softprops/action-gh-release@v3
         with:
           body_path: release-notes.md
-          files: bkpr-macos-arm64.pkg
+          files: bkpr-macos-arm64-unsigned.pkg
           fail_on_unmatched_files: true
           prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
           tag_name: ${{ github.ref_name }}
