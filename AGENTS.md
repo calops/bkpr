@@ -130,6 +130,8 @@ Tests should catch consumer-visible behavior, boundaries, state transitions and 
 
 ## Commits and releases
 
+Start each change on a topic branch and open a GitHub pull request against `main`. Never commit or push directly to `main`. Coordinate branch and worktree ownership before switching a shared checkout; use separate worktrees for concurrent changes. Include verification in the PR and leave it open for review unless the user explicitly asks to merge.
+
 Use Conventional Commits. Mark actual breaking changes with `!` and a `BREAKING CHANGE:` footer. Don't label maintenance as a feature merely to force a release. Automatic releases stay in `0.x`; changing to `1.0` requires deliberate user approval. Don't publish experimental builds as production-ready or retain obsolete release plumbing as a successful no-op.
 
 Release CI builds the native product and its independently cached engine for x86-64 Linux, ARM64 Linux and ARM64 macOS, using the existing `bkpr` Cachix cache. Keep the engine dependency closure pinned and sandbox-offline; don't substitute the networked developer preparation helper inside a package build. Package matching `bkpr` and `bkprd` together and select `bkpr` as `meta.mainProgram`. Local compilation stays bounded to eight jobs, including explicit packaging/release builds.
