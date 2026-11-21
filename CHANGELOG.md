@@ -74,7 +74,7 @@
 * **client:** stop showing routine resize-completion and cancellation toasts; retain rejected and unknown-outcome layout errors.
 * **client:** give recovery a full-width aligned list with colored harness icons and details below it; retain saved pane titles as metadata rather than presenting shell names as conversation identities.
 * **client:** keep the sidebar refresh-checks hint stable across unrelated registry revisions without relaxing painted-source validation for dispatched actions.
-* **client:** reduce the offset and slightly widen fancy chrome shadows so they show on both sides without changing the palette.
+* **client:** bring fancy chrome shadows closer to their edges so they show on both sides without changing the palette.
 
 ### Breaking Rust API Changes
 

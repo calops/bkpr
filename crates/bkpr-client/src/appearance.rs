@@ -33,7 +33,7 @@ pub(crate) fn decoration_styles(host: &ColorProbe, size: Size) -> Option<[Decora
     let popup_radius = (cw * 2 - thickness).min(ch - thickness);
     let pane_radius = (cw * 3 / 2).min(2 * cw).min(2 * ch);
     let surface = surface(fg, bg);
-    let sigma_milli = (cw * 340).max(750);
+    let sigma_milli = (cw * 300).max(750);
     let offset_milli = cw * 180;
     let support = (offset_milli + sigma_milli * 5 + 1000).div_ceil(1000);
     let padding = [support.div_ceil(cw) * cw, support.div_ceil(ch) * ch];
