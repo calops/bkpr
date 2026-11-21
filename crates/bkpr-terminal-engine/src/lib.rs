@@ -59,6 +59,7 @@ struct CallbackState {
     effects: Vec<Effect>,
     effect_bytes: usize,
     failed: bool,
+    color_scheme: Option<sdk::terminal::ColorScheme>,
     clipboard: Option<ClipboardHandler>,
     hold_since: Option<std::time::Instant>,
     held_frame: Option<Frame>,
@@ -117,6 +118,7 @@ impl Terminal {
             effects: Vec::new(),
             effect_bytes: 0,
             failed: false,
+            color_scheme: None,
             clipboard: None,
             hold_since: None,
             held_frame: None,
@@ -156,6 +158,7 @@ impl Terminal {
         self.callbacks.borrow_mut().status_observer = Some(observer);
     }
     /// Set default RGB colors; `None` clears the explicit cursor-color override.
+    /// Queue a scheme report when the new background changes an opted-in pane's scheme.
     pub fn set_default_colors(
         &mut self,
         foreground: [u8; 3],
@@ -168,6 +171,59 @@ impl Terminal {
             .set_default_bg_color(Some(render::native_rgb(background)))?;
         self.native
             .set_default_cursor_color(cursor.map(render::native_rgb))?;
+        self.update_color_scheme(background)
+    }
+    /// Seed default RGB and indexed colors together, leaving application OSC overrides intact.
+    /// Use the observed palette or Ghostty's factory palette, with ANSI entries overriding
+    /// indices 0–15. Queue any scheme report only after the native mutations succeed.
+    pub fn set_theme_colors(
+        &mut self,
+        foreground: [u8; 3],
+        background: [u8; 3],
+        cursor: Option<[u8; 3]>,
+        palette: Option<&[[u8; 3]; 256]>,
+        ansi: Option<&[[u8; 3]; 16]>,
+    ) -> Result<()> {
+        let palette = match (palette, ansi) {
+            (None, None) => None,
+            (palette, ansi) => {
+                let mut palette = palette
+                    .map(|palette| sdk::style::Palette(palette.map(render::native_rgb)))
+                    .unwrap_or_default();
+                if let Some(ansi) = ansi {
+                    for (entry, &rgb) in palette.0.iter_mut().zip(ansi) {
+                        *entry = render::native_rgb(rgb);
+                    }
+                }
+                Some(palette)
+            }
+        };
+        self.native.set_default_color_palette(palette)?;
+        self.set_default_colors(foreground, background, cursor)
+    }
+    fn update_color_scheme(&mut self, background: [u8; 3]) -> Result<()> {
+        use sdk::terminal::{ColorScheme, Mode};
+        let scheme = if render::native_rgb(background).perceived_luminance() > 0.5 {
+            ColorScheme::Light
+        } else {
+            ColorScheme::Dark
+        };
+        if self.callbacks.borrow().color_scheme == Some(scheme) {
+            return Ok(());
+        }
+        let report = if self.native.mode(Mode::COLOR_SCHEME_REPORT)? {
+            let mut buffer = [0; 16];
+            let len = scheme.encode_report(&mut buffer)?;
+            Some(buffer[..len].to_vec())
+        } else {
+            None
+        };
+        let mut state = self.callbacks.borrow_mut();
+        state.color_scheme = Some(scheme);
+        if let Some(report) = report {
+            let len = report.len();
+            state.push(Effect::PtyWrite(report), len);
+        }
         Ok(())
     }
     /// Replace the complete indexed default palette.

@@ -1,6 +1,6 @@
 use super::{Budget, generated::native_wire as g};
 use crate::*;
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use planus::{Builder, UnionOffset};
 
 use super::types::*;
@@ -238,6 +238,7 @@ pub(super) fn write_pane_request(
             background,
             cursor,
             palette,
+            ansi,
         } => {
             let view_id = {
                 budget.bytes(view_id.len())?;
@@ -281,8 +282,16 @@ pub(super) fn write_pane_request(
                     Ok(g::OptionalPalette::create(builder, value))
                 })
                 .transpose()?;
+            let ansi = ansi
+                .as_ref()
+                .map(|value| -> Result<_> {
+                    budget.vector(value.len(), size_of::<g::Rgb>())?;
+                    let colors = value.map(|[r, g, b]| g::Rgb { r, g, b });
+                    Ok(builder.create_vector(colors))
+                })
+                .transpose()?;
             let offset = g::PaneRequestColors::create(
-                builder, view_id, foreground, background, cursor, palette,
+                builder, view_id, foreground, background, cursor, palette, ansi,
             );
             g::PaneRequest::create_pane_request_colors(builder, offset)
         }
@@ -516,6 +525,21 @@ pub(super) fn read_pane_request(
                         .iter()
                         .map(|rgb| [rgb.r(), rgb.g(), rgb.b()])
                         .collect())
+                })
+                .transpose()?,
+            ansi: value
+                .ansi()?
+                .map(|vector| -> Result<_> {
+                    let mut colors = [[0; 3]; 16];
+                    ensure!(
+                        vector.len() == colors.len(),
+                        "ANSI override must contain 16 colors"
+                    );
+                    budget.vector(vector.len(), size_of::<[u8; 3]>())?;
+                    for (color, rgb) in colors.iter_mut().zip(vector.iter()) {
+                        *color = [rgb.r(), rgb.g(), rgb.b()];
+                    }
+                    Ok(colors)
                 })
                 .transpose()?,
         },

@@ -174,12 +174,20 @@ fn same_scene(previous: &Frame, current: &Frame) -> bool {
             })
         && previous.rows == current.rows
 }
+#[derive(Default)]
+struct AppliedColors {
+    owner: String,
+    observed: Option<Box<[[u8; 3]; 256]>>,
+    ansi: Option<[[u8; 3]; 16]>,
+}
 enum Mutation {
     Colors {
+        view_id: String,
         foreground: [u8; 3],
         background: [u8; 3],
         cursor: Option<[u8; 3]>,
         palette: Option<Box<[[u8; 3]; 256]>>,
+        ansi: Option<[[u8; 3]; 16]>,
     },
     Raw(String, Vec<u8>),
     Paste(String, Vec<u8>),
@@ -1059,30 +1067,28 @@ impl Pane {
                 background,
                 cursor,
                 palette,
+                ansi,
             } => {
-                if self
-                    .shared
+                self.shared
                     .authority
                     .lock()
                     .unwrap()
-                    .owner()
-                    .is_none_or(|(owner, _)| owner != view_id)
-                {
-                    bail!("only current size owner may seed terminal colors");
-                }
-                let palette = match palette {
-                    Some(palette) => {
-                        Some(Box::new(palette.try_into().map_err(|_| {
-                            anyhow::anyhow!("palette must contain 256 colors")
-                        })?))
-                    }
-                    None => None,
-                };
+                    .require_color_owner(&view_id)?;
+                let palette = palette
+                    .map(|palette| {
+                        palette
+                            .into_boxed_slice()
+                            .try_into()
+                            .map_err(|_| anyhow::anyhow!("palette must contain 256 colors"))
+                    })
+                    .transpose()?;
                 command(Mutation::Colors {
+                    view_id,
                     foreground,
                     background,
                     cursor,
                     palette,
+                    ansi,
                 })?;
                 Ok(json!({"updated":true}))
             }
@@ -1799,6 +1805,7 @@ fn run_pane(
         let clock = Instant::now();
         let mut next_image_tick = None;
         let mut current_size = spec.size;
+        let mut colors = AppliedColors::default();
         let mut pending_output = None;
         let no_output = crossbeam_channel::never();
         loop {
@@ -2035,15 +2042,46 @@ fn run_pane(
                         let mut write_id = None;
                         match command.mutation {
                             Mutation::Colors {
+                                view_id,
                                 foreground,
                                 background,
                                 cursor,
                                 palette,
+                                ansi,
                             } => {
-                                terminal.set_default_colors(foreground, background, cursor)?;
-                                if let Some(palette) = palette {
-                                    terminal.set_palette(&palette)?;
+                                let same_owner = colors.owner == view_id;
+                                let observed = if same_owner {
+                                    palette.as_deref().or(colors.observed.as_deref())
+                                } else {
+                                    palette.as_deref()
+                                };
+                                let palette_changed = colors.ansi != ansi
+                                    || match &palette {
+                                        Some(palette) => colors.observed.as_ref() != Some(palette),
+                                        None => !same_owner && colors.observed.is_some(),
+                                    };
+                                {
+                                    let authority = shared.authority.lock().unwrap();
+                                    authority.check_client(&view_id, command.client.as_ref())?;
+                                    authority.require_color_owner(&view_id)?;
+                                    if palette_changed {
+                                        terminal.set_theme_colors(
+                                            foreground,
+                                            background,
+                                            cursor,
+                                            observed,
+                                            ansi.as_ref(),
+                                        )?;
+                                    } else {
+                                        terminal
+                                            .set_default_colors(foreground, background, cursor)?;
+                                    }
                                 }
+                                if !same_owner || palette.is_some() {
+                                    colors.observed = palette;
+                                }
+                                colors.owner = view_id;
+                                colors.ansi = ansi;
                             }
                             Mutation::Raw(view_id, data) => {
                                 let nonempty = !data.is_empty();

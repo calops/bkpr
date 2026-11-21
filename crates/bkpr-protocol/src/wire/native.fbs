@@ -475,6 +475,7 @@ table PaneRequestColors {
   background:Rgb (required);
   cursor:Rgb;
   palette:OptionalPalette;
+  ansi:[Rgb];
 }
 table PaneRequestTerminate {
   view_id:string (required);

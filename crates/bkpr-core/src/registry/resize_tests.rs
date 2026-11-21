@@ -381,6 +381,124 @@ fn policy_acceptance_during_in_flight_resize_converges_to_latest_authority() {
     assert_eq!(poll(registry, &pane_id, &owner).views.len(), 1);
 }
 
+fn colors(
+    view_id: String,
+    palette: Option<Vec<[u8; 3]>>,
+    ansi: Option<[[u8; 3]; 16]>,
+) -> PaneRequest {
+    PaneRequest::Colors {
+        view_id,
+        foreground: [230; 3],
+        background: [12; 3],
+        cursor: None,
+        palette,
+        ansi,
+    }
+}
+
+#[test]
+fn colors_keep_one_owners_observed_base_across_incomplete_probes() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    let home = fixture.home("observed-palette");
+    let pane_id = spawn_shell(registry, &home, vec!["/bin/sh".into()]);
+    let owner = view(registry, &pane_id, 80);
+    let palette = |view_id: &str| poll(registry, &pane_id, view_id).frame.unwrap().palette;
+    let factory = palette(&owner);
+    let observed = vec![[101, 102, 103]; 256];
+    let ansi = [[51, 52, 53]; 16];
+
+    pane_request(
+        registry,
+        &pane_id,
+        colors(owner.clone(), Some(observed.clone()), Some(ansi)),
+    )
+    .unwrap();
+    for (ansi, first) in [(Some(ansi), ansi[0]), (None, observed[0])] {
+        pane_request(registry, &pane_id, colors(owner.clone(), None, ansi)).unwrap();
+        let effective = palette(&owner);
+        assert_eq!(effective[0], first);
+        assert_eq!(effective[16..], observed[16..]);
+    }
+
+    let replacement = view(registry, &pane_id, 80);
+    pane_request(
+        registry,
+        &pane_id,
+        colors(replacement.clone(), None, Some(ansi)),
+    )
+    .unwrap();
+    assert_eq!(palette(&replacement)[16..], factory[16..]);
+    pane_request(registry, &pane_id, colors(replacement.clone(), None, None)).unwrap();
+    assert_eq!(palette(&replacement), factory);
+}
+
+#[test]
+fn queued_colors_cannot_apply_after_the_exact_size_owner_changes() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    let home = fixture.home("queued-colors");
+    let pane_id = spawn_shell(registry, &home, vec!["/bin/sh".into()]);
+    let owner = view(registry, &pane_id, 80);
+    let factory = poll(registry, &pane_id, &owner).frame.unwrap().palette;
+    let pane = registry.inner.state.lock().unwrap().live[&pane_id].clone();
+    let (entered, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (resume, resume_rx) = std::sync::mpsc::sync_channel(1);
+    *pane.shared.resize_barrier.lock().unwrap() = Some(Arc::new(crate::ResizeBarrier {
+        entered,
+        resume: Mutex::new(resume_rx),
+    }));
+    let release = ResumeResize(Some(resume));
+    pane_request(
+        registry,
+        &pane_id,
+        PaneRequest::Update {
+            view_id: owner.clone(),
+            spec: policy_spec(120),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        entered_rx
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .cols,
+        120
+    );
+
+    let ansi = [[77, 88, 99]; 16];
+    let request = colors(owner.clone(), None, Some(ansi));
+    let queued_registry = registry.clone();
+    let queued_pane = pane_id.clone();
+    let queued = std::thread::spawn(move || pane_request(&queued_registry, &queued_pane, request));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while pane.commands.is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "Colors did not enter the worker FIFO"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let replacement = view(registry, &pane_id, 90);
+    drop(release);
+    assert!(
+        queued
+            .join()
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("only current size owner")
+    );
+    assert!(pane_request(registry, &pane_id, colors(owner, None, Some(ansi))).is_err());
+    assert_eq!(
+        poll(registry, &pane_id, &replacement)
+            .frame
+            .unwrap()
+            .palette,
+        factory
+    );
+}
+
 #[test]
 fn enhanced_paste_never_combines_permissions_from_different_policy_versions() {
     let fixture = Fixture::new();

@@ -48,6 +48,8 @@ pub(super) fn install(
         })
     })?;
     let state = Rc::clone(shared);
+    terminal.on_color_scheme(move |_| state.borrow().color_scheme)?;
+    let state = Rc::clone(shared);
     terminal.on_bell(move |_| {
         guarded(&state, || {
             state.borrow_mut().push(Effect::Bell, 0);

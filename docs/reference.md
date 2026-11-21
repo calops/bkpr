@@ -1150,12 +1150,18 @@ left click keeps the choice; Escape or an outside press restores it everywhere.
 The chooser leaves the background undimmed for accurate previews; ordinary
 dialogs keep their existing dimming.
 The list includes inferred terminal colors, four Catppuccin variants, Solarized
-Dark/Light, Tokyo Night/Storm/Day and PaperColor Light/Dark. Muted, blended and semantic styles continue
-to use Bkpr's appearance recipe. Pane default foreground/background and the 16
-ANSI colors follow the theme; application-specified RGB colors, higher indexed
-colors and images remain application-owned. This is a per-client presentation
-override, not a mutation of shared terminal state. A new client starts with
-inferred terminal colors; there is no config persistence yet.
+Dark/Light, Tokyo Night/Storm/Day and PaperColor Light/Dark. Muted, blended and
+semantic styles continue to use Bkpr's appearance recipe.
+
+Previews only change what this client draws. The pane's current size owner
+also publishes its committed default foreground/background and ANSI16 palette
+to the virtual terminal, so programs can query them with OSC 4, 10 and 11.
+Programs can query light/dark with CSI `?996n`; those that enable mode 2031
+receive a report when the scheme changes. A palette change within the same
+scheme updates query answers without sending another report. Bkpr does not
+recolor explicit RGB, higher indexed colors or images as part of a preset.
+Other clients can still choose a different presentation preset. A new client
+starts with inferred terminal colors; there is no config persistence yet.
 
 Supporting hosts notify live terminal color changes through mode 2031; Bkpr
 re-queries without polling and restores the original confirmed notification

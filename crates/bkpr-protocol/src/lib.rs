@@ -217,7 +217,7 @@ pub enum PaneRequest {
         /// Consent decision and exact returned MIME bytes.
         response: ClipboardResponse,
     },
-    /// Publish the attached terminal's observed colors.
+    /// Publish the attached terminal's colors with an optional theme override.
     Colors {
         /// Attachment supplying the color observations.
         view_id: String,
@@ -229,6 +229,9 @@ pub enum PaneRequest {
         cursor: Option<[u8; 3]>,
         /// Observed indexed palette, if available.
         palette: Option<Vec<[u8; 3]>>,
+        /// Theme override for indexed colors 0 through 15, if active.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ansi: Option<[[u8; 3]; 16]>,
     },
     /// Terminate the pane's process through an authorized view.
     Terminate {

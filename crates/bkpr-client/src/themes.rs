@@ -67,6 +67,14 @@ impl ThemeId {
     }
 }
 
+pub(crate) fn observed_ansi(probe: &ColorProbe) -> Option<[[u8; 3]; 16]> {
+    let mut ansi = [[0; 3]; 16];
+    for (index, rgb) in ansi.iter_mut().enumerate() {
+        *rgb = *probe.palette.get(&index)?;
+    }
+    Some(ansi)
+}
+
 /// Effective input to the existing appearance policy, not new host evidence.
 ///
 /// The caller retains the actual probe and updates this cache before styling.

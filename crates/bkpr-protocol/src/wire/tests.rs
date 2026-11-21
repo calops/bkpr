@@ -1023,7 +1023,8 @@ fn every_nested_request_variant_roundtrips() {
             foreground: [0, 127, 255],
             background: [0, 127, 255],
             cursor: Some([0, 127, 255]),
-            palette: Some(vec![[0, 127, 255]]),
+            palette: Some((0..=255).map(|value| [value, 127, 255]).collect()),
+            ansi: Some(std::array::from_fn(|index| [255, 0, index as u8])),
         },
     });
     assert_request(Operation::Pane {
@@ -2065,8 +2066,67 @@ fn invalid_utf8_and_empty_palette_presence_are_not_silently_normalized() {
                 background: [255; 3],
                 cursor: None,
                 palette,
+                ansi: None,
             },
         });
+    }
+}
+
+#[test]
+fn ansi_override_does_not_require_an_observed_palette() {
+    let json = serde_json::json!({
+        "op": "colors",
+        "view_id": "view",
+        "foreground": [0, 0, 0],
+        "background": [255, 255, 255],
+        "cursor": null,
+        "palette": null
+    });
+    let request: PaneRequest = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&request).unwrap(), json);
+    let PaneRequest::Colors { ansi: None, .. } = request else {
+        panic!("no ANSI override was sent");
+    };
+
+    assert_request(Operation::Pane {
+        pane_id: "pane".into(),
+        request: PaneRequest::Colors {
+            view_id: "view".into(),
+            foreground: [0; 3],
+            background: [255; 3],
+            cursor: None,
+            palette: None,
+            ansi: Some(std::array::from_fn(|index| [index as u8, 127, 255])),
+        },
+    });
+}
+
+#[test]
+fn native_ansi_override_rejects_invalid_vector_lengths() {
+    let rgb = g::Rgb { r: 1, g: 2, b: 3 };
+    for length in [0, 15, 17] {
+        let mut builder = Builder::new();
+        let pane_id = builder.create_string("pane");
+        let view_id = builder.create_string("view");
+        let ansi = builder.create_vector(&[rgb; 17][..length]);
+        let colors = g::PaneRequestColors::create(
+            &mut builder,
+            view_id,
+            rgb,
+            rgb,
+            None::<g::Rgb>,
+            None::<planus::Offset<g::OptionalPalette>>,
+            Some(ansi),
+        );
+        let pane_request = g::PaneRequest::create_pane_request_colors(&mut builder, colors);
+        let pane = g::OperationPane::create(&mut builder, pane_id, pane_request);
+        let operation = g::Operation::create_operation_pane(&mut builder, pane);
+        let root = g::Request::create(&mut builder, PROTOCOL_VERSION, operation);
+        let bytes = builder.finish(root, None);
+        assert_eq!(
+            decode_request(bytes).unwrap_err().to_string(),
+            "ANSI override must contain 16 colors"
+        );
     }
 }
 

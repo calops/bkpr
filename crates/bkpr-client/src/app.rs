@@ -1,4 +1,5 @@
 use crate::metadata::ProjectSpan;
+use crate::themes::ThemeId;
 use crate::transport::{Endpoint, RegisteredClient};
 use crate::tree::{Node as TreeNode, Owner as TreeOwner, Target as TreeTarget, Tree};
 use crate::{
@@ -262,7 +263,7 @@ struct Attached {
     images: pane_scene::ViewImages,
     /// Prepared terminal payloads for newly received images, awaiting the writer.
     transports: Vec<bkpr_tui_framework::PreparedTransport>,
-    seeded: u64,
+    queued_colors: Option<(u64, ThemeId)>,
     retirement_requested: bool,
     retirement_policy: RetirementPolicy,
     retirement_focus_out: bool,
@@ -1832,6 +1833,65 @@ impl App {
                 Ok(false)
             }
         }
+    }
+    fn sync_pane_colors(&mut self) -> Result<()> {
+        let theme = self.committed_theme();
+        let preset = theme.pane_palette(self.colors.truecolor);
+        let Some((foreground, background)) = preset
+            .map(|palette| (palette.foreground, palette.background))
+            .or_else(|| self.colors.foreground.zip(self.colors.background))
+        else {
+            return Ok(());
+        };
+        let stamp = (self.colors.revision, theme);
+        let mut pending = Vec::new();
+        for (pane, view) in &mut self.views {
+            let owns_size = view.spec.visible
+                && !view.retirement_requested
+                && view
+                    .metadata
+                    .size_owner
+                    .as_ref()
+                    .is_some_and(|owner| owner.view_id == view.view);
+            if !owns_size {
+                view.queued_colors = None;
+            } else if view.queued_colors != Some(stamp) {
+                pending.push((pane.clone(), view.view.clone()));
+            }
+        }
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let palette = (self.colors.palette.len() == 256).then(|| {
+            (0..256)
+                .map(|index| self.colors.palette[&index])
+                .collect::<Vec<_>>()
+        });
+        let ansi = preset
+            .map(|palette| palette.palette.try_into().expect("built-in ANSI16 palette"))
+            .or_else(|| {
+                if palette.is_some() {
+                    None
+                } else {
+                    crate::themes::observed_ansi(&self.colors)
+                }
+            });
+        for (pane, view_id) in pending {
+            if self.queue_control(
+                &pane,
+                PaneRequest::Colors {
+                    view_id,
+                    foreground,
+                    background,
+                    cursor: self.colors.cursor,
+                    palette: palette.clone(),
+                    ansi,
+                },
+            )? {
+                self.views.get_mut(&pane).unwrap().queued_colors = Some(stamp);
+            }
+        }
+        Ok(())
     }
     fn input_enabled(&self, pane: &str) -> bool {
         !self.view_failures.contains_key(pane)
@@ -4107,7 +4167,7 @@ impl App {
                 .list
                 .handle_key(&event, local);
             self.state.suppressed.insert(event.key.clone());
-            self.theme_picker_intent(intent);
+            self.theme_picker_intent(intent)?;
             return Ok(false);
         }
         if self.finder.is_some() {
@@ -4618,7 +4678,7 @@ impl App {
                         .unwrap()
                         .list
                         .handle_mouse(&event, rect.size(size));
-                    self.theme_picker_intent(intent);
+                    self.theme_picker_intent(intent)?;
                     return Ok(());
                 }
                 PointerRoute::Target {
@@ -5070,7 +5130,7 @@ fn attach(socket: &Endpoint, pane: &str, mut spec: ViewSpec) -> Result<Attached>
         revision: 0,
         images: pane_scene::ViewImages::new(held),
         transports: Vec::new(),
-        seeded: 0,
+        queued_colors: None,
         retirement_requested: false,
         retirement_policy: RetirementPolicy::Visible,
         retirement_focus_out: false,
@@ -5389,44 +5449,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             let tick = app.selection_tick();
             app.scope_input_result(tick)?;
             app.selection_clipboard(&mut out)?;
-            let color_revision = app.colors.revision;
-            if color_revision > 0
-                && let (Some(foreground), Some(background)) =
-                    (app.colors.foreground, app.colors.background)
-            {
-                let palette = if app.colors.palette.len() == 256 {
-                    Some((0..256).map(|i| app.colors.palette[&i]).collect::<Vec<_>>())
-                } else {
-                    None
-                };
-                let colors = app
-                    .views
-                    .iter()
-                    .filter(|(_, view)| {
-                        view.seeded != color_revision
-                            && view
-                                .metadata
-                                .size_owner
-                                .as_ref()
-                                .is_some_and(|owner| owner.view_id == view.view)
-                    })
-                    .map(|(pane, view)| (pane.clone(), view.view.clone()))
-                    .collect::<Vec<_>>();
-                for (pane, view) in colors {
-                    if app.queue_control(
-                        &pane,
-                        PaneRequest::Colors {
-                            view_id: view,
-                            foreground,
-                            background,
-                            cursor: app.colors.cursor,
-                            palette: palette.clone(),
-                        },
-                    )? {
-                        app.views.get_mut(&pane).unwrap().seeded = color_revision;
-                    }
-                }
-            }
+            app.sync_pane_colors()?;
             let clipboard = app.clipboard(&mut out);
             app.scope_input_result(clipboard)?;
             let transfer = app.paste_offer.is_some()
@@ -5450,7 +5473,26 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             let guide_rows = app.guide_rows(size);
             ui_palette.update(&app.colors, app.theme);
             let ui_colors = ui_palette.probe();
-            let pane_palette = app.theme.pane_palette(app.colors.truecolor);
+            let previewing_inferred = app.colors.truecolor
+                && app.theme == ThemeId::Terminal
+                && app.committed_theme() != ThemeId::Terminal;
+            let observed_ansi = previewing_inferred
+                .then(|| crate::themes::observed_ansi(&app.colors))
+                .flatten();
+            let pane_palette = app.theme.pane_palette(app.colors.truecolor).or_else(|| {
+                if !previewing_inferred {
+                    return None;
+                }
+                let (foreground, background) = app.colors.foreground.zip(app.colors.background)?;
+                let palette = observed_ansi
+                    .as_ref()
+                    .map_or(&[][..], |ansi| ansi.as_slice());
+                Some(bkpr_tui_framework::PaletteOverride {
+                    foreground,
+                    background,
+                    palette,
+                })
+            });
             crate::appearance::update_region_theme(&mut popover_theme, ui_colors, None);
             // One presentation lock; input and Coordinator callbacks run only after release.
             let mut tree = shared_tree.lock().unwrap();
@@ -8626,7 +8668,7 @@ pub(super) mod tests {
                 revision: 1,
                 images: pane_scene::ViewImages::new(Arc::default()),
                 transports: Vec::new(),
-                seeded: 0,
+                queued_colors: None,
                 retirement_requested: false,
                 retirement_policy: RetirementPolicy::Visible,
                 retirement_focus_out: false,

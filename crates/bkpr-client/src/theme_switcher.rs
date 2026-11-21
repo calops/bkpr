@@ -49,6 +49,12 @@ impl App {
         self.finder.is_some() || self.theme_picker.is_some() || self.recovery.open()
     }
 
+    pub(super) fn committed_theme(&self) -> ThemeId {
+        self.theme_picker
+            .as_ref()
+            .map_or(self.theme, |picker| picker.original)
+    }
+
     pub(super) fn restore_theme_preview(&mut self) {
         if let Some(picker) = self.theme_picker.take() {
             self.theme = picker.original;
@@ -84,7 +90,7 @@ impl App {
         }
     }
 
-    pub(super) fn theme_picker_intent(&mut self, intent: SearchListIntent) {
+    pub(super) fn theme_picker_intent(&mut self, intent: SearchListIntent) -> Result<()> {
         self.preview_theme();
         match intent {
             SearchListIntent::None => {}
@@ -93,7 +99,9 @@ impl App {
                 // Removing the preview owner first keeps the choice when focus is restored.
                 self.theme_picker = None;
                 self.cancel_modal();
+                self.sync_pane_colors()?;
             }
         }
+        Ok(())
     }
 }

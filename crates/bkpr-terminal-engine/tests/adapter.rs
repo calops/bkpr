@@ -73,6 +73,92 @@ fn empty_cell_background_and_palette_override_are_not_lost() {
 }
 
 #[test]
+fn scheme_queries_and_subscriptions_report_only_known_changes() {
+    let mut term = terminal();
+    assert!(replies(term.feed(b"\x1b[?996n\x1b[?2031h").unwrap()).is_empty());
+
+    let foreground = [231, 232, 233];
+    term.set_theme_colors(foreground, [127; 3], None, None, None)
+        .unwrap();
+    assert_eq!(term.encode_paste(b"literal").unwrap(), b"literal");
+    assert_eq!(replies(term.drain_effects().unwrap()), b"\x1b[?997;1n");
+    assert_eq!(replies(term.feed(b"\x1b[?996n").unwrap()), b"\x1b[?997;1n");
+
+    term.set_theme_colors(foreground, [18; 3], None, None, None)
+        .unwrap();
+    assert!(term.drain_effects().unwrap().is_empty());
+    term.set_theme_colors(foreground, [128; 3], None, None, None)
+        .unwrap();
+    assert_eq!(replies(term.drain_effects().unwrap()), b"\x1b[?997;2n");
+
+    assert!(term.feed(b"\x1b[?2031l").unwrap().is_empty());
+    term.set_theme_colors(foreground, [0; 3], None, None, None)
+        .unwrap();
+    assert!(term.drain_effects().unwrap().is_empty());
+    assert_eq!(replies(term.feed(b"\x1b[?996n").unwrap()), b"\x1b[?997;1n");
+    assert!(term.feed(b"\x1b[?2031h").unwrap().is_empty());
+}
+
+#[test]
+fn native_color_queries_keep_app_overrides_and_the_extended_palette() {
+    let mut term = terminal();
+    let factory = term.snapshot().unwrap().palette;
+    let mut observed = [[0; 3]; 256];
+    observed[1] = [1, 2, 3];
+    observed[16] = [40, 41, 42];
+    let mut ansi = [[0; 3]; 16];
+    ansi[1] = [7, 8, 9];
+    term.set_theme_colors(
+        [10, 11, 12],
+        [21, 22, 23],
+        None,
+        Some(&observed),
+        Some(&ansi),
+    )
+    .unwrap();
+    assert!(term.drain_effects().unwrap().is_empty());
+    assert_eq!(
+        replies(
+            term.feed(b"\x1b]4;1;?;16;?\x07\x1b]10;?\x07\x1b]11;?\x07")
+                .unwrap()
+        ),
+        b"\x1b]4;1;rgb:0707/0808/0909\x07\x1b]4;16;rgb:2828/2929/2a2a\x07\
+          \x1b]10;rgb:0a0a/0b0b/0c0c\x07\x1b]11;rgb:1515/1616/1717\x07"
+    );
+    term.feed(b"\x1b]4;1;rgb:aa/bb/cc\x07\x1b]10;rgb:dd/ee/ff\x07\x1b]11;rgb:ff/ff/ff\x07")
+        .unwrap();
+    term.set_theme_colors([10, 11, 12], [21, 22, 23], None, Some(&observed), None)
+        .unwrap();
+    assert_eq!(
+        replies(
+            term.feed(b"\x1b]4;1;?;16;?\x07\x1b]10;?\x07\x1b]11;?\x07\x1b[?996n")
+                .unwrap()
+        ),
+        b"\x1b]4;1;rgb:aaaa/bbbb/cccc\x07\x1b]4;16;rgb:2828/2929/2a2a\x07\
+          \x1b]10;rgb:dddd/eeee/ffff\x07\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?997;1n"
+    );
+    assert_eq!(
+        replies(
+            term.feed(
+                b"\x1b]104;1\x07\x1b]110\x07\x1b]111\x07\x1b]4;1;?\x07\x1b]10;?\x07\x1b]11;?\x07"
+            )
+            .unwrap()
+        ),
+        b"\x1b]4;1;rgb:0101/0202/0303\x07\x1b]10;rgb:0a0a/0b0b/0c0c\x07\
+          \x1b]11;rgb:1515/1616/1717\x07"
+    );
+
+    term.set_theme_colors([10, 11, 12], [21, 22, 23], None, None, Some(&ansi))
+        .unwrap();
+    let frame = term.snapshot().unwrap();
+    assert_eq!(frame.palette[1], ansi[1]);
+    assert_eq!(frame.palette[16..], factory[16..]);
+    term.set_theme_colors([10, 11, 12], [21, 22, 23], None, None, None)
+        .unwrap();
+    assert_eq!(term.snapshot().unwrap().palette, factory);
+}
+
+#[test]
 fn scrollback_read_restores_live_view_and_resize_reflows() {
     let mut term = terminal();
     for i in 0..30 {
