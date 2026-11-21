@@ -452,16 +452,39 @@ mod platform {
         error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
     }
 
+    fn require_children_abi() -> Result<()> {
+        static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let available = if let Some(available) = AVAILABLE.get() {
+            *available
+        } else {
+            let task = format!("/proc/self/task/{}", unsafe { libc::gettid() });
+            let available = match File::open(Path::new(&task).join("children")) {
+                Ok(_) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    fs::metadata(task)?;
+                    false
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let _ = AVAILABLE.set(available);
+            available
+        };
+        anyhow::ensure!(available, "Linux task children listing is unavailable");
+        Ok(())
+    }
+
     /// Observe only the current pane trees. Child lists are best-effort discovery,
     /// never evidence of process exit or a source of cleanup ownership.
     pub(crate) fn pane_snapshot<'a>(
         roots: impl IntoIterator<Item = &'a Process>,
     ) -> Result<HashMap<i32, Process>> {
+        require_children_abi()?;
         descendant_snapshot(
             roots.into_iter().map(|root| {
-                Ok(process(root.pid)?.filter(|p| p.identity == root.identity && p.tty == root.tty))
+                Ok(scoped_process(root.pid, true)?
+                    .filter(|p| p.identity == root.identity && p.tty == root.tty))
             }),
-            process,
+            |pid| scoped_process(pid, true),
         )
     }
 
@@ -469,23 +492,25 @@ mod platform {
     pub(crate) fn ownership_snapshot(
         retained: impl IntoIterator<Item = (i32, u64)>,
     ) -> Result<HashMap<i32, Process>> {
-        let daemon = retirement_process(std::process::id() as i32)?;
+        require_children_abi()?;
+        let daemon = scoped_process(std::process::id() as i32, true)?;
         descendant_snapshot(
             std::iter::once(Ok(daemon)).chain(retained.into_iter().map(|(pid, birth)| {
-                Ok(retirement_process(pid)?.filter(|p| p.birth_ticks == birth))
+                Ok(scoped_process(pid, true)?.filter(|p| p.birth_ticks == birth))
             })),
-            retirement_process,
+            |pid| scoped_process(pid, true),
         )
     }
 
     fn descendant_snapshot(
         roots: impl IntoIterator<Item = Result<Option<Process>>>,
-        inspect: fn(i32) -> Result<Option<Process>>,
+        mut inspect: impl FnMut(i32) -> Result<Option<Process>>,
     ) -> Result<HashMap<i32, Process>> {
         const PID_FIELD_BYTES: usize = 11;
         let mut table = HashMap::new();
         let mut pending = Vec::new();
         let mut children = String::new();
+        let mut observed_children = Vec::new();
         let mut remaining = MAX_PROCESSES;
         for root in roots {
             remaining = remaining
@@ -502,9 +527,10 @@ mod platform {
             let tasks = match fs::read_dir(format!("/proc/{pid}/task")) {
                 Ok(tasks) => tasks,
                 Err(error) if gone(&error) => {
-                    if inspect(pid)?.is_some_and(|p| p.birth_ticks == table[&pid].birth_ticks) {
+                    if inspect(pid)?.is_some() {
                         return Err(error.into());
                     }
+                    table.remove(&pid);
                     continue;
                 }
                 Err(error) => return Err(error.into()),
@@ -545,11 +571,25 @@ mod platform {
                         .checked_sub(1)
                         .ok_or_else(|| anyhow::anyhow!("pane process inspection bound exceeded"))?;
                     let child = child.parse::<i32>()?;
-                    if let std::collections::hash_map::Entry::Vacant(entry) = table.entry(child)
+                    if !table.contains_key(&child)
                         && let Some(p) = inspect(child)?.filter(|p| p.parent == pid)
                     {
-                        pending.push(child);
-                        entry.insert(p);
+                        observed_children.push(p);
+                    }
+                }
+            }
+            if !observed_children.is_empty() {
+                // Discovery follows numeric proc paths; do not attach a replacement's
+                // children to the old birth retained in the table.
+                anyhow::ensure!(
+                    inspect(pid)?.is_some_and(|p| p.birth_ticks == table[&pid].birth_ticks),
+                    "parent changed during process traversal"
+                );
+                for child in observed_children.drain(..) {
+                    if let std::collections::hash_map::Entry::Vacant(entry) = table.entry(child.pid)
+                    {
+                        pending.push(child.pid);
+                        entry.insert(child);
                     }
                 }
             }
@@ -558,28 +598,51 @@ mod platform {
     }
 
     fn retirement_process(pid: i32) -> Result<Option<Process>> {
+        scoped_process(pid, false)
+    }
+
+    fn scoped_process(pid: i32, require_visible: bool) -> Result<Option<Process>> {
         if pid <= 0 {
             return Ok(None);
         }
         let mut path = PathBuf::from(format!("/proc/{pid}"));
         match fs::metadata(&path) {
-            Ok(metadata) if metadata.uid() != unsafe { libc::geteuid() } => return Ok(None),
+            Ok(metadata) if metadata.uid() != unsafe { libc::geteuid() } => {
+                anyhow::ensure!(
+                    !require_visible,
+                    "cannot enumerate descendants of process {pid} owned by a different user"
+                );
+                return Ok(None);
+            }
             Ok(_) => {}
-            Err(error) if gone(&error) => return Ok(None),
+            Err(error) if gone(&error) => return absent_process(pid, require_visible),
             Err(error) => return Err(error.into()),
         }
         path.push("stat");
         match fs::read_to_string(path) {
             Ok(stat) => Ok(Some(parse_stat(pid, &stat, boot()?, true).ok_or_else(
-                || anyhow::anyhow!("invalid Linux process stat for launch retirement"),
+                || anyhow::anyhow!("invalid Linux process stat during scoped inspection"),
             )?)),
-            Err(error) if gone(&error) => Ok(None),
+            Err(error) if gone(&error) => absent_process(pid, require_visible),
             Err(error) => Err(error.into()),
         }
     }
 
+    fn absent_process(pid: i32, require_visible: bool) -> Result<Option<Process>> {
+        if require_visible {
+            // hidepid can report ENOENT for a live process in a children list.
+            // A signal-zero probe checks existence without delivering a signal.
+            anyhow::ensure!(
+                unsafe { libc::kill(pid, 0) } == -1
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH),
+                "live process {pid} is not visible in procfs"
+            );
+        }
+        Ok(None)
+    }
+
     /// Verify launch provenance with fresh PID reads, independently of discovery.
-    /// Unknown or changing ancestry is an error, not permission to retire.
+    /// A detected ancestry change returns an error; a chain beyond the depth limit is rejected.
     pub(crate) fn launch_in_pane(root: &Process, pane_root: &Process) -> Result<bool> {
         let Some(mut current) = retirement_process(root.pid)? else {
             return Ok(false);
@@ -653,7 +716,7 @@ mod platform {
     }
     #[cfg(test)]
     mod tests {
-        use super::{launch_in_pane, pane_snapshot, process};
+        use super::{descendant_snapshot, launch_in_pane, pane_snapshot, process, snapshot};
         use std::{
             process::{Command, Stdio},
             sync::mpsc,
@@ -679,18 +742,42 @@ mod platform {
                     assert!(child.wait().unwrap().success());
                 });
                 let child = child_id.recv().unwrap();
-                let snapshot = pane_snapshot([&pane]).unwrap();
-                assert_eq!(snapshot[&child].parent, pane.pid);
-                let mut old_child = snapshot[&child].clone();
+                let real = process(child).unwrap().unwrap();
+                let mut old_child = real.clone();
                 old_child.parent = pane.parent;
                 assert!(!launch_in_pane(&old_child, &pane).unwrap());
-                assert!(!snapshot.contains_key(&pane.parent));
-
                 let mut replaced = pane.clone();
                 replaced.identity.push_str(":replaced");
-                assert!(pane_snapshot([&replaced]).unwrap().is_empty());
-                assert!(launch_in_pane(&snapshot[&child], &pane).unwrap());
-                assert!(!launch_in_pane(&snapshot[&child], &replaced).unwrap());
+                assert!(launch_in_pane(&real, &pane).unwrap());
+                assert!(!launch_in_pane(&real, &replaced).unwrap());
+
+                if super::require_children_abi().is_ok() {
+                    let table = pane_snapshot([&pane]).unwrap();
+                    assert_eq!(table[&child].parent, pane.pid);
+                    assert!(!table.contains_key(&pane.parent));
+                    assert!(pane_snapshot([&replaced]).unwrap().is_empty());
+
+                    let changed_birth = descendant_snapshot([Ok(Some(pane.clone()))], |pid| {
+                        Ok(process(pid)?.map(|mut current| {
+                            if pid == pane.pid {
+                                current.birth_ticks += 1;
+                            }
+                            current
+                        }))
+                    });
+                    assert_eq!(
+                        changed_birth.unwrap_err().to_string(),
+                        "parent changed during process traversal"
+                    );
+                    let opaque = descendant_snapshot([Ok(Some(pane.clone()))], |pid| {
+                        anyhow::ensure!(pid != child, "opaque live intermediary");
+                        process(pid)
+                    });
+                    assert_eq!(opaque.unwrap_err().to_string(), "opaque live intermediary");
+                } else {
+                    assert!(pane_snapshot([&pane]).is_err());
+                }
+                assert_eq!(snapshot().unwrap()[&child].parent, pane.pid);
                 drop(release);
             });
         }

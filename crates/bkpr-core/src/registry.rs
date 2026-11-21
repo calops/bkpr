@@ -2209,7 +2209,7 @@ impl Registry {
     }
     fn shutdown_inner(&self) -> Result<()> {
         // Observe while the process tree still exists; never derive intent from teardown.
-        self.observe_processes();
+        self.checkpoint_processes();
         let directory_capture = self.flush_directories();
         let panes = {
             let _transaction = self.inner.transaction.lock().unwrap();

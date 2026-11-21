@@ -37,18 +37,21 @@ pub struct Tree {
     tracked: Arc<Mutex<Tracked>>,
     _observation: ObservationLease,
 }
+fn registered_trees() -> Vec<Arc<Mutex<Tracked>>> {
+    let mut registrations = TREES.lock().unwrap();
+    let trees = registrations.iter().filter_map(Weak::upgrade).collect();
+    registrations.retain(|tree| tree.strong_count() != 0);
+    trees
+}
+
 /// Sample only daemon descendants and previously verified tree members for periodic cleanup.
 pub(crate) fn sample_owned() -> Result<HashMap<i32, process::Process>> {
-    let retained = {
-        let registrations = TREES.lock().unwrap();
-        let mut retained = BTreeMap::new();
-        for tree in registrations.iter().filter_map(Weak::upgrade) {
-            let tree = tree.lock().unwrap();
-            retained.extend(tree.known.iter().map(|(&pid, &birth)| (pid, birth)));
-            retained.insert(tree.root, tree.root_birth);
-        }
-        retained
-    };
+    let mut retained = BTreeMap::new();
+    for tree in registered_trees() {
+        let tree = tree.lock().unwrap();
+        retained.extend(tree.known.iter().map(|(&pid, &birth)| (pid, birth)));
+        retained.insert(tree.root, tree.root_birth);
+    }
     if retained.is_empty() {
         return Ok(HashMap::new());
     }
@@ -58,15 +61,7 @@ pub(crate) fn sample_owned() -> Result<HashMap<i32, process::Process>> {
 /// Called only by the existing off-path shared sampler, never an input actor.
 /// Keep pane roots reserved for their owner's fresh exit barrier and output drain.
 pub(crate) fn observe_sample(processes: &HashMap<i32, process::Process>) {
-    let trees = {
-        let mut registrations = TREES.lock().unwrap();
-        let trees = registrations
-            .iter()
-            .filter_map(Weak::upgrade)
-            .collect::<Vec<_>>();
-        registrations.retain(|tree| tree.strong_count() != 0);
-        trees
-    };
+    let trees = registered_trees();
     let roots = trees
         .iter()
         .map(|tree| tree.lock().unwrap().root)

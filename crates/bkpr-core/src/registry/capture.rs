@@ -565,15 +565,29 @@ impl Registry {
         id: &str,
         pane: &Pane,
         cwd: Option<PathBuf>,
-        mut harness: Option<HarnessInfo>,
+        harness: Option<HarnessInfo>,
         expected_capture_version: Option<u64>,
     ) -> Result<()> {
+        self.publish_process_facts(id, pane, cwd, harness, expected_capture_version, false)
+            .map(|_| ())
+    }
+
+    // False requests a full observation before publishing a foreground transition.
+    fn publish_process_facts(
+        &self,
+        id: &str,
+        pane: &Pane,
+        cwd: Option<PathBuf>,
+        mut harness: Option<HarnessInfo>,
+        expected_capture_version: Option<u64>,
+        scoped: bool,
+    ) -> Result<bool> {
         let _transaction = self.inner.transaction.lock().unwrap();
         let mut notification_capture = pane.shared.notification_capture.lock().unwrap();
         let mut state = self.inner.state.lock().unwrap();
         let captures = self.inner.captures.lock().unwrap();
         if expected_capture_version.is_some_and(|expected| captures.version != expected) {
-            return Ok(());
+            return Ok(true);
         }
         ensure!(
             !state.closing && !pane.shared.finished.load(Ordering::Acquire),
@@ -592,7 +606,7 @@ impl Registry {
             && let Some(managed) = &observed.managed
         {
             let Some(live) = captures.launches.get(&managed.launch_id) else {
-                return Ok(());
+                return Ok(true);
             };
             observed.managed = Some(live.managed.clone());
         }
@@ -604,19 +618,14 @@ impl Registry {
                 .as_ref()
                 .map(|conversation| (harness.kind, conversation.id.as_str()))
         });
-        if let Some(cwd) = cwd.as_deref() {
-            directories::queue(&mut state, id, pane, cwd, native);
-        }
-        let info = state
+        let index = state
             .record
             .registry
             .panes
-            .iter_mut()
-            .find(|p| p.id == id && p.status == PaneStatus::Running)
+            .iter()
+            .position(|p| p.id == id && p.status == PaneStatus::Running)
             .context("pane execution ended")?;
-        if info.foreground_cwd == cwd && info.harness == harness {
-            return Ok(());
-        }
+        let info = &state.record.registry.panes[index];
         let notification_changed = info.harness.as_ref().map(|h| {
             (
                 h.kind,
@@ -632,6 +641,16 @@ impl Registry {
                 super::notification_capture::managed_authority(h.managed.as_ref()),
             )
         });
+        if scoped && notification_changed && info.harness.is_some() {
+            return Ok(false);
+        }
+        if let Some(cwd) = cwd.as_deref() {
+            directories::queue(&mut state, id, pane, cwd, native);
+        }
+        let info = &mut state.record.registry.panes[index];
+        if info.foreground_cwd == cwd && info.harness == harness {
+            return Ok(true);
+        }
         let identity = harness.as_ref().map(|h| ProcessIdentity {
             pid: h.pid,
             birth: h.birth.clone(),
@@ -712,7 +731,7 @@ impl Registry {
         if notification_changed && let Some(service) = self.inner.notifications.get() {
             notification_capture.withdraw(service);
         }
-        Ok(())
+        Ok(true)
     }
     pub(super) fn start_observer(&self) -> Result<()> {
         if self.inner.observer_started.swap(true, Ordering::AcqRel) {
@@ -838,6 +857,26 @@ impl Registry {
         }
     }
     pub(super) fn observe_processes(&self) {
+        self.observe_processes_with(|panes| {
+            #[cfg(target_os = "linux")]
+            return proc::pane_snapshot(panes.iter().map(|(_, _, root)| root)).ok();
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = panes;
+                None
+            }
+        });
+    }
+
+    /// Observe recovery directories from a full process snapshot before termination.
+    pub(super) fn checkpoint_processes(&self) {
+        self.observe_processes_with(|_| None);
+    }
+
+    fn observe_processes_with(
+        &self,
+        scoped_snapshot: impl FnOnce(&[(String, Pane, Process)]) -> Option<HashMap<i32, Process>>,
+    ) {
         let panes = self.running_panes();
         if panes.is_empty() {
             return;
@@ -854,10 +893,7 @@ impl Registry {
                 let _ = self.publish_facts(id, pane, None, None, Some(version));
             }
         };
-        #[cfg(target_os = "linux")]
-        let scoped = proc::pane_snapshot(panes.iter().map(|(_, _, root)| root)).ok();
-        #[cfg(not(target_os = "linux"))]
-        let scoped = None;
+        let scoped = scoped_snapshot(&panes);
         let shared;
         let table: &HashMap<i32, Process> = if let Some(table) = &scoped {
             table
@@ -915,6 +951,21 @@ impl Registry {
             captures.version = captures.version.wrapping_add(1);
             version = captures.version;
         }
+        if !self.publish_process_sample(&panes, &valid_launches, table, version, scoped.is_some())
+            && let Ok(full) = proc::fresh_snapshot()
+        {
+            self.publish_process_sample(&panes, &valid_launches, &full, version, false);
+        }
+    }
+
+    fn publish_process_sample(
+        &self,
+        panes: &[(String, Pane, Process)],
+        valid_launches: &[Launch],
+        table: &HashMap<i32, Process>,
+        version: u64,
+        scoped: bool,
+    ) -> bool {
         let mut foreground: HashMap<u64, Vec<&Process>> = HashMap::new();
         for p in table
             .values()
@@ -924,11 +975,17 @@ impl Registry {
         }
         let mut kinds = HashMap::new();
         for (id, pane, root) in panes {
+            let publish = |cwd, harness| {
+                self.publish_process_facts(id, pane, cwd, harness, Some(version), scoped)
+                    .unwrap_or(true)
+            };
             let Some(current_root) = table
                 .get(&root.pid)
                 .filter(|p| p.identity == root.identity && p.tty == root.tty)
             else {
-                let _ = self.publish_facts(&id, &pane, None, None, Some(version));
+                if !publish(None, None) {
+                    return false;
+                }
                 continue;
             };
             let mut selected: Option<(usize, &Process, HarnessKind)> = None;
@@ -960,7 +1017,7 @@ impl Registry {
                 managed = valid_launches
                     .iter()
                     .find(|l| {
-                        l.grant.pane_id == id
+                        l.grant.pane_id == *id
                             && l.grant.kind == kind
                             && proc::lineage(process, &l.root, table).is_some_and(|chain| {
                                 // A foreground nested job must not borrow an outer/background
@@ -973,7 +1030,7 @@ impl Registry {
                     })
                     .cloned();
             } else if let Some(launch) = valid_launches.iter().find(|l| {
-                l.grant.pane_id == id
+                l.grant.pane_id == *id
                     && table.get(&l.root.pid).is_some_and(|p| {
                         p.identity == l.root.identity && proc::foreground(p, current_root)
                     })
@@ -988,14 +1045,18 @@ impl Registry {
                 .map(|(_, p, _)| *p)
                 .or_else(|| generic.map(|(_, p)| p));
             let Some(process) = process else {
-                let _ = self.publish_facts(&id, &pane, None, None, Some(version));
+                if !publish(None, None) {
+                    return false;
+                }
                 continue;
             };
             let cwd = proc::cwd(process.pid).ok().flatten();
             let live =
                 proc::lineage(process, current_root, table).is_some_and(|chain| proc::live(&chain));
             if !live {
-                let _ = self.publish_facts(&id, &pane, None, None, Some(version));
+                if !publish(None, None) {
+                    return false;
+                }
                 continue;
             }
             let info = selected.and_then(|(_, p, kind)| {
@@ -1007,8 +1068,11 @@ impl Registry {
                     managed: managed.map(|l| l.managed),
                 })
             });
-            let _ = self.publish_facts(&id, &pane, cwd, info, Some(version));
+            if !publish(cwd, info) {
+                return false;
+            }
         }
+        true
     }
 }
 
