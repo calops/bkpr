@@ -2,7 +2,7 @@
 use crate::{
     Rect, Role, RoleSpan, SurfaceContent, Theme, UiSurface, overlay::Placement, text_width, window,
 };
-use bkpr_protocol::Size;
+use bkpr_protocol::{Frame, Size};
 
 /// An available action and its trusted single-line presentation.
 pub struct Item<T> {
@@ -21,6 +21,7 @@ pub struct ContextMenu<T> {
     items: Vec<Item<T>>,
     selected: usize,
     pressed: Option<usize>,
+    surface: Option<UiSurface>,
 }
 
 impl<T> ContextMenu<T> {
@@ -43,6 +44,7 @@ impl<T> ContextMenu<T> {
             items,
             selected: 0,
             pressed: None,
+            surface: None,
         }
     }
 
@@ -104,34 +106,43 @@ impl<T> ContextMenu<T> {
             .filter(|&row| row < self.items.len())
     }
 
-    /// Paint rounded fallback borders and full-width selection. Pass the outer
-    /// size of this menu's placement, including the current cell pixel size.
-    pub fn paint(&self, surface: &mut UiSurface, size: Size, theme: &Theme) {
+    /// Paint rounded fallback borders, full-width selection and a hidden cursor
+    /// anchored to the selected row. Pass the outer size of the placement.
+    pub fn paint(&mut self, size: Size, theme: &Theme) {
         let body = window::content(size);
         let row = |index: usize| Rect {
             y: body.y + index as u16,
             height: 1,
             ..body
         };
-        let mut lines = window::border_rows(size, "", window::Border::Rounded);
-        lines.extend(
-            self.items
-                .iter()
-                .take(usize::from(body.height))
-                .enumerate()
-                .map(|(index, item)| {
-                    let label = if !item.icon.is_empty()
-                        && text_width(item.label) + text_width(item.icon) + 2
-                            <= usize::from(body.width)
-                    {
-                        format!(" {} {}", item.icon, item.label)
-                    } else {
-                        item.label.to_owned()
-                    };
-                    (row(index), label, false)
-                }),
-        );
-        surface.paint(size, lines, None);
+        let needs_layout = self
+            .surface
+            .as_ref()
+            .is_none_or(|surface| surface.frame.size != size);
+        let surface = self.surface.get_or_insert_with(|| UiSurface::new(size));
+        if needs_layout {
+            let mut lines = window::border_rows(size, "", window::Border::Rounded);
+            lines.extend(
+                self.items
+                    .iter()
+                    .take(usize::from(body.height))
+                    .enumerate()
+                    .map(|(index, item)| {
+                        let label = if !item.icon.is_empty()
+                            && text_width(item.label) + text_width(item.icon) + 2
+                                <= usize::from(body.width)
+                        {
+                            format!(" {} {}", item.icon, item.label)
+                        } else {
+                            item.label.to_owned()
+                        };
+                        (row(index), label, false)
+                    }),
+            );
+            surface.paint(size, lines, None);
+        }
+        surface.frame.cursor.x = body.x;
+        surface.frame.cursor.y = row(self.selected).y;
         let [panel, top, bottom, left, right] = window::theme_spans(size);
         surface.apply_theme(
             theme,
@@ -149,6 +160,11 @@ impl<T> ContextMenu<T> {
             ],
         );
     }
+
+    /// The last painted frame, or `None` until the menu is first painted.
+    pub fn frame(&self) -> Option<&Frame> {
+        self.surface.as_ref().map(|surface| &surface.frame)
+    }
 }
 
 /// Cell projection for a painted menu. Ready graphical chrome replaces the
@@ -158,5 +174,47 @@ pub fn content(size: Size, decorated: bool) -> SurfaceContent {
         SurfaceContent::CellsClipped(window::content(size))
     } else {
         SurfaceContent::All
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn releasing_on_another_row_does_not_activate_either_action() {
+        let mut menu = ContextMenu::new(
+            (4, 5),
+            0,
+            vec![
+                Item {
+                    action: "rename",
+                    label: "Rename",
+                    icon: "",
+                },
+                Item {
+                    action: "close",
+                    label: "Close",
+                    icon: "",
+                },
+            ],
+        );
+        let body = menu
+            .placement(Size {
+                cols: 80,
+                rows: 24,
+                cell_width: 8,
+                cell_height: 16,
+            })
+            .unwrap()
+            .content;
+
+        menu.press(body, body.x, body.y);
+        menu.hover(body, body.x, body.y + 1);
+        assert_eq!(menu.release(body, body.x, body.y + 1), None);
+        assert_eq!(menu.release(body, body.x, body.y), None);
+
+        menu.press(body, body.x, body.y + 1);
+        assert_eq!(menu.release(body, body.x, body.y + 1), Some(&"close"));
     }
 }

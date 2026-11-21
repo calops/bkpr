@@ -2196,6 +2196,82 @@ mod tests {
     }
 
     #[test]
+    fn context_menu_renames_the_clicked_owner_not_the_sidebar_cursor() {
+        let (mut coordinator, _captures) = coordinator_fixture();
+        let native = SidebarTarget::Workspace("shared-id".into());
+        let target = |slot| crate::tree::Target {
+            owner: crate::tree::Owner {
+                slot,
+                generation: 1,
+            },
+            node: crate::tree::Node::Native(native.clone()),
+        };
+        for (index, name) in ["Local workspace", "Foreign workspace"]
+            .into_iter()
+            .enumerate()
+        {
+            let app = coordinator.sessions[index].app.as_mut().unwrap();
+            app.tree = Arc::clone(&coordinator.tree);
+            app.registry.revision += 1;
+            app.registry.workspaces.push(Workspace {
+                id: "shared-id".into(),
+                name: name.into(),
+                revision: index as u64 + 1,
+                windows: Vec::new(),
+            });
+            app.state.reconcile(&app.registry);
+        }
+        coordinator.refresh_tree();
+        {
+            let mut tree = coordinator.tree.lock().unwrap();
+            assert!((0..2).all(|slot| {
+                tree.rows
+                    .iter()
+                    .any(|row| row.target.as_ref() == Some(&target(slot)))
+            }));
+            tree.enter();
+            tree.select(target(0));
+            assert_eq!(tree.cursor.as_ref(), Some(&target(0)));
+        }
+        let app = coordinator.app_mut();
+        app.synchronize_tree_focus();
+        app.open_sidebar_menu(Some(target(1)), (4, 5), size());
+        for name in ["ArrowDown", "Enter"] {
+            app.key(key(name), &mut io::sink(), size(), &[]).unwrap();
+        }
+        let Some(SessionAction::Tree {
+            target,
+            action,
+            size,
+        }) = app.session_action.take()
+        else {
+            panic!("rename did not dispatch a tree action");
+        };
+        coordinator.dispatch_tree(target, action, size).unwrap();
+
+        assert!(
+            coordinator.sessions[0]
+                .app
+                .as_ref()
+                .unwrap()
+                .state
+                .form
+                .is_none()
+        );
+        let form = coordinator.sessions[1]
+            .app
+            .as_ref()
+            .unwrap()
+            .state
+            .form
+            .as_ref()
+            .unwrap();
+        assert_eq!(form.kind, FormKind::RenameWorkspace);
+        assert_eq!(form.fields.primary.value, "Foreign workspace");
+        assert_eq!(form.target.as_ref(), Some(&(native, 2)));
+    }
+
+    #[test]
     fn in_host_session_switch_keeps_held_key_until_original_hardware_release() {
         let (mut coordinator, [first_input, second_input]) = coordinator_fixture();
         coordinator

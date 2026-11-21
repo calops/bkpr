@@ -5287,11 +5287,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             ..initial_size
         });
         let mut diagnostic_effects = graphics_frame(initial_size);
-        let mut sidebar_menu_surface = UiSurface::new(Size {
-            cols: 1,
-            rows: 1,
-            ..initial_size
-        });
         let mut sidebar_menu_effects = graphics_frame(initial_size);
         let mut window_surface = UiSurface::new(Size {
             cols: 1,
@@ -5867,13 +5862,9 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 None
             };
             let mut sidebar_menu_graphical = false;
-            if let Some((menu, placement)) = app.sidebar_menu.as_ref().zip(menu_placement) {
+            if let Some((menu, placement)) = app.sidebar_menu.as_mut().zip(menu_placement) {
                 crate::appearance::update_region_theme(&mut menu_theme, ui_colors, None);
-                menu.widget.paint(
-                    &mut sidebar_menu_surface,
-                    placement.outer.size(size),
-                    &menu_theme,
-                );
+                menu.widget.paint(placement.outer.size(size), &menu_theme);
                 sidebar_menu_graphical = graphics.decorate_region(
                     &mut sidebar_menu_effects,
                     placement.outer,
@@ -6524,19 +6515,25 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     {
                         surfaces.push(artwork);
                     }
-                    if layer.id == SIDEBAR_MENU {
+                    if layer.id == SIDEBAR_MENU
+                        && let Some(frame) = app
+                            .sidebar_menu
+                            .as_ref()
+                            .and_then(|menu| menu.widget.frame())
+                    {
                         surfaces.push(Surface {
                             palette: None,
                             id: SIDEBAR_MENU,
                             content: bkpr_tui_framework::context_menu::content(
-                                sidebar_menu_surface.frame.size,
+                                frame.size,
                                 sidebar_menu_graphical,
                             ),
                             rect: layer.placement.outer,
-                            frame: &sidebar_menu_surface.frame,
+                            frame,
                             selection: &[],
                             search: &[],
-                            focused: false,
+                            focused: app.host_focused
+                                && app.overlays.keyboard_owner() == Some(layer.id),
                             faint: false,
                         });
                         surfaces.push(Surface {
