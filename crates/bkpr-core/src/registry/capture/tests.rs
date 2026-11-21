@@ -711,6 +711,7 @@ fn restored_foreground_facts_are_stripped_and_metadata_writes_do_not_persist_the
         directories: BTreeMap::new(),
         automatic: BTreeMap::new(),
         automatic_titles: BTreeSet::new(),
+        recovery_titles: BTreeMap::new(),
         registry: RegistrySnapshot {
             revision: 1,
             workspaces: Vec::new(),

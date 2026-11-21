@@ -403,13 +403,22 @@ impl Picker {
     }
 }
 
+fn agent_title(candidate: &RecoveryCandidate) -> &str {
+    let title = candidate.harness.kind.display_title(&candidate.title);
+    if title.trim().is_empty() {
+        candidate.harness.kind.display_name()
+    } else {
+        title
+    }
+}
+
 fn detail_paragraphs(candidate: &RecoveryCandidate, readonly: bool) -> Vec<Paragraph> {
     let mut rows = vec![
         Paragraph::new(
             format!(
-                "{} {} conversation",
+                "{} {}",
                 crate::controller::harness_icon(candidate.harness.kind),
-                candidate.harness.kind.display_name(),
+                agent_title(candidate),
             ),
             crate::controller::harness_role(candidate.harness.kind),
         ),
@@ -422,8 +431,8 @@ fn detail_paragraphs(candidate: &RecoveryCandidate, readonly: bool) -> Vec<Parag
             Role::Panel,
         ),
         Paragraph::new(
-            format!("Saved pane title: {}", candidate.title),
-            Role::Muted,
+            format!("Harness: {}", candidate.harness.kind.display_name()),
+            crate::controller::harness_role(candidate.harness.kind),
         ),
         Paragraph::new(format!("Source pane: {}", candidate.pane_id), Role::Muted),
         Paragraph::new(
@@ -779,9 +788,9 @@ mod tests {
     }
 
     #[test]
-    fn shell_titles_and_clipped_unicode_ids_retain_exact_search_and_selection() {
+    fn agent_titles_and_clipped_unicode_ids_retain_exact_search_and_selection() {
         let mut source = candidate(RecoveryStatus::Recoverable);
-        source.title = "fish".into();
+        source.title = "Reviewing 日本語".into();
         source.harness.conversation_id = "native-会話-e\u{301}-👩‍💻-exact".into();
         source.harness.cwd = "/work/日本語".into();
         let mut other = source.clone();
@@ -803,12 +812,7 @@ mod tests {
         }
         picker.replace(Listing::parse(listing(&[other, source])).unwrap());
         assert_eq!(picker.list.selected(), Some(&key));
-        assert!(
-            picker
-                .details()
-                .iter()
-                .any(|row| row.text == "Saved pane title: fish")
-        );
+        assert!(picker.details()[0].text.ends_with("Reviewing 日本語"));
 
         let mut saved_title = Picker::new(
             Listing::parse(listing(&[candidate(RecoveryStatus::Recoverable)])).unwrap(),

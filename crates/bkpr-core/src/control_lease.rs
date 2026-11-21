@@ -90,10 +90,11 @@ impl ControlLease {
 }
 
 /// The same pidfd/kqueue lifetime primitives used by managed client ownership.
-/// Descriptor acquisition and birth checks run only on the control worker.
-struct ProcessLifetime(OwnedFd);
+/// Open off the registry locks; liveness checks only poll the retained descriptor.
+pub(crate) struct ProcessLifetime(OwnedFd);
 impl ProcessLifetime {
-    fn observe(expected: &Process) -> Result<Self> {
+    /// Retain a kernel exit witness for the expected process birth.
+    pub(crate) fn observe(expected: &Process) -> Result<Self> {
         #[cfg(target_os = "linux")]
         let descriptor = {
             let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, expected.pid, 0) } as i32;
@@ -149,7 +150,8 @@ impl ProcessLifetime {
             Ok(lifetime)
         }
     }
-    fn is_alive(&self) -> bool {
+    /// Check whether the original process is still alive without process scans.
+    pub(crate) fn is_alive(&self) -> bool {
         let mut descriptor = libc::pollfd {
             fd: self.0.as_raw_fd(),
             events: libc::POLLIN,

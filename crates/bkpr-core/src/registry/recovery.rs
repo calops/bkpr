@@ -1,5 +1,6 @@
 //! Explicit native resume intent. This store never grants live capture or inbox authority.
 use super::*;
+use crate::control_lease::ProcessLifetime;
 use std::os::unix::ffi::OsStrExt;
 
 #[derive(Clone)]
@@ -51,6 +52,189 @@ fn resume_flag(kind: HarnessKind) -> Result<&'static str> {
 }
 fn same_conversation(a: &HarnessRecovery, b: &HarnessRecovery) -> bool {
     a.kind == b.kind && a.conversation_id == b.conversation_id
+}
+
+struct TitleSource {
+    launch_id: String,
+    generation: u64,
+    group: i32,
+    lifetime: ProcessLifetime,
+}
+
+/// Pane-local title observation and its non-durable process witness.
+#[derive(Default)]
+pub(crate) struct TitleCapture {
+    source: Option<TitleSource>,
+    observed: Option<String>,
+}
+
+impl TitleCapture {
+    pub(super) fn end(&mut self) {
+        self.source = None;
+    }
+
+    /// Whether there is a managed title witness to consult on OSC title effects.
+    pub(crate) fn has_source(&self) -> bool {
+        self.source.is_some()
+    }
+}
+
+impl Record {
+    pub(super) fn remove_recovery(&mut self, id: &str) {
+        self.recoveries.remove(id);
+        self.automatic.remove(id);
+        self.recovery_titles.remove(id);
+    }
+}
+
+pub(super) fn pending_title(state: &State, id: &str) -> Option<String> {
+    let descriptor = state.record.recoveries.get(id)?;
+    if !state.record.automatic_titles.contains(id) {
+        return None;
+    }
+    let pane = state.live.get(id)?;
+    let published = pane.shared.published.lock().unwrap();
+    let title = published.recovery_title.observed.as_ref()?;
+    (!same_display_title(descriptor.kind, state.record.recovery_titles.get(id), title))
+        .then(|| title.clone())
+}
+
+pub(super) fn save_title(state: &State, next: &mut Record, id: &str) {
+    if let Some(title) = pending_title(state, id) {
+        next.recovery_titles.insert(id.to_owned(), title);
+    }
+}
+
+fn same_display_title(kind: HarnessKind, previous: Option<&String>, title: &str) -> bool {
+    previous.is_some_and(|old| kind.display_title(old) == kind.display_title(title))
+}
+
+fn capture_title(
+    inner: &Inner,
+    shared: &crate::Shared,
+    title: &str,
+    epoch: u64,
+    foreground_group: i32,
+) {
+    if valid_name(title).is_err() {
+        return;
+    }
+    let id = &shared.pane_id;
+    let state = inner.state.lock().unwrap();
+    if state.closing
+        || state.durability_error.is_some()
+        || !state.record.automatic_titles.contains(id)
+        || !state
+            .live
+            .get(id)
+            .is_some_and(|pane| std::ptr::eq(pane.shared.as_ref(), shared))
+        || shared.finished.load(std::sync::atomic::Ordering::Acquire)
+        || shared
+            .status_epoch
+            .load(std::sync::atomic::Ordering::Acquire)
+            != epoch
+    {
+        return;
+    }
+    let Some(descriptor) = state.record.recoveries.get(id) else {
+        return;
+    };
+    let Some(harness) = state
+        .record
+        .registry
+        .panes
+        .iter()
+        .find(|pane| &pane.id == id && pane.status == PaneStatus::Running)
+        .and_then(|pane| pane.harness.as_ref())
+    else {
+        return;
+    };
+    let Some(managed) = &harness.managed else {
+        return;
+    };
+    let Some(binding) = &managed.conversation else {
+        return;
+    };
+    if descriptor.kind != harness.kind
+        || descriptor.conversation_id != binding.id
+        || harness.kind.display_title(title).trim().is_empty()
+    {
+        return;
+    }
+    let captures = inner.captures.lock().unwrap();
+    let Some(launch) = captures.launches.get(&managed.launch_id) else {
+        return;
+    };
+    if &launch.grant.pane_id != id
+        || launch.grant.kind != harness.kind
+        || launch.binding_generation != binding.generation
+        || launch.managed.conversation.as_ref() != Some(binding)
+        || !launch.control.is_valid()
+    {
+        return;
+    }
+    let mut published = shared.published.lock().unwrap();
+    if published.lifecycle != "running"
+        || !published
+            .program_identity
+            .as_ref()
+            .is_some_and(|process| process.pid == harness.pid && process.birth == harness.birth)
+    {
+        return;
+    }
+    let capture = &mut published.recovery_title;
+    let Some(source) = &capture.source else {
+        return;
+    };
+    // OSC has no sender identity. Require the bound launch's verified process
+    // lifetime and foreground job, not just the last observed title of the PTY.
+    if source.launch_id != managed.launch_id
+        || source.generation != binding.generation
+        || source.group != foreground_group
+        || !source.lifetime.is_alive()
+    {
+        return;
+    }
+    let previous = capture
+        .observed
+        .as_ref()
+        .or_else(|| state.record.recovery_titles.get(id));
+    if !same_display_title(harness.kind, previous, title) {
+        capture.observed = Some(title.to_owned());
+    }
+}
+
+fn publish_title_source(state: &State, id: &str, replace: bool, source: Option<TitleSource>) {
+    if let Some(pane) = state.live.get(id) {
+        let mut published = pane.shared.published.lock().unwrap();
+        if replace {
+            published.recovery_title.observed = None;
+        }
+        published.recovery_title.source = source;
+    }
+}
+
+fn candidate_title(state: &State, pane: &PaneInfo, kind: HarnessKind) -> String {
+    if !state.record.automatic_titles.contains(&pane.id) {
+        return pane.title.clone();
+    }
+    if let Some(live) = state.live.get(&pane.id)
+        && let Some(title) = &live
+            .shared
+            .published
+            .lock()
+            .unwrap()
+            .recovery_title
+            .observed
+    {
+        return title.clone();
+    }
+    state
+        .record
+        .recovery_titles
+        .get(&pane.id)
+        .cloned()
+        .unwrap_or_else(|| kind.display_name().to_owned())
 }
 fn bound(captures: &crate::harness::Captures, descriptor: &HarnessRecovery) -> bool {
     captures.launches.values().any(|launch| {
@@ -126,6 +310,17 @@ pub(super) fn check_resume_reserved(
 }
 
 impl Registry {
+    pub(super) fn install_recovery_title_capture(&self, pane: &Pane) {
+        let weak = Arc::downgrade(&self.inner);
+        let _ = pane.shared.recovery_title_observer.set(Box::new(
+            move |shared, title, epoch, group| {
+                if let Some(inner) = weak.upgrade() {
+                    capture_title(&inner, shared, title, epoch, group);
+                }
+            },
+        ));
+    }
+
     pub(super) fn recovery_candidates(&self) -> Result<Vec<RecoveryCandidate>> {
         let configured = self.inner.spawn_environment.lock().unwrap().is_some();
         let state = self.inner.state.lock().unwrap();
@@ -201,7 +396,7 @@ impl Registry {
                             find_window(&state.record.registry, workspace, window).ok()
                         })
                         .map(|window| window.revision),
-                    title: pane.title.clone(),
+                    title: candidate_title(&state, pane, descriptor.kind),
                     harness: descriptor.clone(),
                     status,
                     reason,
@@ -373,10 +568,11 @@ impl Registry {
             }
             state.record.clone()
         };
-        next.recoveries.remove(pane_id);
-        next.automatic.remove(pane_id);
+        next.remove_recovery(pane_id);
         next.registry.revision = next_revision(next.registry.revision)?;
-        commit(&self.inner, next, |_| {})?;
+        commit(&self.inner, next, |state| {
+            publish_title_source(state, pane_id, true, None);
+        })?;
         Ok(())
     }
     pub(super) fn recovery_bind(
@@ -384,15 +580,31 @@ impl Registry {
         launch: &crate::harness::Launch,
         descriptor: HarnessRecovery,
         active: bool,
+        title_lifetime: Option<ProcessLifetime>,
     ) -> Result<()> {
         validate(&descriptor)?;
         let pane_id = &launch.grant.pane_id;
-        let (mut next, source) = {
+        let (mut next, source, replaced, title_source) = {
             let mut state = self.inner.state.lock().unwrap();
             healthy(&state)?;
             // This authenticated binding supersedes earlier sampled role/CWD,
             // including when its durable descriptor is otherwise unchanged.
             state.pending_directories.remove(pane_id);
+            let captures = self.inner.captures.lock().unwrap();
+            let title_source = title_lifetime.and_then(|lifetime| {
+                let current = captures.launches.get(&launch.grant.launch_id)?;
+                Some(TitleSource {
+                    launch_id: launch.grant.launch_id.clone(),
+                    generation: current.binding_generation,
+                    group: launch.root.group,
+                    lifetime,
+                })
+            });
+            let replaced = state
+                .record
+                .recoveries
+                .get(pane_id)
+                .is_none_or(|old| !same_conversation(old, &descriptor));
             let source = state
                 .resuming
                 .get(pane_id)
@@ -401,13 +613,24 @@ impl Registry {
                 && source.is_none()
                 && state.record.automatic.get(pane_id) == active.then_some(&descriptor)
             {
+                publish_title_source(&state, pane_id, false, title_source);
                 return Ok(());
             }
-            (state.record.clone(), source)
+            (state.record.clone(), source, replaced, title_source)
         };
+        let inherited = source
+            .as_ref()
+            .and_then(|source| next.recovery_titles.remove(source));
         if let Some(source) = source {
-            next.recoveries.remove(&source);
-            next.automatic.remove(&source);
+            next.remove_recovery(&source);
+        }
+        if replaced {
+            next.recovery_titles.remove(pane_id);
+        }
+        if let Some(title) = inherited
+            && next.automatic_titles.contains(pane_id)
+        {
+            next.recovery_titles.insert(pane_id.clone(), title);
         }
         if active {
             next.automatic.insert(pane_id.clone(), descriptor.clone());
@@ -419,6 +642,7 @@ impl Registry {
         validate_record(&next)?;
         commit(&self.inner, next, |state| {
             state.resuming.remove(pane_id);
+            publish_title_source(state, pane_id, replaced, title_source);
         })?;
         Ok(())
     }
@@ -448,7 +672,9 @@ impl Registry {
             {
                 return Ok(());
             }
-            state.record.clone()
+            let mut next = state.record.clone();
+            save_title(&state, &mut next, &launch.grant.pane_id);
+            next
         };
         next.automatic.remove(&launch.grant.pane_id);
         next.registry.revision = next_revision(next.registry.revision)?;
@@ -473,11 +699,9 @@ impl Registry {
                 "pane busy: native resume in progress"
             );
             let mut next = state.record.clone();
-            next.recoveries.remove(pane_id);
-            next.automatic.remove(pane_id);
+            next.remove_recovery(pane_id);
             if let Some(attempt) = state.resuming.get(pane_id) {
-                next.recoveries.remove(&attempt.source);
-                next.automatic.remove(&attempt.source);
+                next.remove_recovery(&attempt.source);
             }
             if next.recoveries == state.record.recoveries {
                 state.closing_panes.insert(pane_id.to_owned());

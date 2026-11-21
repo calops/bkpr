@@ -102,12 +102,12 @@ pub(super) fn queue(
 }
 
 impl Registry {
-    /// Worker-only fsync batching all changed panes after one observation cycle.
+    /// Worker-only fsync batching changed directories and recovery titles.
     /// Guard publication by the exact execution allocation; late observations from
     /// an old process cannot rewrite a replacement's durable directory intent.
     pub(super) fn flush_directories(&self) -> Result<()> {
         let _transaction = self.inner.transaction.lock().unwrap();
-        let (mut next, accepted) = {
+        let (mut next, accepted, titles) = {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
             let accepted = state
@@ -133,10 +133,17 @@ impl Registry {
                 })
                 .map(|(id, pending)| (id.clone(), pending.cwd.clone(), pending.native.clone()))
                 .collect::<Vec<_>>();
-            if accepted.is_empty() {
+            let titles = state
+                .live
+                .keys()
+                .filter_map(|id| {
+                    recovery::pending_title(&state, id).map(|title| (id.clone(), title))
+                })
+                .collect::<Vec<_>>();
+            if accepted.is_empty() && titles.is_empty() {
                 return Ok(());
             }
-            (state.record.clone(), accepted)
+            (state.record.clone(), accepted, titles)
         };
         for (id, cwd, native) in &accepted {
             next.directories
@@ -151,6 +158,7 @@ impl Registry {
                 next.automatic.insert(id.clone(), descriptor.clone());
             }
         }
+        next.recovery_titles.extend(titles);
         next.registry.revision = next_revision(next.registry.revision)?;
         validate_record(&next)?;
         commit(&self.inner, next, |state| {

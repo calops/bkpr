@@ -62,6 +62,31 @@ impl HarnessKind {
             Self::Pi => "Pi",
         }
     }
+    /// Strip known transient harness decoration from a pane title, without changing its identity.
+    pub fn display_title(self, title: &str) -> &str {
+        if self != Self::Omp {
+            return title;
+        }
+        if let Some(label) = title.strip_prefix("π: ") {
+            return label;
+        }
+        let Some(rest) = title.strip_prefix("π ") else {
+            return title;
+        };
+        let Some(separator) = rest.chars().next() else {
+            return title;
+        };
+        if matches!(
+            separator,
+            '>' | '!' | ':' | '-' | '\\' | '|' | '/' | '○' | '◔' | '◑' | '◕' | '●'
+        ) || ('\u{2800}'..='\u{28ff}').contains(&separator)
+        {
+            return rest[separator.len_utf8()..]
+                .strip_prefix(' ')
+                .unwrap_or(title);
+        }
+        title
+    }
     /// Recognize an executable basename, including supported aliases and Nix wrappers.
     pub fn from_command(command: &str) -> Option<Self> {
         let name = Path::new(command).file_name()?.to_str()?;

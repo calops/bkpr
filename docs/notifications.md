@@ -305,7 +305,9 @@ UI acceptance are not implemented by this experiment.
 
 ## Desktop providers
 
-The TUI uses the viewing terminal's positively queried [OSC 99 protocol](https://sw.kovidgoyal.net/kitty/desktop-notifications/), including when the TUI or its panes are SSH-hosted. No terminal-name guess enables it. The framework owns discovery, safe UTF-8/base64 framing, reply demultiplexing, physical focus and terminal-resource cleanup; the client owns source policy and navigation. One output owner handles all terminal traffic. Notifications contain the event category, session name and harness family, not arbitrary status messages, prompts or transcripts.
+The TUI uses the viewing terminal's positively queried [OSC 99 protocol](https://sw.kovidgoyal.net/kitty/desktop-notifications/), including when the TUI or its panes are SSH-hosted. No terminal-name guess enables it. The framework owns discovery, safe UTF-8/base64 framing, reply demultiplexing, physical focus and terminal-resource cleanup; the client owns source policy and navigation. One output owner handles all terminal traffic.
+
+Desktop alerts show the event and `session · workspace · agent title`. The TUI looks up the workspace and sidebar title in the notification's owning session, never the foreground session. If that launch is no longer current, the alert uses the harness name rather than a replacement pane's title. If the workspace cannot be resolved, it says so. This is presentation only; durable notification records and push payloads do not gain titles, prompts, arbitrary status messages or transcripts.
 
 Each admitted session has one cancellable observer outside the management-worker pool, reusing a runtime and a one-page queue. Processing is round-robin and bounded to one page per UI turn. Empty pages advance the cursor without waking the UI unless health or continuity changes. New attachments and replacement stores establish a fresh baseline; observation failures stop that subscription without replay. Reconnecting the owning session starts a new baseline. At most 64 physical IDs/source callbacks are retained; expiry, eviction, attachment retirement and TUI exit release owned resources on a best-effort basis.
 
@@ -314,6 +316,13 @@ Only a positively observed, locally focused application pane with matching curre
 Unconfirmed/unsupported OSC 99 means no OS presentation attempt; a UI toast is not an OS delivery receipt. OSC 99 has no provider-acceptance/display acknowledgement, so successful writes remain unknown outcomes. Multiple TUI instances may independently notify, and the OS may group or discard attempts. No direct native fallback or new dependency is installed: [notify-rust 4.19](https://docs.rs/notify-rust/4.19.0/notify_rust/) was evaluated, but a TUI-local native provider can target the wrong machine when the TUI itself is SSH-hosted. The selected terminal path preserves viewing-machine ownership.
 
 Actual incremental-debug acceptance with Kitty 0.49.2, Dunst 1.13.2, private D-Bus/Xvfb and real loopback SSH is retained under `target/smoke/desktop-notifications/integrated-actual-4/`. It covers non-replaying fresh attachments, independent TUI attempts, physical popup activation to both local and remote sources, local focus suppression, retired-source rejection and device/input separation. `unconfirmed-actual-2/` proves real xterm leaves OSC 99 unconfirmed without emitting unsupported notifications or breaking ordinary pane input. Screenshots were inspected; owned cleanup had no survivors. Coordinated workspace tests (1,339 passed, 19 ignored), strict all-target Clippy, formatting and warnings-denied rustdoc passed for the joined source.
+
+`target/smoke/desktop-context/actual-5/acceptance.json` records real Kitty/Dunst
+alerts with the correct local and SSH owner labels while another session was
+selected. The same Omp title appears in the recovery list and details while
+live, after shell return, and after pane exit. The fixture made no model calls
+or resume attempts; both cleanup survivor lists are empty. Cold-reopen and
+explicit-title precedence also pass in the host-user registry regressions.
 
 ## Later provider: Bkpr publisher relay
 

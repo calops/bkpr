@@ -13,7 +13,7 @@ struct Row {
     key: Key,
     search: String,
     icon: &'static str,
-    fields: [Field; 4],
+    fields: [Field; 5],
     spans: Vec<(u16, u16, Role)>,
 }
 
@@ -34,6 +34,7 @@ impl Row {
                 candidate.harness.kind.display_name().into(),
                 crate::controller::harness_role(candidate.harness.kind),
             ),
+            field(super::agent_title(candidate).into(), Role::Base),
             field(
                 status_label(candidate.status).into(),
                 status_role(candidate.status),
@@ -41,8 +42,6 @@ impl Row {
             field(candidate.harness.cwd.display().to_string(), Role::Panel),
             field(candidate.harness.conversation_id.clone(), Role::Muted),
         ];
-        search.push_str(" Saved pane title: ");
-        search.push_str(&crate::metadata::clean(&candidate.title));
         search.push_str(" Source pane: ");
         search.push_str(&crate::metadata::clean(&candidate.pane_id));
         Self {
@@ -50,7 +49,7 @@ impl Row {
             search,
             icon: crate::controller::harness_icon(candidate.harness.kind),
             fields,
-            spans: Vec::with_capacity(4),
+            spans: Vec::with_capacity(5),
         }
     }
 
@@ -62,13 +61,21 @@ impl Row {
         let available = width.saturating_sub(harness + 2);
         let status = available.min(11);
         let remainder = available.saturating_sub(status + 2);
-        let (cwd, identity) = if remainder >= 26 {
-            let identity = ((remainder - 2) / 2).max(12);
-            (remainder - identity - 2, identity)
+        let identity = if remainder >= 28 {
+            (remainder / 3).clamp(12, 36)
         } else {
-            (0, remainder)
+            0
         };
-        let columns = [(0, harness), (1, status), (2, cwd), (3, identity)];
+        let content = remainder.saturating_sub(identity + 2 * u16::from(identity > 0));
+        let cwd = if content >= 38 { (content - 2) / 2 } else { 0 };
+        let title = content.saturating_sub(cwd + 2 * u16::from(cwd > 0));
+        let columns = [
+            (0, harness),
+            (1, title),
+            (2, status),
+            (3, cwd),
+            (4, identity),
+        ];
         let mut x = 0_u16;
         for (index, cells) in columns {
             if cells == 0 {
@@ -93,7 +100,7 @@ impl Row {
             } else {
                 0
             };
-            append_field(&mut text, &mut sources, field, cells - prefix, index == 2);
+            append_field(&mut text, &mut sources, field, cells - prefix, index == 3);
             x += cells;
             self.spans.push((start, cells, field.role));
         }
@@ -255,17 +262,18 @@ mod tests {
     }
 
     #[test]
-    fn shell_title_is_searchable_metadata_not_primary_identity() {
-        let candidate = candidate(HarnessKind::Pi);
+    fn agent_title_is_visible_alongside_harness_and_exact_search_metadata() {
+        let mut candidate = candidate(HarnessKind::Omp);
+        candidate.title = "π > Repairing notifications".into();
         let mut row = Row::new(&candidate);
         let (text, _) = row.presentation(160, 12);
-        assert!(text.starts_with(crate::controller::harness_icon(HarnessKind::Pi)));
-        assert!(text.contains("Pi"));
+        assert!(text.starts_with(crate::controller::harness_icon(HarnessKind::Omp)));
+        assert!(text.contains("Repairing notifications"));
         assert!(text.contains("Recoverable"));
         assert!(text.contains(&candidate.harness.cwd.display().to_string()));
         assert!(text.contains(&candidate.harness.conversation_id));
-        assert!(!text.contains("fish"));
-        assert!(row.search.contains("Saved pane title: fish"));
+        assert!(!text.contains("π >"));
+        assert!(row.search.contains("Repairing notifications"));
     }
 
     #[test]
@@ -286,8 +294,8 @@ mod tests {
                         assert_eq!(grapheme, original[source as usize], "{width}: {text}");
                     }
                 }
-                if row.spans.len() > 1 {
-                    let start = row.spans[1].0;
+                if row.spans.len() > 2 {
+                    let start = row.spans[2].0;
                     assert_eq!(*status_start.get_or_insert(start), start);
                 }
             }

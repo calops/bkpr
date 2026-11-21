@@ -16,6 +16,15 @@ fn seed_launch_command(
     kind: HarnessKind,
     script: &str,
 ) -> (String, CaptureGrant, Peer) {
+    let executable = match kind {
+        HarnessKind::Claude => fixture.home.join("native/claude"),
+        HarnessKind::Omp => {
+            let path = fixture.home.join("native/omp");
+            fs::copy("/bin/sh", &path).unwrap();
+            path
+        }
+        _ => PathBuf::from("/bin/sh"),
+    };
     fixture
         .registry
         .inner
@@ -31,11 +40,7 @@ fn seed_launch_command(
                 reference: "pane".into(),
                 spec: PaneSpawnSpec {
                     argv: vec![
-                        if kind == HarnessKind::Claude {
-                            fixture.home.join("native/claude").to_str().unwrap().into()
-                        } else {
-                            "/bin/sh".into()
-                        },
+                        executable.to_str().unwrap().into(),
                         "-c".into(),
                         script.into(),
                     ],
@@ -309,6 +314,162 @@ fn observer_releases_stale_launch_contexts_without_ending_its_live_pane() {
             .status,
         PaneStatus::Running
     );
+}
+
+fn bind_title_fixture(
+    fixture: &Fixture,
+    grant: &CaptureGrant,
+    peer: &Peer,
+    id: &str,
+    expected_revision: Option<u64>,
+) {
+    fixture
+        .registry
+        .request_authenticated(
+            Request::new(Operation::HarnessEvent {
+                launch_id: grant.launch_id.clone(),
+                token: grant.token.clone(),
+                event: CaptureEvent::Bind {
+                    conversation_id: id.into(),
+                    source: ConversationSource::OmpExtension,
+                    expected_revision,
+                },
+            }),
+            peer,
+        )
+        .unwrap();
+}
+
+fn wait_recovery_title_fixture(fixture: &Fixture, id: &str, expected: &str) {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let snapshot = fixture.registry.snapshot().unwrap();
+        if snapshot
+            .panes
+            .iter()
+            .any(|pane| pane.id == id && pane.title == expected)
+        {
+            return;
+        }
+        assert!(Instant::now() < deadline, "title not published: {expected}");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn recovery_titles_follow_the_bound_conversation_and_survive_exit_and_restart() {
+    let fixture = Fixture::new();
+    let (id, grant, peer) = seed_launch_command(
+        &fixture,
+        HarnessKind::Omp,
+        r"
+        while [ ! -f title-one ]; do sleep 0.02; done
+        printf '\033]0;π ◑ Agent heading\007'
+        while [ ! -f animate ]; do sleep 0.02; done
+        printf '\033]0;π ◕ Agent heading\007'
+        while [ ! -f title-two ]; do sleep 0.02; done
+        printf '\033]0;π: Switched conversation\007'
+        while [ ! -f exit-gate ]; do sleep 0.02; done
+        exit 7
+        ",
+    );
+    let registry = &fixture.registry;
+    let candidate = || registry.recovery_candidates().unwrap().remove(0);
+    bind_title_fixture(&fixture, &grant, &peer, "first", None);
+    assert_eq!(candidate().title, HarnessKind::Omp.display_name());
+
+    fs::write(fixture.home.join("title-one"), b"ready").unwrap();
+    wait_recovery_title_fixture(&fixture, &id, "π ◑ Agent heading");
+    assert_eq!(candidate().title, "π ◑ Agent heading");
+    registry.flush_directories().unwrap();
+    let record = fixture._root.path().join("registry.json");
+    let saved = fs::read(&record).unwrap();
+
+    fs::write(fixture.home.join("animate"), b"ready").unwrap();
+    wait_recovery_title_fixture(&fixture, &id, "π ◕ Agent heading");
+    assert_eq!(
+        HarnessKind::Omp.display_title(&candidate().title),
+        "Agent heading"
+    );
+    registry.flush_directories().unwrap();
+    assert_eq!(fs::read(&record).unwrap(), saved);
+
+    let pane = registry.capture_pane(&id).unwrap();
+    let old_epoch = pane.shared.status_epoch.load(Ordering::Acquire);
+    let foreground = pane.shared.root.lock().unwrap().as_ref().unwrap().group;
+    bind_title_fixture(&fixture, &grant, &peer, "first", Some(1));
+    let observe = pane.shared.recovery_title_observer.get().unwrap();
+    observe(&pane.shared, "late prior generation", old_epoch, foreground);
+    assert_eq!(candidate().title, "π ◑ Agent heading");
+
+    bind_title_fixture(&fixture, &grant, &peer, "second", Some(2));
+    observe(
+        &pane.shared,
+        "late prior conversation",
+        old_epoch,
+        foreground,
+    );
+    assert_eq!(candidate().harness.conversation_id, "second");
+    assert_eq!(candidate().title, HarnessKind::Omp.display_name());
+    fs::write(fixture.home.join("title-two"), b"ready").unwrap();
+    wait_recovery_title_fixture(&fixture, &id, "π: Switched conversation");
+    assert_eq!(candidate().title, "π: Switched conversation");
+
+    // No observer batch after title-two: the natural completion must save it.
+    fs::write(fixture.home.join("exit-gate"), b"exit").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while registry.snapshot().unwrap().panes[0].status != PaneStatus::Exited {
+        assert!(Instant::now() < deadline, "pane did not exit");
+        thread::sleep(Duration::from_millis(5));
+    }
+    let current_epoch = pane.shared.status_epoch.load(Ordering::Acquire);
+    observe(
+        &pane.shared,
+        "late after retirement",
+        current_epoch,
+        foreground,
+    );
+    assert_eq!(candidate().title, "π: Switched conversation");
+
+    let cold = tempfile::tempdir().unwrap();
+    fs::set_permissions(cold.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    fs::copy(&record, cold.path().join("registry.json")).unwrap();
+    let reopened = Registry::open(cold.path()).unwrap();
+    let recovered = reopened.recovery_candidates().unwrap().remove(0);
+    assert_eq!(recovered.harness.conversation_id, "second");
+    assert_eq!(recovered.title, "π: Switched conversation");
+    let snapshot = reopened.snapshot().unwrap();
+    assert_eq!(snapshot.panes[0].title, "omp");
+    assert!(snapshot.panes[0].harness.is_none());
+}
+
+#[test]
+fn a_renamed_pane_overrides_an_already_saved_recovery_title() {
+    let fixture = Fixture::new();
+    let (id, grant, peer) = seed_launch_command(&fixture, HarnessKind::Omp, "IFS= read -r hold");
+    let registry = &fixture.registry;
+    bind_title_fixture(&fixture, &grant, &peer, "named", None);
+    let pane = registry.capture_pane(&id).unwrap();
+    let epoch = pane.shared.status_epoch.load(Ordering::Acquire);
+    let foreground = pane.shared.root.lock().unwrap().as_ref().unwrap().group;
+    let observe = pane.shared.recovery_title_observer.get().unwrap();
+    observe(&pane.shared, "native title", epoch, foreground);
+    registry.flush_directories().unwrap();
+    let candidate_title = || registry.recovery_candidates().unwrap().remove(0).title;
+    assert_eq!(candidate_title(), "native title");
+
+    registry
+        .request(Request::new(Operation::PaneRename {
+            pane_id: id,
+            title: "My explicit title".into(),
+        }))
+        .unwrap();
+    observe(&pane.shared, "replacement native title", epoch, foreground);
+    registry.flush_directories().unwrap();
+    assert_eq!(candidate_title(), "My explicit title");
+    let saved = read_record(fixture._root.path()).unwrap().unwrap();
+    assert!(saved.recovery_titles.is_empty());
+    assert_eq!(saved.registry.panes[0].title, "My explicit title");
 }
 
 #[test]

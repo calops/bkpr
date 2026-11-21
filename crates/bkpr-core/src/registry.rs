@@ -10,7 +10,7 @@ mod control;
 mod directories;
 pub(crate) mod notification_capture;
 mod project;
-mod recovery;
+pub(crate) mod recovery;
 pub(crate) mod sessions;
 use anyhow::{Context, Result, bail, ensure};
 use bkpr_protocol::*;
@@ -70,6 +70,8 @@ struct Record {
     // their saved labels fixed rather than guessing which names were explicit.
     #[serde(default)]
     automatic_titles: BTreeSet<String>,
+    #[serde(default)]
+    recovery_titles: BTreeMap<String, String>,
 }
 // Persistence is an explicit intent whitelist, not serialization of live facts.
 // Borrow the record: a metadata write need not copy every foreground observation.
@@ -81,6 +83,8 @@ struct DurableRecord<'a> {
     directories: &'a BTreeMap<String, directories::Directory>,
     automatic: &'a BTreeMap<String, HarnessRecovery>,
     automatic_titles: &'a BTreeSet<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    recovery_titles: &'a BTreeMap<String, String>,
 }
 #[derive(Serialize)]
 struct DurableRegistry<'a> {
@@ -565,6 +569,7 @@ impl Registry {
             directories: BTreeMap::new(),
             automatic: BTreeMap::new(),
             automatic_titles: BTreeSet::new(),
+            recovery_titles: BTreeMap::new(),
             registry: RegistrySnapshot {
                 revision: 0,
                 workspaces: Vec::new(),
@@ -1151,6 +1156,7 @@ impl Registry {
                     .clone();
                 let registry = self.mutate_record_inner(workspace_id.as_deref(), control, |record| {
                     record.automatic_titles.remove(&pane_id);
+                    record.recovery_titles.remove(&pane_id);
                     let r = &mut record.registry;
                     let pane = r
                         .panes
@@ -1468,6 +1474,7 @@ impl Registry {
                 &automatic_titles,
                 &target,
                 layout.as_ref(),
+                resume.as_ref(),
             )?;
             if let Some(workspace_id) = &workspace_id {
                 state.spawn_workspaces.insert(workspace_id.clone());
@@ -1590,7 +1597,14 @@ impl Registry {
                 state.record.clone()
             };
             // Rebuild against current metadata, merging unrelated workspace commits.
-            let next = spawn_record(current, &infos, &automatic_titles, &target, layout.as_ref())?;
+            let next = spawn_record(
+                current,
+                &infos,
+                &automatic_titles,
+                &target,
+                layout.as_ref(),
+                resume.as_ref(),
+            )?;
             commit_projected(
                 &self.inner,
                 next,
@@ -1649,6 +1663,7 @@ impl Registry {
         Ok(result)
     }
     fn install_spawn_callbacks(&self, id: &str, pane: &Pane) {
+        self.install_recovery_title_capture(pane);
         let weak = Arc::downgrade(&self.inner);
         let terminating_id = id.to_owned();
         *pane.shared.before_terminate.lock().unwrap() = Some(Arc::new(move || {
@@ -1800,9 +1815,8 @@ impl Registry {
             .map(|pane| (pane.workspace_id.clone(), pane.window_id.clone()))
             .unwrap_or_default();
         next.registry.panes.retain(|pane| pane.id != id);
-        next.recoveries.remove(id);
+        next.remove_recovery(id);
         next.directories.remove(id);
-        next.automatic.remove(id);
         next.automatic_titles.remove(id);
         next.registry.revision = next_revision(next.registry.revision)?;
         validate_record(&next)?;
@@ -1861,6 +1875,7 @@ impl Registry {
         let agent_retirement = self.inner.agents.retire_pane(id);
         {
             let mut published = pane.shared.published.lock().unwrap();
+            published.recovery_title.end();
             pane.shared
                 .status_epoch
                 .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
@@ -1876,6 +1891,13 @@ impl Registry {
         let (mut next, closing, reserved) = {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
+            if !state
+                .live
+                .get(id)
+                .is_some_and(|current| Arc::ptr_eq(&current.shared, &pane.shared))
+            {
+                return Ok(());
+            }
             let reserved = state.restore_batch
                 || unbound_restore
                 || state
@@ -1893,7 +1915,9 @@ impl Registry {
                     .spawn_workspaces
                     .iter()
                     .any(|id| !state.record.registry.workspaces.iter().any(|w| &w.id == id));
-            (state.record.clone(), state.closing, reserved)
+            let mut next = state.record.clone();
+            recovery::save_title(&state, &mut next, id);
+            (next, state.closing, reserved)
         };
         let Some(info) = next.registry.panes.iter_mut().find(|pane| pane.id == id) else {
             // A concurrent successful PaneForget may retire an already-completed handle.
@@ -2031,11 +2055,11 @@ impl Registry {
             );
             let mut next = state.record.clone();
             next.recoveries.retain(|id, _| !removed.contains(id));
+            next.recovery_titles.retain(|id, _| !removed.contains(id));
             next.automatic.retain(|id, _| !removed.contains(id));
             for (id, attempt) in &state.resuming {
                 if removed.contains(id) {
-                    next.recoveries.remove(&attempt.source);
-                    next.automatic.remove(&attempt.source);
+                    next.remove_recovery(&attempt.source);
                 }
             }
             if next.recoveries != state.record.recoveries {
@@ -2318,6 +2342,7 @@ fn spawn_record(
     automatic_titles: &[bool],
     target: &SpawnTarget,
     layout: Option<&LayoutNode>,
+    resume: Option<&recovery::ResumeAttempt>,
 ) -> Result<Record> {
     let info = &infos[0];
     if let SpawnTarget::Restore { pane_id, .. } = target {
@@ -2330,8 +2355,10 @@ fn spawn_record(
         // Execution identity remains in its exact saved position. Initial CWD is
         // historical launch metadata; current directory intent has its own whitelist.
         let initial_cwd = old.cwd.clone();
+        let title = std::mem::take(&mut old.title);
         *old = info.clone();
         old.cwd = initial_cwd;
+        old.title = title;
         next.registry.revision = next_revision(next.registry.revision)?;
         validate_record(&next)?;
         return Ok(next);
@@ -2404,9 +2431,32 @@ fn spawn_record(
         window.revision = next_revision(window.revision)?;
         workspace.revision = next_revision(workspace.revision)?;
     }
+    let resumed_title = resume
+        .map(|attempt| {
+            let source = next
+                .registry
+                .panes
+                .iter()
+                .find(|pane| pane.id == attempt.source)
+                .context("unknown recovery pane")?;
+            Ok::<_, anyhow::Error>((
+                source.title.clone(),
+                next.automatic_titles.contains(&source.id),
+            ))
+        })
+        .transpose()?;
     next.registry.panes.extend_from_slice(infos);
     let first_new = next.registry.panes.len() - infos.len();
     for (index, (info, automatic)) in infos.iter().zip(automatic_titles).enumerate() {
+        if let Some((title, automatic)) = &resumed_title {
+            next.registry.panes[first_new + index]
+                .title
+                .clone_from(title);
+            if *automatic {
+                next.automatic_titles.insert(info.id.clone());
+            }
+            continue;
+        }
         if *automatic {
             let inherited = match target {
                 SpawnTarget::Reopen { pane_id, .. } if !next.automatic_titles.contains(pane_id) => {
@@ -2791,6 +2841,13 @@ fn validate_record(record: &Record) -> Result<()> {
         );
         recovery::validate(descriptor)?;
     }
+    for (id, title) in &record.recovery_titles {
+        ensure!(
+            record.recoveries.contains_key(id) && record.automatic_titles.contains(id),
+            "retained recovery title requires automatic label and recovery descriptor"
+        );
+        valid_name(title)?;
+    }
     for (id, directory) in &record.directories {
         ensure!(
             panes.contains_key(id.as_str()),
@@ -2993,6 +3050,7 @@ fn durable_record(record: &Record) -> DurableRecord<'_> {
         directories: &record.directories,
         automatic: &record.automatic,
         automatic_titles: &record.automatic_titles,
+        recovery_titles: &record.recovery_titles,
         registry: DurableRegistry {
             revision: record.registry.revision,
             workspaces: &record.registry.workspaces,

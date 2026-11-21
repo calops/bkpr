@@ -40,7 +40,9 @@ pub struct RecoveryCandidate {
     pub window_id: Option<String>,
     /// Current owning-window revision, absent when there is no owning window.
     pub window_revision: Option<u64>,
-    /// Retained pane title, not a recovered live OSC title.
+    /// Explicit pane label, last retained managed title, or harness name when an
+    /// automatic label has no retained title. Legacy labels of unknown origin
+    /// stay unchanged. This is not a live title observation.
     pub title: String,
     /// Saved native conversation and launch directory.
     pub harness: HarnessRecovery,

@@ -78,6 +78,7 @@ struct Published {
     status_changed_at_ms: BTreeMap<String, u64>,
     title: Option<String>,
     title_changed: bool,
+    recovery_title: registry::recovery::TitleCapture,
     program_identity: Option<bkpr_protocol::ProcessIdentity>,
     lifecycle: String,
     exit_code: Option<u32>,
@@ -95,6 +96,7 @@ impl Default for Published {
             status_changed_at_ms: BTreeMap::new(),
             title: None,
             title_changed: false,
+            recovery_title: Default::default(),
             program_identity: None,
             revision: 0,
             scene_revision: 0,
@@ -314,6 +316,7 @@ struct SnapshotBarrier {
 }
 type BeforeTerminate = Arc<dyn Fn() -> Result<()> + Send + Sync>;
 type StatusObserver = Box<dyn Fn(bkpr_terminal_engine::ProgramStatusView<'_>, bool) + Send + Sync>;
+type RecoveryTitleObserver = Box<dyn Fn(&Shared, &str, u64, libc::pid_t) + Send + Sync>;
 struct Shared {
     authority: Mutex<Authority>,
     published: Mutex<Published>,
@@ -347,6 +350,7 @@ struct Shared {
     status_dirty: AtomicBool,
     status_wake: Option<crossbeam_channel::Sender<()>>,
     status_observer: std::sync::OnceLock<StatusObserver>,
+    recovery_title_observer: std::sync::OnceLock<RecoveryTitleObserver>,
     notification_capture: Mutex<registry::notification_capture::Capture>,
     #[cfg(test)]
     resize_barrier: Mutex<Option<Arc<ResizeBarrier>>>,
@@ -356,6 +360,10 @@ struct Shared {
     control_request_wait: Mutex<Option<mpsc::SyncSender<()>>>,
 }
 impl Shared {
+    fn has_recovery_title_source(&self) -> bool {
+        self.published.lock().unwrap().recovery_title.has_source()
+    }
+
     fn notify_status_changed(&self) {
         self.status_dirty.store(true, Ordering::Release);
         if let Some(wake) = &self.status_wake {
@@ -467,6 +475,7 @@ impl Pane {
             status_dirty: AtomicBool::new(false),
             status_wake,
             status_observer: std::sync::OnceLock::new(),
+            recovery_title_observer: std::sync::OnceLock::new(),
             notification_capture: Mutex::new(Default::default()),
             #[cfg(test)]
             resize_barrier: Mutex::new(None),
@@ -1426,7 +1435,12 @@ fn publish_live_input(terminal: &mut Terminal, shared: &Shared, id: &str) -> Res
     shared.changes.notify();
     Ok(())
 }
-fn route_effects(effects: Vec<Effect>, writer: &writer::Queue, shared: &Shared) -> Result<()> {
+fn route_effects(
+    effects: Vec<Effect>,
+    writer: &writer::Queue,
+    shared: &Shared,
+    output: Option<(&dyn portable_pty::MasterPty, u64)>,
+) -> Result<()> {
     let mut replies = Vec::new();
     for effect in effects {
         match effect {
@@ -1437,6 +1451,15 @@ fn route_effects(effects: Vec<Effect>, writer: &writer::Queue, shared: &Shared) 
                 replies.extend(data);
             }
             effect => {
+                if let Effect::Title(title) = &effect
+                    && !title.is_empty()
+                    && let Some((master, epoch)) = output
+                    && let Some(observe) = shared.recovery_title_observer.get()
+                    && shared.has_recovery_title_source()
+                    && let Some(group) = master.process_group_leader()
+                {
+                    observe(shared, title, epoch, group);
+                }
                 let mut p = shared.published.lock().unwrap();
                 let title_changed = if let Effect::Title(title) = &effect {
                     let title = (!title.is_empty()).then_some(title.as_str());
@@ -1640,7 +1663,7 @@ fn run_pane(
     let mut writer_thread = Some(writer_thread);
     *shared.writer.lock().unwrap() = Some(writer.clone());
     let mut reader = master.try_clone_reader()?;
-    let (output_tx, output) = crossbeam_channel::bounded::<Vec<u8>>(64);
+    let (output_tx, output) = crossbeam_channel::bounded::<(u64, Vec<u8>)>(64);
     let reader_fd = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
     if reader_fd < 0 {
         return Err(std::io::Error::last_os_error().into());
@@ -1649,15 +1672,19 @@ fn run_pane(
         unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(reader_fd) };
     let reader_stop = ReaderStop(Arc::new(AtomicBool::new(false)));
     let reader_cancel = reader_stop.0.clone();
+    let reader_state = shared.clone();
     let reader_thread = thread::Builder::new()
         .name("bkpr-pty-reader".into())
         .spawn(move || {
             let mut buffer = [0; 16384];
             while !reader_cancel.load(Ordering::Acquire) {
+                // A title queued before authority changes must not follow a new
+                // binding when the terminal worker eventually drains this read.
+                let epoch = reader_state.status_epoch.load(Ordering::Acquire);
                 match reader.read(&mut buffer) {
                     Ok(0) => break,
                     Ok(n) => {
-                        if output_tx.send(buffer[..n].to_vec()).is_err() {
+                        if output_tx.send((epoch, buffer[..n].to_vec())).is_err() {
                             break;
                         }
                     }
@@ -1803,7 +1830,7 @@ fn run_pane(
             if !stale.is_empty() {
                 shared.changes.notify();
                 reconcile_size(&*master, &mut terminal, &shared, &mut current_size)?;
-                route_effects(terminal.drain_effects()?, &writer, &shared)?;
+                route_effects(terminal.drain_effects()?, &writer, &shared, None)?;
                 dirty = true;
             }
             // A bounded drain gives controls a turn even under an output flood.
@@ -1813,18 +1840,21 @@ fn run_pane(
                 }
                 let next = pending_output.take().map_or_else(|| output.try_recv(), Ok);
                 match next {
-                    Ok(bytes) => {
+                    Ok((epoch, bytes)) => {
                         {
                             let _published = shared.published.lock().unwrap();
                             if shared.status_reset.swap(false, Ordering::AcqRel) {
                                 terminal.clear_program_status();
                             }
-                            shared.status_feed_epoch.store(
-                                shared.status_epoch.load(Ordering::Acquire),
-                                Ordering::Release,
-                            );
+                            let epoch = shared.status_epoch.load(Ordering::Acquire);
+                            shared.status_feed_epoch.store(epoch, Ordering::Release);
                         }
-                        route_effects(terminal.feed(&bytes)?, &writer, &shared)?;
+                        route_effects(
+                            terminal.feed(&bytes)?,
+                            &writer,
+                            &shared,
+                            Some((&*master, epoch)),
+                        )?;
                         dirty = true;
                     }
                     Err(crossbeam_channel::TryRecvError::Disconnected) => {
@@ -1876,7 +1906,7 @@ fn run_pane(
             let command = crossbeam_channel::select_biased! {
                 recv(resize_events) -> _ => {
                     reconcile_size(&*master, &mut terminal, &shared, &mut current_size)?;
-                    route_effects(terminal.drain_effects()?, &writer, &shared)?;
+                    route_effects(terminal.drain_effects()?, &writer, &shared, None)?;
                     publish(&mut terminal, &shared)?;
                     None
                 },
@@ -2169,7 +2199,7 @@ fn run_pane(
                             Mutation::Terminate => {}
                         }
                         if write_id.is_none() {
-                            route_effects(terminal.drain_effects()?, &writer, &shared)?;
+                            route_effects(terminal.drain_effects()?, &writer, &shared, None)?;
                             if needs_publish {
                                 publish(&mut terminal, &shared)?;
                             }
@@ -2184,7 +2214,7 @@ fn run_pane(
                             if let Some(view_id) = live_input_view {
                                 publish_live_input(&mut terminal, &shared, &view_id)?;
                             }
-                            route_effects(terminal.drain_effects()?, &writer, &shared)
+                            route_effects(terminal.drain_effects()?, &writer, &shared, None)
                         })()
                     } else {
                         Ok(())
@@ -2470,6 +2500,7 @@ mod snapshot_tests {
                 status_dirty: AtomicBool::new(false),
                 status_wake: None,
                 status_observer: std::sync::OnceLock::new(),
+                recovery_title_observer: std::sync::OnceLock::new(),
                 notification_capture: Mutex::new(Default::default()),
                 resize_barrier: Mutex::new(None),
                 #[cfg(target_os = "linux")]

@@ -1697,31 +1697,26 @@ impl Coordinator {
                 }) {
                     continue;
                 }
-                let current = session
+                let context = session
                     .owner
                     .as_ref()
                     .zip(session.app.as_ref())
-                    .is_some_and(|(attachment, app)| {
-                        app.registry
-                            .panes
-                            .iter()
-                            .find(|pane| pane.id == record.source.pane_id)
-                            .is_some_and(|pane| {
-                                crate::desktop::source_is_current(
-                                    &record.source,
-                                    attachment.info(),
-                                    pane,
-                                )
-                            })
-                    });
-                if current
+                    .map(|(attachment, app)| {
+                        crate::desktop::Context::resolve(
+                            &record.source,
+                            attachment.info(),
+                            &app.registry,
+                        )
+                    })
+                    .unwrap_or_default();
+                if context.current
                     && attended
                         .as_ref()
                         .is_some_and(|(pane, _)| *pane == record.source.pane_id)
                 {
                     continue;
                 }
-                self.desktop.show(owner, record, terminal, out)?;
+                self.desktop.show(owner, record, context, terminal, out)?;
             }
             out.flush()?;
             break;

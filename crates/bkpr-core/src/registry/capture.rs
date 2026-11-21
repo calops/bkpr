@@ -98,6 +98,9 @@ impl Registry {
                 } else {
                     None
                 };
+                let title_lifetime = descriptor
+                    .as_ref()
+                    .and_then(|_| crate::control_lease::ProcessLifetime::observe(&launch.root).ok());
                 // Binding remains useful explicit recovery when foreground role
                 // cannot be verified. Only proven activity grants automatic intent.
                 let automatic_binding = descriptor.is_some()
@@ -192,7 +195,12 @@ impl Registry {
                     }
                     let result = (|| -> Result<()> {
                         if let Some(descriptor) = descriptor {
-                            self.recovery_bind(&launch, descriptor, automatic_binding)?;
+                            self.recovery_bind(
+                                &launch,
+                                descriptor,
+                                automatic_binding,
+                                title_lifetime,
+                            )?;
                         }
                         self.publish_capture_change(&launch)
                     })();
@@ -491,6 +499,7 @@ impl Registry {
             info.harness_status = None;
             info.harness_status_changed_at_ms = None;
             let mut published = pane.shared.published.lock().unwrap();
+            published.recovery_title.end();
             pane.shared.status_epoch.fetch_add(1, Ordering::AcqRel);
             published.status.clear();
             published.status_changed_at_ms.clear();
@@ -501,8 +510,16 @@ impl Registry {
             pane.shared.status_reset.store(true, Ordering::Release);
             pane.shared.changes.notify();
         } else {
-            let published = pane.shared.published.lock().unwrap();
+            let mut published = pane.shared.published.lock().unwrap();
             if authority_changed {
+                if info.harness.as_ref().is_none_or(|harness| {
+                    harness
+                        .managed
+                        .as_ref()
+                        .is_none_or(|managed| managed.conversation.is_none())
+                }) {
+                    published.recovery_title.end();
+                }
                 pane.shared.status_epoch.fetch_add(1, Ordering::AcqRel);
                 pane.shared.status_reset.store(true, Ordering::Release);
             }

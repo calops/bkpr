@@ -1,7 +1,8 @@
 use crate::tree::Owner;
 use anyhow::Result;
 use bkpr_protocol::{
-    Notification, NotificationKind, NotificationSource, PaneInfo, PaneStatus, SessionInfo,
+    Notification, NotificationKind, NotificationSource, PaneInfo, PaneStatus, RegistrySnapshot,
+    SessionInfo,
 };
 use bkpr_tui_framework::{TerminalGuard, notification};
 use std::{
@@ -9,6 +10,54 @@ use std::{
     io::Write,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+/// Display labels resolved through the notification's original session and launch.
+#[derive(Default)]
+pub(crate) struct Context<'a> {
+    /// Whether the original process and binding are still current.
+    pub current: bool,
+    workspace: Option<&'a str>,
+    title: Option<&'a str>,
+}
+
+impl<'a> Context<'a> {
+    /// Resolve labels without borrowing a replacement launch's title.
+    pub fn resolve(
+        source: &NotificationSource,
+        session: &SessionInfo,
+        registry: &'a RegistrySnapshot,
+    ) -> Self {
+        if !source_session_is_current(source, session) {
+            return Self::default();
+        }
+        let pane = registry
+            .panes
+            .iter()
+            .find(|pane| pane.id == source.pane_id && source_is_current(source, session, pane));
+        Self {
+            current: pane.is_some(),
+            workspace: registry
+                .workspaces
+                .iter()
+                .find(|workspace| Some(&workspace.id) == source.workspace_id.as_ref())
+                .map(|workspace| workspace.name.as_str()),
+            title: pane.map(|pane| crate::metadata::pane_title(pane, None)),
+        }
+    }
+
+    fn description(&self, source: &NotificationSource) -> String {
+        let title = self
+            .title
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or(source.harness.display_name());
+        format!(
+            "{} · {} · {}",
+            source.session.name,
+            self.workspace.unwrap_or("Unknown workspace"),
+            title
+        )
+    }
+}
 
 /// An attached source retained for a bounded physical notification lifetime.
 pub(crate) struct Target {
@@ -32,6 +81,7 @@ impl Desktop {
         &mut self,
         owner: Owner,
         record: Notification,
+        context: Context<'_>,
         terminal: &mut TerminalGuard,
         out: &mut impl Write,
     ) -> Result<()> {
@@ -60,11 +110,7 @@ impl Desktop {
             (NotificationKind::Done, _) => "Completion reported",
         };
         let title = format!("Bkpr · {state}");
-        let context = format!(
-            "{} · {}",
-            record.source.session.name,
-            record.source.harness.display_name()
-        );
+        let context = context.description(&record.source);
         let compact;
         let (title, body) = if capabilities.body {
             (title.as_str(), context.as_str())
@@ -194,8 +240,7 @@ mod tests {
         ProcessIdentity,
     };
 
-    #[test]
-    fn activation_rejects_replaced_session_process_launch_and_binding() {
+    fn fixture() -> (SessionInfo, NotificationSource, PaneInfo) {
         let session = SessionInfo {
             name: "Main".into(),
             session_id: "session".into(),
@@ -246,6 +291,69 @@ mod tests {
             home: "/".into(),
             isolated_environment: true,
         };
+        (session, source, pane)
+    }
+
+    #[test]
+    fn context_uses_source_workspace_and_cleaned_title_without_replacement_labels() {
+        let (session, source, mut pane) = fixture();
+        pane.title = "π > Frontend 日本語".into();
+        let mut registry = RegistrySnapshot {
+            revision: 1,
+            workspaces: vec![
+                bkpr_protocol::Workspace {
+                    id: "elsewhere".into(),
+                    name: "Unrelated focus".into(),
+                    revision: 1,
+                    windows: vec![],
+                },
+                bkpr_protocol::Workspace {
+                    id: "workspace".into(),
+                    name: "Development".into(),
+                    revision: 1,
+                    windows: vec![],
+                },
+            ],
+            panes: vec![pane],
+        };
+        let context = Context::resolve(&source, &session, &registry);
+        assert!(context.current);
+        assert_eq!(
+            context.description(&source),
+            "Main · Development · Frontend 日本語"
+        );
+        registry.panes[0]
+            .harness
+            .as_mut()
+            .unwrap()
+            .managed
+            .as_mut()
+            .unwrap()
+            .launch_id = "new-launch".into();
+        registry.panes[0].title = "Unrelated replacement".into();
+        let context = Context::resolve(&source, &session, &registry);
+        assert!(!context.current);
+        assert_eq!(context.title, None);
+        assert!(
+            !context
+                .description(&source)
+                .contains("Unrelated replacement")
+        );
+        registry.workspaces.clear();
+        assert!(
+            Context::resolve(&source, &session, &registry)
+                .description(&source)
+                .contains("Unknown workspace")
+        );
+        let mut foreign = session;
+        foreign.session_instance_id = "new-session".into();
+        let context = Context::resolve(&source, &foreign, &registry);
+        assert!(context.workspace.is_none() && context.title.is_none());
+    }
+
+    #[test]
+    fn activation_rejects_replaced_session_process_launch_and_binding() {
+        let (session, source, pane) = fixture();
         assert!(source_is_current(&source, &session, &pane));
         let mut replaced = session.clone();
         replaced.session_instance_id = "reopened".into();

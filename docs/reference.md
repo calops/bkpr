@@ -638,10 +638,15 @@ rendering keeps the same layout with rounded Unicode borders. Shortcuts stay in
 the bottom-left key hint popup, above the active overlay, and follow its current
 focus and available actions rather than repeating inside the dialog.
 
-Recovery keeps the list full-width and places its details below it. Rows align
-harness identity, admission status, directory and conversation ID, using the same
-colored harness icons as the sidebar. Saved pane titles remain searchable and
-appear explicitly in details; they are not conversation names.
+Recovery keeps the list full-width and places its details below it. Rows show
+the agent title alongside the colored harness icon and admission status, with
+directory and conversation ID columns when space permits. Titles follow the
+sidebar's display rules; they are not native conversation IDs.
+An explicit pane label takes precedence. Otherwise, the last retained title
+from the bound foreground harness survives normal exit and restart. For an
+automatic pane label with no retained title, the picker shows the harness name
+rather than the shell name. Older titles that were never retained can't be
+reconstructed.
 
 `Ctrl-r` refreshes while keeping the query and exact surviving selection.
 Tab switches between the list and scrollable details; arrows, PageUp/PageDown
