@@ -51,7 +51,8 @@ fn installed_terminfo() -> Option<&'static Path> {
                 .map(PathBuf::from)
                 .filter(|path| contains_bkpr_terminfo(path))
                 .or_else(|| {
-                    let executable = std::env::current_exe().ok()?;
+                    // On macOS current_exe can report the entrypoint symlink.
+                    let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
                     let directory = executable.parent()?.parent()?.join("share/terminfo");
                     contains_bkpr_terminfo(&directory).then_some(directory)
                 })
