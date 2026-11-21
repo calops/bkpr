@@ -16,6 +16,8 @@ Managed launches obtain authority through the backend's verified launcher/PTY an
 
 Omp's compiled legacy shim traverses relative imports, not `file:` re-exports; its discovery loader uses `pathdiff` so native package imports are rewritten. Keep the main-context binding guard. Parse TOML documents with `toml::from_str`; `Value::from_str` parses an individual value.
 
+Omp subscriber recovery stays within the selected native binding. Bound automatic retries across short-lived helpers; rearm an exhausted budget only on a new conversation or a root user prompt. Retire queued callbacks and timers on binding changes or shutdown. Reconnection is not permission to reoffer a claimed aside.
+
 Managed execution supplies `BKPR_INTEGRATION_FILE` only after scrub; it names a 0600 grant file in a 0700 launch root, never persistent configuration. Installed commands do not begin capture or discover a daemon. Missing context is inactive; malformed present context fails closed. Keep Codex relay transport and Antigravity native root metadata/context intact.
 
 Installation leases serialize Bkpr writers, not native applications. Sync files and newly created parent directories; compare before writes and conditionally roll back both settings and ownership metadata. Journals contain only declared owned values/hashes, never full user configuration. Keep explicit `LOCK_UN` on lease drop. Bundle cleanup retains referenced/live-leased versions and a bounded previous-version cache; changed or foreign contents are retained with diagnostics.

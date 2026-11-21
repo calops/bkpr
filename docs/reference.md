@@ -824,7 +824,10 @@ Reading a summary records a read, not full-body consumption or processing.
 `read_inbox.ack_ids` can acknowledge previously read, explicitly processed IDs
 atomically while returning the next unread page; it never auto-acknowledges newly
 returned messages. Native notifications carry batch/unread counts, not bodies.
-An expired wake claim releases its slot without replaying the old ambiguous wake.
+A wake batch stops accepting new messages 30 seconds after its claim, even if
+native dispatch reported `unknown`. New messages can claim a fresh wake.
+Messages covered by the old claim stay in the inbox with their original
+receipts; expiration does not replay them.
 
 Removing the sender delivery choice keeps native family 11: its trailing field
 slot is permanently retired, so an older daemon defaults an omitted choice to
@@ -857,6 +860,10 @@ Pi inserts native custom-message steering, and Antigravity uses native
 Registration and native binding do not establish receiver readiness: an actual
 subscription is required. An API that cannot confirm acceptance produces an
 `unknown` receipt rather than a synthetic success; it is not blindly replayed.
+If Omp's subscription helper exits unexpectedly, its extension retries the
+same authenticated conversation with bounded backoff. When its automatic retry
+budget is exhausted, a native user prompt or conversation change can rearm it.
+Reconnecting never repeats an old native aside.
 Pi's void steering API does not establish durable admission: its native wake
 receipt remains `unknown`, even when a later inbox read and processed
 acknowledgement independently demonstrate processing.

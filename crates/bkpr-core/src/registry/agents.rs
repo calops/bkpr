@@ -9,6 +9,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 mod messages;
 
 const RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+const WAKE_BATCH_LEASE_MS: u64 = 30_000;
 const MAX_INBOX: usize = 1000;
 const MAX_STORE_BYTES: u64 = 128 * 1024 * 1024;
 #[derive(Clone, Serialize, Deserialize)]
@@ -260,7 +261,7 @@ impl Agents {
             }
             agent.notification = None;
         }
-        for (id, receiver, notification, generation, _) in pending_dispatches(&store) {
+        for (id, receiver, notification, generation) in pending_dispatches(&store) {
             settle_unknown(
                 &mut store,
                 &id,
@@ -481,7 +482,7 @@ impl Agents {
                     changed |= agent.notification.take().is_some();
                 }
             }
-            for (id, receiver, notification, generation, _) in pending_dispatches(store)
+            for (id, receiver, notification, generation) in pending_dispatches(store)
                 .into_iter()
                 .filter(|(id, ..)| ids.contains(id))
             {
@@ -538,7 +539,7 @@ impl Agents {
                 }
                 changed |= agent.notification.take().is_some();
             }
-            for (id, receiver, notification, generation, _) in pending_dispatches(store) {
+            for (id, receiver, notification, generation) in pending_dispatches(store) {
                 changed |= settle_unknown(
                     store,
                     &id,
@@ -567,22 +568,15 @@ impl Agents {
     }
     fn maintain(&self, timestamp: u64) -> Result<()> {
         self.transaction_maybe(|store| {
-            let expired = expire(store, timestamp);
-            let timed_out = pending_dispatches(store)
-                .into_iter()
-                .filter(|(_, _, _, _, deadline)| *deadline <= timestamp)
-                .collect::<Vec<_>>();
-            let mut changed = expired;
-            for (id, receiver, notification, generation, _) in timed_out {
-                changed |= settle_unknown(
-                    store,
-                    &id,
-                    &receiver,
-                    &notification,
-                    generation,
-                    "native notification acceptance timed out",
-                    timestamp,
-                );
+            let mut changed = false;
+            for agent in store.agents.values_mut() {
+                changed |= expire_batch(agent, timestamp).is_some();
+            }
+            // Read/ack can release a slot before the native outcome arrives.
+            // Even detached pending receipts keep their original timeout.
+            for message in store.messages.values_mut() {
+                changed |= expire_retired_message(&store.agents, message, timestamp);
+                changed |= expire_pending_wake(message, timestamp);
             }
             Ok(((), changed))
         })
@@ -590,17 +584,37 @@ impl Agents {
 }
 fn expire(store: &mut Store, timestamp: u64) -> bool {
     let mut changed = false;
-    for m in store.messages.values_mut().filter(|m| pending(m)) {
-        if let Some(exit) = store.agents.get(&m.to).and_then(|a| a.exited_at)
-            && timestamp >= exit.saturating_add(RETENTION_MS)
-        {
-            m.text = None;
-            m.expired_at = Some(exit.saturating_add(RETENTION_MS));
-            changed = true;
-        }
+    for message in store.messages.values_mut() {
+        changed |= expire_retired_message(&store.agents, message, timestamp);
     }
     changed
 }
+
+fn expire_retired_message(
+    agents: &BTreeMap<String, Agent>,
+    message: &mut Message,
+    timestamp: u64,
+) -> bool {
+    if let Some(deadline) = retention_deadline(agents, message)
+        && deadline <= timestamp
+    {
+        message.text = None;
+        message.expired_at = Some(deadline);
+        return true;
+    }
+    false
+}
+
+fn retention_deadline(agents: &BTreeMap<String, Agent>, message: &Message) -> Option<u64> {
+    if !pending(message) {
+        return None;
+    }
+    agents
+        .get(&message.to)?
+        .exited_at
+        .map(|exit| exit.saturating_add(RETENTION_MS))
+}
+
 fn prune_retired(store: &mut Store, timestamp: u64, state: &AgentState) -> bool {
     let referenced = store
         .messages
@@ -1157,7 +1171,7 @@ impl Registry {
                     state.revision = state.revision.wrapping_add(1);
                 }
                 let timestamp = now();
-                for (id, receiver, notification, generation, _) in pending_dispatches(store)
+                for (id, receiver, notification, generation) in pending_dispatches(store)
                     .into_iter()
                     .filter(|(id, ..)| id == launch_id)
                 {
@@ -1358,9 +1372,17 @@ impl Registry {
             } => {
                 self.agent_receiver_peer(&launch, peer, &receiver_id)?;
                 let state = self.agent_request_state(&launch)?;
-                Ok(
-                    json!({"current":state.store.agents[id].notification.as_ref().is_some_and(|n| n.receiver_id == receiver_id && n.id == notification_id && n.generation == generation && n.state == "pending")}),
-                )
+                let current = state.store.agents[id]
+                    .notification
+                    .as_ref()
+                    .is_some_and(|n| {
+                        n.receiver_id == receiver_id
+                            && n.id == notification_id
+                            && n.generation == generation
+                            && n.state == "pending"
+                            && now() < wake_deadline(n.claimed_at)
+                    });
+                Ok(json!({"current":current}))
             }
             AgentRequest::WakeOutcome {
                 receiver_id,
@@ -1557,6 +1579,7 @@ impl Registry {
                                     text,
                                     idempotency_key,
                                     scope,
+                                    timestamp: now(),
                                 },
                                 &launch.grant.token,
                                 |store, selector| {
@@ -1679,7 +1702,7 @@ impl Registry {
             self.inner.agents.transaction_locked(|store| {
                 let mut changed = false;
                 let timestamp = now();
-                for (id, receiver, notification, generation, _) in pending_dispatches(store)
+                for (id, receiver, notification, generation) in pending_dispatches(store)
                     .into_iter()
                     .filter(|(id, receiver, ..)| {
                         id == &launch.grant.launch_id && receiver == &previous.id
@@ -1913,6 +1936,59 @@ fn require_scope(scope: AgentScope, own: &ContextFact, _store: &Store) -> Result
     Ok(())
 }
 
+fn wake_deadline(claimed_at: u64) -> u64 {
+    claimed_at.saturating_add(WAKE_BATCH_LEASE_MS)
+}
+
+fn expire_batch(agent: &mut Agent, timestamp: u64) -> Option<Notification> {
+    if agent
+        .notification
+        .as_ref()
+        .is_some_and(|n| wake_deadline(n.claimed_at) <= timestamp)
+    {
+        return agent.notification.take();
+    }
+    None
+}
+
+fn pending_wake_deadline(message: &Message) -> Option<u64> {
+    if message.wake_state == "pending"
+        && message.notification_id.is_some()
+        && message.receiver_id.is_some()
+        && message.generation.is_some()
+    {
+        return message.wake_claimed_at.map(wake_deadline);
+    }
+    None
+}
+
+fn expire_pending_wake(message: &mut Message, timestamp: u64) -> bool {
+    if pending_wake_deadline(message).is_some_and(|deadline| deadline <= timestamp)
+        && let Some(generation) = message.generation
+    {
+        record_unknown(
+            message,
+            generation,
+            "native notification acceptance timed out",
+            timestamp,
+        );
+        return true;
+    }
+    false
+}
+
+fn record_unknown(message: &mut Message, generation: u64, reason: &str, timestamp: u64) {
+    message.wake_state = "unknown".into();
+    message.wake_reason = Some(reason.into());
+    message.wake_failure = Some(WakeFailure {
+        state: "unknown".into(),
+        reason: reason.into(),
+        notification_id: message.notification_id.clone().expect("claimed message"),
+        generation,
+        recorded_at: timestamp,
+    });
+}
+
 fn settle_unknown(
     store: &mut Store,
     id: &str,
@@ -1943,51 +2019,39 @@ fn settle_unknown(
             && m.generation == Some(generation)
             && m.wake_state == "pending"
     }) {
-        m.wake_state = "unknown".into();
-        m.wake_reason = Some(reason.into());
-        m.wake_failure = Some(WakeFailure {
-            state: "unknown".into(),
-            reason: reason.into(),
-            notification_id: notification_id.into(),
-            generation,
-            recorded_at: timestamp,
-        });
+        record_unknown(m, generation, reason, timestamp);
         changed = true;
     }
     changed
 }
-fn pending_dispatches(store: &Store) -> BTreeSet<(String, String, String, u64, u64)> {
+fn pending_dispatches(store: &Store) -> BTreeSet<(String, String, String, u64)> {
     store
         .messages
         .values()
         .filter(|m| m.wake_state == "pending")
         .filter_map(|m| {
+            m.wake_claimed_at?;
             Some((
                 m.to.clone(),
                 m.receiver_id.clone()?,
                 m.notification_id.clone()?,
                 m.generation?,
-                m.wake_claimed_at?.saturating_add(30000),
             ))
         })
         .collect()
 }
 fn next_maintenance(store: &Store) -> Option<u64> {
-    let expiry = store
-        .messages
+    let batches = store
+        .agents
         .values()
-        .filter(|m| pending(m))
-        .filter_map(|m| store.agents.get(&m.to).and_then(|a| a.exited_at))
-        .map(|exit| exit.saturating_add(RETENTION_MS))
-        .min();
-    let notification = store
-        .messages
-        .values()
-        .filter(|m| m.wake_state == "pending" && m.notification_id.is_some())
-        .filter_map(|m| m.wake_claimed_at)
-        .map(|at| at.saturating_add(30000))
-        .min();
-    expiry.into_iter().chain(notification).min()
+        .filter_map(|a| a.notification.as_ref())
+        .map(|n| wake_deadline(n.claimed_at));
+    let receipts = store.messages.values().flat_map(|m| {
+        retention_deadline(&store.agents, m)
+            .into_iter()
+            .chain(pending_wake_deadline(m))
+    });
+    batches.chain(receipts).min()
 }
 
 #[cfg(all(test, target_os = "linux"))]

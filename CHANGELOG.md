@@ -66,6 +66,7 @@
 * **client:** deduplicate transfer-failure notifications and keep technical diagnostics behind Details instead of repeating protocol errors.
 * **client:** keep working-title waves vivid across project hues by maximizing in-gamut chroma at a shared sidebar contrast target instead of fixing every hue to the same lightness.
 * **agents:** resolve message recipients by launch or uniquely matching live conversation ID within scope, pin retries to their original launch, and distinguish copyable launch/conversation identities in the TUI.
+* **agents:** release expired wake batches even when native dispatch is unconfirmed, so later messages can wake the recipient without replaying earlier ones. Restore an exited Omp subscription with bounded backoff.
 * **client:** unify Finder, recovery and theme picker cards with tinted input, separated floating sections and complete rounded Unicode fallback borders. Keep contextual shortcut popups above modals, update them from effective bindings, group editor keys, and remove duplicate inline shortcut footers.
 * **client:** stop showing routine resize-completion and cancellation toasts; retain rejected and unknown-outcome layout errors.
 * **client:** give recovery a full-width aligned list with colored harness icons and details below it; retain saved pane titles as metadata rather than presenting shell names as conversation identities.

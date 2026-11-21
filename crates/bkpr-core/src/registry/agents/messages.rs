@@ -5,6 +5,8 @@ pub(super) struct SendInput {
     pub text: String,
     pub idempotency_key: String,
     pub scope: AgentScope,
+    /// Admission time used for the durable receipt and existing batch deadline.
+    pub timestamp: u64,
 }
 pub(super) struct SendPayload<'a> {
     pub to: &'a str,
@@ -70,6 +72,7 @@ pub(super) fn send(
         text,
         idempotency_key,
         scope,
+        timestamp,
     } = input;
     admit(store, &to)?;
     let recipient = resolve_recipient(store, id, own, contexts, &to, scope)?;
@@ -90,6 +93,19 @@ pub(super) fn send(
         .sequence
         .checked_add(1)
         .context("message sequence exhausted")?;
+    // A new admission must not join an expired claim even if the timer has
+    // not acquired the writer yet. Exact retries returned before this point.
+    if let Some(expired) = expire_batch(store.agents.get_mut(&to).unwrap(), timestamp)
+        && expired.state == "pending"
+    {
+        for message in store.messages.values_mut().filter(|m| {
+            m.to == to
+                && m.generation == Some(expired.generation)
+                && m.notification_id.as_deref() == Some(expired.id.as_str())
+        }) {
+            expire_pending_wake(message, timestamp);
+        }
+    }
     let n = store.agents[&to].notification.as_ref();
     let message = Message {
         id: Uuid::new_v4().to_string(),
@@ -100,7 +116,7 @@ pub(super) fn send(
         digest,
         scope,
         sequence: store.sequence,
-        created_at: now(),
+        created_at: timestamp,
         read_at: None,
         acknowledged_at: None,
         expired_at: None,

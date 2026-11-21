@@ -97,6 +97,18 @@ fn send_to(
     text: &str,
     scope: AgentScope,
 ) -> Result<Value> {
+    send_at(agents, contexts, to, key, text, scope, now())
+}
+
+fn send_at(
+    agents: &Agents,
+    contexts: &BTreeMap<String, ContextFact>,
+    to: &str,
+    key: &str,
+    text: &str,
+    scope: AgentScope,
+    timestamp: u64,
+) -> Result<Value> {
     agents.transaction(|store| {
         messages::send(
             store,
@@ -107,6 +119,7 @@ fn send_to(
                 text: text.into(),
                 idempotency_key: key.into(),
                 scope,
+                timestamp,
             },
             &"a".repeat(64),
             |_, _| Ok(()),
@@ -209,6 +222,7 @@ fn exact_retry_survives_recipient_exit_and_membership_change_but_conflicts_fail(
                 text: "hello".into(),
                 idempotency_key: "same".into(),
                 scope: AgentScope::Workspace,
+                timestamp: now(),
             },
             &"a".repeat(64),
             |_, _| Ok(()),
@@ -868,6 +882,7 @@ fn committed_send_pushes_pointer_without_reading_and_disconnect_retires_readines
                     text: "private peer body".into(),
                     idempotency_key: "push".into(),
                     scope: AgentScope::Workspace,
+                    timestamp: now(),
                 },
                 &"a".repeat(64),
                 |_, _| Ok(()),
@@ -1035,6 +1050,7 @@ fn native_rebind_does_not_replay_old_ambiguity_but_new_messages_get_new_generati
                     text: key.into(),
                     idempotency_key: key.into(),
                     scope: AgentScope::Workspace,
+                    timestamp: now(),
                 },
                 &"a".repeat(64),
                 |_, _| Ok(()),
@@ -1114,6 +1130,7 @@ fn receiver_mode_replacement_retires_old_claim_without_replaying_it() {
                     text: key.into(),
                     idempotency_key: key.into(),
                     scope: AgentScope::Workspace,
+                    timestamp: now(),
                 },
                 &"a".repeat(64),
                 |_, _| Ok(()),
@@ -1530,6 +1547,7 @@ fn every_direct_message_requests_a_wake_and_joins_the_current_claim() {
                     text: "body-free wake test body".into(),
                     idempotency_key: key.into(),
                     scope: AgentScope::Workspace,
+                    timestamp: now(),
                 },
                 &"a".repeat(64),
                 |_, _| Ok(()),
@@ -1588,36 +1606,165 @@ fn timed_out_claim_releases_only_its_slot_and_later_distinct_messages_wake() {
     )
     .unwrap();
     let old_claim = claim(&service, 100);
-    service.maintain(30100).unwrap();
+    // Leave maintenance behind; distinct admission itself must time out the old claim.
+    let new = send_at(
+        &service,
+        &contexts,
+        "b",
+        "new",
+        "distinct wake",
+        AgentScope::Workspace,
+        30_100,
+    )
+    .unwrap();
+    assert_eq!(new["wake"]["state"], "blocked");
+    assert_eq!(service.state.lock().unwrap().maintenance_at, None);
     let old_id = old["message_id"].as_str().unwrap();
     let old_outcome = {
         let state = service.state.lock().unwrap();
         summary(&state.store.messages[old_id])
     };
     assert_eq!(old_outcome["delivery"]["state"], "unknown");
-    assert!(
-        service
-            .transaction(|store| messages::claim(store, "b", "receiver", 30200))
-            .unwrap()
-            .is_none()
+    assert_eq!(
+        old_outcome["delivery"]["reason"],
+        "native notification acceptance timed out"
     );
-    let new = send(
-        &service,
-        &contexts,
-        "new",
-        "distinct wake",
-        AgentScope::Workspace,
-    )
-    .unwrap();
     let new_claim = claim(&service, 30300);
     assert_ne!(new_claim.id, old_claim.id);
     assert!(new_claim.generation > old_claim.generation);
     assert_eq!(new_claim.id, new["message_id"]);
+    assert_eq!(new_claim.message_count, 1);
     let unchanged = {
         let state = service.state.lock().unwrap();
         summary(&state.store.messages[old_id])
     };
     assert_eq!(unchanged, old_outcome);
+}
+
+#[test]
+fn terminal_batch_slots_expire_without_rewriting_or_reoffering_receipts() {
+    for (outcome, label, run_maintenance) in [
+        (
+            AgentWakeOutcome::Unknown {
+                reason: "native result ambiguous".into(),
+            },
+            "unknown",
+            true,
+        ),
+        (
+            AgentWakeOutcome::Unknown {
+                reason: "native result ambiguous".into(),
+            },
+            "unknown",
+            false,
+        ),
+        (AgentWakeOutcome::Accepted, "accepted", false),
+        (
+            AgentWakeOutcome::Failed {
+                reason: "native request rejected".into(),
+            },
+            "failed",
+            false,
+        ),
+    ] {
+        let (dir, service, contexts) = fixture();
+        let send = |key, timestamp| {
+            send_at(
+                &service,
+                &contexts,
+                "b",
+                key,
+                key,
+                AgentScope::Workspace,
+                timestamp,
+            )
+            .unwrap()
+        };
+        let old = send("old", 50);
+        let old_id = old["message_id"].as_str().unwrap();
+        let batch = claim(&service, 100);
+        service
+            .transaction(|store| {
+                messages::outcome(
+                    store,
+                    "b",
+                    "receiver",
+                    &batch.id,
+                    batch.generation,
+                    outcome,
+                    &"a".repeat(64),
+                )
+            })
+            .unwrap();
+        let joined = send("joined", 30_099);
+        assert_eq!(joined["wake"]["state"], label);
+        let historical = {
+            let state = service.state.lock().unwrap();
+            assert_eq!(state.maintenance_at, Some(30_100));
+            summary(&state.store.messages[old_id])
+        };
+        assert_eq!(historical["delivery"]["state"], label);
+        service.maintain(30_099).unwrap();
+        let retry = send("old", 30_100);
+        assert_eq!(retry["duplicate"], true);
+        assert_eq!(retry["message_id"], old_id);
+        assert_eq!(retry["wake"]["state"], label);
+        assert_eq!(service.state.lock().unwrap().maintenance_at, Some(30_100));
+
+        if run_maintenance {
+            // The timer can release a reported unknown without touching its history.
+            service.maintain(30_100).unwrap();
+            assert_eq!(service.state.lock().unwrap().maintenance_at, None);
+            assert!(
+                service
+                    .transaction(|store| messages::claim(store, "b", "receiver", 30_100))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        // Otherwise, deliberately leave maintenance behind the admission deadline.
+        let fresh = send("fresh", 30_100);
+        assert_eq!(fresh["duplicate"], false);
+        assert_eq!(fresh["wake"]["state"], "blocked");
+        assert_eq!(service.state.lock().unwrap().maintenance_at, None);
+        let next = claim(&service, 30_101);
+        assert_eq!(next.id, fresh["message_id"]);
+        assert_eq!(next.generation, batch.generation + 1);
+        assert_eq!(next.message_count, 1);
+        let persisted = Agents::load(&dir.path().join("agents")).unwrap();
+        assert_eq!(summary(&persisted.messages[old_id]), historical);
+        let joined = &persisted.messages[joined["message_id"].as_str().unwrap()];
+        assert_eq!(joined.notification_id.as_deref(), Some(batch.id.as_str()));
+        assert_eq!(joined.generation, Some(batch.generation));
+        assert_eq!(joined.wake_state, label);
+        if label == "unknown" {
+            service
+                .transaction(|store| {
+                    messages::outcome(
+                        store,
+                        "b",
+                        "receiver",
+                        &batch.id,
+                        batch.generation,
+                        AgentWakeOutcome::Accepted,
+                        &"a".repeat(64),
+                    )
+                })
+                .unwrap();
+            let state = service.state.lock().unwrap();
+            assert_eq!(state.store.messages[old_id].wake_state, "accepted");
+            assert_eq!(state.store.messages[&next.id].wake_state, "pending");
+            assert_eq!(
+                state.store.agents["b"]
+                    .notification
+                    .as_ref()
+                    .unwrap()
+                    .generation,
+                next.generation
+            );
+            assert_eq!(state.maintenance_at, Some(60_101));
+        }
+    }
 }
 
 #[test]
@@ -2005,6 +2152,7 @@ fn conversation_selector_persists_exact_launch_and_original_fingerprint() {
                     text: "conversation body".into(),
                     idempotency_key: "conversation".into(),
                     scope: AgentScope::Workspace,
+                    timestamp: now(),
                 },
                 &"a".repeat(64),
                 |_, selector| {
