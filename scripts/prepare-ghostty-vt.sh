@@ -4,7 +4,7 @@ set -euo pipefail
 revision=93967b7f9478e94dcbb42125c8a90f34feb40d75
 source_sha=af551aa496cf54ff734e11563d45fe2c49739ee754d1740d1ac984a67a42dc70
 patch_sha=196b39997c6552d9158f763555a72784aae2dbf4fa61aa500554bfd07e28d32c
-source_patch_sha=847d2d2ea94d65ebc66a1578de3dfc170b15c031ef0083898b44d957b9075e8c
+source_patch_sha=0aea59b0aef7712aa30924ca29135fe188f04d17af6e569e347140c0e5ccf762
 profile=ReleaseSafe-simd-libc-baseline-offer-source-v1
 repo=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
 root=${CARGO_TARGET_DIR:-"$repo/target"}

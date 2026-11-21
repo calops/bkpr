@@ -677,8 +677,10 @@ union ValueBody { NullValue, BoolValue, SignedValue, UnsignedValue, FloatValue, 
 table Value { body:ValueBody (required); }
 table ControlPayload { value:Value (required); }
 table PanePayload { metadata:Value (required); scene:[ubyte]; }
+// Retired with image resource streams: everything from ImagePixelFormat through
+// ImageResourcePayload is kept only for slot stability. Pane images travel inline
+// in scenes, and decoders reject ImageResourcePayload.
 enum ImagePixelFormat : ubyte { Rgb, Rgba, GrayAlpha, Gray }
-// Retired with image resource streams; pane images travel inline in scenes.
 enum ImageEncoding : ubyte { Raw, Zstd }
 table ImageDescriptor {
   key:ImageKey (required);
@@ -695,7 +697,6 @@ table ImageStart {
 }
 table ImageData { key:ImageKey (required); offset:ulong; data:[ubyte] (required); }
 table ImageEnd { key:ImageKey (required); encoded_len:ulong; }
-// Retired: never produced; decoders reject ImageResourcePayload.
 union ImageResource { ImagePreparing, ImageStart, ImageData, ImageEnd }
 table ImageResourcePayload { value:ImageResource (required); }
 union Payload { ControlPayload, PanePayload, ImageResourcePayload }

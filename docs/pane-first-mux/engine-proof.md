@@ -3771,8 +3771,9 @@ No desktop/push delivery, OS display, user read or activation is claimed.
 
 ## Progressive image delivery (2026-11-19)
 
-Status: implemented and accepted against isolated native/SSH and actual Kitty
-surfaces in light/dark, fancy/plain modes. The old-path measurements establish a
+Status: superseded on 2026-11-21 by inline image delivery (see the next section);
+the evidence below is historical. It was implemented and accepted against isolated
+native/SSH and actual Kitty surfaces in light/dark, fancy/plain modes. The old-path measurements establish a
 failure mechanism, not proof of the user's transient incident.
 
 The user approved independent image delivery while text, cursor and input become
@@ -3986,3 +3987,29 @@ They exposed the corrected annotation-color/blank-ink defects and independent
 fixture geometry, readiness, resize-redraw and reference-alignment issues.
 No user terminal, clipboard, approval, profile or provider/model service was
 used; owned processes and private roots are gone.
+
+## Inline image delivery with original payloads (2026-11-21)
+
+Status: implemented on `perf/image-passthrough`; replaces progressive delivery.
+
+Delivering images separately from their scene let text and images come from
+different moments: scrolling an image-heavy program (kittybrowser) showed stale
+images, stand-ins and flicker that plain Kitty does not. Pane images now travel
+inside the scene that first references them, so every frame is complete when it
+is applied. The client reports the generations it holds, and the backend omits
+them.
+
+To keep inline delivery cheap, a native contribution retains each still image's
+original PNG or zlib RGB/RGBA payload, when it is no larger than the pixels. The
+`planus_v1_sources` encoding carries that payload instead of pixels, and the
+client forwards it to the terminal unchanged (`f=100`, or `o=z`) instead of
+uploading raw RGBA. Retained originals are not charged to Ghostty's storage limit.
+
+Measured with the `scripts/image-bench` harness (release builds, Xvfb + Kitty,
+direct/local/remote/SSH topologies; raw runs under `target/image-bench`):
+
+- Before: the client sent decoded RGBA to the terminal, about 78 MB for 25 MB of
+  program PNGs.
+- After: frames reach the terminal 37–133 ms after the program sends them
+  locally, and a slow link skips to the latest frame rather than queueing.
+- The user reported kittybrowser scrolling on par with running it without Bkpr.

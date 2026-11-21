@@ -780,7 +780,7 @@ fn run(
                     let entry = Entry {
                         asset_id: asset.id,
                         rgb,
-                        png: png.map(|png| PreparedTransport::from_verified(&image, png)),
+                        png: png.map(|png| PreparedTransport::from_verified_png(&image, png)),
                         image,
                     };
                     next_id = following;
@@ -874,7 +874,7 @@ fn run(
                     cell: config.cell,
                     png: raster
                         .png
-                        .map(|png| PreparedTransport::from_verified(&image, png)),
+                        .map(|png| PreparedTransport::from_verified_png(&image, png)),
                     image,
                 };
                 next_id = following;

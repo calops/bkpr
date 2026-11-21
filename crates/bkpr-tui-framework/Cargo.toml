@@ -14,9 +14,8 @@ hashlink = "0.12.2"
 libc = "0.2"
 nucleo-matcher = "0.3"
 palette = { version = "=0.7.7", default-features = false, features = ["std"] }
-png = "0.18"
-# Same zlib-rs backend png already compiles; Kitty o=z transport compression.
-flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+png.workspace = true
+flate2.workspace = true
 image = { version = "0.25", default-features = false }
 uuid = { version = "1", features = ["v4"] }
 unicode-width = "0.2"

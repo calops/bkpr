@@ -955,10 +955,10 @@ fn finish_patch(
         key,
         body_png: body
             .png
-            .map(|png| PreparedTransport::from_verified(&body_image, png)),
+            .map(|png| PreparedTransport::from_verified_png(&body_image, png)),
         shadow_png: shadow
             .png
-            .map(|png| PreparedTransport::from_verified(&shadow_image, png)),
+            .map(|png| PreparedTransport::from_verified_png(&shadow_image, png)),
         body: body_image,
         shadow: shadow_image,
         body_visible,

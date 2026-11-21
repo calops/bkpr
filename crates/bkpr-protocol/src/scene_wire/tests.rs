@@ -516,14 +516,18 @@ fn retired_descriptor_only_scenes_and_descriptor_manifests_are_rejected() {
     assert!(decode(&binary(&descriptors)).is_err());
 }
 
-#[test]
-fn sources_encoding_carries_original_payloads_and_reconstructs_exact_pixels() {
+fn zlib(bytes: &[u8]) -> Vec<u8> {
     use std::io::Write;
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
+/// The fixture showing one 64x64 RGBA image that carries a zlib original.
+fn sourced() -> (Frame, Arc<Image>, Vec<u8>) {
     let mut frame = fixture();
     let original = frame.images[0].clone();
-    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
-    encoder.write_all(&vec![7u8; 64 * 64 * 4]).unwrap();
-    let payload = encoder.finish().unwrap();
+    let payload = zlib(&vec![7u8; 64 * 64 * 4]);
     let image = Arc::new(Image {
         width: 64,
         height: 64,
@@ -531,7 +535,7 @@ fn sources_encoding_carries_original_payloads_and_reconstructs_exact_pixels() {
         pixels: vec![7u8; 64 * 64 * 4],
         source: Some(Arc::new(crate::ImageSource {
             encoding: crate::ImageSourceEncoding::Zlib,
-            bytes: payload.clone(),
+            bytes: payload.clone().into(),
         })),
         ..original.as_ref().clone()
     });
@@ -543,7 +547,12 @@ fn sources_encoding_carries_original_payloads_and_reconstructs_exact_pixels() {
         placement.source_width = placement.source_width.min(64);
         placement.source_height = placement.source_height.min(64);
     }
+    (frame, image, payload)
+}
 
+#[test]
+fn sources_encoding_carries_original_payloads_and_reconstructs_exact_pixels() {
+    let (frame, image, payload) = sourced();
     let with_sources = encode_with_sources(&frame, 1, None, 0, &[]).unwrap();
     let plain = encode(&frame, 1, None, 0, &[]).unwrap();
     // The original payload replaces the pixels on the wire.
@@ -551,7 +560,7 @@ fn sources_encoding_carries_original_payloads_and_reconstructs_exact_pixels() {
     let decoded = decode(&with_sources).unwrap();
     let received = &decoded.images()[0];
     assert_eq!(received.pixels, image.pixels);
-    assert_eq!(received.source.as_ref().unwrap().bytes, payload);
+    assert_eq!(&received.source.as_ref().unwrap().bytes[..], &payload[..]);
     // Older consumers keep receiving plain pixels and no source.
     let decoded = decode(&plain).unwrap();
     assert_eq!(decoded.images()[0].pixels, image.pixels);
@@ -560,4 +569,57 @@ fn sources_encoding_carries_original_payloads_and_reconstructs_exact_pixels() {
     let omitted =
         decode(&encode_with_sources(&frame, 1, None, 0, &[image.key()]).unwrap()).unwrap();
     assert!(omitted.images().is_empty());
+}
+
+#[test]
+fn malformed_image_sources_are_rejected() {
+    let (frame, _, payload) = sourced();
+    let bytes = encode_with_sources(&frame, 1, None, 0, &[]).unwrap();
+    let valid = g::Scene::try_from(g::SceneRef::read_as_root(&bytes).unwrap()).unwrap();
+    assert!(decode(&binary(&valid)).is_ok());
+    let corruptions: &[fn(&mut g::Image, &[u8])] = &[
+        |i, _| i.source_encoding = g::ImageSourceEncoding::None,
+        |i, _| i.pixels = vec![7; 4],
+        |i, _| i.source = None,
+        |i, _| i.source = Some(Vec::new()),
+        |i, _| i.source = Some(vec![0; 64 * 64 * 4 + 1]),
+        |i, payload| i.source = Some(payload[..payload.len() - 4].to_vec()),
+        |i, payload| i.source = Some([payload, &[0]].concat()),
+        |i, _| i.source_encoding = g::ImageSourceEncoding::Png,
+        // The source decodes to fewer bytes than the declared shape.
+        |i, _| i.width = 65,
+    ];
+    for (index, mutate) in corruptions.iter().enumerate() {
+        let mut corrupt = valid.clone();
+        mutate(&mut corrupt.frame.images[0], &payload);
+        assert!(
+            decode(&binary(&corrupt)).is_err(),
+            "accepted corruption {index}"
+        );
+    }
+}
+
+#[test]
+fn tiny_sources_cannot_claim_more_than_the_decoded_image_budget() {
+    // 17 small zlib bodies, each declaring 4 MiB of pixels: about 68 MiB once inflated.
+    let (frame, _, _) = sourced();
+    let bytes = encode_with_sources(&frame, 1, None, 0, &[]).unwrap();
+    let mut scene = g::Scene::try_from(g::SceneRef::read_as_root(&bytes).unwrap()).unwrap();
+    let body = zlib(&vec![0u8; 1024 * 1024 * 4]);
+    let template = scene.frame.images[0].clone();
+    scene.frame.images = (0..17)
+        .map(|generation| g::Image {
+            generation,
+            width: 1024,
+            height: 1024,
+            source: Some(body.clone()),
+            ..template.clone()
+        })
+        .collect();
+    scene.frame.placements.clear();
+    let error = match decode(&binary(&scene)) {
+        Ok(_) => panic!("accepted an amplified image budget"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("scene image byte limit"));
 }

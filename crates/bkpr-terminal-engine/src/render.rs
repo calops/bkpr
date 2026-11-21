@@ -288,13 +288,15 @@ fn read_image(
         height,
         format,
         pixels: pixels.to_vec(),
-        source: read_source(&native, format)?,
+        source: read_source(&native, format, pixels.len())?,
     }))
 }
-/// The program's PNG or zlib payload, when the engine retained one that clients can forward.
+/// The program's PNG or zlib payload, when the engine retained one that clients can forward:
+/// a still PNG or zlib stream no larger than the `decoded_len` pixel bytes it stands for.
 fn read_source(
     native: &sdk::kitty::graphics::Image<'_>,
     format: PixelFormat,
+    decoded_len: usize,
 ) -> Result<Option<std::sync::Arc<bkpr_protocol::ImageSource>>> {
     use bkpr_protocol::ImageSourceEncoding;
     use sdk::kitty::graphics::{Compression, ImageFormat};
@@ -314,11 +316,22 @@ fn read_source(
         // Gray, or zlib-wrapped PNG: no forwardable Kitty form here; send decoded pixels.
         _ => return Ok(None),
     };
-    if source.bytes.len() > IMAGE_MAX_BYTES {
+    // Larger payloads would never be sent instead of pixels.
+    if source.bytes.len() > decoded_len.min(IMAGE_MAX_BYTES) {
+        return Ok(None);
+    }
+    // The engine shows an animated PNG's default image, but a forwarded APNG would animate.
+    if encoding == ImageSourceEncoding::Png && is_animated_png(source.bytes) {
         return Ok(None);
     }
     Ok(Some(std::sync::Arc::new(bkpr_protocol::ImageSource {
         encoding,
-        bytes: source.bytes.to_vec(),
+        bytes: source.bytes.into(),
     })))
+}
+/// Whether a PNG declares animation (`acTL`), or is too malformed to tell.
+fn is_animated_png(bytes: &[u8]) -> bool {
+    png::Decoder::new(std::io::Cursor::new(bytes))
+        .read_info()
+        .map_or(true, |reader| reader.info().animation_control.is_some())
 }

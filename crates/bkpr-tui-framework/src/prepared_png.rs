@@ -1,6 +1,6 @@
 //! Worker-only lossless transport preparation (PNG or zlib) and immutable image identity.
 
-use bkpr_protocol::{Image, PixelFormat};
+use bkpr_protocol::{Image, ImageSourceEncoding, PixelFormat};
 use std::{
     io::Cursor,
     sync::{Arc, Weak},
@@ -12,15 +12,6 @@ const MAX_PIXEL_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PNG_BYTES: usize = 128 * 1024 * 1024;
 const DECODER_WORKING_BYTES: usize = 8 * 1024 * 1024;
 
-/// Lossless Kitty payload form of one image's exact pixels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TransportEncoding {
-    /// A complete PNG file, transmitted with `f=100`.
-    Png,
-    /// The image's packed RGB or RGBA pixels as one zlib stream, transmitted with `o=z`.
-    Zlib,
-}
-
 /// Worker-prepared Kitty payload bound to one immutable image allocation.
 ///
 /// Cloning retains encoded bytes, but never keeps the source image alive. Native
@@ -28,7 +19,7 @@ pub enum TransportEncoding {
 #[derive(Clone, Debug)]
 pub struct PreparedTransport {
     image: Weak<Image>,
-    encoding: TransportEncoding,
+    encoding: ImageSourceEncoding,
     bytes: Arc<[u8]>,
 }
 
@@ -38,24 +29,40 @@ impl PreparedTransport {
     /// The caller must establish that PNG dimensions, eight-bit channel format
     /// and decoded pixels match this exact immutable image, including alpha.
     /// Rendering relies on this invariant and performs no codec/content checks.
-    pub fn from_verified(image: &Arc<Image>, png: Arc<[u8]>) -> Self {
+    pub fn from_verified_png(image: &Arc<Image>, png: Arc<[u8]>) -> Self {
         Self {
             image: Arc::downgrade(image),
-            encoding: TransportEncoding::Png,
+            encoding: ImageSourceEncoding::Png,
             bytes: png,
         }
     }
 
     /// Bind a zlib stream of this image's exact RGB/RGBA pixels, verified by the caller.
     ///
-    /// The invariant of [`Self::from_verified`] applies: inflating the stream must
+    /// The invariant of [`Self::from_verified_png`] applies: inflating the stream must
     /// yield exactly `image.pixels`. Gray formats have no Kitty raw form; `None`.
     pub fn from_verified_zlib(image: &Arc<Image>, zlib: Arc<[u8]>) -> Option<Self> {
-        matches!(image.format, PixelFormat::Rgb | PixelFormat::Rgba).then(|| Self {
+        kitty_raw_format(image.format).map(|_| Self {
             image: Arc::downgrade(image),
-            encoding: TransportEncoding::Zlib,
+            encoding: ImageSourceEncoding::Zlib,
             bytes: zlib,
         })
+    }
+
+    /// Payload for a decoded pane image, on a worker thread: the program's original
+    /// PNG/zlib bytes when they arrived (shared, not copied), else [`Self::compress`].
+    ///
+    /// Decoding the image from its original bytes must already have succeeded.
+    pub fn for_image(image: &Arc<Image>) -> Option<Self> {
+        match image.source.as_deref() {
+            Some(source) => match source.encoding {
+                ImageSourceEncoding::Png => {
+                    Some(Self::from_verified_png(image, source.bytes.clone()))
+                }
+                ImageSourceEncoding::Zlib => Self::from_verified_zlib(image, source.bytes.clone()),
+            },
+            None => Self::compress(image),
+        }
     }
 
     /// Compress RGB/RGBA pixels on a worker thread, never while rendering.
@@ -63,9 +70,7 @@ impl PreparedTransport {
     /// `None` for gray formats, or when compression would not shrink the payload
     /// and raw transmission is already the cheaper form.
     pub fn compress(image: &Arc<Image>) -> Option<Self> {
-        if !matches!(image.format, PixelFormat::Rgb | PixelFormat::Rgba) {
-            return None;
-        }
+        kitty_raw_format(image.format)?;
         let mut encoder = flate2::write::ZlibEncoder::new(
             Vec::with_capacity(image.pixels.len() / 2),
             flate2::Compression::fast(),
@@ -79,7 +84,7 @@ impl PreparedTransport {
     }
 
     /// Kitty payload form of [`Self::bytes`].
-    pub(crate) fn encoding(&self) -> TransportEncoding {
+    pub(crate) fn encoding(&self) -> ImageSourceEncoding {
         self.encoding
     }
 
@@ -98,7 +103,7 @@ impl PreparedTransport {
         self.is_live() && std::ptr::eq(self.image.as_ptr(), image)
     }
 
-    /// Encoded residency charged by worker and terminal transport cache budgets.
+    /// Encoded residency charged by worker caches that retain prepared payloads.
     pub(crate) fn byte_len(&self) -> usize {
         self.bytes.len()
     }
@@ -106,6 +111,15 @@ impl PreparedTransport {
     /// Borrow worker-verified transport bytes without copying them.
     pub(crate) fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+}
+
+/// Kitty `f=` code for raw pixels in this format; gray formats have none.
+pub(crate) fn kitty_raw_format(format: PixelFormat) -> Option<u8> {
+    match format {
+        PixelFormat::Rgb => Some(24),
+        PixelFormat::Rgba => Some(32),
+        PixelFormat::Gray | PixelFormat::GrayAlpha => None,
     }
 }
 
@@ -422,10 +436,45 @@ mod tests {
             source: None,
         });
         let encoded = encode(1, 1, image.format, &image.pixels).unwrap();
-        let prepared = PreparedTransport::from_verified(&image, encoded);
+        let prepared = PreparedTransport::from_verified_png(&image, encoded);
         assert!(prepared.matches(&image));
         assert!(!prepared.matches(&image.as_ref().clone()));
         drop(image);
         assert!(!prepared.is_live());
+    }
+
+    #[test]
+    fn pane_images_forward_their_original_bytes_without_copying() {
+        let pixels = vec![5u8; 64 * 64 * 3];
+        let mut image = Image {
+            id: 1,
+            generation: 1,
+            width: 64,
+            height: 64,
+            format: PixelFormat::Rgb,
+            pixels: pixels.clone(),
+            source: None,
+        };
+        // Without an original, uniform pixels are compressed on the worker.
+        let compressed = PreparedTransport::for_image(&Arc::new(image.clone())).unwrap();
+        assert_eq!(compressed.encoding(), ImageSourceEncoding::Zlib);
+        for encoding in [ImageSourceEncoding::Zlib, ImageSourceEncoding::Png] {
+            let bytes: Arc<[u8]> = vec![1, 2, 3].into();
+            image.source = Some(Arc::new(bkpr_protocol::ImageSource {
+                encoding,
+                bytes: bytes.clone(),
+            }));
+            let prepared = PreparedTransport::for_image(&Arc::new(image.clone())).unwrap();
+            assert_eq!(prepared.encoding(), encoding);
+            assert!(Arc::ptr_eq(&prepared.bytes, &bytes));
+        }
+        // Gray pixels have no Kitty raw form, so a zlib original cannot be forwarded.
+        image.format = PixelFormat::GrayAlpha;
+        image.pixels.truncate(64 * 64 * 2);
+        image.source = Some(Arc::new(bkpr_protocol::ImageSource {
+            encoding: ImageSourceEncoding::Zlib,
+            bytes: vec![1].into(),
+        }));
+        assert!(PreparedTransport::for_image(&Arc::new(image)).is_none());
     }
 }

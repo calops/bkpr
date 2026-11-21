@@ -422,26 +422,26 @@ fn invalid_startup_defaults_do_not_publish_or_consume_configuration() {
     assert!(!String::from_utf8_lossy(&stored).contains("nonexistent"));
 }
 
-#[test]
-fn managed_native_poll_delivers_binary_scene_through_dispatch_and_framing() {
-    let server = Server::new("binary-scene");
-    let client = server.register();
-    assert_eq!(server.activate(&client, false)["ok"], true);
-    let pane_id = server.spawn();
-    let view_id = server.attach(&client, &pane_id);
+fn native_poll(
+    server: &Server,
+    client: &Client,
+    pane_id: &str,
+    view_id: &str,
+    encoding: &str,
+) -> Response {
     let request = Request::new(Operation::Client {
         authority: client.authority.clone(),
         request: Box::new(Operation::Pane {
-            pane_id: pane_id.clone(),
+            pane_id: pane_id.into(),
             request: PaneRequest::Poll {
-                view_id,
+                view_id: view_id.into(),
                 after: 0,
                 frame_after: 0,
                 resources: Vec::new(),
                 snapshot_after: 0,
                 wait_ms: 0,
                 row_deltas: true,
-                scene_encoding: Some("planus_v1".into()),
+                scene_encoding: Some(encoding.into()),
             },
         }),
     });
@@ -456,22 +456,43 @@ fn managed_native_poll_delivers_binary_scene_through_dispatch_and_framing() {
     )
     .unwrap();
     let bytes = wire::read_frame(&mut stream, wire::Kind::Response, wire::MAX_RESPONSE).unwrap();
-    let response = wire::decode_response(&bytes).unwrap();
-    assert!(response.ok, "{response:?}");
-    let Payload::Pane(payload) = response.result.unwrap() else {
-        panic!("native polling must preserve the pane payload discriminator");
-    };
-    assert_eq!(payload.metadata["pane_id"], pane_id);
-    assert!(payload.metadata["frame"].is_null());
-    assert!(payload.metadata.get("scene").is_none());
-    let mut actual = None;
-    let mut revision = 0;
-    bkpr_protocol::scene_wire::decode(payload.scene.as_deref().unwrap())
-        .unwrap()
-        .apply(&mut revision, &mut actual)
-        .unwrap();
-    assert_eq!(revision, payload.metadata["revision"].as_u64().unwrap());
-    assert_eq!(actual.unwrap().size, spec().size);
+    wire::decode_response(&bytes).unwrap()
+}
+
+#[test]
+fn managed_native_poll_delivers_binary_scene_through_dispatch_and_framing() {
+    let server = Server::new("binary-scene");
+    let client = server.register();
+    assert_eq!(server.activate(&client, false)["ok"], true);
+    let pane_id = server.spawn();
+    let view_id = server.attach(&client, &pane_id);
+    for encoding in ["planus_v1", bkpr_protocol::SOURCES_SCENE_ENCODING] {
+        let response = native_poll(&server, &client, &pane_id, &view_id, encoding);
+        assert!(response.ok, "{encoding}: {response:?}");
+        let Payload::Pane(payload) = response.result.unwrap() else {
+            panic!("native polling must preserve the pane payload discriminator");
+        };
+        assert_eq!(payload.metadata["pane_id"], pane_id);
+        assert!(payload.metadata["frame"].is_null());
+        assert!(payload.metadata.get("scene").is_none());
+        let mut actual = None;
+        let mut revision = 0;
+        bkpr_protocol::scene_wire::decode(payload.scene.as_deref().unwrap())
+            .unwrap()
+            .apply(&mut revision, &mut actual)
+            .unwrap();
+        assert_eq!(revision, payload.metadata["revision"].as_u64().unwrap());
+        assert_eq!(actual.unwrap().size, spec().size);
+    }
+    // The retired progressive encoding is no longer served.
+    let response = native_poll(
+        &server,
+        &client,
+        &pane_id,
+        &view_id,
+        "planus_v1_progressive",
+    );
+    assert!(!response.ok);
 }
 
 fn acknowledge_native_turn(pane: &crate::Pane) {

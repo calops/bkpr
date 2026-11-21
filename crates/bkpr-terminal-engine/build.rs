@@ -42,7 +42,7 @@ fn main() {
         .expect("missing native image-source patch provenance");
     assert_eq!(
         source_patch_sha.trim(),
-        "847d2d2ea94d65ebc66a1578de3dfc170b15c031ef0083898b44d957b9075e8c",
+        "0aea59b0aef7712aa30924ca29135fe188f04d17af6e569e347140c0e5ccf762",
         "wrong native image-source patch"
     );
     let patch_path = dir.join("bkpr-source-patch-sha256");

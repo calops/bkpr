@@ -9,12 +9,12 @@ description = "Bkpr normalized terminal scenes and authority policy over libghos
 [dependencies]
 bkpr-protocol = { path = "../bkpr-protocol" }
 libghostty-vt = { path = "../../vendor/libghostty-rs/crates/libghostty-vt", features = ["png"] }
+png.workspace = true
 
 [build-dependencies]
 sha2 = { version = "0.11", default-features = false }
 
 [dev-dependencies]
 base64 = "0.22"
-png = "0.18"
-flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+flate2.workspace = true
 serde_json.workspace = true

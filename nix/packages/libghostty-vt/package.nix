@@ -13,14 +13,14 @@
   # commit, so a copied recipe needs no repository-relative path.
   imageSourcePatch ? fetchurl {
     url = "https://raw.githubusercontent.com/calops/bkpr/d45abebebd190a2f765db0ee4d0802e418d033e4/vendor/libghostty-rs/crates/libghostty-vt-sys/native/kitty-image-source.patch";
-    sha256 = "847d2d2ea94d65ebc66a1578de3dfc170b15c031ef0083898b44d957b9075e8c";
+    sha256 = "0aea59b0aef7712aa30924ca29135fe188f04d17af6e569e347140c0e5ccf762";
   },
 }:
 let
   revision = "93967b7f9478e94dcbb42125c8a90f34feb40d75";
   sourceSha256 = "af551aa496cf54ff734e11563d45fe2c49739ee754d1740d1ac984a67a42dc70";
   patchSha256 = "196b39997c6552d9158f763555a72784aae2dbf4fa61aa500554bfd07e28d32c";
-  imageSourcePatchSha256 = "847d2d2ea94d65ebc66a1578de3dfc170b15c031ef0083898b44d957b9075e8c";
+  imageSourcePatchSha256 = "0aea59b0aef7712aa30924ca29135fe188f04d17af6e569e347140c0e5ccf762";
   profile = "ReleaseSafe-simd-libc-baseline-offer-source-v1";
   targets = {
     x86_64-linux = "x86_64-linux-gnu";
