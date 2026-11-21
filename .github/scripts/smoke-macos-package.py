@@ -106,6 +106,7 @@ def smoke(root):
             time.sleep(0.05)
 
     output = bytearray()
+    startup_output = bytearray()
 
     def expect(master, client, marker):
         deadline = time.monotonic() + 25
@@ -123,6 +124,7 @@ def smoke(root):
                     raise
                 chunk = b""
             check(chunk, f"Terminal closed before rendering {marker!r}")
+            startup_output.extend(chunk[:max(0, 12288 - len(startup_output))])
             output.extend(chunk)
             del output[:-262144]
 
@@ -148,6 +150,13 @@ def smoke(root):
         check(info["daemon_id"] and daemons == [info["pid"]] and len(panes) == 1,
               f"{socket} did not identify the installed daemon and its fixture: {info}, {daemons}, {panes}")
     except Exception:
+        print(f"Terminal startup: {bytes(startup_output)!r}", file=sys.stderr)
+        for args in [(CLI, "daemon", "info", "--socket", socket), (CLI, "list")]:
+            try:
+                print(f"{args[1:]}: {command(*args)}", file=sys.stderr)
+            except Exception as error:
+                print(error, file=sys.stderr)
+        print(f"Owned daemon and pane PIDs: {owned_processes()}", file=sys.stderr)
         print(f"Terminal output tail: {bytes(output[-4096:])!r}", file=sys.stderr)
         log = Path(env["XDG_STATE_HOME"]) / "bkpr/bkprd.log"
         if log.is_file():

@@ -598,6 +598,10 @@ impl BoundSocket {
                         if shutdown.load(Ordering::Acquire) {
                             break;
                         }
+                        // Darwin accept inherits the listener's nonblocking
+                        // flag; the framing worker expects a blocking stream.
+                        #[cfg(target_os = "macos")]
+                        stream.set_nonblocking(false)?;
                         let mut reader = match stop.register_reader(&stream) {
                             Ok(reader) => reader,
                             Err(error) => {

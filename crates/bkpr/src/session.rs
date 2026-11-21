@@ -710,7 +710,14 @@ fn ensure_host(
         });
     })
     .context("watching daemon startup output")?;
-    watcher.watch(stdout.path(), RecursiveMode::NonRecursive)?;
+    // FSEvents observes writes under a directory, not writes to a file used
+    // as the stream root.
+    let watched = if cfg!(target_os = "macos") {
+        paths.state_root.as_path()
+    } else {
+        stdout.path()
+    };
+    watcher.watch(watched, RecursiveMode::NonRecursive)?;
     let mut command = Command::new(server);
     command
         .arg("--socket")
