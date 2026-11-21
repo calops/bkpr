@@ -16,8 +16,7 @@ pub(crate) const MODAL_BACKGROUND_FAINT: bool = true;
 /// Material policy from main 9ad93bd and retained fork 18890b23:
 /// compact frames anchor the opening at the native content boundary;
 /// their placement translates horizontal edges to equalize physical spacing.
-/// depth.rs uses sigma=.30cw, offset=.35cw, opacity=.72 and a .12cw facet.
-/// Raised surfaces use the inverse shadow mask at .45 opacity and the same bevel.
+/// Raised surfaces use the inverse shadow mask and the same bevel.
 /// The sidebar itself is a plain matte surface, not a decorated window.
 pub(crate) fn decoration_styles(host: &ColorProbe, size: Size) -> Option<[DecorationStyle; 2]> {
     use bkpr_tui_framework::decoration::DecorationKind;
@@ -35,7 +34,8 @@ pub(crate) fn decoration_styles(host: &ColorProbe, size: Size) -> Option<[Decora
     let pane_radius = (cw * 3 / 2).min(2 * cw).min(2 * ch);
     let surface = surface(fg, bg);
     let sigma_milli = (cw * 300).max(750);
-    let support = (cw * 350 + sigma_milli * 5 + 1000).div_ceil(1000);
+    let offset_milli = cw * 180;
+    let support = (offset_milli + sigma_milli * 5 + 1000).div_ceil(1000);
     let padding = [support.div_ceil(cw) * cw, support.div_ceil(ch) * ch];
     let recessed = DecorationStyle {
         kind: DecorationKind::Recessed,
@@ -46,7 +46,7 @@ pub(crate) fn decoration_styles(host: &ColorProbe, size: Size) -> Option<[Decora
         outset_px: [0, 0],
         radius_px: pane_radius,
         sigma_milli,
-        offset_milli: [(cw * 350) as i32; 2],
+        offset_milli: [offset_milli as i32; 2],
         shadow_opacity_milli: 720,
         lip_width_milli: (cw * 120).clamp(750, 2000),
         lip_highlight_milli: 240,
