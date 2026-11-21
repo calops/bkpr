@@ -28,24 +28,17 @@ run *args: build
     set -euo pipefail
     exec "${CARGO_TARGET_DIR:-$PWD/target}/debug/bkpr" "$@"
 
-# Your live sessions are untouched. Rerun with the same name to reattach; a running
-# sandbox keeps the binaries it started with until `just sandbox-stop NAME`.
+# Sandboxes never touch your live sessions. Rerun with the same name to reattach; a
+# running sandbox keeps the binaries it started with until `just sandbox-stop NAME`.
 # Extra arguments go to `bkpr tui`, e.g. `just sandbox imgtest release -s work`.
+
 # Open this checkout's build in an isolated bkpr (private daemon, socket and state).
 sandbox name="default" profile="debug" *args:
     #!/usr/bin/env bash
     set -euo pipefail
     name=$1 profile=$2
     shift 2
-    case "$name" in *[!A-Za-z0-9_-]*|"") echo "sandbox name must be [A-Za-z0-9_-]+" >&2; exit 2 ;; esac
-    if (( ${#name} > 16 )); then echo "sandbox name must be at most 16 characters" >&2; exit 2; fi
-    # Short, private path: session sockets nest a 64-character hash under it, and Unix
-    # socket paths are limited to 107 bytes.
-    dir="${XDG_RUNTIME_DIR:-/tmp}/bks-$name"
-    if (( ${#dir} + 74 > 107 )); then
-        echo "sandbox path $dir is too long for session sockets; set a shorter XDG_RUNTIME_DIR" >&2
-        exit 2
-    fi
+    dir=$(just sandbox-dir "$name")
     mkdir -p "$dir"
     chmod 700 "$dir"
     if [[ -x "$dir/bin/bkpr" ]] && "$dir/bin/bkpr" daemon --socket "$dir/c.sock" info >/dev/null 2>&1; then
@@ -64,13 +57,28 @@ sandbox name="default" profile="debug" *args:
 sandbox-stop name="default":
     #!/usr/bin/env bash
     set -euo pipefail
-    case "$1" in *[!A-Za-z0-9_-]*|"") echo "sandbox name must be [A-Za-z0-9_-]+" >&2; exit 2 ;; esac
-    dir="${XDG_RUNTIME_DIR:-/tmp}/bks-$1"
+    dir=$(just sandbox-dir "$1")
     if [[ ! -d "$dir" ]]; then echo "no sandbox '$1'" >&2; exit 0; fi
     if [[ -x "$dir/bin/bkpr" ]] && "$dir/bin/bkpr" daemon --socket "$dir/c.sock" info >/dev/null 2>&1; then
         "$dir/bin/bkpr" daemon --socket "$dir/c.sock" stop
     fi
     rm -rf "$dir"
+
+# Print a sandbox's private directory, rejecting names that are unsafe or too long.
+[private]
+sandbox-dir name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$1" in *[!A-Za-z0-9_-]*|"") echo "sandbox name must be [A-Za-z0-9_-]+" >&2; exit 2 ;; esac
+    if (( ${#1} > 16 )); then echo "sandbox name must be at most 16 characters" >&2; exit 2; fi
+    dir="${XDG_RUNTIME_DIR:-/tmp}/bks-$1"
+    # Each session socket is "$dir/<64-hex session key>/s", 67 bytes longer than $dir,
+    # and Unix socket paths are limited to 107 bytes.
+    if (( ${#dir} + 67 > 107 )); then
+        echo "sandbox path $dir is too long for session sockets; set a shorter XDG_RUNTIME_DIR" >&2
+        exit 2
+    fi
+    printf '%s\n' "$dir"
 
 # Prepare the same pinned engine and run the native workspace tests.
 test:
