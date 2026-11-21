@@ -2,6 +2,8 @@
 
 Own user CLI/bootstrap, utility dispatch and native harness adapters; the default terminal application lives in `bkpr-client`. Depend on protocol/client/framework, not backend implementation. `cli.rs` defines public commands; `harness/mod.rs` dispatches native utility arguments before TUI initialization.
 
+The launcher waits for one bounded readiness record on daemon stdout, then checks the private host socket and identity. Closing the readiness pipe cancels the wait, not the daemon. Do not infer readiness from the socket file alone.
+
 `session/administration.rs` owns explicit stop routing independently of the native data-plane family. Inspect and fence the exact host/session incarnation over frozen BKPA v1; never escalate a session stop to a host signal. Pin the mutation connection before observation for known legacy native owners, validate private paths and named manifests, and never replay an uncertain shutdown.
 
 ## Harness authority

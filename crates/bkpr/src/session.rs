@@ -3,11 +3,10 @@ use anyhow::{Context, Result, bail, ensure};
 use bkpr_client::{SpawnDefaults, transport};
 use bkpr_protocol::{DaemonInfo, Operation, PaneSpawnSpec, SessionEndpoint, SessionInfo, Size};
 use fs2::FileExt;
-use notify::{RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, OpenOptions},
-    io::{Read, Write},
+    io::Write,
     os::unix::{
         fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         process::CommandExt,
@@ -16,6 +15,7 @@ use std::{
     process::{Command, Stdio},
     time::Duration,
 };
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
 mod administration;
@@ -687,37 +687,6 @@ fn ensure_host(
     };
     let log_path = paths.state_root.join("bkprd.log");
     let mut log = private_file(&log_path, true)?;
-    // A pipe would make cancellation close its reader; bkprd treats a failed
-    // ready write as bootstrap failure. A temporary regular stdout file keeps
-    // that one startup write safe even after this launcher stops waiting.
-    let stdout = tempfile::Builder::new()
-        .prefix(".startup-")
-        .tempfile_in(&paths.state_root)
-        .context("opening private daemon startup output")?;
-    let mut startup_output = private_file(stdout.path(), false)?;
-    let (events, mut changes) = tokio::sync::watch::channel(None::<String>);
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if event
-            .as_ref()
-            .is_ok_and(|event| matches!(event.kind, notify::EventKind::Access(_)))
-        {
-            return;
-        }
-        events.send_modify(|failure| {
-            if let Err(error) = event {
-                *failure = Some(error.to_string());
-            }
-        });
-    })
-    .context("watching daemon startup output")?;
-    // FSEvents observes writes under a directory, not writes to a file used
-    // as the stream root.
-    let watched = if cfg!(target_os = "macos") {
-        paths.state_root.as_path()
-    } else {
-        stdout.path()
-    };
-    watcher.watch(watched, RecursiveMode::NonRecursive)?;
     let mut command = Command::new(server);
     command
         .arg("--socket")
@@ -750,7 +719,7 @@ fn ensure_host(
     }
     command
         .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout.as_file().try_clone()?))
+        .stdout(Stdio::piped())
         .stderr(Stdio::from(log.try_clone()?));
     unsafe {
         command.pre_exec(|| {
@@ -768,55 +737,48 @@ fn ensure_host(
             .spawn()
             .context("starting bkprd")?
     };
+    const MAX_READY_BYTES: usize = 8192;
+    let stdout = child.stdout.take().context("opening bkprd stdout")?;
+    let mut output = BufReader::new(stdout.take((MAX_READY_BYTES + 1) as u64));
     let mut record = Vec::with_capacity(512);
     let exited = runtime.block_on(async {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            // No file polling: drain available bytes only on entry or a native
-            // filesystem event. Access events from our reads are ignored above.
-            Read::by_ref(&mut startup_output)
-                .take((8193 - record.len()) as u64)
-                .read_to_end(&mut record)?;
-            ensure!(
-                record.len() <= 8192,
-                "bkprd startup output exceeded its bound"
-            );
-            if record.contains(&b'\n') {
-                #[derive(Deserialize)]
-                struct Ready {
-                    version: u32,
-                    ready: bool,
-                    #[serde(with = "bkpr_protocol::path_wire")]
-                    socket: PathBuf,
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => bail!("local session preparation cancelled"),
+            result = async {
+                output.read_until(b'\n', &mut record).await?;
+                if record.is_empty() {
+                    return Ok(Some(child.wait().await?));
                 }
-                let ready: Ready =
-                    serde_json::from_slice(&record).context("decoding bkprd readiness record")?;
-                ensure!(
-                    ready.version == bkpr_protocol::PROTOCOL_VERSION
-                        && ready.ready
-                        && ready.socket == paths.socket,
-                    "bkprd readiness did not identify the selected socket and protocol"
-                );
-                return Ok(None);
-            }
-            tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => bail!("local session preparation cancelled"),
-                _ = tokio::time::sleep_until(deadline) => {
-                    bail!("bkprd did not report readiness; see {}", log_path.display());
-                }
-                status = child.wait() => return Ok(Some(status?)),
-                event = changes.changed() => {
-                    event.context("daemon startup output watcher stopped")?;
-                    if let Some(error) = changes.borrow_and_update().as_ref() {
-                        bail!("watching daemon startup output: {error}");
-                    }
-                }
+                Ok::<_, std::io::Error>(None)
+            } => Ok(result?),
+            _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                bail!("bkprd did not report readiness; see {}", log_path.display());
             }
         }
     })?;
     if !record.is_empty() {
         log.write_all(&record)?;
+        ensure!(
+            record.len() <= MAX_READY_BYTES,
+            "bkprd startup output exceeded its bound"
+        );
+        ensure!(record.ends_with(b"\n"), "incomplete bkprd startup record");
+        #[derive(Deserialize)]
+        struct Ready {
+            version: u32,
+            ready: bool,
+            #[serde(with = "bkpr_protocol::path_wire")]
+            socket: PathBuf,
+        }
+        let ready: Ready =
+            serde_json::from_slice(&record).context("decoding bkprd readiness record")?;
+        ensure!(
+            ready.version == bkpr_protocol::PROTOCOL_VERSION
+                && ready.ready
+                && ready.socket == paths.socket,
+            "bkprd readiness did not identify the selected socket and protocol"
+        );
     }
     // Exactly one authoritative owner validation follows readiness (or an exit
     // where another launcher may have won the daemon lease). Never reconnect by
