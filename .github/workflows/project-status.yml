@@ -1,0 +1,32 @@
+name: Sync issue project status
+on:
+  pull_request_target:
+    types: [opened, reopened, edited, ready_for_review, converted_to_draft, closed]
+  schedule:
+    # Linking in the Development sidebar doesn't have an Actions trigger.
+    - cron: '7,17,27,37,47,57 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: issue-project-status
+  cancel-in-progress: false
+jobs:
+  sync:
+    if: github.repository == 'calops/bkpr'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Never execute code from the pull request with the project credential.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Reconcile issue cards
+        env:
+          GH_TOKEN: ${{ secrets.BKPR_PROJECT_TOKEN }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo '::notice::Set BKPR_PROJECT_TOKEN to enable project status sync.'
+            exit 0
+          fi
+          node .github/scripts/project-status.mjs
