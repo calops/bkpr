@@ -218,7 +218,9 @@ fn managed_peer_fixture() {
             id == "native-two"
         );
     }
-    fs::write(home.join("ready.json"), serde_json::to_vec(&json!({"launch_id":grant.launch_id,"native_pid":child.0.id(),"context":context()["result"]})).unwrap()).unwrap();
+    let ready = home.join("ready.tmp");
+    fs::write(&ready, serde_json::to_vec(&json!({"launch_id":grant.launch_id,"native_pid":child.0.id(),"context":context()["result"]})).unwrap()).unwrap();
+    fs::rename(ready, home.join("ready.json")).unwrap();
     if home.join("test-rebind-enabled").exists() {
         await_file(&home.join("rebind"));
         assert_eq!(
@@ -470,6 +472,18 @@ fn authenticated_capture_bootstrap_lifecycle_and_startup_status() {
         after.program_status, before.program_status,
         "first native-child discovery must preserve startup OSC"
     );
+    registry.observe_processes_with(|panes| {
+        Some(
+            panes
+                .iter()
+                .map(|(_, _, root)| (root.pid, root.clone()))
+                .collect(),
+        )
+    });
+    let after_omission = fixture.snapshot(&pane_id);
+    assert_eq!(after_omission.program_identity, after.program_identity);
+    assert_eq!(after_omission.program_status, after.program_status);
+
     let serialized = serde_json::to_string(&snapshot).unwrap();
     assert!(!serialized.contains(&grant.token));
     let durable = fs::read_to_string(fixture._root.path().join("registry.json")).unwrap();
@@ -569,7 +583,7 @@ fn authenticated_capture_bootstrap_lifecycle_and_startup_status() {
     );
     fs::write(fixture.home.join("background"), b"go").unwrap();
     await_file(&fixture.home.join("background-ready"));
-    registry.observe_processes();
+    registry.observe_processes_with(|_| Some(HashMap::new()));
     assert!(registry.snapshot().unwrap().panes[0].harness.is_none());
     assert!(
         registry.snapshot().unwrap().panes[0]

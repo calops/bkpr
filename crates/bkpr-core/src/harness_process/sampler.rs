@@ -103,26 +103,42 @@ fn sample(sampler: Arc<Sampler>) {
             state = sampler.wake.wait(state).unwrap();
         }
         let requested = state.requested;
+        #[cfg(target_os = "linux")]
+        let periodic = requested == state.completed;
         drop(state);
         // All procfs/libproc work happens outside the publication mutex.
-        let result = super::platform::snapshot();
         #[cfg(target_os = "linux")]
-        if let Ok(table) = &result {
+        let result = if periodic {
+            let owned =
+                crate::process_tree::sample_owned().or_else(|_| super::platform::snapshot());
+            if let Ok(table) = &owned {
+                crate::process_tree::observe_sample(table);
+            }
+            None
+        } else {
+            Some(super::platform::snapshot())
+        };
+        #[cfg(not(target_os = "linux"))]
+        let result = Some(super::platform::snapshot());
+        #[cfg(target_os = "linux")]
+        if let Some(Ok(table)) = &result {
             crate::process_tree::observe_sample(table);
         }
         let mut state = sampler.state.lock().unwrap();
-        match result {
-            Ok(table) => {
-                state.table = Some(Arc::new(table));
-                state.error = None;
+        if let Some(result) = result {
+            match result {
+                Ok(table) => {
+                    state.table = Some(Arc::new(table));
+                    state.error = None;
+                }
+                Err(error) => {
+                    state.table = None;
+                    state.error = Some(format!("{error:#}"));
+                }
             }
-            Err(error) => {
-                state.table = None;
-                state.error = Some(format!("{error:#}"));
-            }
+            state.completed = requested;
+            sampler.wake.notify_all();
         }
-        state.completed = requested;
-        sampler.wake.notify_all();
         let _ = sampler
             .wake
             .wait_timeout_while(state, Duration::from_millis(100), |s| {
