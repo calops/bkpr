@@ -12,7 +12,7 @@
   # checkout's copy; the default is the exact reviewed file at an immutable
   # commit, so a copied recipe needs no repository-relative path.
   imageSourcePatch ? fetchurl {
-    url = "https://raw.githubusercontent.com/calops/bkpr/d45abebebd190a2f765db0ee4d0802e418d033e4/vendor/libghostty-rs/crates/libghostty-vt-sys/native/kitty-image-source.patch";
+    url = "https://raw.githubusercontent.com/calops/bkpr/14c17713192de09a50f7c073791eb5c4e3001fe6/vendor/libghostty-rs/crates/libghostty-vt-sys/native/kitty-image-source.patch";
     sha256 = "0aea59b0aef7712aa30924ca29135fe188f04d17af6e569e347140c0e5ccf762";
   },
 }:
