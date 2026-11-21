@@ -29,6 +29,11 @@ impl ViewRecord {
     pub(crate) fn live(&self) -> bool {
         self.client.as_ref().is_none_or(|client| client.is_active())
     }
+    fn stale_at(&self, now: Instant) -> bool {
+        !self.live()
+            || (self.client.is_none()
+                && now.saturating_duration_since(self.last_seen) > Duration::from_secs(10))
+    }
     pub(crate) fn snapshot(&self) -> ViewInfo {
         ViewInfo {
             id: self.id.clone(),
@@ -67,11 +72,7 @@ impl Authority {
         let stale = self
             .views
             .values()
-            .filter(|v| {
-                !v.live()
-                    || (v.client.is_none()
-                        && now.saturating_duration_since(v.last_seen) > Duration::from_secs(10))
-            })
+            .filter(|v| v.stale_at(now))
             .map(|v| v.id.clone())
             .collect::<Vec<_>>();
         for id in &stale {
@@ -156,6 +157,17 @@ impl Authority {
             .filter(|v| eligible(v))
             .max_by_key(|v| v.activity)
             .map(|v| (v.id.as_str(), v.spec.size))
+    }
+    pub(crate) fn require_color_owner(&self, id: &str) -> Result<()> {
+        if self.owner().is_some_and(|(owner, _)| owner == id)
+            && self.views.get(id).is_some_and(|view| {
+                view.spec.visible && view.spec.interactive && !view.stale_at(Instant::now())
+            })
+        {
+            Ok(())
+        } else {
+            bail!("only current size owner may seed terminal colors");
+        }
     }
     /// Acquire or release a size pin; reject ineligible views, foreign pins or invalid sizes.
     pub fn pin(&mut self, id: &str, size: Option<Size>) -> Result<()> {
@@ -284,10 +296,15 @@ mod tests {
         let first = a.attach(spec(80)).unwrap();
         let second = a.attach(spec(40)).unwrap();
         a.pin(&first, Some(spec(90).size)).unwrap();
+        assert!(a.require_color_owner(&first).is_ok());
+        assert!(a.require_color_owner(&second).is_err());
         let now = Instant::now();
         a.views.get_mut(&first).unwrap().last_seen = now - Duration::from_secs(11);
+        assert!(a.require_color_owner(&first).is_err());
+        assert!(a.require_color_owner(&second).is_err());
         assert_eq!(a.expire(now), vec![first.clone()]);
         assert_eq!(a.owner().unwrap().0, second);
+        assert!(a.require_color_owner(&second).is_ok());
         assert!(a.input(&first).is_err());
     }
     #[test]

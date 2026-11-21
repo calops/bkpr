@@ -171,8 +171,15 @@ fn payload_bytes(pane: &str, request: &PaneRequest) -> usize {
                 + contents(&response.contents)
                 + response.available.iter().map(String::len).sum::<usize>()
         }
-        PaneRequest::Colors { palette, .. } => {
+        PaneRequest::Colors {
+            palette,
+            ansi,
+            observed_ansi,
+            ..
+        } => {
             palette.as_ref().map_or(0, |colors| colors.len() * 3)
+                + ansi.as_ref().map_or(0, |colors| colors.len() * 3)
+                + observed_ansi.as_ref().map_or(0, |colors| colors.len() * 3)
         }
         PaneRequest::Poll {
             resources,

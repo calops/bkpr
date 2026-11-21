@@ -48,6 +48,8 @@ pub(super) fn install(
         })
     })?;
     let state = Rc::clone(shared);
+    terminal.on_color_scheme(move |_| state.borrow().color_scheme)?;
+    let state = Rc::clone(shared);
     terminal.on_bell(move |_| {
         guarded(&state, || {
             state.borrow_mut().push(Effect::Bell, 0);
@@ -82,7 +84,8 @@ pub(super) fn install(
                 let size = state.borrow().size;
                 let frame = resources.borrow_mut().capture(terminal, size)?;
                 let mut state = state.borrow_mut();
-                state.held_frame = Some(frame);
+                let overrides = state.color_overrides(terminal, &frame.palette)?;
+                state.held_frame = Some((frame, overrides));
                 state.hold_since = Some(std::time::Instant::now());
             } else {
                 let mut state = state.borrow_mut();

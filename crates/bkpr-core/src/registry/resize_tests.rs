@@ -381,6 +381,236 @@ fn policy_acceptance_during_in_flight_resize_converges_to_latest_authority() {
     assert_eq!(poll(registry, &pane_id, &owner).views.len(), 1);
 }
 
+fn colors(
+    view_id: String,
+    palette: Option<Vec<[u8; 3]>>,
+    ansi: Option<[[u8; 3]; 16]>,
+    observed_ansi: Option<[[u8; 3]; 16]>,
+) -> PaneRequest {
+    PaneRequest::Colors {
+        view_id,
+        foreground: Some([230; 3]),
+        background: Some([12; 3]),
+        cursor: None,
+        palette,
+        ansi,
+        observed_ansi,
+    }
+}
+
+#[test]
+fn colors_keep_one_owners_observed_base_across_incomplete_probes() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    let home = fixture.home("observed-palette");
+    let pane_id = spawn_shell(registry, &home, vec!["/bin/sh".into()]);
+    let owner = view(registry, &pane_id, 80);
+    let palette = |view_id: &str| poll(registry, &pane_id, view_id).frame.unwrap().palette;
+    let factory = palette(&owner);
+    let first_observed = [[101, 102, 103]; 16];
+    let next_observed = [[111, 112, 113]; 16];
+    let full = vec![[121, 122, 123]; 256];
+    let preset = [[51, 52, 53]; 16];
+    let apply = |view_id: &str, palette, ansi, observed_ansi| {
+        pane_request(
+            registry,
+            &pane_id,
+            colors(view_id.into(), palette, ansi, observed_ansi),
+        )
+        .unwrap();
+    };
+
+    apply(&owner, None, Some(preset), Some(first_observed));
+    assert_eq!(palette(&owner)[..16], preset);
+    apply(&owner, None, None, None);
+    assert_eq!(palette(&owner)[..16], first_observed);
+    assert_eq!(palette(&owner)[16..], factory[16..]);
+
+    apply(&owner, Some(full.clone()), None, None);
+    assert_eq!(palette(&owner), full);
+    apply(&owner, None, Some(preset), Some(next_observed));
+    assert_eq!(palette(&owner)[..16], preset);
+    apply(&owner, None, None, None);
+    let effective = palette(&owner);
+    assert_eq!(effective[..16], next_observed);
+    assert_eq!(effective[16..], full[16..]);
+
+    let replacement = view(registry, &pane_id, 80);
+    apply(&replacement, None, Some(preset), None);
+    assert_eq!(palette(&replacement)[16..], factory[16..]);
+    apply(&replacement, None, None, None);
+    assert_eq!(palette(&replacement), factory);
+}
+
+#[test]
+fn snapshots_follow_detectable_application_color_overrides() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    let home = fixture.home("application-colors");
+    let script = r#"read -r line
+printf '\033]4;1;rgb:12/34/56\007\033]10;rgb:01/02/03\007\033]11;rgb:10/20/30\007'
+read -r line
+printf '\033]104;1\007\033]110\007\033]111\007'
+read -r line"#;
+    let pane_id = spawn_shell(
+        registry,
+        &home,
+        vec!["/bin/sh".into(), "-c".into(), script.into()],
+    );
+    let owner = pane_request(
+        registry,
+        &pane_id,
+        PaneRequest::Attach {
+            spec: ViewSpec {
+                input: true,
+                ..policy_spec(80)
+            },
+        },
+    )
+    .unwrap()["view_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let preset = [[51, 52, 53]; 16];
+    pane_request(
+        registry,
+        &pane_id,
+        colors(owner.clone(), None, Some(preset), None),
+    )
+    .unwrap();
+    let snapshot = || poll(registry, &pane_id, &owner);
+    let defaults = bkpr_protocol::PaneColorOverrides::default();
+    let before = snapshot();
+    assert_eq!(before.color_overrides, Some(defaults));
+    pane_request(
+        registry,
+        &pane_id,
+        colors(owner.clone(), None, Some(preset), None),
+    )
+    .unwrap();
+    assert_eq!(snapshot().revision, before.revision);
+    let advance = |expected| {
+        pane_request(
+            registry,
+            &pane_id,
+            PaneRequest::Input {
+                view_id: owner.clone(),
+                data: b"next\n".to_vec(),
+            },
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let snapshot = snapshot();
+            if snapshot.color_overrides == Some(expected) {
+                break snapshot.frame.unwrap();
+            }
+            assert!(Instant::now() < deadline, "{:?}", snapshot.color_overrides);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let application = bkpr_protocol::PaneColorOverrides {
+        foreground: true,
+        background: true,
+        ansi_mask: 1 << 1,
+    };
+    let frame = advance(application);
+    assert_eq!(frame.foreground, [1, 2, 3]);
+    assert_eq!(frame.background, [16, 32, 48]);
+    assert_eq!(frame.palette[1], [18, 52, 86]);
+
+    pane_request(
+        registry,
+        &pane_id,
+        PaneRequest::Colors {
+            view_id: owner.clone(),
+            foreground: None,
+            background: None,
+            cursor: None,
+            palette: None,
+            ansi: None,
+            observed_ansi: None,
+        },
+    )
+    .unwrap();
+    let clearing = snapshot();
+    assert_eq!(clearing.color_overrides, Some(application));
+    let frame = clearing.frame.unwrap();
+    assert_eq!(frame.foreground, [1, 2, 3]);
+    assert_eq!(frame.background, [16, 32, 48]);
+    assert_eq!(frame.palette[1], [18, 52, 86]);
+    assert_eq!(
+        advance(defaults).palette[1],
+        bkpr_terminal_engine::Terminal::factory_palette()[1]
+    );
+}
+
+#[test]
+fn queued_colors_cannot_apply_after_the_exact_size_owner_changes() {
+    let fixture = Fixture::new();
+    let registry = &fixture.registry;
+    let home = fixture.home("queued-colors");
+    let pane_id = spawn_shell(registry, &home, vec!["/bin/sh".into()]);
+    let owner = view(registry, &pane_id, 80);
+    let factory = poll(registry, &pane_id, &owner).frame.unwrap().palette;
+    let pane = registry.inner.state.lock().unwrap().live[&pane_id].clone();
+    let (entered, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (resume, resume_rx) = std::sync::mpsc::sync_channel(1);
+    *pane.shared.resize_barrier.lock().unwrap() = Some(Arc::new(crate::ResizeBarrier {
+        entered,
+        resume: Mutex::new(resume_rx),
+    }));
+    let release = ResumeResize(Some(resume));
+    pane_request(
+        registry,
+        &pane_id,
+        PaneRequest::Update {
+            view_id: owner.clone(),
+            spec: policy_spec(120),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        entered_rx
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .cols,
+        120
+    );
+
+    let ansi = [[77, 88, 99]; 16];
+    let request = colors(owner.clone(), None, Some(ansi), None);
+    let queued_registry = registry.clone();
+    let queued_pane = pane_id.clone();
+    let queued = std::thread::spawn(move || pane_request(&queued_registry, &queued_pane, request));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while pane.commands.is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "Colors did not enter the worker FIFO"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let replacement = view(registry, &pane_id, 90);
+    drop(release);
+    assert!(
+        queued
+            .join()
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("only current size owner")
+    );
+    assert!(pane_request(registry, &pane_id, colors(owner, None, Some(ansi), None)).is_err());
+    assert_eq!(
+        poll(registry, &pane_id, &replacement)
+            .frame
+            .unwrap()
+            .palette,
+        factory
+    );
+}
+
 #[test]
 fn enhanced_paste_never_combines_permissions_from_different_policy_versions() {
     let fixture = Fixture::new();

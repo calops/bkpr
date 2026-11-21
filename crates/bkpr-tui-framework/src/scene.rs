@@ -69,12 +69,23 @@ pub enum SurfaceContent {
 /// Missing palette entries fall back to the canonical frame palette.
 #[derive(Clone, Copy, Debug)]
 pub struct PaletteOverride<'a> {
-    /// RGB value used for the frame's default foreground.
-    pub foreground: [u8; 3],
-    /// RGB value used for the frame's default background.
-    pub background: [u8; 3],
+    /// Replacement default foreground, or `None` to retain the frame color.
+    pub foreground: Option<[u8; 3]>,
+    /// Replacement default background, or `None` to retain the frame color.
+    pub background: Option<[u8; 3]>,
     /// Indexed colors, starting at palette entry zero.
     pub palette: &'a [[u8; 3]],
+    /// First sixteen entries to retain from the frame rather than replace.
+    pub preserve_ansi: u16,
+}
+impl PaletteOverride<'_> {
+    fn entry<'a>(&'a self, frame: &'a Frame, index: usize) -> Option<&'a [u8; 3]> {
+        if index >= 16 || self.preserve_ansi & (1 << index) == 0 {
+            self.palette.get(index).or_else(|| frame.palette.get(index))
+        } else {
+            frame.palette.get(index)
+        }
+    }
 }
 /// A borrowed frame projected at a scene-local origin without modifying canonical data.
 pub struct Surface<'a> {
@@ -594,16 +605,9 @@ fn effective_style(
     frame: &Frame,
     palette: PaletteOverride<'_>,
     native_palette: &[bool; 16],
-    override_defaults: bool,
     native_background: Option<[u8; 3]>,
 ) -> Style {
-    let entry = |index| {
-        palette
-            .palette
-            .get(index)
-            .or_else(|| frame.palette.get(index))
-            .copied()
-    };
+    let entry = |index| palette.entry(frame, index).copied();
     let resolve = |source: ColorSource, default: [u8; 3], fallback: [u8; 3]| match source {
         ColorSource::Default => default,
         ColorSource::Palette(index) => entry(usize::from(index)).unwrap_or(fallback),
@@ -612,12 +616,12 @@ fn effective_style(
     let mut result = style.clone();
     result.foreground = resolve(
         style.foreground_source,
-        palette.foreground,
+        palette.foreground.unwrap_or(frame.foreground),
         style.foreground,
     );
     result.background = resolve(
         style.background_source,
-        palette.background,
+        palette.background.unwrap_or(frame.background),
         style.background,
     );
     result.underline_color = resolve(
@@ -645,13 +649,13 @@ fn effective_style(
     // Unknown host defaults intentionally remain native for canonical frames.
     // An explicit view override must instead take effect even without a probe.
     result.foreground_source =
-        if override_defaults && style.foreground_source == ColorSource::Default {
+        if palette.foreground.is_some() && style.foreground_source == ColorSource::Default {
             ColorSource::Rgb(result.foreground)
         } else {
             projected_source(style.foreground_source)
         };
     result.background_source =
-        if override_defaults && style.background_source == ColorSource::Default {
+        if palette.background.is_some() && style.background_source == ColorSource::Default {
             ColorSource::Rgb(result.background)
         } else {
             projected_source(style.background_source)
@@ -751,16 +755,15 @@ fn compose_cells(
     physical_background: Option<[u8; 3]>,
 ) {
     let palette = surface.palette.unwrap_or(PaletteOverride {
-        foreground: surface.frame.foreground,
-        background: surface.frame.background,
-        palette: &surface.frame.palette,
+        foreground: None,
+        background: None,
+        palette: &[],
+        preserve_ansi: 0,
     });
     // Prepare host/virtual palette equality once per surface, not per cell.
     let native_palette = std::array::from_fn(|index| {
         palette
-            .palette
-            .get(index)
-            .or_else(|| surface.frame.palette.get(index))
+            .entry(surface.frame, index)
             .is_some_and(|rgb| host.palette.get(&index) == Some(rgb))
     });
     // Kitty draws below-background images only through cells left on the
@@ -774,7 +777,8 @@ fn compose_cells(
     .then(|| {
         physical_background
             .or(host.background)
-            .unwrap_or(palette.background)
+            .or(palette.background)
+            .unwrap_or(surface.frame.background)
     });
     let blank = blank_cell();
     let mut blank_style = effective_style(
@@ -782,7 +786,6 @@ fn compose_cells(
         surface.frame,
         palette,
         &native_palette,
-        surface.palette.is_some(),
         native_background,
     );
     blank_style.faint |= surface.faint;
@@ -836,7 +839,6 @@ fn compose_cells(
                             surface.frame,
                             palette,
                             &native_palette,
-                            surface.palette.is_some(),
                             native_background,
                         );
                         style.faint |= surface.faint;
@@ -1206,12 +1208,12 @@ mod scene_tests {
             style,
             frame,
             PaletteOverride {
-                foreground: frame.foreground,
-                background: frame.background,
-                palette: &frame.palette,
+                foreground: None,
+                background: None,
+                palette: &[],
+                preserve_ansi: 0,
             },
             &[false; 16],
-            false,
             None,
         )
     }
@@ -1429,7 +1431,7 @@ mod scene_tests {
                 size,
                 surfaces: vec![Surface {
                     id: "pane", rect: Rect { x: 0, y: 0, width: 2, height: 1 }, frame,
-                    palette: Some(PaletteOverride { foreground: [205, 214, 244], background: theme, palette: &[] }),
+                    palette: Some(PaletteOverride { foreground: Some([205, 214, 244]), background: Some(theme), palette: &[], preserve_ansi: 0 }),
                     content: SurfaceContent::All, selection: &[], search: &[],
                     focused: false, faint: false,
                 }],
@@ -1508,14 +1510,16 @@ mod scene_tests {
         second[3] = [81, 82, 83];
         let palettes = [
             Some(PaletteOverride {
-                foreground: [11, 12, 13],
-                background: [14, 15, 16],
+                foreground: Some([11, 12, 13]),
+                background: Some([14, 15, 16]),
                 palette: &first,
+                preserve_ansi: 0,
             }),
             Some(PaletteOverride {
-                foreground: [17, 18, 19],
-                background: [24, 25, 26],
+                foreground: Some([17, 18, 19]),
+                background: None,
                 palette: &second,
+                preserve_ansi: 1 << 1,
             }),
             None,
         ];
@@ -1553,9 +1557,11 @@ mod scene_tests {
         physical_palette[..source.palette.len()].copy_from_slice(&source.palette);
         let mut physical = bkpr_terminal_engine::Terminal::new(size).unwrap();
         physical
-            .set_default_colors(source.foreground, source.background, None)
+            .set_theme_colors(
+                Some(source.foreground), Some(source.background), None,
+                Some(&physical_palette), |_| Ok::<_, bkpr_terminal_engine::Error>(()),
+            )
             .unwrap();
-        physical.set_palette(&physical_palette).unwrap();
         let mut renderer = Renderer::default();
         let mut terminal = terminal();
         let mut bytes = Vec::new();
@@ -1566,7 +1572,7 @@ mod scene_tests {
         let observed = physical.snapshot().unwrap();
         for (index, (foreground, background, palette)) in [
             ([11, 12, 13], [14, 15, 16], first.as_slice()),
-            ([17, 18, 19], [24, 25, 26], second.as_slice()),
+            ([17, 18, 19], source.background, second.as_slice()),
             (
                 source.foreground,
                 source.background,
@@ -1577,12 +1583,13 @@ mod scene_tests {
         .enumerate()
         {
             let view = &observed.rows[0].cells[index * 5..index * 5 + 5];
+            let red = if index == 1 { source.palette[1] } else { palette[1] };
             let expected = [
                 (foreground, background, foreground),
-                (palette[1], palette[2], palette[3]),
+                (red, palette[2], palette[3]),
                 ([141, 142, 143], [151, 152, 153], [161, 162, 163]),
                 ([131, 132, 133], [131, 132, 133], [131, 132, 133]),
-                (palette[1], background, palette[1]),
+                (red, background, red),
             ];
             for (cell, (fg, bg, underline)) in view.iter().zip(expected) {
                 assert_eq!(cell.style.foreground, fg, "view {index}: {}", cell.text);
@@ -1665,9 +1672,10 @@ mod scene_tests {
                 },
                 frame: &source,
                 palette: Some(PaletteOverride {
-                    foreground: [11, 12, 13],
-                    background: [21, 22, 23],
+                    foreground: Some([11, 12, 13]),
+                    background: Some([21, 22, 23]),
                     palette: &palette,
+                    preserve_ansi: 0,
                 }),
                 content: SurfaceContent::CellsClipped(Rect {
                     x: 1,
@@ -3704,7 +3712,8 @@ mod scene_tests {
         {
             let mut native = bkpr_terminal_engine::Terminal::new(local).unwrap();
             native
-                .set_default_colors([220, 220, 220], original, None)
+                .set_theme_colors(Some([220, 220, 220]), Some(original), None, None,
+                    |_| Ok::<_, bkpr_terminal_engine::Error>(()))
                 .unwrap();
             native.feed(input).unwrap();
             let frame = native.snapshot().unwrap();
@@ -3759,7 +3768,8 @@ mod scene_tests {
         let mut renderer = Renderer::default();
         let mut physical = bkpr_terminal_engine::Terminal::new(size).unwrap();
         physical
-            .set_default_colors([220, 220, 220], original, None)
+            .set_theme_colors(Some([220, 220, 220]), Some(original), None, None,
+                |_| Ok::<_, bkpr_terminal_engine::Error>(()))
             .unwrap();
         let mut bytes = Vec::new();
         terminal

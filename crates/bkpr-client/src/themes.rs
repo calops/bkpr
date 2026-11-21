@@ -1,5 +1,5 @@
 //! Instance-local palettes for Bkpr chrome and native pane presentation.
-use bkpr_tui_framework::{ColorProbe, PaletteOverride};
+use bkpr_tui_framework::ColorProbe;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(usize)]
@@ -39,14 +39,8 @@ impl ThemeId {
         THEMES[self as usize].1
     }
 
-    /// Project named colors per client without mutating shared terminal state.
-    pub(crate) fn pane_palette(self, truecolor: bool) -> Option<PaletteOverride<'static>> {
-        let preset = truecolor.then(|| self.preset()).flatten()?;
-        Some(PaletteOverride {
-            foreground: preset.foreground,
-            background: preset.background,
-            palette: &preset.ansi,
-        })
+    pub(crate) fn supported_preset(self, truecolor: bool) -> Option<&'static Preset> {
+        truecolor.then(|| self.preset()).flatten()
     }
 
     fn preset(self) -> Option<&'static Preset> {
@@ -67,6 +61,14 @@ impl ThemeId {
     }
 }
 
+pub(crate) fn observed_ansi(probe: &ColorProbe) -> Option<[[u8; 3]; 16]> {
+    let mut ansi = [[0; 3]; 16];
+    for (index, rgb) in ansi.iter_mut().enumerate() {
+        *rgb = *probe.palette.get(&index)?;
+    }
+    Some(ansi)
+}
+
 /// Effective input to the existing appearance policy, not new host evidence.
 ///
 /// The caller retains the actual probe and updates this cache before styling.
@@ -79,11 +81,7 @@ pub(crate) struct Palette {
 
 impl Palette {
     pub(crate) fn update(&mut self, observed: &ColorProbe, choice: ThemeId) {
-        let preset = if observed.truecolor {
-            choice.preset()
-        } else {
-            None
-        };
+        let preset = choice.supported_preset(observed.truecolor);
         self.probe.truecolor = observed.truecolor;
         self.probe.foreground =
             preset.map_or(observed.foreground, |preset| Some(preset.foreground));
@@ -146,10 +144,10 @@ impl Palette {
     }
 }
 
-struct Preset {
-    foreground: [u8; 3],
-    background: [u8; 3],
-    ansi: [[u8; 3]; 16],
+pub(crate) struct Preset {
+    pub(crate) foreground: [u8; 3],
+    pub(crate) background: [u8; 3],
+    pub(crate) ansi: [[u8; 3]; 16],
 }
 
 const fn rgb(hex: u32) -> [u8; 3] {

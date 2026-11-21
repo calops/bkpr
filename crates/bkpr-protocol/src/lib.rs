@@ -217,18 +217,26 @@ pub enum PaneRequest {
         /// Consent decision and exact returned MIME bytes.
         response: ClipboardResponse,
     },
-    /// Publish the attached terminal's observed colors.
+    /// Publish virtual terminal defaults and an optional pane theme from this attachment.
     Colors {
         /// Attachment supplying the color observations.
         view_id: String,
-        /// Default foreground RGB.
-        foreground: [u8; 3],
-        /// Default background RGB.
-        background: [u8; 3],
-        /// Observed cursor RGB, if available.
+        /// Supplied default foreground (OSC 10); absence clears this view's value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        foreground: Option<[u8; 3]>,
+        /// Supplied default background (OSC 11); absence clears this view's value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        background: Option<[u8; 3]>,
+        /// Observed cursor RGB (OSC 12), if available.
         cursor: Option<[u8; 3]>,
-        /// Observed indexed palette, if available.
+        /// Observed full indexed palette (OSC 4, indices 0 through 255), if available.
         palette: Option<Vec<[u8; 3]>>,
+        /// Theme override for indexed colors 0 through 15; absence clears the overlay.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ansi: Option<[[u8; 3]; 16]>,
+        /// Observed base colors 0 through 15, when known independently of the full palette.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        observed_ansi: Option<[[u8; 3]; 16]>,
     },
     /// Terminate the pane's process through an authorized view.
     Terminate {

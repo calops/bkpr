@@ -26,8 +26,8 @@ use authority::Authority;
 use bkpr_protocol::ViewSpec;
 use bkpr_protocol::{
     ClipboardContent, ClipboardLocation, ClipboardPending, ClipboardResponse, Effect, Event, Frame,
-    KeyEvent, MouseEvent, PaneCapabilities, PanePayload, PaneSnapshot, Payload, ProgramStatus,
-    SelectionEvent, SelectionSnapshot, Size, SizeOwner,
+    KeyEvent, MouseEvent, PaneCapabilities, PaneColorOverrides, PanePayload, PaneSnapshot, Payload,
+    ProgramStatus, SelectionEvent, SelectionSnapshot, Size, SizeOwner,
 };
 use bkpr_protocol::{MAX_INPUT_BYTES, PaneRequest as Request, valid_size};
 use bkpr_protocol::{MAX_SEARCH_BYTES, SearchAction, SearchSnapshot};
@@ -77,6 +77,7 @@ struct Published {
     status: Vec<ProgramStatus>,
     status_changed_at_ms: BTreeMap<String, u64>,
     title: Option<String>,
+    color_overrides: PaneColorOverrides,
     title_changed: bool,
     recovery_title: registry::recovery::TitleCapture,
     program_identity: Option<bkpr_protocol::ProcessIdentity>,
@@ -95,6 +96,7 @@ impl Default for Published {
             status: Vec::new(),
             status_changed_at_ms: BTreeMap::new(),
             title: None,
+            color_overrides: PaneColorOverrides::default(),
             title_changed: false,
             recovery_title: Default::default(),
             program_identity: None,
@@ -174,13 +176,84 @@ fn same_scene(previous: &Frame, current: &Frame) -> bool {
             })
         && previous.rows == current.rows
 }
+struct ColorUpdate {
+    view_id: String,
+    foreground: Option<[u8; 3]>,
+    background: Option<[u8; 3]>,
+    cursor: Option<[u8; 3]>,
+    palette: Option<Box<[[u8; 3]; 256]>>,
+    ansi: Option<[[u8; 3]; 16]>,
+    observed_ansi: Option<[[u8; 3]; 16]>,
+}
+#[derive(Default)]
+struct AppliedColors {
+    owner: String,
+    observed: Option<Box<[[u8; 3]; 256]>>,
+    observed_ansi: Option<[[u8; 3]; 16]>,
+    applied_ansi: Option<[[u8; 3]; 16]>,
+}
+impl AppliedColors {
+    fn target_palette(&self, update: &ColorUpdate) -> Option<[[u8; 3]; 256]> {
+        let same_owner = self.owner == update.view_id;
+        let factory = Terminal::factory_palette();
+        let cached_full = self.observed.as_deref().filter(|_| same_owner);
+        let cached_ansi = self
+            .observed_ansi
+            .as_ref()
+            .filter(|_| same_owner && update.palette.is_none());
+        let full = update.palette.as_deref().or(cached_full).unwrap_or(factory);
+        let ansi = update
+            .ansi
+            .as_ref()
+            .or(update.observed_ansi.as_ref())
+            .or(cached_ansi)
+            .map_or(&full[..16], |ansi| ansi.as_slice());
+        let previous = self.observed.as_deref().unwrap_or(factory);
+        let previous_ansi = self
+            .applied_ansi
+            .as_ref()
+            .map_or(&factory[..16], |ansi| ansi.as_slice());
+        if previous_ansi == ansi
+            && ((same_owner && update.palette.is_none()) || previous[16..] == full[16..])
+        {
+            return None;
+        }
+        let mut palette = *full;
+        palette[..16].copy_from_slice(ansi);
+        Some(palette)
+    }
+    fn apply<'w>(
+        &mut self,
+        terminal: &mut Terminal,
+        writer: &'w writer::Queue,
+        update: ColorUpdate,
+        palette: Option<&[[u8; 3]; 256]>,
+    ) -> Result<(bool, Option<writer::Reservation<'w>>)> {
+        let (changed, report) = terminal.set_theme_colors(
+            update.foreground,
+            update.background,
+            update.cursor,
+            palette,
+            |report| writer.reserve_internal(report),
+        )?;
+        let same_owner = self.owner == update.view_id;
+        if !same_owner || update.palette.is_some() || update.observed_ansi.is_some() {
+            self.observed_ansi = update.observed_ansi;
+        }
+        if !same_owner || update.palette.is_some() {
+            self.observed = update.palette;
+        }
+        if !same_owner {
+            self.owner = update.view_id;
+        }
+        if let Some(palette) = palette {
+            self.applied_ansi = palette.first_chunk::<16>().copied();
+        }
+        Ok((changed, report))
+    }
+}
 enum Mutation {
-    Colors {
-        foreground: [u8; 3],
-        background: [u8; 3],
-        cursor: Option<[u8; 3]>,
-        palette: Option<Box<[[u8; 3]; 256]>>,
-    },
+    Colors(ColorUpdate),
     Raw(String, Vec<u8>),
     Paste(String, Vec<u8>),
     PasteContents(String, Vec<ClipboardContent>, ClipboardLocation, bool),
@@ -1059,31 +1132,31 @@ impl Pane {
                 background,
                 cursor,
                 palette,
+                ansi,
+                observed_ansi,
             } => {
-                if self
-                    .shared
+                self.shared
                     .authority
                     .lock()
                     .unwrap()
-                    .owner()
-                    .is_none_or(|(owner, _)| owner != view_id)
-                {
-                    bail!("only current size owner may seed terminal colors");
-                }
-                let palette = match palette {
-                    Some(palette) => {
-                        Some(Box::new(palette.try_into().map_err(|_| {
-                            anyhow::anyhow!("palette must contain 256 colors")
-                        })?))
-                    }
-                    None => None,
-                };
-                command(Mutation::Colors {
+                    .require_color_owner(&view_id)?;
+                let palette = palette
+                    .map(|palette| {
+                        palette
+                            .into_boxed_slice()
+                            .try_into()
+                            .map_err(|_| anyhow::anyhow!("palette must contain 256 colors"))
+                    })
+                    .transpose()?;
+                command(Mutation::Colors(ColorUpdate {
+                    view_id,
                     foreground,
                     background,
                     cursor,
                     palette,
-                })?;
+                    ansi,
+                    observed_ansi,
+                }))?;
                 Ok(json!({"updated":true}))
             }
             Request::Terminate { view_id } => {
@@ -1162,6 +1235,7 @@ impl Pane {
             event_sequence,
             selection,
             search,
+            color_overrides,
         ) = {
             let mut authority = self.shared.authority.lock().unwrap();
             if let Some(client) = client {
@@ -1238,6 +1312,7 @@ impl Pane {
                                 .map(|(_, snapshot)| snapshot.clone())
                         })
                 }),
+                published.color_overrides,
             )
         };
         let (clipboard, clipboard_pending) = {
@@ -1308,6 +1383,7 @@ impl Pane {
                 row_deltas: true,
                 scene_encodings: ["planus_v1", bkpr_protocol::SOURCES_SCENE_ENCODING],
             },
+            color_overrides: Some(color_overrides),
         })?;
         Ok(Payload::Pane(PanePayload { metadata, scene }))
     }
@@ -1354,7 +1430,8 @@ fn publish(terminal: &mut Terminal, shared: &Shared) -> Result<()> {
         terminal.retain_scrollback_views(|view| authority.views.contains_key(view));
         authority.views.keys().cloned().collect::<Vec<_>>()
     };
-    let frame = Arc::new(terminal.snapshot()?);
+    let (frame, color_overrides) = terminal.snapshot_with_color_overrides()?;
+    let frame = Arc::new(frame);
     let mut cache = BTreeMap::new();
     cache.insert(0, frame.clone());
     let mut frames = BTreeMap::new();
@@ -1380,6 +1457,7 @@ fn publish(terminal: &mut Terminal, shared: &Shared) -> Result<()> {
         terminal.clear_program_status();
     }
     p.set_frame(frame)?;
+    p.color_overrides = color_overrides;
     p.scroll_frames = frames;
     p.selections = selections;
     p.searches = searches;
@@ -1799,6 +1877,7 @@ fn run_pane(
         let clock = Instant::now();
         let mut next_image_tick = None;
         let mut current_size = spec.size;
+        let mut colors = AppliedColors::default();
         let mut pending_output = None;
         let no_output = crossbeam_channel::never();
         loop {
@@ -2005,10 +2084,8 @@ fn run_pane(
                         }
                         continue;
                     }
-                    let needs_publish = matches!(
-                        &command.mutation,
-                        Mutation::Colors { .. } | Mutation::Scroll { .. }
-                    );
+                    let needs_publish = matches!(&command.mutation, Mutation::Scroll { .. });
+                    let mut publish_colors = false;
                     let mut live_input_view = None;
                     let outcome = (|| -> Result<CommandOutcome> {
                         let cleanup = release_cleanup(&command.mutation);
@@ -2034,16 +2111,25 @@ fn run_pane(
                         };
                         let mut write_id = None;
                         match command.mutation {
-                            Mutation::Colors {
-                                foreground,
-                                background,
-                                cursor,
-                                palette,
-                            } => {
-                                terminal.set_default_colors(foreground, background, cursor)?;
-                                if let Some(palette) = palette {
-                                    terminal.set_palette(&palette)?;
+                            Mutation::Colors(update) => {
+                                let palette = colors.target_palette(&update);
+                                let (changed, report) = {
+                                    let authority = shared.authority.lock().unwrap();
+                                    authority
+                                        .check_client(&update.view_id, command.client.as_ref())?;
+                                    authority.require_color_owner(&update.view_id)?;
+                                    colors.apply(
+                                        &mut terminal,
+                                        &writer,
+                                        update,
+                                        palette.as_ref(),
+                                    )?
+                                };
+                                if let Some(report) = report {
+                                    report.commit();
                                 }
+                                publish_colors = changed;
+                                return Ok(CommandOutcome::Applied(None));
                             }
                             Mutation::Raw(view_id, data) => {
                                 let nonempty = !data.is_empty();
@@ -2209,7 +2295,9 @@ fn run_pane(
                     // Once the writer accepts bytes, later projection/effect errors
                     // fault the worker; they must never report a retryable rejection.
                     let accepted = matches!(&outcome, Ok(CommandOutcome::Applied(Some(_))));
-                    let after_acceptance = if accepted {
+                    let after_acceptance = if publish_colors {
+                        publish(&mut terminal, &shared)
+                    } else if accepted {
                         (|| -> Result<()> {
                             if let Some(view_id) = live_input_view {
                                 publish_live_input(&mut terminal, &shared, &view_id)?;

@@ -1,7 +1,7 @@
 use super::{Budget, generated::native_wire as g};
 use crate::*;
-use anyhow::Result;
-use planus::{Builder, UnionOffset};
+use anyhow::{Result, ensure};
+use planus::{Builder, Offset, UnionOffset, Vector};
 
 use super::types::*;
 
@@ -238,51 +238,35 @@ pub(super) fn write_pane_request(
             background,
             cursor,
             palette,
+            ansi,
+            observed_ansi,
         } => {
             let view_id = {
                 budget.bytes(view_id.len())?;
                 builder.create_string(view_id.as_str())
             };
-            let foreground = g::Rgb {
-                r: foreground[0],
-                g: foreground[1],
-                b: foreground[2],
-            };
-            let background = g::Rgb {
-                r: background[0],
-                g: background[1],
-                b: background[2],
-            };
-            let cursor = cursor
-                .as_ref()
-                .map(|value| -> Result<_> {
-                    Ok(g::Rgb {
-                        r: value[0],
-                        g: value[1],
-                        b: value[2],
-                    })
-                })
-                .transpose()?;
             let palette = palette
                 .as_ref()
                 .map(|value| -> Result<_> {
                     let value = {
                         budget.vector(value.len(), 8)?;
-                        let mut values = Vec::with_capacity(value.len());
-                        for value in value.iter() {
-                            values.push(g::Rgb {
-                                r: value[0],
-                                g: value[1],
-                                b: value[2],
-                            });
-                        }
+                        let values: Vec<_> = value.iter().copied().map(write_rgb).collect();
                         builder.create_vector(&values)
                     };
                     Ok(g::OptionalPalette::create(builder, value))
                 })
                 .transpose()?;
+            let ansi = write_ansi(builder, budget, ansi.as_ref())?;
+            let observed_ansi = write_ansi(builder, budget, observed_ansi.as_ref())?;
             let offset = g::PaneRequestColors::create(
-                builder, view_id, foreground, background, cursor, palette,
+                builder,
+                view_id,
+                foreground.map(write_rgb),
+                background.map(write_rgb),
+                cursor.map(write_rgb),
+                palette,
+                ansi,
+                observed_ansi,
             );
             g::PaneRequest::create_pane_request_colors(builder, offset)
         }
@@ -490,34 +474,19 @@ pub(super) fn read_pane_request(
                 budget.bytes(text.len())?;
                 text.to_owned()
             },
-            foreground: {
-                let rgb = value.foreground()?;
-                [rgb.r(), rgb.g(), rgb.b()]
-            },
-            background: {
-                let rgb = value.background()?;
-                [rgb.r(), rgb.g(), rgb.b()]
-            },
-            cursor: value
-                .cursor()?
-                .map(|value| -> Result<_> {
-                    Ok({
-                        let rgb = value;
-                        [rgb.r(), rgb.g(), rgb.b()]
-                    })
-                })
-                .transpose()?,
+            foreground: value.foreground()?.map(read_rgb),
+            background: value.background()?.map(read_rgb),
+            cursor: value.cursor()?.map(read_rgb),
             palette: value
                 .palette()?
                 .map(|value| -> Result<_> {
                     let vector = value.value()?;
                     budget.vector(vector.len(), std::mem::size_of::<[u8; 3]>())?;
-                    Ok(vector
-                        .iter()
-                        .map(|rgb| [rgb.r(), rgb.g(), rgb.b()])
-                        .collect())
+                    Ok(vector.iter().map(read_rgb).collect())
                 })
                 .transpose()?,
+            ansi: read_ansi(value.ansi()?, budget, "ANSI override")?,
+            observed_ansi: read_ansi(value.observed_ansi()?, budget, "Observed ANSI palette")?,
         },
         g::PaneRequestRef::PaneRequestTerminate(value) => PaneRequest::Terminate {
             view_id: {
@@ -528,6 +497,43 @@ pub(super) fn read_pane_request(
         },
         g::PaneRequestRef::PaneRequestShutdown(_value) => PaneRequest::Shutdown,
     })
+}
+
+fn write_rgb([r, g, b]: [u8; 3]) -> g::Rgb {
+    g::Rgb { r, g, b }
+}
+
+fn write_ansi(
+    builder: &mut Builder,
+    budget: &mut Budget,
+    colors: Option<&[[u8; 3]; 16]>,
+) -> Result<Option<Offset<[g::Rgb]>>> {
+    let Some(colors) = colors else {
+        return Ok(None);
+    };
+    budget.vector(colors.len(), size_of::<g::Rgb>())?;
+    Ok(Some(builder.create_vector(colors.map(write_rgb))))
+}
+
+fn read_rgb(rgb: g::RgbRef<'_>) -> [u8; 3] {
+    [rgb.r(), rgb.g(), rgb.b()]
+}
+
+fn read_ansi(
+    vector: Option<Vector<'_, g::RgbRef<'_>>>,
+    budget: &mut Budget,
+    field: &str,
+) -> Result<Option<[[u8; 3]; 16]>> {
+    let Some(vector) = vector else {
+        return Ok(None);
+    };
+    ensure!(vector.len() == 16, "{field} must contain 16 colors");
+    budget.vector(vector.len(), size_of::<[u8; 3]>())?;
+    let mut colors = [[0; 3]; 16];
+    for (color, rgb) in colors.iter_mut().zip(vector.iter()) {
+        *color = read_rgb(rgb);
+    }
+    Ok(Some(colors))
 }
 
 pub(super) fn write_search_action(

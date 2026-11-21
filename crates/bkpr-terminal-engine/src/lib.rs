@@ -14,7 +14,13 @@ use bkpr_protocol::*;
 use libghostty_vt as sdk;
 pub use offers::{PASTE_OFFER_MAX_BYTES, PASTE_OFFER_MAX_COUNT, PASTE_OFFER_TIMEOUT};
 pub use status::ProgramStatusView;
-use std::{cell::RefCell, collections::HashMap, fmt, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    fmt,
+    rc::Rc,
+    sync::{Arc, LazyLock},
+};
 
 /// Native Ghostty source revision required by this adapter.
 pub const ENGINE_REVISION: &str = "93967b7f9478e94dcbb42125c8a90f34feb40d75";
@@ -55,13 +61,22 @@ pub type ClipboardHandler = Box<dyn FnMut(ClipboardRequest) -> ClipboardResponse
 /// Ordered status changes on the terminal worker; `false` denotes withdrawal,
 /// never completion. The borrowed records cannot outlive the callback.
 pub type ProgramStatusObserver = Box<dyn FnMut(ProgramStatusView<'_>, bool)>;
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct DefaultColors {
+    foreground: Option<sdk::style::RgbColor>,
+    background: Option<sdk::style::RgbColor>,
+    cursor: Option<sdk::style::RgbColor>,
+}
 struct CallbackState {
     effects: Vec<Effect>,
     effect_bytes: usize,
     failed: bool,
+    color_scheme: Option<sdk::terminal::ColorScheme>,
+    default_colors: DefaultColors,
+    default_ansi: [[u8; 3]; 16],
     clipboard: Option<ClipboardHandler>,
     hold_since: Option<std::time::Instant>,
-    held_frame: Option<Frame>,
+    held_frame: Option<(Frame, PaneColorOverrides)>,
     status: status::StatusRecords,
     status_observer: Option<ProgramStatusObserver>,
     size: Size,
@@ -77,6 +92,24 @@ impl CallbackState {
         }
         self.effect_bytes += bytes;
         self.effects.push(effect);
+    }
+    fn color_overrides(
+        &self,
+        terminal: &sdk::Terminal<'_, '_>,
+        palette: &[[u8; 3]],
+    ) -> Result<PaneColorOverrides> {
+        let ansi_mask = palette
+            .iter()
+            .zip(&self.default_ansi)
+            .enumerate()
+            .fold(0, |mask, (index, (effective, default))| {
+                mask | (u16::from(effective != default) << index)
+            });
+        Ok(PaneColorOverrides {
+            foreground: terminal.fg_color()? != self.default_colors.foreground,
+            background: terminal.bg_color()? != self.default_colors.background,
+            ansi_mask,
+        })
     }
 }
 /// Neither Send nor Sync, matching the upstream SDK's thread-affinity contract.
@@ -117,6 +150,9 @@ impl Terminal {
             effects: Vec::new(),
             effect_bytes: 0,
             failed: false,
+            color_scheme: None,
+            default_colors: DefaultColors::default(),
+            default_ansi: *Self::factory_palette().first_chunk::<16>().unwrap(),
             clipboard: None,
             hold_since: None,
             held_frame: None,
@@ -155,28 +191,97 @@ impl Terminal {
     pub fn set_program_status_observer(&mut self, observer: ProgramStatusObserver) {
         self.callbacks.borrow_mut().status_observer = Some(observer);
     }
-    /// Set default RGB colors; `None` clears the explicit cursor-color override.
-    pub fn set_default_colors(
-        &mut self,
-        foreground: [u8; 3],
-        background: [u8; 3],
-        cursor: Option<[u8; 3]>,
-    ) -> Result<()> {
-        self.native
-            .set_default_fg_color(Some(render::native_rgb(foreground)))?;
-        self.native
-            .set_default_bg_color(Some(render::native_rgb(background)))?;
-        self.native
-            .set_default_cursor_color(cursor.map(render::native_rgb))?;
-        Ok(())
+    /// Ghostty's built-in indexed palette, independent of pane and application state.
+    pub fn factory_palette() -> &'static [[u8; 3]; 256] {
+        static PALETTE: LazyLock<[[u8; 3]; 256]> =
+            LazyLock::new(|| sdk::style::Palette::default().0.map(render::rgb));
+        &PALETTE
     }
-    /// Replace the complete indexed default palette.
-    pub fn set_palette(&mut self, palette: &[[u8; 3]; 256]) -> Result<()> {
-        self.native
-            .set_default_color_palette(Some(sdk::style::Palette(
-                palette.map(render::native_rgb),
-            )))?;
-        Ok(())
+    /// Set virtual RGB defaults (unset on `None`) and optionally replace the indexed
+    /// defaults. The SDK preserves application OSC overrides.
+    ///
+    /// Reserve an opted-in scheme report before changing any native defaults.
+    /// A report admission error leaves the theme unchanged; otherwise the caller
+    /// receives the reservation to dispatch after application. The boolean reports
+    /// whether defaults were changed (a supplied palette must differ).
+    pub fn set_theme_colors<R, E: From<Error>>(
+        &mut self,
+        foreground: Option<[u8; 3]>,
+        background: Option<[u8; 3]>,
+        cursor: Option<[u8; 3]>,
+        palette: Option<&[[u8; 3]; 256]>,
+        admit_report: impl FnOnce(Vec<u8>) -> Result<R, E>,
+    ) -> Result<(bool, Option<R>), E> {
+        use sdk::terminal::{ColorScheme, Mode};
+        let defaults = DefaultColors {
+            foreground: foreground.map(render::native_rgb),
+            background: background.map(render::native_rgb),
+            cursor: cursor.map(render::native_rgb),
+        };
+        let (previous, previous_scheme) = {
+            let state = self.callbacks.borrow();
+            (state.default_colors, state.color_scheme)
+        };
+        if previous == defaults && palette.is_none() {
+            return Ok((false, None));
+        }
+        let scheme = if previous.background == defaults.background {
+            previous_scheme
+        } else {
+            defaults.background.map(|rgb| {
+                if rgb.perceived_luminance() > 0.5 {
+                    ColorScheme::Light
+                } else {
+                    ColorScheme::Dark
+                }
+            })
+        };
+        let reservation = if let Some(scheme) = scheme
+            && Some(scheme) != previous_scheme
+            && self
+                .native
+                .mode(Mode::COLOR_SCHEME_REPORT)
+                .map_err(Error::from)?
+        {
+            let mut report = vec![0; 16];
+            let len = scheme.encode_report(&mut report).map_err(Error::from)?;
+            report.truncate(len);
+            Some(admit_report(report)?)
+        } else {
+            None
+        };
+        if let Some(palette) = palette {
+            self.native
+                .set_default_color_palette(Some(sdk::style::Palette(
+                    palette.map(render::native_rgb),
+                )))
+                .map_err(Error::from)?;
+            self.callbacks
+                .borrow_mut()
+                .default_ansi
+                .copy_from_slice(&palette[..16]);
+        }
+        if previous.foreground != defaults.foreground {
+            self.native
+                .set_default_fg_color(defaults.foreground)
+                .map_err(Error::from)?;
+            self.callbacks.borrow_mut().default_colors.foreground = defaults.foreground;
+        }
+        if previous.cursor != defaults.cursor {
+            self.native
+                .set_default_cursor_color(defaults.cursor)
+                .map_err(Error::from)?;
+            self.callbacks.borrow_mut().default_colors.cursor = defaults.cursor;
+        }
+        if previous.background != defaults.background {
+            self.native
+                .set_default_bg_color(defaults.background)
+                .map_err(Error::from)?;
+            let mut state = self.callbacks.borrow_mut();
+            state.default_colors.background = defaults.background;
+            state.color_scheme = scheme;
+        }
+        Ok((true, reservation))
     }
     /// Resize and reconcile inspection state; rejects invalid geometry or native failures.
     pub fn resize(&mut self, size: Size) -> Result<()> {
@@ -249,7 +354,7 @@ impl Terminal {
             state.hold_since = None;
             state.held_frame = None;
         }
-        if let Some(frame) = &self.callbacks.borrow().held_frame {
+        if let Some((frame, _)) = &self.callbacks.borrow().held_frame {
             let mut frame = frame.clone();
             // Input policy follows current native modes even while rendering
             // is held. The immutable held scene itself remains untouched.
@@ -258,6 +363,18 @@ impl Terminal {
             return Ok(frame);
         }
         self.render.borrow_mut().capture(&self.native, self.size)
+    }
+    /// Extract the canonical scene and its detectable application color overrides.
+    /// Overrides equal to their native defaults are indistinguishable in the SDK.
+    pub fn snapshot_with_color_overrides(&mut self) -> Result<(Frame, PaneColorOverrides)> {
+        let frame = self.snapshot()?;
+        let state = self.callbacks.borrow();
+        let overrides = if let Some((_, overrides)) = &state.held_frame {
+            *overrides
+        } else {
+            state.color_overrides(&self.native, &frame.palette)?
+        };
+        Ok((frame, overrides))
     }
     /// Move one attached view through native history without changing PTY input
     /// or the canonical live viewport. Extremes mean live/oldest respectively.
