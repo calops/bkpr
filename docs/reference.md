@@ -992,15 +992,23 @@ fold or unfold a workspace or window, and Enter activates the selected workspace
 window or terminal. Esc returns to the original application. The mouse supports
 activation, wheel scrolling and double-click folding.
 
+Right-click a sidebar row for its available actions. Open, Rename and Close use
+the same actions as keyboard navigation; Close still asks for confirmation.
+Branches also offer Collapse or Expand. Workspace rows offer New window;
+session rows and empty sidebar space offer New workspace (in the active session
+when clicking empty space). Use Up/Down and Enter or click an action. Escape or
+an outside click dismisses the menu. Read-only clients omit actions that change
+the session. Fancy and plain chrome use the same menu geometry.
+
 When the tree overflows, a scrollbar at the right edge of the sidebar shows the
 visible fraction and scroll position. It counts every display row, including
 branch details. Plain and fancy chrome both reserve one column while the bar
 is visible. Existing wheel and keyboard navigation are unchanged.
 
-The terminal cursor stays hidden but is positioned on the highlighted item,
-including after arrow navigation. Passive metadata cards do not move that
-logical focus position; native applications and focused forms regain their own
-cursor on return. This also keeps host cursor trails anchored to actual focus.
+The terminal cursor stays hidden but follows the highlighted sidebar item or
+context menu action, including after arrow navigation. Passive metadata cards
+do not move that logical focus position. Native applications and focused forms
+regain their own cursor on return.
 
 In the sidebar, `n` creates a workspace and its first terminal, `N` creates a
 separate full terminal window, and `r` renames the selected item. `x`/Delete closes

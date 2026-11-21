@@ -7,6 +7,7 @@ pub use render::*;
 pub mod animation;
 pub mod chord;
 pub mod color;
+pub mod context_menu;
 pub mod decoration;
 pub mod graphics;
 mod graphics_cache;

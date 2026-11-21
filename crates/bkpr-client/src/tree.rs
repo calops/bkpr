@@ -527,6 +527,32 @@ impl Tree {
             row.continuations = continuations;
         }
     }
+    pub(crate) fn menu_fold(&self, target: &Target) -> Option<bool> {
+        if matches!(target.node, Node::Native(SidebarTarget::Pane { .. })) {
+            return None;
+        }
+        if self.collapsed.contains(target) {
+            Some(false)
+        } else {
+            self.rows
+                .iter()
+                .any(|row| row.parent.as_ref() == Some(target))
+                .then_some(true)
+        }
+    }
+
+    pub(crate) fn toggle_menu_fold(&mut self, target: Target) {
+        if let Some(collapse) = self.menu_fold(&target) {
+            if collapse {
+                self.collapsed.insert(target.clone());
+            } else {
+                self.collapsed.remove(&target);
+            }
+            self.rebuild();
+            self.repair(target.owner);
+        }
+    }
+
     pub fn fold(&mut self, collapsed: Option<bool>) {
         let Some(cursor) = self.cursor.clone() else {
             return;

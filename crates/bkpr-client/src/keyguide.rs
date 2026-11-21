@@ -29,6 +29,7 @@ pub enum Context {
     /// Full-resource image viewing; only dismissal is a keyboard action.
     ImageViewer,
     Chooser,
+    Menu,
     Details,
     ClipboardConsent,
     History,
@@ -50,6 +51,7 @@ pub enum ModalContext {
     /// Caller-owned full-resource image viewing.
     ImageViewer,
     Chooser,
+    Menu,
     Details,
     ClipboardConsent,
 }
@@ -80,6 +82,7 @@ impl ContextState {
                 ModalContext::RecoveryDetails => Context::RecoveryDetails,
                 ModalContext::ImageViewer => Context::ImageViewer,
                 ModalContext::Chooser => Context::Chooser,
+                ModalContext::Menu => Context::Menu,
                 ModalContext::Details => Context::Details,
                 ModalContext::ClipboardConsent => Context::ClipboardConsent,
             };
@@ -352,6 +355,7 @@ const THEME: u32 = 1 << 13;
 const SESSIONS: u32 = 1 << 14;
 const RECOVERY: u32 = 1 << 15;
 const IMAGE_VIEWER: u32 = 1 << 16;
+const MENU: u32 = 1 << 17;
 const SHIFT: u16 = 1;
 const CTRL: u16 = 2;
 const LOCKS: u16 = 16 | 32;
@@ -397,6 +401,7 @@ impl Context {
             Self::Search => SEARCH,
             Self::Resize => RESIZE,
             Self::Chooser => CHOOSER,
+            Self::Menu => MENU,
             Self::Details => DETAILS,
             Self::ClipboardConsent => CLIPBOARD_CONSENT,
         }
@@ -420,6 +425,7 @@ impl Context {
             Self::Search => "Search",
             Self::Resize => "Resize",
             Self::Chooser => "Choose",
+            Self::Menu => "Context menu",
             Self::Details => "Details",
             Self::ClipboardConsent => "Clipboard permission",
         }
@@ -647,7 +653,7 @@ static BINDINGS: &[Binding] = &[
     ),
     text(SIDEBAR, "/", A::OpenFinder, 5),
     physical(
-        SIDEBAR | SESSIONS | FINDER | CHOOSER | DETAILS | THEME | RECOVERY,
+        SIDEBAR | SESSIONS | FINDER | CHOOSER | DETAILS | THEME | RECOVERY | MENU,
         "ArrowUp",
         0,
         "↑",
@@ -656,7 +662,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        SIDEBAR | SESSIONS | FINDER | CHOOSER | DETAILS | THEME | RECOVERY,
+        SIDEBAR | SESSIONS | FINDER | CHOOSER | DETAILS | THEME | RECOVERY | MENU,
         "ArrowDown",
         0,
         "↓",
@@ -763,7 +769,8 @@ static BINDINGS: &[Binding] = &[
             | DETAILS
             | THEME
             | RECOVERY
-            | IMAGE_VIEWER,
+            | IMAGE_VIEWER
+            | MENU,
         "Escape",
         0,
         "Esc",
@@ -776,7 +783,7 @@ static BINDINGS: &[Binding] = &[
     text(CONFIRM, "n", A::Cancel, 0),
     text(CONFIRM, "N", A::Cancel, 0),
     physical(
-        CREATE | EDIT | CONFIRM | FINDER | CHOOSER | THEME | RECOVERY,
+        CREATE | EDIT | CONFIRM | FINDER | CHOOSER | THEME | RECOVERY | MENU,
         "Enter",
         0,
         "Enter",
