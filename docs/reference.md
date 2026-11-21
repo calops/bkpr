@@ -1786,6 +1786,29 @@ individual releases. Image/provenance and Pages artifacts expire after one day.
 Existing release assets and Git history are not rewritten or deleted.
 No branch commits, release creation or tag changes are made by this workflow.
 
+## Issue board automation
+
+The **Sync issue project status** workflow updates open Bkpr issue cards on the
+[issue tracker](https://github.com/users/calops/projects/3). An open ready PR
+takes precedence over draft PRs and puts the issue **In review**. With only
+open draft PRs the issue is **In progress**. All linked PRs must merge for
+**Done**; a PR closed without merging does not count. The workflow does not
+close issues or add them to the board.
+
+Put `Tracks #123` on its own line in a maintainer's PR description to link it
+without closing the issue on merge. Opening or editing an already-ready PR
+with that line goes straight to **In review**. Use this for multi-PR issues:
+a `Closes` keyword can close the issue on the first merge, independently of
+the workflow. Links made in the **Development** sidebar are also read, but
+GitHub doesn't trigger Actions for that edit alone. The scheduled run picks
+them up, or you can run the workflow manually.
+
+To enable writes, add the `BKPR_PROJECT_TOKEN` repository Actions secret with a
+dedicated classic personal access token from the project owner, scoped to
+`project`. The repository's default `GITHUB_TOKEN` cannot write to a user-owned
+project. To preview status changes locally with authenticated `gh`, run
+`node .github/scripts/project-status.mjs --dry-run`.
+
 ## Packaging and releases
 
 ### Nix
