@@ -8,6 +8,7 @@ openssl_source=$3
 output=$4
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
+umask 022
 root=$work/root
 runtime=$root/lib/bkpr
 mkdir -p "$runtime/bin" "$runtime/lib" "$runtime/share" "$root/bin" "$root/share"
@@ -75,13 +76,28 @@ done < <(find "$runtime/bin" "$runtime/lib" -type f -print0)
 version=$("$runtime/bin/bkpr" --version)
 version=${version#bkpr }
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+minimum_system=$(
+  while IFS= read -r -d '' file; do
+    otool -arch arm64 -l "$file" | awk '
+      $1 == "cmd" { field = ($2 == "LC_BUILD_VERSION") ? "minos" : ($2 == "LC_VERSION_MIN_MACOSX" ? "version" : "") }
+      field != "" && $1 == field { print $2; field = "" }
+    '
+  done < <(find "$runtime/bin" "$runtime/lib" -type f -print0) |
+    sort -t . -k1,1n -k2,2n -k3,3n | tail -1
+)
+[[ "$minimum_system" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]
 pkgbuild --root "$root" --install-location /usr/local --identifier app.bkpr.cli \
   --version "$version" --ownership recommended "$work/payload.pkg"
-cat > "$work/requirements.plist" <<'PLIST'
+cat > "$work/requirements.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict><key>arch</key><array><string>arm64</string></array></dict>
+<dict>
+  <key>arch</key><array><string>arm64</string></array>
+  <key>os</key><array><string>$minimum_system</string></array>
+</dict>
 </plist>
 PLIST
-productbuild --product "$work/requirements.plist" --package "$work/payload.pkg" "$output"
+productbuild --synthesize --product "$work/requirements.plist" --package "$work/payload.pkg" \
+  "$work/Distribution"
+productbuild --distribution "$work/Distribution" --package-path "$work" "$output"
