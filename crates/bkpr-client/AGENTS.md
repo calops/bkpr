@@ -19,6 +19,7 @@
 
 ## Presentation and authority
 
+- Keep reusable widgets and rendering logic in `bkpr-tui-framework`. The client supplies Bkpr-specific content, styling choices, action routing and state, then composes framework surfaces. Extend the framework rather than implementing another client-local widget when the behavior can be reused.
 - `tree.rs`, `finder.rs` and popup models consume published backend facts. `metadata.rs`/`ci.rs` format supplied metadata; provider/Git/process acquisition belongs to the backend. Client annotations cannot overwrite authoritative status or membership.
 - The sidebar scrollbar uses the same display-row viewport as text, artwork and hit testing. When visible, it reserves the last sidebar column without moving the pane divider. Joined popup graphics must leave the scrollbar glyphs unobscured.
 - Finder invalidation includes terminal diagnostics even when the registry revision is unchanged. Its semantic key avoids rebuilding the index for unrelated view/lease metadata; keep query and selected pane identity through refresh.

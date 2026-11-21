@@ -131,32 +131,7 @@ const SIDEBAR_MENU: &str = "ui:sidebar-menu";
 
 struct SidebarMenu {
     target: TreeTarget,
-    anchor: (u16, u16),
-    actions: Vec<(&'static str, crate::keyguide::Action)>,
-    selected: usize,
-    pressed: Option<usize>,
-}
-
-impl SidebarMenu {
-    fn placement(&self, size: Size) -> OverlayPlacement {
-        let width = self
-            .actions
-            .iter()
-            .map(|(label, _)| label.len())
-            .max()
-            .unwrap() as u16
-            + 4;
-        let height = self.actions.len() as u16 + 2;
-        OverlayPlacement::framed(
-            Rect {
-                x: self.anchor.0.min(size.cols.saturating_sub(width)),
-                y: self.anchor.1.min(size.rows.saturating_sub(height)),
-                width,
-                height,
-            },
-            size,
-        )
-    }
+    widget: bkpr_tui_framework::context_menu::ContextMenu<crate::keyguide::Action>,
 }
 
 #[path = "diagnostics.rs"]
@@ -920,8 +895,19 @@ impl App {
         self.tree.lock().unwrap().jump_session(owner);
         self.synchronize_tree_focus();
     }
-    fn open_sidebar_menu(&mut self, target: TreeTarget, anchor: (u16, u16), size: Size) {
+    fn open_sidebar_menu(&mut self, row: Option<TreeTarget>, anchor: (u16, u16), size: Size) {
         use crate::keyguide::Action;
+        use bkpr_tui_framework::context_menu::{ContextMenu, Item};
+        let item = |icon, label, action| Item {
+            icon,
+            label,
+            action,
+        };
+        let empty = row.is_none();
+        let target = row.unwrap_or_else(|| TreeTarget {
+            owner: self.tree_owner(),
+            node: TreeNode::Session,
+        });
         let tree = self.tree.lock().unwrap();
         let Some(session) = tree.session(target.owner) else {
             return;
@@ -929,43 +915,44 @@ impl App {
         let mut actions = Vec::new();
         let native = matches!(target.node, TreeNode::Native(_));
         if native {
-            actions.push(("Open", Action::ActivateSelected));
+            actions.push(item("󰏌", "Open", Action::ActivateSelected));
             if !self.options.read_only {
-                actions.push(("Rename", Action::RenameSelected));
+                actions.push(item("󰏫", "Rename", Action::RenameSelected));
             }
         }
-        if let Some(collapse) = tree.menu_fold(&target) {
-            actions.push((
-                if collapse { "Collapse" } else { "Expand" },
-                Action::ToggleFoldSidebar,
-            ));
+        if !empty && let Some(collapse) = tree.menu_fold(&target) {
+            let (icon, label) = if collapse {
+                ("󰅀", "Collapse")
+            } else {
+                ("󰅂", "Expand")
+            };
+            actions.push(item(icon, label, Action::ToggleFoldSidebar));
         }
         if !self.options.read_only {
+            match &target.node {
+                TreeNode::Session => {
+                    actions.push(item("󰉕", "New workspace", Action::CreateWorkspace))
+                }
+                TreeNode::Native(SidebarTarget::Workspace(_)) => {
+                    actions.push(item("󰐕", "New window", Action::CreateTerminal));
+                }
+                _ => {}
+            }
             if native {
-                actions.push(("Close", Action::CloseSelected));
-            } else if session.can_stop {
-                actions.push(("Close session", Action::StopSession));
+                actions.push(item("󰅖", "Close", Action::CloseSelected));
+            } else if !empty && session.can_stop {
+                actions.push(item("󰅖", "Close session", Action::StopSession));
             }
         }
         drop(tree);
-        if actions.is_empty() || size.rows < actions.len() as u16 + 2 || size.cols < 4 {
+        let widget = ContextMenu::new(anchor, 22, actions);
+        let Some(placement) = widget.placement(size) else {
             return;
-        }
-        let menu = SidebarMenu {
-            target,
-            anchor,
-            actions,
-            selected: 0,
-            pressed: None,
         };
         self.overlays.remove(crate::popover::SURFACE_ID);
-        self.overlays.present(
-            SIDEBAR_MENU,
-            menu.placement(size),
-            OverlayPolicy::MODAL,
-            None,
-        );
-        self.sidebar_menu = Some(menu);
+        self.overlays
+            .present(SIDEBAR_MENU, placement, OverlayPolicy::MODAL, None);
+        self.sidebar_menu = Some(SidebarMenu { target, widget });
     }
 
     fn close_sidebar_menu(&mut self) {
@@ -973,18 +960,19 @@ impl App {
         self.sidebar_menu = None;
     }
 
-    fn choose_sidebar_menu(&mut self, index: usize, size: Size) {
+    fn choose_sidebar_menu(&mut self, action: crate::keyguide::Action, size: Size) {
         let Some(menu) = self.sidebar_menu.take() else {
             return;
         };
         self.overlays.remove(SIDEBAR_MENU);
-        let action = menu.actions[index].1;
         let mut tree = self.tree.lock().unwrap();
-        if !tree
-            .rows
-            .iter()
-            .any(|row| row.target.as_ref() == Some(&menu.target))
-        {
+        if match menu.target.node {
+            TreeNode::Session => tree.session(menu.target.owner).is_none(),
+            TreeNode::Native(_) => !tree
+                .rows
+                .iter()
+                .any(|row| row.target.as_ref() == Some(&menu.target)),
+        } {
             return;
         }
         if action == crate::keyguide::Action::ToggleFoldSidebar {
@@ -3857,13 +3845,12 @@ impl App {
             self.state.suppressed.insert(event.key.clone());
             match event.key.as_str() {
                 "Escape" => self.close_sidebar_menu(),
-                "ArrowUp" => {
-                    menu.selected = (menu.selected + menu.actions.len() - 1) % menu.actions.len()
-                }
-                "ArrowDown" => menu.selected = (menu.selected + 1) % menu.actions.len(),
+                "ArrowUp" => menu.widget.navigate(false),
+                "ArrowDown" => menu.widget.navigate(true),
                 "Enter" if event.action == KeyAction::Press => {
-                    let selected = menu.selected;
-                    self.choose_sidebar_menu(selected, size);
+                    if let Some(action) = menu.widget.selected().copied() {
+                        self.choose_sidebar_menu(action, size);
+                    }
                 }
                 _ => {}
             }
@@ -4513,29 +4500,24 @@ impl App {
                     return Ok(());
                 }
                 PointerRoute::Target {
-                    id: SIDEBAR_MENU,
-                    content,
+                    id: SIDEBAR_MENU, ..
                 } => {
-                    if let Some(menu) = &mut self.sidebar_menu {
-                        let row = content
-                            .then(|| {
-                                usize::from(mouse.y.saturating_sub(menu.placement(size).content.y))
-                            })
-                            .filter(|index| *index < menu.actions.len());
-                        if let Some(index) = row {
-                            menu.selected = index;
-                        }
+                    if let Some(layer) = self.overlays.layer(SIDEBAR_MENU)
+                        && let Some(menu) = &mut self.sidebar_menu
+                    {
+                        let body = layer.placement.content;
+                        menu.widget.hover(body, mouse.x, mouse.y);
                         if event_button == MouseButton::Left {
                             match action {
-                                MouseAction::Press => menu.pressed = row,
+                                MouseAction::Press => menu.widget.press(body, mouse.x, mouse.y),
                                 MouseAction::Release => {
-                                    if let Some(index) =
-                                        menu.pressed.take().filter(|index| Some(*index) == row)
+                                    if let Some(action) =
+                                        menu.widget.release(body, mouse.x, mouse.y).copied()
                                     {
-                                        self.choose_sidebar_menu(index, size);
+                                        self.choose_sidebar_menu(action, size);
                                     }
                                 }
-                                _ => {}
+                                MouseAction::Motion => {}
                             }
                         }
                     }
@@ -4741,9 +4723,8 @@ impl App {
             if event_button == MouseButton::Right
                 && action == MouseAction::Press
                 && captured.is_none()
-                && let Some(target) = target
             {
-                self.open_sidebar_menu(target.clone(), (mouse.x, mouse.y), size);
+                self.open_sidebar_menu(target.cloned(), (mouse.x, mouse.y), size);
                 return Ok(());
             }
             if event_button == MouseButton::Left
@@ -5846,39 +5827,20 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     );
                 }
             }
-            if app
-                .sidebar_menu
-                .as_ref()
-                .is_some_and(|menu| size.rows < menu.actions.len() as u16 + 2 || size.cols < 4)
-                || (app.sidebar_menu.is_some()
-                    && (placement.is_some() || app.diagnostic_view.is_some()))
-            {
-                app.close_sidebar_menu();
-            }
+            let menu_placement = if placement.is_none() && app.diagnostic_view.is_none() {
+                app.sidebar_menu
+                    .as_ref()
+                    .and_then(|menu| menu.widget.placement(size))
+            } else {
+                None
+            };
             let mut sidebar_menu_graphical = false;
-            if let Some(menu) = &app.sidebar_menu {
-                let placement = menu.placement(size);
-                let local = placement.outer.size(size);
-                let body = window::content(local);
-                let mut rows = window::border_rows(local, "", window::Border::Rounded);
-                rows.extend(menu.actions.iter().enumerate().map(|(index, (label, _))| {
-                    (
-                        Rect {
-                            x: body.x,
-                            y: body.y + index as u16,
-                            width: body.width,
-                            height: 1,
-                        },
-                        window::fit(&format!(" {label}"), body.width),
-                        index == menu.selected,
-                    )
-                }));
-                sidebar_menu_surface.paint(local, rows, None);
+            if let Some((menu, placement)) = app.sidebar_menu.as_ref().zip(menu_placement) {
                 crate::appearance::update_region_theme(&mut menu_theme, ui_colors, None);
-                sidebar_menu_surface.apply_theme(
+                menu.widget.paint(
+                    &mut sidebar_menu_surface,
+                    placement.outer.size(size),
                     &menu_theme,
-                    Role::Panel,
-                    &window::theme_spans(local),
                 );
                 sidebar_menu_effects = graphics_frame(size);
                 sidebar_menu_graphical = graphics.decorate_region(
@@ -5890,6 +5852,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 );
                 app.overlays
                     .present(SIDEBAR_MENU, placement, OverlayPolicy::MODAL, None);
+            } else if app.sidebar_menu.is_some() {
+                app.close_sidebar_menu();
             }
             if let Some(viewer) = &mut app.diagnostic_view {
                 let placement = App::diagnostic_geometry(size);
@@ -6524,13 +6488,10 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         surfaces.push(Surface {
                             palette: None,
                             id: SIDEBAR_MENU,
-                            content: if sidebar_menu_graphical {
-                                SurfaceContent::CellsClipped(window::content(
-                                    sidebar_menu_surface.frame.size,
-                                ))
-                            } else {
-                                SurfaceContent::All
-                            },
+                            content: bkpr_tui_framework::context_menu::content(
+                                sidebar_menu_surface.frame.size,
+                                sidebar_menu_graphical,
+                            ),
                             rect: layer.placement.outer,
                             frame: &sidebar_menu_surface.frame,
                             selection: &[],

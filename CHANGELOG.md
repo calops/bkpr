@@ -61,7 +61,7 @@
 * **client:** double-click pane dividers to balance their two sides, including both axes at a corner, while preserving nested minimum sizes and unrelated layout ratios.
 * **client:** show the current position and visible extent of overflowing sidebar trees in a muted right-edge scrollbar with a thicker thumb centered on its track.
 * **client:** include the source session, workspace and agent title in desktop alerts. Show the same agent title in the conversation recovery picker.
-* **client:** add sidebar context menus with open, rename, collapse/expand and confirmed close actions.
+* **client:** add sidebar context menus for opening, renaming, folding, closing, and creating workspaces and windows.
 
 ### Bug Fixes
 

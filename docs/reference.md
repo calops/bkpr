@@ -994,9 +994,11 @@ activation, wheel scrolling and double-click folding.
 
 Right-click a sidebar row for its available actions. Open, Rename and Close use
 the same actions as keyboard navigation; Close still asks for confirmation.
-Branches also offer Collapse or Expand. Use Up/Down and Enter or click an action;
-Escape or an outside click dismisses the menu. Read-only clients omit Rename and
-Close. Both fancy and plain chrome use the same menu geometry.
+Branches also offer Collapse or Expand. Workspace rows offer New window;
+session rows and empty sidebar space offer New workspace (in the active session
+when clicking empty space). Use Up/Down and Enter or click an action. Escape or
+an outside click dismisses the menu. Read-only clients omit actions that change
+the session. Fancy and plain chrome use the same menu geometry.
 
 When the tree overflows, a scrollbar at the right edge of the sidebar shows the
 visible fraction and scroll position. It counts every display row, including
