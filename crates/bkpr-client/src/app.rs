@@ -127,6 +127,38 @@ fn raised_material(
     ready
 }
 
+const SIDEBAR_MENU: &str = "ui:sidebar-menu";
+
+struct SidebarMenu {
+    target: TreeTarget,
+    anchor: (u16, u16),
+    actions: Vec<(&'static str, crate::keyguide::Action)>,
+    selected: usize,
+    pressed: Option<usize>,
+}
+
+impl SidebarMenu {
+    fn placement(&self, size: Size) -> OverlayPlacement {
+        let width = self
+            .actions
+            .iter()
+            .map(|(label, _)| label.len())
+            .max()
+            .unwrap() as u16
+            + 4;
+        let height = self.actions.len() as u16 + 2;
+        OverlayPlacement::framed(
+            Rect {
+                x: self.anchor.0.min(size.cols.saturating_sub(width)),
+                y: self.anchor.1.min(size.rows.saturating_sub(height)),
+                width,
+                height,
+            },
+            size,
+        )
+    }
+}
+
 #[path = "diagnostics.rs"]
 mod diagnostics;
 #[path = "identity_copy.rs"]
@@ -498,6 +530,7 @@ struct App {
     notification_source: Option<String>,
     tree: Arc<Mutex<Tree>>,
     tree_press: Option<TreeTarget>,
+    sidebar_menu: Option<SidebarMenu>,
     sidebar_target: Option<TreeTarget>,
     sidebar_backend_available: bool,
     sidebar_has_workspace: bool,
@@ -887,6 +920,86 @@ impl App {
         self.tree.lock().unwrap().jump_session(owner);
         self.synchronize_tree_focus();
     }
+    fn open_sidebar_menu(&mut self, target: TreeTarget, anchor: (u16, u16), size: Size) {
+        use crate::keyguide::Action;
+        let tree = self.tree.lock().unwrap();
+        let Some(session) = tree.session(target.owner) else {
+            return;
+        };
+        let mut actions = Vec::new();
+        let native = matches!(target.node, TreeNode::Native(_));
+        if native {
+            actions.push(("Open", Action::ActivateSelected));
+            if !self.options.read_only {
+                actions.push(("Rename", Action::RenameSelected));
+            }
+        }
+        if let Some(collapse) = tree.menu_fold(&target) {
+            actions.push((
+                if collapse { "Collapse" } else { "Expand" },
+                Action::ToggleFoldSidebar,
+            ));
+        }
+        if !self.options.read_only {
+            if native {
+                actions.push(("Close", Action::CloseSelected));
+            } else if session.can_stop {
+                actions.push(("Close session", Action::StopSession));
+            }
+        }
+        drop(tree);
+        if actions.is_empty() || size.rows < actions.len() as u16 + 2 || size.cols < 4 {
+            return;
+        }
+        let menu = SidebarMenu {
+            target,
+            anchor,
+            actions,
+            selected: 0,
+            pressed: None,
+        };
+        self.overlays.remove(crate::popover::SURFACE_ID);
+        self.overlays.present(
+            SIDEBAR_MENU,
+            menu.placement(size),
+            OverlayPolicy::MODAL,
+            None,
+        );
+        self.sidebar_menu = Some(menu);
+    }
+
+    fn close_sidebar_menu(&mut self) {
+        self.overlays.remove(SIDEBAR_MENU);
+        self.sidebar_menu = None;
+    }
+
+    fn choose_sidebar_menu(&mut self, index: usize, size: Size) {
+        let Some(menu) = self.sidebar_menu.take() else {
+            return;
+        };
+        self.overlays.remove(SIDEBAR_MENU);
+        let action = menu.actions[index].1;
+        let mut tree = self.tree.lock().unwrap();
+        if !tree
+            .rows
+            .iter()
+            .any(|row| row.target.as_ref() == Some(&menu.target))
+        {
+            return;
+        }
+        if action == crate::keyguide::Action::ToggleFoldSidebar {
+            tree.toggle_menu_fold(menu.target);
+            drop(tree);
+            self.synchronize_tree_focus();
+        } else {
+            self.session_action = Some(SessionAction::Tree {
+                target: menu.target,
+                action,
+                size,
+            });
+        }
+    }
+
     fn emit_tree_action(&mut self, action: crate::keyguide::Action, size: Size) {
         let target = self.sidebar_target.clone().or_else(|| {
             self.sidebar_backend_available.then(|| TreeTarget {
@@ -3740,6 +3853,22 @@ impl App {
             self.flush_key_releases()?;
             return Ok(false);
         }
+        if let Some(menu) = &mut self.sidebar_menu {
+            self.state.suppressed.insert(event.key.clone());
+            match event.key.as_str() {
+                "Escape" => self.close_sidebar_menu(),
+                "ArrowUp" => {
+                    menu.selected = (menu.selected + menu.actions.len() - 1) % menu.actions.len()
+                }
+                "ArrowDown" => menu.selected = (menu.selected + 1) % menu.actions.len(),
+                "Enter" if event.action == KeyAction::Press => {
+                    let selected = menu.selected;
+                    self.choose_sidebar_menu(selected, size);
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
         if self.diagnostic_active() {
             use crate::keyguide::{self, Action, Context};
             self.state.suppressed.insert(event.key.clone());
@@ -4379,6 +4508,39 @@ impl App {
                 self.clear_tree_pointer();
             }
             match route {
+                PointerRoute::Dismiss(SIDEBAR_MENU) => {
+                    self.close_sidebar_menu();
+                    return Ok(());
+                }
+                PointerRoute::Target {
+                    id: SIDEBAR_MENU,
+                    content,
+                } => {
+                    if let Some(menu) = &mut self.sidebar_menu {
+                        let row = content
+                            .then(|| {
+                                usize::from(mouse.y.saturating_sub(menu.placement(size).content.y))
+                            })
+                            .filter(|index| *index < menu.actions.len());
+                        if let Some(index) = row {
+                            menu.selected = index;
+                        }
+                        if event_button == MouseButton::Left {
+                            match action {
+                                MouseAction::Press => menu.pressed = row,
+                                MouseAction::Release => {
+                                    if let Some(index) =
+                                        menu.pressed.take().filter(|index| Some(*index) == row)
+                                    {
+                                        self.choose_sidebar_menu(index, size);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
                 PointerRoute::Dismiss("ui:diagnostics") => {
                     self.close_diagnostic()?;
                     return Ok(());
@@ -4575,6 +4737,14 @@ impl App {
                         3
                     });
                 }
+            }
+            if event_button == MouseButton::Right
+                && action == MouseAction::Press
+                && captured.is_none()
+                && let Some(target) = target
+            {
+                self.open_sidebar_menu(target.clone(), (mouse.x, mouse.y), size);
+                return Ok(());
             }
             if event_button == MouseButton::Left
                 && action == MouseAction::Press
@@ -4968,6 +5138,7 @@ impl App {
             namespace: (0, 0),
             tree,
             tree_press: None,
+            sidebar_menu: None,
             sidebar_target: None,
             sidebar_backend_available: false,
             sidebar_has_workspace: false,
@@ -5109,6 +5280,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             ..initial_size
         });
         let mut diagnostic_effects = graphics_frame(initial_size);
+        let mut sidebar_menu_surface = UiSurface::new(initial_size);
+        let mut sidebar_menu_effects = graphics_frame(initial_size);
         let mut window_surface = UiSurface::new(Size {
             cols: 1,
             rows: 1,
@@ -5123,6 +5296,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         let mut window_roles = Vec::new();
         let mut guide_painted = None;
         let mut form_theme = Theme::default();
+        let mut menu_theme = Theme::default();
         let mut search_surface = UiSurface::new(initial_size);
         let mut window_effects = graphics_frame(initial_size);
         let mut popover_effects = graphics_frame(initial_size);
@@ -5294,6 +5468,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     || app.state.form.is_some()
                     || app.state.prefix
                     || app.picker_open()
+                    || app.sidebar_menu.is_some()
                     || app.search_open(),
             );
             let workspace_hits = crate::controller::tree_chrome(
@@ -5670,6 +5845,51 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         1,
                     );
                 }
+            }
+            if app
+                .sidebar_menu
+                .as_ref()
+                .is_some_and(|menu| size.rows < menu.actions.len() as u16 + 2 || size.cols < 4)
+                || (app.sidebar_menu.is_some()
+                    && (placement.is_some() || app.diagnostic_view.is_some()))
+            {
+                app.close_sidebar_menu();
+            }
+            let mut sidebar_menu_graphical = false;
+            if let Some(menu) = &app.sidebar_menu {
+                let placement = menu.placement(size);
+                let local = placement.outer.size(size);
+                let body = window::content(local);
+                let mut rows = window::border_rows(local, "", window::Border::Rounded);
+                rows.extend(menu.actions.iter().enumerate().map(|(index, (label, _))| {
+                    (
+                        Rect {
+                            x: body.x,
+                            y: body.y + index as u16,
+                            width: body.width,
+                            height: 1,
+                        },
+                        window::fit(&format!(" {label}"), body.width),
+                        index == menu.selected,
+                    )
+                }));
+                sidebar_menu_surface.paint(local, rows, None);
+                crate::appearance::update_region_theme(&mut menu_theme, ui_colors, None);
+                sidebar_menu_surface.apply_theme(
+                    &menu_theme,
+                    Role::Panel,
+                    &window::theme_spans(local),
+                );
+                sidebar_menu_effects = graphics_frame(size);
+                sidebar_menu_graphical = graphics.decorate_region(
+                    &mut sidebar_menu_effects,
+                    placement.outer,
+                    placement.content,
+                    1,
+                    None,
+                );
+                app.overlays
+                    .present(SIDEBAR_MENU, placement, OverlayPolicy::MODAL, None);
             }
             if let Some(viewer) = &mut app.diagnostic_view {
                 let placement = App::diagnostic_geometry(size);
@@ -6300,6 +6520,42 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     {
                         surfaces.push(artwork);
                     }
+                    if layer.id == SIDEBAR_MENU {
+                        surfaces.push(Surface {
+                            palette: None,
+                            id: SIDEBAR_MENU,
+                            content: if sidebar_menu_graphical {
+                                SurfaceContent::CellsClipped(window::content(
+                                    sidebar_menu_surface.frame.size,
+                                ))
+                            } else {
+                                SurfaceContent::All
+                            },
+                            rect: layer.placement.outer,
+                            frame: &sidebar_menu_surface.frame,
+                            selection: &[],
+                            search: &[],
+                            focused: false,
+                            faint: false,
+                        });
+                        surfaces.push(Surface {
+                            palette: None,
+                            id: "ui:sidebar-menu:graphics",
+                            content: SurfaceContent::Graphics,
+                            rect: Rect {
+                                x: 0,
+                                y: 0,
+                                width: size.cols,
+                                height: size.rows,
+                            },
+                            frame: &sidebar_menu_effects,
+                            selection: &[],
+                            search: &[],
+                            focused: false,
+                            faint: false,
+                        });
+                        continue;
+                    }
                     if layer.id == "ui:diagnostics" {
                         surfaces.push(Surface {
                             palette: None,
@@ -6705,7 +6961,9 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             return Ok(());
                         }
                     }
-                    ClientEvent::Legacy(InputEvent::Paste(text)) if !app.resize_capturing() => {
+                    ClientEvent::Legacy(InputEvent::Paste(text))
+                        if !app.resize_capturing() && app.sidebar_menu.is_none() =>
+                    {
                         let result = app.paste(text);
                         app.scope_input_result(result)?;
                     }
@@ -7045,6 +7303,7 @@ pub(super) mod tests {
                 namespace: (1, 1),
                 tree: Arc::new(Mutex::new(Tree::default())),
                 tree_press: None,
+                sidebar_menu: None,
                 sidebar_target: None,
                 sidebar_backend_available: false,
                 sidebar_has_workspace: false,

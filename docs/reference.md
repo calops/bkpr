@@ -992,6 +992,12 @@ fold or unfold a workspace or window, and Enter activates the selected workspace
 window or terminal. Esc returns to the original application. The mouse supports
 activation, wheel scrolling and double-click folding.
 
+Right-click a sidebar row for its available actions. Open, Rename and Close use
+the same actions as keyboard navigation; Close still asks for confirmation.
+Branches also offer Collapse or Expand. Use Up/Down and Enter or click an action;
+Escape or an outside click dismisses the menu. Read-only clients omit Rename and
+Close. Both fancy and plain chrome use the same menu geometry.
+
 When the tree overflows, a scrollbar at the right edge of the sidebar shows the
 visible fraction and scroll position. It counts every display row, including
 branch details. Plain and fancy chrome both reserve one column while the bar
