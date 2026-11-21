@@ -6,7 +6,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     os::unix::{
         fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         process::CommandExt,
