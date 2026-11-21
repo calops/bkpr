@@ -136,13 +136,13 @@ fn failed_initial_attach_retires_its_loading_deadline() {
     let rects = vec![(pane.to_owned(), Rect {
         x: 0, y: 0, width: size().cols, height: size().rows,
     })];
-    app.begin_image_attach(pane, size());
-    app.paint_image_feedback(size(), &rects, &Theme::default());
+    app.begin_pane_attach(pane, size());
+    app.paint_pane_feedback(size(), &rects, &Theme::default());
     let key = format!("attach:{pane}");
     app.jobs.submit(key.clone(), || bail!("initial frame unavailable")).unwrap();
     wait_background(&mut app, &key);
-    app.paint_image_feedback(size(), &rects, &Theme::default());
-    assert_eq!(app.image_timeout(1000, Instant::now()), 1000);
+    app.paint_pane_feedback(size(), &rects, &Theme::default());
+    assert_eq!(app.pane_feedback_timeout(1000, Instant::now()), 1000);
     assert!(app.view_failures.contains_key(pane));
     assert!(app.latest_diagnostic().is_some());
 }
@@ -154,11 +154,28 @@ fn visible_loading_is_not_hidden_by_keyboard_focus_loss() {
     let rects = [(pane.to_owned(), Rect {
         x: 0, y: 0, width: size().cols, height: size().rows,
     })];
-    app.begin_image_attach(pane, size());
+    app.begin_pane_attach(pane, size());
     app.host_focused = false;
-    app.paint_image_feedback(size(), &rects, &Theme::default());
-    assert!(app.image_timeout(1000, Instant::now()) < 1000);
+    app.paint_pane_feedback(size(), &rects, &Theme::default());
+    assert!(app.pane_feedback_timeout(1000, Instant::now()) < 1000);
     app.backgrounded = true;
-    app.paint_image_feedback(size(), &rects, &Theme::default());
-    assert_eq!(app.image_timeout(1000, Instant::now()), 1000);
+    app.paint_pane_feedback(size(), &rects, &Theme::default());
+    assert_eq!(app.pane_feedback_timeout(1000, Instant::now()), 1000);
+}
+
+#[test]
+fn first_inline_frame_clears_loading() {
+    let (mut app, _received) = fixture();
+    attach_fixture(&mut app);
+    let pane = "focused-pane";
+    let rects = [(pane.to_owned(), Rect {
+        x: 0, y: 0, width: size().cols, height: size().rows,
+    })];
+    app.begin_pane_attach(pane, size());
+    app.paint_pane_feedback(size(), &rects, &Theme::default());
+    assert!(app.pane_feedback_timeout(1000, Instant::now()) < 1000);
+    // The view's frame arrived with its images inline: nothing is left to load.
+    app.sync_pane_feedback(size(), &rects);
+    assert!(!app.pane_feedback.contains_key(pane));
+    assert_eq!(app.pane_feedback_timeout(1000, Instant::now()), 1000);
 }

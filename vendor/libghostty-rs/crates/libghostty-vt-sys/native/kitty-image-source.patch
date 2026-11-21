@@ -154,20 +154,22 @@ diff -ruN a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_
      /// Quiet is the quiet settings for the initial load command. This is
      /// used if q isn't set on subsequent chunks.
      quiet: command.Command.Quiet,
-@@ -87,6 +90,12 @@
+@@ -87,6 +90,14 @@
          },
          shared_memory: bool,
  
 +        /// Keep a copy of each completed image's transmitted PNG or zlib
-+        /// payload, before decoding, so embedders can forward the
-+        /// application's original encoding (see `Image.source`). Retained
-+        /// bytes count against the storage limit.
++        /// RGB/RGBA payload, before decoding, so embedders can forward the
++        /// application's original encoding (see `Image.source`). A payload
++        /// is kept only when it is no larger than the decoded pixels, so it
++        /// at most doubles an image's memory; it is not charged to the
++        /// storage limit, which keeps admitting the same images.
 +        retain_source: bool = false,
 +
          /// Enables all filesystem-related image transmission mediums. `path`
          /// is the temporary directory to expect files in when files are
          /// transmitted using said medium.
-@@ -144,6 +153,7 @@
+@@ -144,6 +155,7 @@
                  .enabled => |d| d.directory,
                  .disabled => null,
              },
@@ -175,17 +177,21 @@ diff -ruN a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_
          };
  
          // Special case for the direct medium, we just add the chunk directly.
-@@ -569,6 +579,20 @@
+@@ -569,6 +581,24 @@
      pub fn complete(self: *LoadingImage, alloc: Allocator) !Image {
          const img = &self.image;
  
-+        // Keep the encoded payload before decoding replaces it. Only PNG or
-+        // zlib payloads are worth forwarding; raw pixels equal the data.
++        // Keep the encoded payload before decoding replaces it. Only a plain
++        // PNG file or a zlib RGB/RGBA stream has a forwardable Kitty form;
++        // raw pixels equal the data.
 +        var source: ?Image.Source = null;
 +        errdefer if (source) |s| alloc.free(s.bytes);
-+        if (self.retain_source and self.frame == null and
-+            (img.format == .png or img.compression != .none))
-+        {
++        const forwardable = switch (img.format) {
++            .png => img.compression == .none,
++            .rgb, .rgba => img.compression == .zlib_deflate,
++            else => false,
++        };
++        if (self.retain_source and self.frame == null and forwardable) {
 +            source = .{
 +                .format = img.format,
 +                .compression = img.compression,
@@ -196,15 +202,22 @@ diff -ruN a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_
          // Decompress the data if it is compressed.
          try self.decompress(alloc);
  
-@@ -607,6 +631,7 @@
+@@ -607,6 +637,14 @@
          var result = self.image;
          result.data = .{ .complete = try self.data.toOwnedSlice(alloc) };
          errdefer result.deinit(alloc);
++        // A payload larger than its pixels would never be forwarded.
++        if (source) |s| {
++            if (s.bytes.len > result.data.len()) {
++                alloc.free(s.bytes);
++                source = null;
++            }
++        }
 +        result.source = source;
          self.image = .{};
          return result;
      }
-@@ -795,6 +820,19 @@
+@@ -795,6 +833,19 @@
      /// pointer and never own it).
      animation: ?*animation.Animation = null,
  
@@ -224,7 +237,7 @@ diff -ruN a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_
      pub const Error = error{
          InsufficientData,
          InvalidData,
-@@ -846,6 +884,10 @@
+@@ -846,6 +897,10 @@
  
      pub fn deinit(self: *Image, alloc: Allocator) void {
          self.data.deinit(alloc);
@@ -235,12 +248,7 @@ diff -ruN a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_
          if (self.animation) |anim| {
              anim.deinit(alloc);
              alloc.destroy(anim);
-@@ -906,10 +948,19 @@
-     /// for this image: the base data plus any animation frames.
-     pub fn storageSize(self: *const Image) usize {
-         var total: usize = self.data.len();
-+        if (self.source) |s| total += s.bytes.len;
-         if (self.animation) |anim| total += anim.frameBytes();
+@@ -910,6 +965,14 @@
          return total;
      }
  
@@ -255,7 +263,7 @@ diff -ruN a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_
      /// Mostly for logging
      pub fn withoutData(self: *const Image) Image {
          var copy = self.*;
-@@ -1259,6 +1310,67 @@
+@@ -1259,6 +1322,67 @@
      try testing.expect(img.compression == .none);
  }
  
@@ -291,11 +299,11 @@ diff -ruN a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_
 +            try testing.expect(source.format == .rgb);
 +            try testing.expect(source.compression == .zlib_deflate);
 +            try testing.expectEqualSlices(u8, payload, source.bytes);
-+            try testing.expectEqual(img.data.len() + payload.len, img.storageSize());
 +        } else {
 +            try testing.expect(img.currentSource() == null);
-+            try testing.expectEqual(img.data.len(), img.storageSize());
 +        }
++        // Retained payloads are not charged to the storage limit.
++        try testing.expectEqual(img.data.len(), img.storageSize());
 +    }
 +
 +    // Raw payloads equal the decoded pixels, so nothing extra is retained.
@@ -326,23 +334,13 @@ diff -ruN a/src/terminal/kitty/graphics_image.zig b/src/terminal/kitty/graphics_
 diff -ruN a/src/terminal/kitty/graphics_storage.zig b/src/terminal/kitty/graphics_storage.zig
 --- a/src/terminal/kitty/graphics_storage.zig
 +++ b/src/terminal/kitty/graphics_storage.zig
-@@ -408,7 +408,7 @@
-         s: *terminal.Screen,
-         img: Image,
-     ) Allocator.Error!void {
--        const new_len = img.data.len();
-+        const new_len = img.storageSize();
- 
-         // If the image itself is over the limit, then error immediately
-         if (new_len > self.total_limit) return error.OutOfMemory;
-@@ -1166,6 +1166,13 @@
+@@ -1166,6 +1166,12 @@
          alloc: Allocator,
          img: *Image,
      ) Allocator.Error!void {
 +        // Composition may edit the pixels from here on, so a retained
 +        // transmission payload no longer describes them.
 +        if (img.source) |s| {
-+            self.total_bytes -= s.bytes.len;
 +            alloc.free(s.bytes);
 +            img.source = null;
 +        }

@@ -10,10 +10,10 @@ pub const SOURCES_SCENE_ENCODING: &str = "planus_v1_sources";
 const INFLATE_CHUNK: usize = 64 * 1024;
 
 /// The image's original payload, when it has one no larger than its pixels.
-pub fn original_payload(image: &Image) -> Option<(ImageSourceEncoding, &[u8])> {
+pub(crate) fn original_payload(image: &Image) -> Option<(ImageSourceEncoding, &[u8])> {
     let source = image.source.as_deref()?;
     (!source.bytes.is_empty() && source.bytes.len() <= image.pixels.len())
-        .then_some((source.encoding, source.bytes.as_slice()))
+        .then_some((source.encoding, &source.bytes[..]))
 }
 
 /// Inflate one zlib stream to exactly `expected` bytes in bounded turns, rejecting trailing data.
@@ -69,6 +69,8 @@ pub(crate) fn decode_png_rgba(
     ensure!(depth == png::BitDepth::Eight, "PNG output depth");
     let mut buffer = vec![0; reader.output_buffer_size().context("PNG output size")?];
     let frame = reader.next_frame(&mut buffer)?;
+    // Forwarded bytes must be a complete file: read through IEND, checking every chunk CRC.
+    reader.finish()?;
     buffer.truncate(frame.buffer_size());
     let pixels = match color {
         png::ColorType::Rgba => buffer,
@@ -143,7 +145,7 @@ mod tests {
         assert!(original_payload(&image).is_none());
         image.source = Some(std::sync::Arc::new(crate::ImageSource {
             encoding: ImageSourceEncoding::Zlib,
-            bytes: vec![0; 3],
+            bytes: vec![0; 3].into(),
         }));
         assert_eq!(
             original_payload(&image),
@@ -151,7 +153,7 @@ mod tests {
         );
         image.source = Some(std::sync::Arc::new(crate::ImageSource {
             encoding: ImageSourceEncoding::Zlib,
-            bytes: vec![0; 4],
+            bytes: vec![0; 4].into(),
         }));
         assert!(original_payload(&image).is_none());
     }

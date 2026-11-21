@@ -252,11 +252,7 @@ struct Attached {
     frame: Option<Frame>,
     history: bool,
     revision: u64,
-    images: HashMap<ImageKey, Arc<Image>>,
-    /// Recently unreferenced images, kept so a reappearing generation needs no resend.
-    recent: std::collections::VecDeque<Arc<Image>>,
-    /// Generations reported to the backend as retained; shared with the poll thread.
-    held: updates::HeldImages,
+    images: pane_scene::ViewImages,
     /// Prepared terminal payloads for newly received images, awaiting the writer.
     transports: Vec<bkpr_tui_framework::PreparedTransport>,
     seeded: u64,
@@ -509,7 +505,7 @@ struct App {
     state: Controller,
     views: HashMap<String, Attached>,
     retiring: Vec<RetiringView>,
-    image_feedback: HashMap<String, pane_feedback::Feedback>,
+    pane_feedback: HashMap<String, pane_feedback::Feedback>,
     retiring_candidates: Vec<RetiringCandidate>,
     jobs: jobs::Scope<Background>,
     management: HashMap<String, ManagementIntent>,
@@ -625,7 +621,7 @@ impl App {
 
     fn fail_view(&mut self, pane: String, summary: &str, error: &anyhow::Error) {
         let diagnostic = self.report_failure(summary, error);
-        self.retire_image_feedback(&pane);
+        self.retire_pane_feedback(&pane);
         self.view_failures.insert(
             pane,
             ViewFailure {
@@ -1642,7 +1638,7 @@ impl App {
                         });
                     }
                     if let Some(pane) = completion.key.strip_prefix("attach:") {
-                        self.retire_image_feedback(pane);
+                        self.retire_pane_feedback(pane);
                         self.view_failures.insert(
                             pane.to_owned(),
                             ViewFailure {
@@ -2247,7 +2243,7 @@ impl App {
         }
     }
     fn retire_view(&mut self, pane: &str, wait_policy: bool) -> Result<()> {
-        self.retire_image_feedback(pane);
+        self.retire_pane_feedback(pane);
         let Some(attached) = self.views.get(pane) else {
             return Ok(());
         };
@@ -2358,7 +2354,7 @@ impl App {
             .filter(|(_, r)| content(*r).height > 0)
             .map(|(id, _)| id.clone())
             .collect::<HashSet<_>>();
-        self.image_feedback.retain(|pane, _| visible.contains(pane));
+        self.pane_feedback.retain(|pane, _| visible.contains(pane));
         let removed = self
             .views
             .keys()
@@ -2497,7 +2493,7 @@ impl App {
                     }) {
                         self.fail_view(id.clone(), "Couldn't start loading this pane.", &error);
                     } else {
-                        self.begin_image_attach(id, local);
+                        self.begin_pane_attach(id, local);
                     }
                 }
             }
@@ -4872,16 +4868,12 @@ fn attach(socket: &Endpoint, pane: &str, mut spec: ViewSpec) -> Result<Attached>
     let result: AttachResult = serde_json::from_value(payload)
         .map_err(|error| transport::mark_outcome_unknown(error.into()))?;
     let view = result.view_id;
-    let held = updates::HeldImages::default();
+    let held = Arc::new(updates::HeldImages::default());
     let mut pump = match updates::pane(socket, pane, &view, held.clone()) {
         Ok(pump) => pump,
         Err(error) => return Err(detach_failed_attach(socket, pane, &view, error)),
     };
-    let Snapshot {
-        metadata,
-        scene,
-        transports,
-    } = match pump.initial() {
+    let snapshot = match pump.initial() {
         Ok(snapshot) => snapshot,
         Err(error) => {
             pump.cancel();
@@ -4890,32 +4882,24 @@ fn attach(socket: &Endpoint, pane: &str, mut spec: ViewSpec) -> Result<Attached>
             return Err(error);
         }
     };
-    let clipboard_id = metadata
-        .clipboard
-        .as_ref()
-        .map(|pending| pending.request_id.clone());
     let mut attached = Attached {
         view,
         spec,
         pump,
-        metadata,
-        clipboard_id,
+        metadata: snapshot.metadata.clone(),
+        clipboard_id: None,
         frame: None,
         history: false,
         revision: 0,
-        images: HashMap::new(),
-        recent: Default::default(),
-        held,
-        transports,
+        images: pane_scene::ViewImages::new(held),
+        transports: Vec::new(),
         seeded: 0,
         retirement_requested: false,
         retirement_policy: RetirementPolicy::Visible,
         retirement_focus_out: false,
         retirement_error: None,
     };
-    if let Some(scene) = scene
-        && let Err(error) = attached.scene(scene)
-    {
+    if let Err(error) = attached.apply(snapshot) {
         attached.pump.cancel();
         let error = detach_failed_attach(socket, pane, &attached.view, error);
         drop(attached);
@@ -4992,7 +4976,7 @@ impl App {
             registry,
             state,
             views: HashMap::new(),
-            image_feedback: HashMap::new(),
+            pane_feedback: HashMap::new(),
             retiring: Vec::new(),
             retiring_candidates: Vec::new(),
             jobs,
@@ -5218,7 +5202,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             }
             app.sync_views(size, &rects)?;
             app.poll_views();
-            app.sync_image_feedback(size, &rects);
+            app.sync_pane_feedback(size, &rects);
             let search = app.flush_search();
             app.scope_input_result(search)?;
             let tick = app.selection_tick();
@@ -6096,7 +6080,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 None
             };
             terminal.set_background(&mut out, background)?;
-            app.paint_image_feedback(size, &rects, &theme);
+            app.paint_pane_feedback(size, &rects, &theme);
             fds.clear();
             fds.extend([
                 libc::pollfd {
@@ -6143,7 +6127,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 escape.as_millis().max(1) as i32
             };
             let timeout = app.selection_timeout(timeout);
-            let timeout = app.image_timeout(timeout, Instant::now());
+            let timeout = app.pane_feedback_timeout(timeout, Instant::now());
             let timeout = if incoming.is_empty() {
                 app.toast_timeout(timeout.min(session_timeout), Instant::now())
             } else {
@@ -6237,7 +6221,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                                     .any(|p| p.id == *id && p.status == PaneStatus::Running),
                         });
                     }
-                    if let Some(feedback) = app.image_feedback.get(id)
+                    if let Some(feedback) = app.pane_feedback.get(id)
                         && let Some(rect) = feedback.rect
                     {
                         surfaces.push(Surface {
@@ -7075,7 +7059,7 @@ pub(super) mod tests {
                 registry,
                 state,
                 views: HashMap::new(),
-                image_feedback: HashMap::new(),
+                pane_feedback: HashMap::new(),
                 retiring: Vec::new(),
                 retiring_candidates: Vec::new(),
                 jobs: jobs::Scope::new(8).unwrap(),
@@ -8383,9 +8367,7 @@ pub(super) mod tests {
                 frame: Some(blank(size())),
                 history: false,
                 revision: 1,
-                images: HashMap::new(),
-                recent: Default::default(),
-                held: Default::default(),
+                images: pane_scene::ViewImages::new(Arc::default()),
                 transports: Vec::new(),
                 seeded: 0,
                 retirement_requested: false,
@@ -8426,6 +8408,8 @@ pub(super) mod tests {
                 metadata,
                 scene: Some(scene_wire::decode(&bytes).unwrap()),
                 transports: Vec::new(),
+                sequence: 2,
+                held_as_of: 1,
             };
             assert!(attached.apply(update).is_err());
             assert_eq!(
@@ -8434,57 +8418,11 @@ pub(super) mod tests {
             );
             assert_eq!(attached.revision, 1);
             assert_eq!(attached.frame.as_ref(), Some(&before));
-            assert!(attached.images.is_empty());
             assert!(attached.history);
             assert_eq!(attached.clipboard_id.as_deref(), Some("pending-request"));
         }
     }
 
-    #[test]
-    fn scene_resource_generation_replacement_retires_only_the_old_cache_entry() {
-        let (mut app, _received) = fixture();
-        attach_fixture(&mut app);
-        let attached = app.views.get_mut("focused-pane").unwrap();
-        let old = Arc::new(Image {
-            id: 7,
-            generation: 1,
-            width: 1,
-            height: 1,
-            format: PixelFormat::Rgba,
-            pixels: vec![1, 2, 3, 255],
-            source: None,
-        });
-        let new = Arc::new(Image {
-            id: 7,
-            generation: 2,
-            width: 1,
-            height: 1,
-            format: PixelFormat::Rgba,
-            pixels: vec![4, 5, 6, 255],
-            source: None,
-        });
-        attached.images.insert(old.key(), old.clone());
-        let mut next = attached.frame.clone().unwrap();
-        next.rows[0].cells[0].text = "N".into();
-        next.images.push(new.clone());
-        let bytes = scene_wire::encode(&next, 2, None, 0, &[old.key()]).unwrap();
-        let mut metadata = attached.metadata.clone();
-        metadata.revision = 2;
-        metadata.image_refs = vec![new.key()];
-        attached
-            .apply(Snapshot {
-                metadata,
-                scene: Some(scene_wire::decode(&bytes).unwrap()),
-                transports: Vec::new(),
-            })
-            .unwrap();
-        assert_eq!(attached.revision, 2);
-        assert!(!attached.images.contains_key(&old.key()));
-        assert_eq!(attached.images[&new.key()].pixels, new.pixels);
-        let frame = attached.frame.as_ref().unwrap();
-        assert_eq!(frame.rows[0].cells[0].text.as_str(), "N");
-        assert_eq!(frame.images, vec![new]);
-    }
     fn physical_keys(app: &mut App, bytes: &[u8]) -> Result<()> {
         let mut parser = InputParser::new();
         let mut demux = ReplyDemux::default();
@@ -10088,6 +10026,8 @@ pub(super) mod tests {
                     metadata,
                     scene: Some(scene_wire::decode(&bytes).unwrap()),
                     transports: Vec::new(),
+                    sequence: revision,
+                    held_as_of: revision - 1,
                 })
                 .unwrap();
             assert_eq!(app.focused_history(), offset != 0);

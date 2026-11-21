@@ -76,7 +76,8 @@ cargo build --locked --workspace
 ```
 
 The helper downloads hash-checked Ghostty and Zig archives, applies the checked
-local clipboard-offer patch and builds the pinned static engine. Initial
+local clipboard-offer and retained Kitty image source patches and builds the
+pinned static engine. Initial
 preparation can require network access, including Zig build dependencies. The
 Cargo build checks engine provenance and prepared-file hashes; an arbitrary
 system Ghostty installation is not a substitute.
@@ -1183,12 +1184,13 @@ read original files or create an image archive or persistent settings.
 
 Pane images arrive inline, in order with the scene that first references them,
 so text and images always come from the same moment. Native clients request
-`planus_v1_sources`: an image the program sent as PNG or zlib-compressed pixels
-travels as those original bytes and reaches the terminal unchanged (`f=100` or
-`o=z`); other images are compressed for the terminal off the render path.
-`planus_v1` remains the explicit inline API with raw pixels. Each poll reports the
-image generations the client already holds, so unchanged images are never resent;
-a poll always returns the latest frame, so a slow link skips intermediate frames
+`planus_v1_sources`: a still image the program sent as a PNG or zlib-compressed
+RGB/RGBA pixels travels as those original bytes, when they are no larger than the
+pixels, and reaches the terminal unchanged (`f=100` or `o=z`); other images are
+compressed for the terminal off the render path. `planus_v1` remains the explicit
+inline API with raw pixels. Each poll reports the image generations the client
+holds, the current ones plus a few recently dropped ones, so held images are not
+resent; a poll always returns the latest frame, so a slow link skips intermediate frames
 instead of queueing them.
 
 A slow initial attach shows a delayed `Loading pane…` indicator in the center of

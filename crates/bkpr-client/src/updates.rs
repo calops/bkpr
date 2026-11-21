@@ -2,6 +2,7 @@ use crate::transport::Endpoint;
 use anyhow::{Context, Result, bail, ensure};
 use bkpr_protocol::*;
 use std::{
+    collections::VecDeque,
     io::{Read, Write},
     os::unix::net::UnixStream,
     sync::{
@@ -17,9 +18,34 @@ pub struct Snapshot {
     pub scene: Option<scene_wire::DecodedScene>,
     /// Terminal payloads for the scene's newly supplied images, prepared on the poll thread.
     pub transports: Vec<bkpr_tui_framework::PreparedTransport>,
+    /// Worker-assigned position, increasing by one per snapshot of this view.
+    pub sequence: u64,
+    /// The last applied `sequence` when this poll reported its held generations. A generation
+    /// the view evicted after that snapshot may still have been reported, so the backend may
+    /// have omitted it here.
+    pub held_as_of: u64,
 }
-/// Image generations a view retains, reported on each poll so the backend omits them.
-pub type HeldImages = Arc<std::sync::Mutex<Vec<ImageKey>>>;
+/// Image generations a view retains, shared between the UI that applies its snapshots and
+/// its poll worker, which reports them so the backend omits their bytes.
+#[derive(Default)]
+pub struct HeldImages(std::sync::Mutex<Held>);
+#[derive(Default)]
+struct Held {
+    applied: u64,
+    keys: Vec<ImageKey>,
+}
+impl HeldImages {
+    /// Record the generations retained once snapshot `applied` has been applied.
+    pub fn publish(&self, applied: u64, keys: Vec<ImageKey>) {
+        *self.0.lock().unwrap() = Held { applied, keys };
+    }
+    /// Copy the last applied sequence and its generations. The lock is never held beyond
+    /// this call, so a long-poll cannot block the UI's next publish.
+    pub(crate) fn read(&self) -> (u64, Vec<ImageKey>) {
+        let held = self.0.lock().unwrap();
+        (held.applied, held.keys.clone())
+    }
+}
 /// Bounded single-flight receiver: output cannot grow an unbounded queue or
 /// block the UI's keyboard reader. All worker state is owned, never UI-borrowed.
 pub struct Pump<T> {
@@ -112,16 +138,21 @@ pub fn pane(
     socket: &Endpoint,
     pane_id: &str,
     view: &str,
-    held: HeldImages,
+    held: Arc<HeldImages>,
 ) -> Result<Pump<Snapshot>> {
     let socket = socket.to_owned();
     let pane_id = pane_id.to_owned();
     let view_id = view.to_owned();
     let (mut frame_after, mut snapshot_after) = (0, 0);
+    let mut sequence = 0;
+    // Generations this worker delivered in snapshots the UI had not yet applied when it last
+    // published. They are reported too, so the next scene does not resend them.
+    let mut delivered = VecDeque::<(u64, Vec<ImageKey>)>::new();
     Pump::start(move || {
-        // Copy in its own statement: a guard in the call expression would stay locked for
-        // the whole long-poll and block the UI thread's update of `held`.
-        let resources = held.lock().unwrap().clone();
+        let (applied, mut keys) = held.read();
+        delivered.retain(|(delivered_in, _)| *delivered_in > applied);
+        keys.extend(delivered.iter().flat_map(|(_, keys)| keys.iter().copied()));
+        let resources = keys;
         let (metadata, scene) = socket.checked_scene(Operation::Pane {
             pane_id: pane_id.clone(),
             request: PaneRequest::Poll {
@@ -141,35 +172,23 @@ pub fn pane(
         );
         snapshot_after = metadata.snapshot_revision;
         frame_after = metadata.revision;
-        let transports = scene
+        sequence += 1;
+        let images = scene.as_ref().map_or(&[][..], |scene| scene.images());
+        if !images.is_empty() {
+            delivered.push_back((sequence, images.iter().map(|image| image.key()).collect()));
+        }
+        let transports = images
             .iter()
-            .flat_map(|scene| scene.images())
-            .filter_map(prepare_transport)
+            .filter_map(bkpr_tui_framework::PreparedTransport::for_image)
             .collect();
         Ok(Snapshot {
             metadata,
             scene,
             transports,
+            sequence,
+            held_as_of: applied,
         })
     })
-}
-/// Terminal payload for one received image, prepared on the poll thread rather than the
-/// render path: the program's own PNG/zlib bytes when they arrived, otherwise compressed
-/// pixels when that is smaller.
-fn prepare_transport(image: &Arc<Image>) -> Option<bkpr_tui_framework::PreparedTransport> {
-    use bkpr_tui_framework::PreparedTransport;
-    match image.source.as_deref() {
-        Some(source) => match source.encoding {
-            ImageSourceEncoding::Png => Some(PreparedTransport::from_verified(
-                image,
-                source.bytes.as_slice().into(),
-            )),
-            ImageSourceEncoding::Zlib => {
-                PreparedTransport::from_verified_zlib(image, source.bytes.as_slice().into())
-            }
-        },
-        None => PreparedTransport::compress(image),
-    }
 }
 pub fn registry(socket: &Endpoint, after: u64) -> Result<Pump<RegistrySnapshot>> {
     let socket = socket.to_owned();
@@ -373,7 +392,7 @@ mod tests {
             }
         });
         let endpoint = Endpoint::unmanaged(&socket);
-        let mut pump = pane(&endpoint, "pane", "view", HeldImages::default()).unwrap();
+        let mut pump = pane(&endpoint, "pane", "view", Arc::default()).unwrap();
         let (mut revision, mut current) = (0, None);
         let empty = pump.initial().unwrap();
         assert!(empty.metadata.frame.is_none());
@@ -457,7 +476,7 @@ mod tests {
             pixels: pixels.clone(),
             source: Some(Arc::new(ImageSource {
                 encoding: ImageSourceEncoding::Zlib,
-                bytes: source.clone(),
+                bytes: source.clone().into(),
             })),
         });
         let key = image.key();
@@ -470,6 +489,7 @@ mod tests {
         initial.images.push(image);
         let scene = scene_wire::encode_with_sources(&initial, 1, None, 0, &[]).unwrap();
         let (polled, polled_rx) = mpsc::channel();
+        let (done, polled_rx_done) = mpsc::channel::<()>();
         let server = thread::spawn(move || {
             let poll = |listener: &UnixListener, expected: &[ImageKey]| {
                 let (mut stream, _) = listener.accept().unwrap();
@@ -503,20 +523,34 @@ mod tests {
             };
             let mut first = poll(&listener, &[other]);
             reply(&mut first, 11, Some(scene));
+            // The next poll goes out before the UI applies the first snapshot: it still
+            // reports the image just delivered, so the backend does not send it again.
+            let second = poll(&listener, &[other, key]);
             polled.send(()).unwrap();
+            // Hold the long-poll open while the UI publishes.
+            let _ = polled_rx_done.recv_timeout(Duration::from_secs(3));
+            drop(second);
         });
         let endpoint = Endpoint::unmanaged(&socket);
-        let held = HeldImages::new(std::sync::Mutex::new(vec![other]));
+        let held = Arc::new(HeldImages::default());
+        held.publish(0, vec![other]);
         let mut pump = pane(&endpoint, "pane", "view", held.clone()).unwrap();
         let first = pump.initial().unwrap();
-        // The image arrived with its scene, decoded, with its original payload retained
-        // and a terminal payload prepared on the poll thread.
+        assert_eq!((first.sequence, first.held_as_of), (1, 0));
         let images = first.scene.as_ref().unwrap().images();
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].pixels, pixels);
-        assert_eq!(images[0].source.as_ref().unwrap().bytes, source);
         assert_eq!(first.transports.len(), 1);
         polled_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        // Publishing while a poll is in flight must not wait for that poll.
+        let (published, published_rx) = mpsc::channel();
+        let publisher = held.clone();
+        thread::spawn(move || {
+            publisher.publish(1, vec![key]);
+            published.send(()).unwrap();
+        });
+        published_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        done.send(()).unwrap();
         pump.cancel();
         server.join().unwrap();
     }

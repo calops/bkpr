@@ -1,4 +1,4 @@
-pub use crate::prepared_png::{PreparedTransport, TransportEncoding};
+pub use crate::prepared_png::PreparedTransport;
 use anyhow::{Context, Result, bail};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use bkpr_protocol::*;
@@ -42,8 +42,6 @@ struct TextState {
 
 const MAX_CACHED_PROJECTIONS: usize = 512;
 const MAX_CACHED_PROJECTION_BYTES: usize = 8 * 1024 * 1024;
-const MAX_PREPARED_TRANSPORTS: usize = 64;
-const MAX_PREPARED_TRANSPORT_BYTES: usize = 16 * 1024 * 1024;
 
 struct ProjectionResource {
     id: u32,
@@ -56,8 +54,8 @@ struct GraphicsState {
     image_ids: HashMap<ImageKey, u32>,
     derived_ids: hashlink::LinkedHashMap<geometry::DerivedKey, ProjectionResource>,
     derived_bytes: usize,
-    prepared_transports: hashlink::LinkedHashMap<usize, PreparedTransport>,
-    prepared_transport_bytes: usize,
+    /// Payloads of images still owned elsewhere; each lives exactly as long as its image.
+    prepared_transports: HashMap<usize, PreparedTransport>,
     text: TextState,
     projections: Vec<geometry::Projection>,
 }
@@ -68,8 +66,7 @@ impl GraphicsState {
             image_ids: HashMap::new(),
             derived_ids: hashlink::LinkedHashMap::new(),
             derived_bytes: 0,
-            prepared_transports: hashlink::LinkedHashMap::new(),
-            prepared_transport_bytes: 0,
+            prepared_transports: HashMap::new(),
             text: TextState::default(),
             projections: Vec::new(),
         }
@@ -87,40 +84,22 @@ impl GraphicsState {
             .chain(self.derived_ids.values().map(|resource| &resource.id))
     }
 
-    fn purge_expired_pngs(&mut self) {
-        let bytes = &mut self.prepared_transport_bytes;
-        self.prepared_transports.retain(|_, source| {
-            if source.is_live() {
-                true
-            } else {
-                *bytes -= source.byte_len();
-                false
-            }
-        });
+    fn purge_expired_transports(&mut self) {
+        self.prepared_transports
+            .retain(|_, source| source.is_live());
     }
 
     fn register_prepared_transports<'a>(
         &mut self,
         sources: impl IntoIterator<Item = &'a PreparedTransport>,
     ) {
-        self.purge_expired_pngs();
+        self.purge_expired_transports();
         for source in sources {
-            let bytes = source.byte_len();
-            if !source.is_live() || bytes > MAX_PREPARED_TRANSPORT_BYTES {
-                continue;
+            if source.is_live() {
+                self.prepared_transports
+                    .entry(source.source_id())
+                    .or_insert_with(|| source.clone());
             }
-            let key = source.source_id();
-            if self.prepared_transports.to_back(&key).is_some() {
-                continue;
-            }
-            while self.prepared_transports.len() >= MAX_PREPARED_TRANSPORTS
-                || self.prepared_transport_bytes + bytes > MAX_PREPARED_TRANSPORT_BYTES
-            {
-                let (_, evicted) = self.prepared_transports.pop_front().unwrap();
-                self.prepared_transport_bytes -= evicted.byte_len();
-            }
-            self.prepared_transports.insert(key, source.clone());
-            self.prepared_transport_bytes += bytes;
         }
     }
 
@@ -536,10 +515,9 @@ fn transmit_image(
     format: PixelFormat,
     pixels: &[u8],
 ) -> Result<()> {
-    let (format, pixels) = match format {
-        PixelFormat::Rgb => (24, Cow::Borrowed(pixels)),
-        PixelFormat::Rgba => (32, Cow::Borrowed(pixels)),
-        PixelFormat::Gray | PixelFormat::GrayAlpha => {
+    let (format, pixels) = match crate::prepared_png::kitty_raw_format(format) {
+        Some(code) => (code, Cow::Borrowed(pixels)),
+        None => {
             let mut encoded = Vec::new();
             {
                 let mut encoder = png::Encoder::new(&mut encoded, width, height);
@@ -681,7 +659,7 @@ fn draw_prepared(
         graphics,
         background: physical_background,
     } = target;
-    graphics.purge_expired_pngs();
+    graphics.purge_expired_transports();
     // Scene strings are never interpreted as terminal programs. Only renderer-owned
     // escapes and validated normalized colors/positions reach the physical terminal.
     if frame.rows.len() > frame.size.rows as usize
@@ -839,9 +817,12 @@ fn draw_prepared(
         graphics.image_ids.insert(*key, id);
         if let Some(transport) = graphics.prepared_transport(image) {
             let (format, zlib) = match transport.encoding() {
-                TransportEncoding::Png => (100, false),
-                TransportEncoding::Zlib if image.format == PixelFormat::Rgb => (24, true),
-                TransportEncoding::Zlib => (32, true),
+                ImageSourceEncoding::Png => (100, false),
+                ImageSourceEncoding::Zlib => (
+                    crate::prepared_png::kitty_raw_format(image.format)
+                        .expect("zlib transports are only bound to RGB/RGBA images"),
+                    true,
+                ),
             };
             transmit_image_payload(
                 out,
@@ -3275,7 +3256,7 @@ mod prepared_png_tests {
         let image = image(64, 32, PixelFormat::Rgba);
         let encoded = encode(image.width, image.height, image.format, &image.pixels).unwrap();
         assert!(encoded.len() > 3072);
-        let prepared = PreparedTransport::from_verified(&image, encoded.clone());
+        let prepared = PreparedTransport::from_verified_png(&image, encoded.clone());
         let mut terminal = terminal();
         terminal.register_prepared_transports([&prepared]);
         let uploads = paint(&mut terminal, image);
@@ -3318,7 +3299,7 @@ mod prepared_png_tests {
     fn same_native_ids_and_pixels_do_not_grant_another_allocation_png_transport() {
         let original = image(4, 2, PixelFormat::Rgba);
         let encoded = encode(4, 2, original.format, &original.pixels).unwrap();
-        let prepared = PreparedTransport::from_verified(&original, encoded);
+        let prepared = PreparedTransport::from_verified_png(&original, encoded);
         for change_pixels in [false, true] {
             let mut other = original.as_ref().clone();
             if change_pixels {
@@ -3359,60 +3340,27 @@ mod prepared_png_tests {
     }
 
     #[test]
-    fn registration_bounds_resources_and_releases_expired_sources() {
-        let source = image(1, 1, PixelFormat::Rgba);
-        let encoded = encode(1, 1, source.format, &source.pixels).unwrap();
-        let images: Vec<_> = (0..MAX_PREPARED_TRANSPORTS + 1)
-            .map(|_| Arc::new(source.as_ref().clone()))
-            .collect();
-        let prepared: Vec<_> = images
-            .iter()
-            .map(|image| PreparedTransport::from_verified(image, encoded.clone()))
-            .collect();
-        let mut terminal = terminal();
-        terminal.register_prepared_transports(&prepared);
-        assert_eq!(
-            terminal.graphics.prepared_transports.len(),
-            MAX_PREPARED_TRANSPORTS
-        );
-        assert_eq!(
-            terminal.graphics.prepared_transport_bytes,
-            MAX_PREPARED_TRANSPORTS * encoded.len()
-        );
-        assert!(terminal.graphics.prepared_transport(&images[0]).is_none());
-        assert!(
-            terminal
-                .graphics
-                .prepared_transport(images.last().unwrap())
-                .is_some()
-        );
-        drop(images);
-        terminal.register_prepared_transports(std::iter::empty::<&PreparedTransport>());
-        assert!(terminal.graphics.prepared_transports.is_empty());
-        assert_eq!(terminal.graphics.prepared_transport_bytes, 0);
-    }
-
-    #[test]
-    fn registration_charges_encoded_bytes_before_admission() {
+    fn transports_stay_registered_exactly_while_their_images_live() {
+        // Many large originals must all stay forwardable until drawn: none fall back to raw pixels.
         let source = image(512, 256, PixelFormat::Rgba);
         let encoded = encode(source.width, source.height, source.format, &source.pixels).unwrap();
-        let capacity = MAX_PREPARED_TRANSPORT_BYTES / encoded.len();
-        assert!(capacity < MAX_PREPARED_TRANSPORTS);
-        let images: Vec<_> = (0..capacity + 1)
+        let mut images: Vec<_> = (0..128)
             .map(|_| Arc::new(source.as_ref().clone()))
             .collect();
         let prepared: Vec<_> = images
             .iter()
-            .map(|image| PreparedTransport::from_verified(image, encoded.clone()))
+            .map(|image| PreparedTransport::from_verified_png(image, encoded.clone()))
             .collect();
         let mut terminal = terminal();
         terminal.register_prepared_transports(&prepared);
-        assert_eq!(terminal.graphics.prepared_transports.len(), capacity);
-        assert_eq!(
-            terminal.graphics.prepared_transport_bytes,
-            capacity * encoded.len()
+        assert!(
+            images
+                .iter()
+                .all(|image| terminal.graphics.prepared_transport(image).is_some())
         );
-        assert!(terminal.graphics.prepared_transport_bytes <= MAX_PREPARED_TRANSPORT_BYTES);
-        assert!(terminal.graphics.prepared_transport(&images[0]).is_none());
+        let kept = images.split_off(64);
+        drop(images);
+        terminal.register_prepared_transports(std::iter::empty::<&PreparedTransport>());
+        assert_eq!(terminal.graphics.prepared_transports.len(), kept.len());
     }
 }

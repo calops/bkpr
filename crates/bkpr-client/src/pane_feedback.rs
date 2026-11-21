@@ -1,19 +1,26 @@
 use super::*;
 
+/// What a pane's centered notice says.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Notice {
+    /// The view is attaching; shown with a spinner until its first frame arrives.
+    Opening,
+    /// The frame places images the terminal cannot show.
+    NeedsGraphics,
+}
+
 /// Centered pane notice: attach progress, or images the terminal cannot show.
 pub(super) struct Feedback {
-    opening: bool,
-    needs_graphics: bool,
+    notice: Notice,
     loading: loading::LoadingIndicator,
     pub(super) surface: UiSurface,
     pub(super) rect: Option<Rect>,
 }
 
 impl Feedback {
-    fn new(viewport: Size, now: Instant) -> Self {
+    fn new(viewport: Size, now: Instant, notice: Notice) -> Self {
         Self {
-            opening: false,
-            needs_graphics: false,
+            notice,
             loading: loading::LoadingIndicator::new(
                 now,
                 Duration::from_millis(200),
@@ -31,20 +38,19 @@ impl Feedback {
 
 impl App {
     /// Show "Loading pane…" until the view's first frame arrives.
-    pub(super) fn begin_image_attach(&mut self, pane: &str, viewport: Size) {
+    pub(super) fn begin_pane_attach(&mut self, pane: &str, viewport: Size) {
         let now = Instant::now();
-        let mut feedback = Feedback::new(viewport, now);
-        feedback.opening = true;
+        let mut feedback = Feedback::new(viewport, now, Notice::Opening);
         feedback.loading.update(true, false, now);
-        self.image_feedback.insert(pane.to_owned(), feedback);
+        self.pane_feedback.insert(pane.to_owned(), feedback);
     }
 
-    pub(super) fn retire_image_feedback(&mut self, pane: &str) {
-        self.image_feedback.remove(pane);
+    pub(super) fn retire_pane_feedback(&mut self, pane: &str) {
+        self.pane_feedback.remove(pane);
     }
 
     /// Resolve attach progress and the graphics-support notice from current frames.
-    pub(super) fn sync_image_feedback(&mut self, size: Size, rects: &[(String, Rect)]) {
+    pub(super) fn sync_pane_feedback(&mut self, size: Size, rects: &[(String, Rect)]) {
         let now = Instant::now();
         self.colors.graphics.expire(now);
         let unsupported = !self.colors.graphics.supported() && self.colors.graphics.resolved();
@@ -55,20 +61,18 @@ impl App {
             let needs_graphics = unsupported && !frame.placements.is_empty();
             if !needs_graphics {
                 // Inline frames arrive complete with their images: nothing is left to load.
-                self.image_feedback.remove(pane);
+                self.pane_feedback.remove(pane);
                 continue;
             }
             let viewport = content(*outer).size(size);
-            let feedback = self
-                .image_feedback
+            self.pane_feedback
                 .entry(pane.clone())
-                .or_insert_with(|| Feedback::new(viewport, now));
-            feedback.opening = false;
-            feedback.needs_graphics = true;
+                .or_insert_with(|| Feedback::new(viewport, now, Notice::NeedsGraphics))
+                .notice = Notice::NeedsGraphics;
         }
     }
 
-    pub(super) fn paint_image_feedback(
+    pub(super) fn paint_pane_feedback(
         &mut self,
         size: Size,
         rects: &[(String, Rect)],
@@ -76,18 +80,15 @@ impl App {
     ) {
         let now = Instant::now();
         for (pane, outer) in rects {
-            let Some(feedback) = self.image_feedback.get_mut(pane) else {
+            let Some(feedback) = self.pane_feedback.get_mut(pane) else {
                 continue;
             };
             feedback.rect = None;
             let area = content(*outer);
-            let pending = feedback.opening;
-            let label = if feedback.opening {
-                "Loading pane…"
-            } else if feedback.needs_graphics {
-                "Images require Kitty graphics support"
-            } else {
-                ""
+            let pending = feedback.notice == Notice::Opening;
+            let label = match feedback.notice {
+                Notice::Opening => "Loading pane…",
+                Notice::NeedsGraphics => "Images require Kitty graphics support",
             };
             let width =
                 (text_width(label).saturating_add(2).min(u16::MAX as usize) as u16).min(area.width);
@@ -106,7 +107,7 @@ impl App {
                         && layer.placement.outer.contains(rect.x + width - 1, rect.y)
                 });
             feedback.loading.update(pending, visible, now);
-            if !visible || label.is_empty() {
+            if !visible {
                 continue;
             }
             let local = Rect {
@@ -154,13 +155,13 @@ impl App {
         }
     }
 
-    pub(super) fn image_timeout(&self, timeout: i32, now: Instant) -> i32 {
+    pub(super) fn pane_feedback_timeout(&self, timeout: i32, now: Instant) -> i32 {
         self.colors
             .graphics
             .next_deadline()
             .into_iter()
             .chain(
-                self.image_feedback
+                self.pane_feedback
                     .values()
                     .filter_map(|feedback| feedback.loading.next_deadline()),
             )

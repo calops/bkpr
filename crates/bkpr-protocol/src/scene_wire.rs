@@ -133,13 +133,17 @@ fn encode_inner(
     }
     let known: HashSet<_> = resources.iter().copied().collect();
     let include = |image: &&Arc<Image>| !known.contains(&image.key());
-    let source_of = |image| sent_source(image, sources);
+    let source_of = |image| {
+        sources
+            .then(|| crate::image_source::original_payload(image))
+            .flatten()
+    };
+    // Charge decoded pixels, as decoding does, so every encoded scene also decodes.
     let mut image_count = 0usize;
     let mut image_bytes = 0usize;
     for image in frame.images.iter().filter(include) {
         image_count += 1;
-        image_bytes = image_bytes
-            .saturating_add(source_of(image).map_or(image.pixels.len(), |(_, bytes)| bytes.len()));
+        image_bytes = image_bytes.saturating_add(image.pixels.len());
         ensure!(
             image_count <= MAX_IMAGES && image_bytes <= MAX_IMAGE_BYTES,
             "scene image resource limit"
@@ -337,15 +341,6 @@ impl DecodedScene {
     }
 }
 
-/// The original payload sent instead of pixels: only for `planus_v1_sources`, and only
-/// when it is no larger than the pixels.
-fn sent_source(image: &Image, sources: bool) -> Option<(crate::ImageSourceEncoding, &[u8])> {
-    if !sources {
-        return None;
-    }
-    crate::original_payload(image)
-}
-
 /// Exact packed pixel length of an image, bounded before any decode allocation.
 fn expected_len(width: u32, height: u32, format: crate::PixelFormat) -> Result<usize> {
     (width as usize)
@@ -356,10 +351,10 @@ fn expected_len(width: u32, height: u32, format: crate::PixelFormat) -> Result<u
 }
 
 fn check_image(width: u32, height: u32, format: crate::PixelFormat, length: usize) -> Result<()> {
-    let expected = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|pixels| pixels.checked_mul(format.bytes_per_pixel()));
-    ensure!(expected == Some(length), "scene image dimensions mismatch");
+    ensure!(
+        expected_len(width, height, format)? == length,
+        "scene image dimensions mismatch"
+    );
     Ok(())
 }
 
@@ -458,21 +453,23 @@ fn validate(bytes: &[u8]) -> Result<g::SceneRef<'_>> {
         image.id()?;
         image.generation()?;
         let pixels = image.pixels()?;
+        let (width, height, format) = (
+            image.width()?,
+            image.height()?,
+            read_format(image.format()?),
+        );
         let decoded = match image.source_encoding()? {
             g::ImageSourceEncoding::None => {
                 ensure!(
                     image.source()?.is_none(),
                     "scene image source without encoding"
                 );
+                check_image(width, height, format, pixels.len())?;
                 pixels.len()
             }
             _ => {
                 let source = image.source()?.context("scene image source missing")?;
-                let expected = expected_len(
-                    image.width()?,
-                    image.height()?,
-                    read_format(image.format()?),
-                )?;
+                let expected = expected_len(width, height, format)?;
                 ensure!(
                     pixels.is_empty() && !source.is_empty() && source.len() <= expected,
                     "scene image source bounds"
@@ -480,12 +477,6 @@ fn validate(bytes: &[u8]) -> Result<g::SceneRef<'_>> {
                 expected
             }
         };
-        check_image(
-            image.width()?,
-            image.height()?,
-            read_format(image.format()?),
-            decoded,
-        )?;
         image_bytes = image_bytes.saturating_add(decoded);
         ensure!(image_bytes <= MAX_IMAGE_BYTES, "scene image byte limit");
     }
@@ -607,7 +598,7 @@ fn read_metadata(frame: g::FrameRef<'_>) -> Result<Frame> {
                     };
                     let source = crate::ImageSource {
                         encoding,
-                        bytes: bytes.to_vec(),
+                        bytes: bytes.into(),
                     };
                     (pixels, Some(Arc::new(source)))
                 }

@@ -5,7 +5,7 @@ set -euo pipefail
 if [[ $# != 1 ]]; then printf 'Usage: %s OUTPUT_DIRECTORY\n' "$0" >&2; exit 1; fi
 revision=575ed6b8ceb79ffaf247ecf7e34333876b0d5be4
 source_sha=fc16a84c73ec9783ce078e2c2d24a64b7e03e7d11039694f06a66e9865d2eeb8
-patch_sha=b509de79c52975dc2867bfa6ce2555ecb542524cfa62d80b462dc05d8e40cec1
+patch_sha=88e8f2cc109f790c5d88a6ba50c9230eb52c9cac5911091364ee308ac9e527f6
 repo=$(realpath "$(dirname "${BASH_SOURCE[0]}")/..")
 cache=${CARGO_TARGET_DIR:-"$repo/target"}
 mkdir -p "$cache"
