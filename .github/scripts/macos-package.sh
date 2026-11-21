@@ -7,7 +7,11 @@ terminfo=$2
 openssl_source=$3
 output=$4
 work=$(mktemp -d)
-trap 'rm -rf -- "$work"' EXIT
+cleanup() {
+  find "$work" -type d -exec chmod u+w {} +
+  rm -rf -- "$work"
+}
+trap cleanup EXIT
 umask 022
 root=$work/root
 runtime=$root/lib/bkpr
@@ -18,8 +22,10 @@ for program in bkpr bkprd; do
 done
 ditto "$terminfo/share/terminfo" "$runtime/share/terminfo"
 ditto "$binaries/share" "$root/share"
-ditto "$terminfo/share/licenses" "$root/share/licenses"
+chmod u+w "$root/share" "$root/share/licenses"
+ditto "$terminfo/share/licenses/bkpr-terminfo" "$root/share/licenses/bkpr-terminfo"
 ditto "$terminfo/share/bkpr" "$root/share/bkpr"
+find "$root" -type d -exec chmod 755 {} +
 
 # OpenSSL is the only non-system dynamic dependency we expect. Reject other
 # load paths rather than shipping a package that works only on the Nix runner.
