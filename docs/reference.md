@@ -1864,8 +1864,9 @@ The installer doesn't edit shell profiles or register a system service.
 Bkpr uses the tools on your `PATH`; install `gh` separately for GitHub features.
 Quit old Bkpr sessions and stop their daemon yourself before switching installs.
 
-The macOS build job stages the existing Nix binaries and relocates their
-OpenSSL dylibs, if present. It rejects other non-system Mach-O load paths.
+The macOS build job stages the existing Nix binaries, uses macOS's system
+`libiconv`, and bundles the OpenSSL dylibs. It rejects unexpected Mach-O load
+paths.
 Apple's `pkgbuild` and `productbuild` assemble the installer; no second
 Cargo build or third-party bundler is needed. Dispatch **Build, cache and
 publish** with `macos_installer_smoke` checked to build an unsigned installer

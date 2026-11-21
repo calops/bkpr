@@ -27,8 +27,8 @@ ditto "$terminfo/share/licenses/bkpr-terminfo" "$root/share/licenses/bkpr-termin
 ditto "$terminfo/share/bkpr" "$root/share/bkpr"
 find "$root" -type d -exec chmod 755 {} +
 
-# OpenSSL is the only non-system dynamic dependency we expect. Reject other
-# load paths rather than shipping a package that works only on the Nix runner.
+# Only relocate the known closure; reject dependencies that would bind the
+# installer to the Nix runner.
 loads() {
   otool -arch arm64 -l "$1" | awk '
     $1 == "cmd" { field = ($2 ~ /^LC_.*DYLIB$/ && $2 != "LC_ID_DYLIB") ? "name" : ($2 == "LC_RPATH" ? "path" : "") }
@@ -43,6 +43,9 @@ relocate() {
       :) ;;
       path:*) install_name_tool -delete_rpath "$path" "$file" ;;
       name:/usr/lib/*|name:/System/Library/*) ;;
+      name:/nix/store/*-libiconv-115.*/lib/libiconv.2.dylib)
+        install_name_tool -change "$path" /usr/lib/libiconv.2.dylib "$file"
+        ;;
       name:/nix/store/*/lib/libssl.3.dylib|name:/nix/store/*/lib/libcrypto.3.dylib)
         name=${path##*/}
         lib=$runtime/lib/$name
