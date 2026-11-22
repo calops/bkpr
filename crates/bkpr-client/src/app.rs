@@ -2303,19 +2303,32 @@ impl App {
                 .any(|candidate| candidate.pane == pane)
     }
     fn placeholder(&self, pane: &str) -> String {
+        let (title, body, _) = self.pane_notice(pane);
+        format!(
+            "{} {body}",
+            title.split_once(' ').map_or(title, |(_, text)| text)
+        )
+    }
+
+    fn pane_notice(&self, pane: &str) -> (&'static str, std::borrow::Cow<'_, str>, Role) {
         if let Some(error) = self.view_failures.get(pane) {
-            return format!("{} Ctrl-b ! opens diagnostics.", error.summary);
+            return (
+                "\u{f0026} Could not open pane",
+                format!("{}\nCtrl-b !  Details", error.summary).into(),
+                Role::Error,
+            );
         }
         if let Some(failure) = self
             .input_failures
             .get(pane)
             .and_then(|failures| failures.iter().flatten().find(|failure| failure.stopped))
         {
-            return if failure.lane == updates::InputLane::Clipboard {
-                "Clipboard access stopped. Ctrl-b ! opens diagnostics.".into()
+            let title = if failure.lane == updates::InputLane::Clipboard {
+                "\u{f0026} Clipboard access stopped"
             } else {
-                "Input stopped for this pane. Ctrl-b ! opens diagnostics.".into()
+                "\u{f0026} Pane input stopped"
             };
+            return (title, "Ctrl-b !  Details".into(), Role::Error);
         }
         match self
             .registry
@@ -2324,17 +2337,18 @@ impl App {
             .find(|info| info.id == pane)
             .map(|info| &info.status)
         {
-            None | Some(PaneStatus::Stopped) => {
-                if self.options.read_only {
-                    return "Execution unavailable. Read-only client cannot open a new shell or change this layout.".into();
-                }
-                return "Execution unavailable. Ctrl-b R opens a new shell here after confirmation; Ctrl-b n splits a new pane.".into();
-            }
-            Some(PaneStatus::Exited) => {
-                if self.options.read_only {
-                    return "Execution exited; any retained scene is read-only. This client cannot open a new shell.".into();
-                }
-                return "Execution exited; any retained scene is read-only. Ctrl-b R opens a new shell here after confirmation.".into();
+            status @ (None | Some(PaneStatus::Stopped | PaneStatus::Exited)) => {
+                let title = if status == Some(&PaneStatus::Exited) {
+                    "\u{f0159} Process exited"
+                } else {
+                    "\u{f0159} No process running"
+                };
+                let body = if self.options.read_only {
+                    "This client is read-only."
+                } else {
+                    "Ctrl-b R  Open a new shell here"
+                };
+                return (title, body.into(), Role::Muted);
             }
             Some(PaneStatus::Running) => {}
         }
@@ -2342,13 +2356,15 @@ impl App {
             .views
             .get(pane)
             .is_some_and(|view| view.retirement_requested)
+            || self.pane_retiring(pane)
         {
-            return "Previous view retiring; accepted operations are still draining.".into();
+            return (
+                "\u{f0150} Waiting for previous view",
+                "Finishing operations already accepted.".into(),
+                Role::Warning,
+            );
         }
-        if self.pane_retiring(pane) {
-            return "Previous view retiring; accepted operations are still draining.".into();
-        }
-        "Attaching pane; waiting for its initial scene or a background worker slot.".into()
+        ("\u{f0a9e} Opening pane", "".into(), Role::Muted)
     }
     fn badge(&self, pane: &str) -> Option<&'static str> {
         if self.view_failures.contains_key(pane) {
@@ -5680,21 +5696,23 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 let surface = placeholders
                     .entry(id.clone())
                     .or_insert_with(|| UiSurface::new(local));
-                surface.paint(
-                    local,
-                    vec![(
-                        Rect {
-                            x: 0,
-                            y: 0,
-                            width: local.cols,
-                            height: 1,
-                        },
-                        app.placeholder(id),
-                        false,
-                    )],
-                    None,
-                );
-                surface.apply_theme(&theme, Role::Muted, &[]);
+                let (title, body, role) = app.pane_notice(id);
+                let lines: Vec<_> = crate::controller::centered_notice(
+                    Rect {
+                        x: 0,
+                        y: 0,
+                        width: local.cols,
+                        height: local.rows,
+                    },
+                    title,
+                    &body,
+                )
+                .collect();
+                let title_rect = lines.first().map(|(rect, _, _)| *rect);
+                surface.paint(local, lines, None);
+                if let Some(rect) = title_rect {
+                    surface.apply_theme(&theme, Role::Muted, &[RoleSpan { rect, role }]);
+                }
             }
             if let Some(finder) = &mut app.finder {
                 finder.update_registry(&app.registry, tree.project_slots(active_owner), |pane| {

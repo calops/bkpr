@@ -930,6 +930,47 @@ fn wrapped(value: &str, width: usize) -> Vec<String> {
     }
     lines
 }
+pub(super) fn centered_notice(
+    area: Rect,
+    title: &str,
+    body: &str,
+) -> impl Iterator<Item = (Rect, String, bool)> + use<> {
+    let width = area.width.saturating_sub(4).max(1).min(area.width);
+    let mut rows = Vec::new();
+    if width > 0 && area.height > 0 {
+        rows.push(bkpr_tui_framework::window::fit(title, width));
+        rows.extend(
+            body.lines()
+                .flat_map(|paragraph| textwrap::wrap(paragraph, usize::from(width)))
+                .take(usize::from(area.height - 1))
+                .map(std::borrow::Cow::into_owned),
+        );
+    }
+    let top = area.y + (area.height - rows.len() as u16) / 2;
+    rows.into_iter().enumerate().map(move |(row, label)| {
+        let columns = bkpr_tui_framework::text_width(&label).min(usize::from(width)) as u16;
+        line(
+            area.x + (area.width - columns) / 2,
+            top + row as u16,
+            columns,
+            label,
+            false,
+        )
+    })
+}
+
+fn session_notice(area: Rect, group: &SessionGroup) -> impl Iterator<Item = (Rect, String, bool)> {
+    let headline = match group.status {
+        SessionStatus::Offline => "Session offline",
+        SessionStatus::Rejected => "Connection refused",
+        SessionStatus::Queued => "Connection queued",
+        SessionStatus::Reconnecting => "Reconnecting",
+        _ => "Connecting",
+    };
+    let title = format!("{} {headline} · {}", group.status.badge(), group.name);
+    centered_notice(area, &title, &group.detail)
+}
+
 fn line(
     x: u16,
     y: u16,
@@ -1408,27 +1449,7 @@ fn render_chrome<'a>(
         && let Some(group) = tree.session(active).map(|session| &session.group)
         && group.status != SessionStatus::Online
     {
-        let width = area.width.saturating_sub(4);
-        if width > 0 {
-            let title = format!("{} {}", group.name, group.status.badge());
-            let rows = wrapped(&title, usize::from(width)).into_iter()
-                .chain(std::iter::once(String::new()))
-                .chain(wrapped(&group.detail, usize::from(width)))
-                .chain(std::iter::once(String::new()))
-                .chain(wrapped("Ctrl-b S selects a session row. Arrows navigate the tree, Enter returns to the application, R forces reconnect. Quit detaches only.", usize::from(width)));
-            for (row, label) in rows
-                .take(usize::from(area.height.saturating_sub(4)))
-                .enumerate()
-            {
-                lines.push(line(
-                    area.x.saturating_add(2),
-                    row as u16 + 2,
-                    width,
-                    label,
-                    false,
-                ));
-            }
-        }
+        lines.extend(session_notice(area, group));
     }
     for (id, rect) in rects {
         if pane_graphics.contains(rect) {
@@ -1557,10 +1578,20 @@ fn render_theme_chrome<'a>(
         }
     }
     let size = surface.frame.size;
-    let sidebar = screen_geometry(size, tree.preferred_columns).0;
+    let (sidebar, area) = screen_geometry(size, tree.preferred_columns);
     let mut spans = Vec::new();
     let mut backgrounds = Vec::new();
     foregrounds.clear();
+    if rects.is_empty()
+        && let Some(group) = tree.session(active).map(|session| &session.group)
+        && group.status != SessionStatus::Online
+        && let Some((rect, _, _)) = session_notice(area, group).next()
+    {
+        spans.push(RoleSpan {
+            rect,
+            role: group.status.role(),
+        });
+    }
     let muted = theme.ink(Role::Muted, false);
     spans.push(RoleSpan {
         rect: Rect {

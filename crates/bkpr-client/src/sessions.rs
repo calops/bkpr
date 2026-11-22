@@ -206,15 +206,29 @@ impl Session {
     fn record_failure(&mut self, error: anyhow::Error, now: Instant) {
         let rejected =
             error.downcast_ref::<IdentityRejection>() == Some(&IdentityRejection::Replacement);
-        let message = format!("{error:#}");
-        self.last_error = Some(message.clone());
-        self.status = if rejected {
-            format!("rejected: {message}\nPress R to retry this target.")
-        } else if self.ever_active && self.stop == StopState::None {
-            format!("offline: {message}\nWaiting to reconnect.")
+        let message = diagnostics::technical(format_args!("{error:#}"));
+        let reason = if rejected {
+            "This name now belongs to a different session. Bkpr did not switch to it."
+        } else if matches!(self.target, SessionTarget::Remote(_))
+            && message
+                .lines()
+                .any(|line| line.contains("Error: session runtime directory is absent"))
+        {
+            "No running session with this name was found on the SSH host. Check the name or start the session there."
+        } else if matches!(self.target, SessionTarget::Remote(_)) {
+            "Could not connect to the session over SSH."
         } else {
-            format!("offline: {message}\nPress R to retry this target.")
+            "Could not connect to the local session."
         };
+        self.status = format!(
+            "{reason}\n{}\nCtrl-b !  Details",
+            if !rejected && self.ever_active && self.stop == StopState::None {
+                "Retrying automatically. Press R to retry now."
+            } else {
+                "Press R to retry."
+            },
+        );
+        self.last_error = Some(message);
         self.phase = if rejected {
             Phase::Rejected
         } else {
@@ -236,10 +250,7 @@ impl Session {
         self.cancellation = CancellationToken::new();
         self.stop = StopState::None;
         self.phase = Phase::Queued;
-        self.status = match &self.last_error {
-            Some(error) => format!("reconnect queued\nPrevious failure: {error}"),
-            None => "reconnect queued".into(),
-        };
+        self.status.clear();
         self.next_attempt = Some(now);
         Ok(())
     }
@@ -656,15 +667,7 @@ impl Coordinator {
         let generation = session.generation;
         session.next_attempt = None;
         session.phase = Phase::Connecting;
-        let state = if session.ever_active {
-            "reconnecting"
-        } else {
-            "connecting"
-        };
-        session.status = match &session.last_error {
-            Some(error) => format!("{state}\nPrevious failure: {error}"),
-            None => state.into(),
-        };
+        session.status.clear();
         let connect: Box<dyn FnOnce() -> Result<Validated> + Send> = match &mut session.target {
             SessionTarget::Local {
                 name,
@@ -749,10 +752,7 @@ impl Coordinator {
             .get_or_insert_with(|| info.session_id.clone());
         session.identity = Some(info);
         session.phase = Phase::Activating;
-        session.status = match &session.last_error {
-            Some(error) => format!("activating\nPrevious failure: {error}"),
-            None => "activating".into(),
-        };
+        session.status.clear();
         let generation = session.generation;
         let cancellation = session.cancellation.clone();
         let detach_others = session.initial_activation
@@ -797,6 +797,16 @@ impl Coordinator {
         }
         self.retire_current(index, false)?;
         self.sessions[index].record_failure(error, Instant::now());
+        if let Some(details) = &self.sessions[index].last_error {
+            self.diagnostics
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .record(
+                    "Session connection failed",
+                    details,
+                    diagnostics::Outcome::NotApplicable,
+                );
+        }
         Ok(())
     }
 
@@ -2723,6 +2733,24 @@ mod tests {
     }
 
     #[test]
+    fn missing_remote_session_explains_how_to_recover_without_transport_noise() {
+        let now = Instant::now();
+        let mut session = pending_session(now);
+        let error = anyhow::anyhow!("reading remote control header: early eof").context(
+            "owned SSH transport ended; bounded stderr: Error: session runtime directory is absent\n",
+        );
+        session.record_failure(error, now);
+        assert!(
+            session
+                .status
+                .contains("Check the name or start the session")
+        );
+        assert!(session.status.contains("Press R to retry"));
+        assert!(!session.status.contains("early eof"));
+        assert!(session.last_error.unwrap().contains("early eof"));
+    }
+
+    #[test]
     fn established_loss_retries_but_replacement_rejection_stays_pinned_and_manual() {
         let now = Instant::now();
         let mut session = pending_session(now);
@@ -2752,7 +2780,6 @@ mod tests {
         assert!(!session.cancellation.is_cancelled());
         assert!(session.phase == Phase::Queued);
         assert_eq!(session.next_attempt, Some(now));
-        assert!(session.status.contains("Previous failure: old failure"));
         assert!(!session.initial_activation);
         assert!(!session.ever_active);
         assert_eq!(session.expected_session.as_deref(), Some("pinned"));
