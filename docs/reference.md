@@ -1820,10 +1820,6 @@ project. To preview status changes locally with authenticated `gh`, run
 
 ### Nix
 
-Distribution is Nix-only. Release publication generates notes and a showcase image, not tarballs,
-Debian packages or other downloadable installers. Previously published assets
-are left unchanged.
-
 The Nix flake provides `bkpr` and its matching `bkprd` together, plus the pinned
 native engine as a separately cached `libghostty-vt` output. Builds run on
 x86-64 Linux, ARM64 Linux and ARM64 macOS. Linux has the recorded full native
@@ -1858,6 +1854,29 @@ flake-specific arguments or access to its vendor tree. This is packaging
 structure, not a claim of nixpkgs acceptance: the official prebuilt Zig fallback,
 native clipboard patch and maintainer metadata still need upstream review.
 
+### Standalone macOS installer
+
+Apple Silicon releases include `bkpr-macos-arm64-unsigned.pkg`. It is not
+Developer ID signed or notarized. If Gatekeeper blocks it, verify the download
+source before approving it in System Settings → Privacy & Security, or use
+Nix instead. It installs both commands under `/usr/local/bin`,
+with the actual executables, terminfo and runtime libraries under
+`/usr/local/lib/bkpr`. Completions and licenses are under `/usr/local/share`.
+The installer doesn't edit shell profiles or register a system service.
+Bkpr uses the tools on your `PATH`; install `gh` separately for GitHub features.
+Quit old Bkpr sessions and stop their daemon yourself before switching installs.
+
+The macOS build job stages the existing Nix binaries, uses macOS's system
+`libiconv`, and bundles the OpenSSL dylibs. It rejects unexpected Mach-O load
+paths.
+Apple's `pkgbuild` and `productbuild` assemble the installer; no second
+Cargo build or third-party bundler is needed. Dispatch **Build, cache and
+publish** with `macos_installer_smoke` checked to build an unsigned installer
+and test it on a second Mac runner without Nix. That run doesn't publish a release.
+
+Tagged releases upload the same installer that passed the clean Mac install
+and CLI/daemon smoke. Older releases and their assets are left unchanged.
+
 ### Upgrade and publication policy
 
 **Upgrading from the Zellij implementation:** existing Zellij sessions are not
@@ -1881,13 +1900,14 @@ node --test .github/scripts/*.test.cjs .github/scripts/*.test.mjs
 `npm --prefix .github run release -- --dry-run` previews the version on `main` without tagging.
 Publishing atomically updates `main` and its immutable version tag, then
 dispatches **Build, cache and publish**. That single workflow shows the
-three-platform Nix/Cachix matrix, packaged executable loader checks and release
-notes publication as one job graph. The separate **Tag next release** workflow
+three-platform Nix/Cachix matrix, packaged executable loader checks, macOS
+installer verification and release publication as one job graph. The separate **Tag next release** workflow
 is the manual version/tag entrypoint.
 
-Every platform build must succeed before publishing tagged release notes or
-advancing `unstable`. Branch dispatch runs the same package builds and loader
-checks without publishing notes or advancing `unstable`.
+Every platform build must succeed before publishing a tagged release or
+advancing `unstable`; release tags also require the macOS installer checks.
+Branch dispatch runs the package builds and loader checks without publishing
+or advancing `unstable`.
 Historical versions remain in [CHANGELOG.md](../CHANGELOG.md).
 
 ## Notification records and subscriptions

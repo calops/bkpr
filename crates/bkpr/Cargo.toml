@@ -25,7 +25,7 @@ url = "2"
 saphyr = { version = "0.3.4", default-features = false }
 serde_json.workspace = true
 jsonc-parser = { version = "0.34", features = ["serde_json", "cst"] }
-tokio = { version = "1", features = ["rt", "sync", "time", "process", "macros"] }
+tokio = { version = "1", features = ["rt", "sync", "time", "process", "macros", "io-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 bkpr-client = { path = "../bkpr-client" }
 bkpr-protocol = { path = "../bkpr-protocol" }

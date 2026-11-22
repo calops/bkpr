@@ -168,7 +168,10 @@ stdenvNoCC.mkDerivation (
       cp -rs ${terminfo}/share/. "$out/share/"
       runHook postInstall
     '';
-    passthru = { inherit binaries terminfo; };
+    passthru = {
+      inherit binaries terminfo;
+      opensslSource = openssl.src;
+    };
     meta = {
       description = "Pane-first native terminal multiplexer with persistent named workspaces";
       homepage = "https://github.com/calops/bkpr";

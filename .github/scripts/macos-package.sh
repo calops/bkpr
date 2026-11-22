@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# The Nix output's bin entries are store-bound launchers. Use the real pair.
+binaries=$1
+terminfo=$2
+openssl_source=$3
+output=$4
+work=$(mktemp -d)
+cleanup() {
+  find "$work" -type d -exec chmod u+w {} +
+  rm -rf -- "$work"
+}
+trap cleanup EXIT
+umask 022
+root=$work/root
+runtime=$root/lib/bkpr
+mkdir -p "$runtime/bin" "$runtime/lib" "$runtime/share" "$root/bin" "$root/share"
+for program in bkpr bkprd; do
+  install -m755 "$binaries/bin/$program" "$runtime/bin/$program"
+  ln -s "../lib/bkpr/bin/$program" "$root/bin/$program"
+done
+ditto "$terminfo/share/terminfo" "$runtime/share/terminfo"
+ditto "$binaries/share" "$root/share"
+chmod u+w "$root/share" "$root/share/licenses"
+ditto "$terminfo/share/licenses/bkpr-terminfo" "$root/share/licenses/bkpr-terminfo"
+ditto "$terminfo/share/bkpr" "$root/share/bkpr"
+find "$root" -type d -exec chmod 755 {} +
+
+# Only relocate the known closure; reject dependencies that would bind the
+# installer to the Nix runner.
+loads() {
+  otool -arch arm64 -l "$1" | awk '
+    $1 == "cmd" { field = ($2 ~ /^LC_.*DYLIB$/ && $2 != "LC_ID_DYLIB") ? "name" : ($2 == "LC_RPATH" ? "path" : "") }
+    field != "" && $1 == field { print field, $2; field = "" }
+  '
+}
+relocate() {
+  local file=$1 relative=$2 load kind path name lib
+  load=$(loads "$file")
+  while read -r kind path; do
+    case "$kind:$path" in
+      :) ;;
+      path:*) install_name_tool -delete_rpath "$path" "$file" ;;
+      name:/usr/lib/*|name:/System/Library/*) ;;
+      name:/nix/store/*-libiconv-115.*/lib/libiconv.2.dylib)
+        install_name_tool -change "$path" /usr/lib/libiconv.2.dylib "$file"
+        ;;
+      name:/nix/store/*/lib/libssl.3.dylib|name:/nix/store/*/lib/libcrypto.3.dylib)
+        name=${path##*/}
+        lib=$runtime/lib/$name
+        if [[ ! -e "$lib" ]]; then
+          install -m755 "$path" "$lib"
+          install_name_tool -id "@loader_path/$name" "$lib"
+          relocate "$lib" @loader_path
+        fi
+        install_name_tool -change "$path" "$relative/$name" "$file"
+        ;;
+      *) echo "Unexpected Mach-O load command in $file: $kind $path" >&2; return 1 ;;
+    esac
+  done <<< "$load"
+}
+for program in bkpr bkprd; do
+  relocate "$runtime/bin/$program" @loader_path/../lib
+done
+if compgen -G "$runtime/lib/*.dylib" > /dev/null; then
+  mkdir -p "$root/share/licenses/openssl" "$work/openssl"
+  tar -xf "$openssl_source" -C "$work/openssl" --strip-components 1 --include '*/LICENSE.txt'
+  install -m644 "$work/openssl/LICENSE.txt" "$root/share/licenses/openssl/LICENSE.txt"
+fi
+
+while IFS= read -r -d '' file; do
+  codesign --force --sign - "$file"
+  codesign --verify --strict "$file"
+done < <(find "$runtime/bin" "$runtime/lib" -type f -print0)
+
+version=$("$runtime/bin/bkpr" --version)
+version=${version#bkpr }
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+minimum_system=$(
+  while IFS= read -r -d '' file; do
+    otool -arch arm64 -l "$file" | awk '
+      $1 == "cmd" { field = ($2 == "LC_BUILD_VERSION") ? "minos" : ($2 == "LC_VERSION_MIN_MACOSX" ? "version" : "") }
+      field != "" && $1 == field { print $2; field = "" }
+    '
+  done < <(find "$runtime/bin" "$runtime/lib" -type f -print0) |
+    sort -t . -k1,1n -k2,2n -k3,3n | tail -1
+)
+[[ "$minimum_system" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]
+pkgbuild --root "$root" --install-location /usr/local --identifier app.bkpr.cli \
+  --version "$version" --ownership recommended "$work/payload.pkg"
+cat > "$work/requirements.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>arch</key><array><string>arm64</string></array>
+  <key>os</key><array><string>$minimum_system</string></array>
+</dict>
+</plist>
+PLIST
+productbuild --synthesize --product "$work/requirements.plist" --package "$work/payload.pkg" \
+  "$work/Distribution"
+productbuild --distribution "$work/Distribution" --package-path "$work" "$output"

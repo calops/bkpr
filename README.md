@@ -27,6 +27,13 @@ Bkpr is packaged with Nix for x86-64 Linux, ARM64 Linux and ARM64 macOS.
 The package includes matching `bkpr` and `bkprd` binaries. Managed harness
 capture hasn't been verified on macOS.
 
+On Apple Silicon, download `bkpr-macos-arm64-unsigned.pkg` from
+[GitHub Releases](https://github.com/calops/bkpr/releases) to install without
+Nix. The installer is unsigned and may require Gatekeeper approval. Once
+installed, run `bkpr` in a new terminal.
+
+### Install with Nix
+
 ```sh
 # Try it without installing.
 nix run --accept-flake-config github:calops/bkpr

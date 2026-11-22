@@ -573,11 +573,17 @@ impl BoundSocket {
             })
             .transpose()?;
         if bootstrap.is_none() && announce {
-            writeln!(
+            let result = writeln!(
                 std::io::stdout().lock(),
                 "{}",
                 json!({"version":PROTOCOL_VERSION,"ready":true,"socket":bkpr_protocol::path_wire::WirePath(&socket)})
-            )?;
+            );
+            // A launcher may cancel its readiness wait without stopping the host.
+            if let Err(error) = result
+                && error.kind() != std::io::ErrorKind::BrokenPipe
+            {
+                return Err(error.into());
+            }
         }
         if bootstrap.is_none()
             && let Some(ready) = &ready
@@ -598,6 +604,10 @@ impl BoundSocket {
                         if shutdown.load(Ordering::Acquire) {
                             break;
                         }
+                        // Darwin accept inherits the listener's nonblocking
+                        // flag; the framing worker expects a blocking stream.
+                        #[cfg(target_os = "macos")]
+                        stream.set_nonblocking(false)?;
                         let mut reader = match stop.register_reader(&stream) {
                             Ok(reader) => reader,
                             Err(error) => {
