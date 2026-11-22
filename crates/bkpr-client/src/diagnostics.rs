@@ -51,6 +51,17 @@ pub(crate) enum Outcome {
 }
 
 impl Outcome {
+    /// Preserve dispatch knowledge carried through the transport error chain.
+    pub(crate) fn from_error(error: &anyhow::Error) -> Self {
+        if crate::transport::outcome_unknown(error) {
+            Self::Unknown
+        } else if crate::transport::shutdown_not_dispatched(error) {
+            Self::NotDispatched
+        } else {
+            Self::NotApplicable
+        }
+    }
+
     fn description(self) -> &'static str {
         match self {
             Self::NotApplicable => "Outcome: NotApplicable — no mutation result is asserted.",

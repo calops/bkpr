@@ -169,7 +169,7 @@ struct Session {
     retiring: usize,
     present: bool,
     ever_active: bool,
-    last_error: Option<String>,
+    diagnostic: Option<diagnostics::DiagnosticId>,
     membership: Membership,
     presentation: Option<Arc<crate::tree::Session>>,
     stop: StopState,
@@ -196,39 +196,43 @@ impl Session {
             retiring: 0,
             present: true,
             ever_active: false,
-            last_error: None,
+            diagnostic: None,
             membership: Membership::default(),
             presentation: None,
             stop: StopState::None,
         }
     }
 
-    fn record_failure(&mut self, error: anyhow::Error, now: Instant) {
+    fn record_failure(&mut self, error: &anyhow::Error, now: Instant) -> diagnostics::Outcome {
         let rejected =
             error.downcast_ref::<IdentityRejection>() == Some(&IdentityRejection::Replacement);
-        let message = diagnostics::technical(format_args!("{error:#}"));
-        let reason = if rejected {
-            "This name now belongs to a different session. Bkpr did not switch to it."
-        } else if matches!(self.target, SessionTarget::Remote(_))
-            && message
-                .lines()
-                .any(|line| line.contains("Error: session runtime directory is absent"))
+        let outcome = diagnostics::Outcome::from_error(error);
+        self.status = if rejected {
+            "This name now belongs to a different session. Bkpr did not switch to it.".into()
+        } else if error.is::<crate::remote::RemoteSessionMissing>()
+            && let SessionTarget::Remote(target) = &self.target
         {
-            "No running session with this name was found on the SSH host. Check the name or start the session there."
+            format!(
+                "No running session named {} on {}.\nCheck the name or start the session there.",
+                target.session_name, target.destination,
+            )
         } else if matches!(self.target, SessionTarget::Remote(_)) {
-            "Could not connect to the session over SSH."
+            "Could not connect to the session over SSH.".into()
         } else {
-            "Could not connect to the local session."
+            "Could not connect to the local session.".into()
         };
-        self.status = format!(
-            "{reason}\n{}\nCtrl-b !  Details",
+        if outcome == diagnostics::Outcome::Unknown {
+            self.status
+                .push_str("\nThe last operation may already have happened.");
+        }
+        self.status.push_str(
             if !rejected && self.ever_active && self.stop == StopState::None {
-                "Retrying automatically. Press R in Sessions to retry now."
+                "\nRetrying automatically. Press R in Sessions to retry now."
             } else {
-                "Press R in Sessions to retry."
+                "\nPress R in Sessions to retry."
             },
         );
-        self.last_error = Some(message);
+        self.status.push_str("\nCtrl-b !  Details");
         self.phase = if rejected {
             Phase::Rejected
         } else {
@@ -237,6 +241,7 @@ impl Session {
         self.failures = self.failures.saturating_add(1);
         self.next_attempt = (self.ever_active && !rejected && self.stop == StopState::None)
             .then(|| now + retry_delay(self.failures));
+        outcome
     }
 
     fn queue_reconnect(&mut self, now: Instant) -> Result<()> {
@@ -792,21 +797,19 @@ impl Coordinator {
     /// owner is eligible for automatic reconnect; initial errors require R.
     fn fail(&mut self, index: usize, error: anyhow::Error) -> Result<()> {
         if self.sessions[index].stop == StopState::Pending {
-            self.sessions[index].last_error = Some(format!("{error:#}"));
             return Ok(());
         }
         self.retire_current(index, false)?;
-        self.sessions[index].record_failure(error, Instant::now());
-        if let Some(details) = &self.sessions[index].last_error {
+        let session = &mut self.sessions[index];
+        let outcome = session.record_failure(&error, Instant::now());
+        let summary = format!("Session connection failed: {}", session.target.label());
+        let details = diagnostics::technical(format_args!("{error:#}"));
+        session.diagnostic = Some(
             self.diagnostics
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .record(
-                    "Session connection failed",
-                    details,
-                    diagnostics::Outcome::NotApplicable,
-                );
-        }
+                .record(&summary, &details, outcome),
+        );
         Ok(())
     }
 
@@ -1409,7 +1412,7 @@ impl Coordinator {
                     session.app = Some(app);
                     session.failures = 0;
                     session.ever_active = true;
-                    session.last_error = None;
+                    session.diagnostic = None;
                     session.membership = Membership::default();
                     session.phase = Phase::Online;
                     session.status = "online".into();
@@ -1534,6 +1537,7 @@ impl Coordinator {
         let spinner = self.spinner.glyph();
         let namespace = self.namespace();
         self.offline.namespace = namespace;
+        self.offline.session_diagnostic = self.sessions[self.selected].diagnostic;
         let app = self.app_mut();
         app.synchronize_tree_focus();
         app.state.session_spinner = spinner;
@@ -2724,10 +2728,9 @@ mod tests {
         session.initial_activation = false;
         session.phase = Phase::Activating;
         session.cancellation.cancel();
-        session.record_failure(anyhow::anyhow!("helper is missing"), now);
+        session.record_failure(&anyhow::anyhow!("helper is missing"), now);
         assert!(session.phase == Phase::Offline);
         assert!(session.next_attempt.is_none());
-        assert_eq!(session.last_error.as_deref(), Some("helper is missing"));
         assert!(session.status.contains("Press R"));
         assert!(session.present);
     }
@@ -2736,10 +2739,9 @@ mod tests {
     fn missing_remote_session_explains_how_to_recover_without_transport_noise() {
         let now = Instant::now();
         let mut session = pending_session(now);
-        let error = anyhow::anyhow!("reading remote control header: early eof").context(
-            "owned SSH transport ended; bounded stderr: Error: session runtime directory is absent\n",
-        );
-        session.record_failure(error, now);
+        let error = anyhow::anyhow!("reading remote control header: early eof")
+            .context(crate::remote::RemoteSessionMissing);
+        session.record_failure(&error, now);
         assert!(
             session
                 .status
@@ -2747,7 +2749,53 @@ mod tests {
         );
         assert!(session.status.contains("Press R in Sessions to retry"));
         assert!(!session.status.contains("early eof"));
-        assert!(session.last_error.unwrap().contains("early eof"));
+    }
+
+    #[test]
+    fn offline_details_follow_the_displayed_session_and_preserve_unknown_activation() {
+        let now = Instant::now();
+        let (app, _) = fixture();
+        let targets = ["alpha", "beta"].map(|name| {
+            let mut session = pending_session(now);
+            let SessionTarget::Remote(target) = &mut session.target else {
+                unreachable!();
+            };
+            target.session_name = name.into();
+            session.target
+        });
+        let mut coordinator =
+            Coordinator::new(targets.into(), app.options.clone(), size()).unwrap();
+        coordinator
+            .fail(
+                0,
+                transport::mark_outcome_unknown(anyhow::anyhow!("alpha activation reply lost")),
+            )
+            .unwrap();
+        coordinator
+            .fail(1, anyhow::anyhow!("beta refused"))
+            .unwrap();
+
+        for (index, text, outcome) in [
+            (
+                0,
+                "alpha activation reply lost",
+                diagnostics::Outcome::Unknown,
+            ),
+            (1, "beta refused", diagnostics::Outcome::NotApplicable),
+        ] {
+            coordinator.select(index, size()).unwrap();
+            coordinator.tick(size()).unwrap();
+            let id = coordinator.app().latest_diagnostic().unwrap();
+            let store = coordinator.diagnostics.lock().unwrap();
+            let incident = store.get(id).unwrap();
+            assert_eq!(incident.outcome, outcome);
+            assert!(incident.details.contains(text));
+        }
+        assert!(
+            coordinator.sessions[0]
+                .status
+                .contains("may already have happened")
+        );
     }
 
     #[test]
@@ -2756,9 +2804,9 @@ mod tests {
         let mut session = pending_session(now);
         session.expected_session = Some("pinned".into());
         session.ever_active = true;
-        session.record_failure(anyhow::anyhow!("transport lost"), now);
+        session.record_failure(&anyhow::anyhow!("transport lost"), now);
         assert_eq!(session.next_attempt, Some(now + Duration::from_millis(500)));
-        session.record_failure(IdentityRejection::Replacement.into(), now);
+        session.record_failure(&IdentityRejection::Replacement.into(), now);
         assert!(session.phase == Phase::Rejected);
         assert!(session.next_attempt.is_none());
         assert_eq!(session.expected_session.as_deref(), Some("pinned"));
@@ -2772,7 +2820,7 @@ mod tests {
         session.generation = 8;
         session.initial_activation = false;
         session.expected_session = Some("pinned".into());
-        session.record_failure(anyhow::anyhow!("old failure"), now);
+        session.record_failure(&anyhow::anyhow!("old failure"), now);
         let old = session.cancellation.clone();
         session.queue_reconnect(now).unwrap();
         assert!(old.is_cancelled());
@@ -2925,7 +2973,7 @@ mod tests {
         coordinator.app_mut().cancel_modal();
         assert!(coordinator.app().state.form.is_none());
         let session = &mut coordinator.sessions[1];
-        session.record_failure(anyhow::anyhow!("transport closed"), Instant::now());
+        session.record_failure(&anyhow::anyhow!("transport closed"), Instant::now());
         assert!(session.next_attempt.is_none());
         assert_eq!(session.stop, StopState::Finished);
         session.queue_reconnect(Instant::now()).unwrap();

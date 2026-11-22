@@ -906,69 +906,8 @@ pub(crate) fn project_details(project: Option<&ProjectSnapshot>) -> Vec<String> 
     lines
 }
 
-fn wrapped(value: &str, width: usize) -> Vec<String> {
-    use unicode_segmentation::UnicodeSegmentation as _;
-    if width == 0 {
-        return Vec::new();
-    }
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    let mut used = 0;
-    for glyph in value.graphemes(true) {
-        let columns = unicode_width::UnicodeWidthStr::width(glyph);
-        if used + columns > width && !line.is_empty() {
-            lines.push(std::mem::take(&mut line));
-            used = 0;
-        }
-        if columns <= width {
-            line.push_str(glyph);
-            used += columns;
-        }
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
-}
-pub(super) fn centered_notice(
-    area: Rect,
-    title: &str,
-    body: &str,
-) -> impl Iterator<Item = (Rect, String, bool)> + use<> {
-    let width = area.width.saturating_sub(4).max(1).min(area.width);
-    let mut rows = Vec::new();
-    if width > 0 && area.height > 0 {
-        rows.push(bkpr_tui_framework::window::fit(title, width));
-        rows.extend(
-            body.lines()
-                .flat_map(|paragraph| textwrap::wrap(paragraph, usize::from(width)))
-                .take(usize::from(area.height - 1))
-                .map(std::borrow::Cow::into_owned),
-        );
-    }
-    let top = area.y + (area.height - rows.len() as u16) / 2;
-    rows.into_iter().enumerate().map(move |(row, label)| {
-        let columns = bkpr_tui_framework::text_width(&label).min(usize::from(width)) as u16;
-        line(
-            area.x + (area.width - columns) / 2,
-            top + row as u16,
-            columns,
-            label,
-            false,
-        )
-    })
-}
-
-fn session_notice(area: Rect, group: &SessionGroup) -> impl Iterator<Item = (Rect, String, bool)> {
-    let headline = match group.status {
-        SessionStatus::Offline => "Session offline",
-        SessionStatus::Rejected => "Connection refused",
-        SessionStatus::Queued => "Connection queued",
-        SessionStatus::Reconnecting => "Reconnecting",
-        _ => "Connecting",
-    };
-    let title = format!("{} {headline} · {}", group.status.badge(), group.name);
-    centered_notice(area, &title, &group.detail)
+fn wrapped(value: &str, width: usize) -> impl Iterator<Item = String> + '_ {
+    bkpr_tui_framework::window::wrap_cells(value, width.min(usize::from(u16::MAX)) as u16)
 }
 
 fn line(
@@ -1310,7 +1249,7 @@ fn render_chrome<'a>(
     } = context;
     project_spans.clear();
     working_titles.clear();
-    let (sidebar, area) = screen_geometry(size, tree.preferred_columns);
+    let sidebar = screen_geometry(size, tree.preferred_columns).0;
     let mut lines = Vec::new();
     // Hidden cursors still determine terminal cursor trails. Only a rendered
     // keyboard selection supplies an anchor; passive hover cards never do.
@@ -1445,12 +1384,6 @@ fn render_chrome<'a>(
             hit(target.node.clone(), target.owner, row);
         }
     }
-    if rects.is_empty()
-        && let Some(group) = tree.session(active).map(|session| &session.group)
-        && group.status != SessionStatus::Online
-    {
-        lines.extend(session_notice(area, group));
-    }
     for (id, rect) in rects {
         if pane_graphics.contains(rect) {
             continue;
@@ -1578,20 +1511,10 @@ fn render_theme_chrome<'a>(
         }
     }
     let size = surface.frame.size;
-    let (sidebar, area) = screen_geometry(size, tree.preferred_columns);
+    let sidebar = screen_geometry(size, tree.preferred_columns).0;
     let mut spans = Vec::new();
     let mut backgrounds = Vec::new();
     foregrounds.clear();
-    if rects.is_empty()
-        && let Some(group) = tree.session(active).map(|session| &session.group)
-        && group.status != SessionStatus::Online
-        && let Some((rect, _, _)) = session_notice(area, group).next()
-    {
-        spans.push(RoleSpan {
-            rect,
-            role: group.status.role(),
-        });
-    }
     let muted = theme.ink(Role::Muted, false);
     spans.push(RoleSpan {
         rect: Rect {
@@ -2573,57 +2496,6 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_body_uses_active_owner_not_hovered_or_selected_session() {
-        use crate::tree::{Node, Owner, Target, Tree};
-        let active = Owner {
-            slot: 0,
-            generation: 4,
-        };
-        let other = Owner {
-            slot: 1,
-            generation: 8,
-        };
-        let mut first = session_fixture(active, "first");
-        let mut second = session_fixture(other, "second");
-        std::sync::Arc::get_mut(&mut first).unwrap().group.status = super::SessionStatus::Offline;
-        std::sync::Arc::get_mut(&mut second).unwrap().group.status = super::SessionStatus::Offline;
-        let state = Controller::new(&first.registry);
-        let mut tree = Tree::new();
-        tree.reconcile(vec![first.clone(), second], active);
-        tree.enter();
-        tree.select(Target {
-            owner: other,
-            node: Node::Session,
-        });
-        let mut surface = capture_surface();
-        let size = surface.frame.size;
-        super::tree_chrome(
-            &mut surface,
-            super::TreeChromeContext {
-                native: ChromeContext {
-                    size,
-                    state: &state,
-                    registry: &first.registry,
-                    rects: &[],
-                    pane_graphics: &[],
-                    guide_rows: 0,
-                },
-                tree: &tree,
-                active,
-                popup: None,
-            },
-            |_| panic!("No native pane frame"),
-            |_| panic!("Unavailable body cannot poll panes"),
-            |_| panic!("No native pane frame"),
-            &mut Vec::new(),
-            &mut Vec::new(),
-        );
-        let text = painted_text(&surface);
-        assert!(text.contains("first session details"));
-        assert!(!text.contains("second session details"));
-    }
-
-    #[test]
     fn unified_tree_uses_owner_metadata_and_one_geometry_for_hits_cursor_and_artwork() {
         use crate::tree::{Node, Owner, Target, Tree};
         let first = Owner {
@@ -2969,10 +2841,11 @@ mod tests {
 
     #[test]
     fn wrapped_details_keep_joined_emoji_and_combining_clusters_whole() {
-        assert_eq!(super::wrapped("a👩‍💻e\u{301}界", 3), ["a👩‍💻", "e\u{301}界"]);
-        assert_eq!(super::wrapped("👩‍💻x", 2), ["👩‍💻", "x"]);
-        assert_eq!(super::wrapped("a👩‍💻e\u{301}", 1), ["a", "e\u{301}"]);
-        assert!(super::wrapped("👩‍💻", 0).is_empty());
+        let wrap = |text, width| super::wrapped(text, width).collect::<Vec<_>>();
+        assert_eq!(wrap("a👩‍💻e\u{301}界", 3), ["a👩‍💻", "e\u{301}界"]);
+        assert_eq!(wrap("👩‍💻x", 2), ["👩‍💻", "x"]);
+        assert_eq!(wrap("a👩‍💻e\u{301}", 1), ["a", "e\u{301}"]);
+        assert!(wrap("👩‍💻", 0).is_empty());
     }
 
     #[test]

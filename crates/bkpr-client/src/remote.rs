@@ -46,6 +46,29 @@ const STDERR_LIMIT: usize = 16 * 1024;
 const HEARTBEAT_MS: u32 = 1000;
 const LEASE_MS: u32 = 5000;
 
+const ABSENT_SESSION_REASON: &str = "session runtime directory is absent";
+
+/// The selected remote session is absent, rather than merely unreachable.
+#[derive(Debug)]
+pub(crate) struct RemoteSessionMissing;
+
+#[derive(Debug)]
+struct HandshakeInterrupted;
+
+impl std::fmt::Display for RemoteSessionMissing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("remote session is missing")
+    }
+}
+
+impl std::error::Error for RemoteSessionMissing {}
+
+impl std::fmt::Display for HandshakeInterrupted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("remote handshake transport interrupted")
+    }
+}
+
 /// Literal SSH destination, remote session and connection preferences.
 #[derive(Clone, Debug)]
 pub struct RemoteTarget {
@@ -189,7 +212,7 @@ struct Supervisor {
     stop: watch::Sender<bool>,
     thread: Option<thread::JoinHandle<()>>,
     cancellation: CancellationToken,
-    failure: Arc<Mutex<Option<String>>>,
+    failure: Arc<Mutex<Option<anyhow::Error>>>,
 }
 impl Supervisor {
     fn cancel(&self) {
@@ -366,6 +389,8 @@ impl RemoteSession {
         let thread = thread::Builder::new()
             .name("bkpr-remote-ssh".into())
             .spawn(move || {
+                // Keep the channel open until a failed attempt has reaped SSH,
+                // drained stderr and published its original typed error.
                 let result = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -376,12 +401,12 @@ impl RemoteSession {
                             hello,
                             receiver,
                             stop_rx,
-                            ready,
+                            ready.clone(),
                             transport_cancellation,
                         ))
                     });
                 if let Err(error) = result {
-                    *failure_task.lock().unwrap() = Some(format!("{error:#}"));
+                    *failure_task.lock().unwrap() = Some(error);
                 }
             })?;
         let mut supervisor = Supervisor {
@@ -398,11 +423,7 @@ impl RemoteSession {
             Ok(welcome) => welcome,
             Err(error) => {
                 supervisor.cancel_and_join();
-                let failure = supervisor.failure.lock().unwrap();
-                if let Some(cause) = failure.as_ref() {
-                    return Err(error.context(cause.clone()));
-                }
-                return Err(error);
+                return Err(supervisor.failure.lock().unwrap().take().unwrap_or(error));
             }
         };
         Ok((welcome, connector, supervisor))
@@ -441,7 +462,7 @@ impl RemoteSession {
             if matches!(result, Ok(Lifecycle::TransportClosed))
                 && let Some(error) = self.supervisor.failure.lock().unwrap().as_ref()
             {
-                bail!("remote transport disconnected: {error}");
+                bail!("remote transport disconnected: {error:#}");
             }
         }
         result
@@ -731,7 +752,7 @@ async fn run_ssh(
         write: owned.child.stdin.take().unwrap(),
     };
     let mut stderr = owned.child.stderr.take().unwrap();
-    let diagnostics = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_LIMIT)));
+    let diagnostics = Arc::new(Mutex::new((true, VecDeque::with_capacity(STDERR_LIMIT))));
     let diagnostics_task = diagnostics.clone();
     let mut stderr_task = tokio::spawn(async move {
         let mut buffer = [0; 4096];
@@ -739,10 +760,10 @@ async fn run_ssh(
             if count == 0 {
                 break;
             }
-            let mut ring = diagnostics_task.lock().unwrap();
+            let (starts_at_line, ring) = &mut *diagnostics_task.lock().unwrap();
             for byte in &buffer[..count] {
                 if ring.len() == STDERR_LIMIT {
-                    ring.pop_front();
+                    *starts_at_line = ring.pop_front() == Some(b'\n');
                 }
                 ring.push_back(*byte);
             }
@@ -765,9 +786,20 @@ async fn run_ssh(
         let _ = stderr_task.await;
     }
     result.map_err(|error| {
-        let ring = diagnostics.lock().unwrap();
-        let bytes: Vec<u8> = ring.iter().copied().collect();
-        let text: String = String::from_utf8_lossy(&bytes)
+        let (starts_at_line, ring) = &mut *diagnostics.lock().unwrap();
+        let text = String::from_utf8_lossy(ring.make_contiguous());
+        let mut lines = text.split_inclusive('\n');
+        if !*starts_at_line {
+            lines.next();
+        }
+        let missing = error.is::<HandshakeInterrupted>()
+            && lines.any(|line| {
+                line.strip_suffix('\n')
+                    .map(|line| line.strip_suffix('\r').unwrap_or(line))
+                    .and_then(|line| line.strip_prefix("Error: "))
+                    == Some(ABSENT_SESSION_REASON)
+            });
+        let text: String = text
             .chars()
             .map(|c| {
                 if c.is_control() && c != '\n' && c != '\t' {
@@ -777,8 +809,27 @@ async fn run_ssh(
                 }
             })
             .collect();
-        error.context(format!("owned SSH transport ended; bounded stderr: {text}"))
+        let error = error.context(format!("owned SSH transport ended; bounded stderr: {text}"));
+        if missing {
+            error.context(RemoteSessionMissing)
+        } else {
+            error
+        }
     })
+}
+
+fn classify_handshake_io(error: anyhow::Error) -> anyhow::Error {
+    use std::io::ErrorKind::{BrokenPipe, ConnectionAborted, ConnectionReset, UnexpectedEof};
+    if error.downcast_ref::<std::io::Error>().is_some_and(|cause| {
+        matches!(
+            cause.kind(),
+            BrokenPipe | ConnectionAborted | ConnectionReset | UnexpectedEof
+        )
+    }) {
+        error.context(HandshakeInterrupted)
+    } else {
+        error
+    }
 }
 
 async fn client_transport<R, W>(
@@ -802,28 +853,35 @@ where
         incoming,
     ));
     let handshake = async {
-        let mut control = open_mux(&opens).await?.compat();
-        write_control(&mut control, &Control::Hello(hello.clone())).await?;
-        let welcome = match read_control(&mut control).await? {
+        let mut control = open_mux(&opens)
+            .await
+            .context(HandshakeInterrupted)?
+            .compat();
+        write_control(&mut control, &Control::Hello(hello.clone()))
+            .await
+            .map_err(classify_handshake_io)?;
+        let welcome = match read_control(&mut control)
+            .await
+            .map_err(classify_handshake_io)?
+        {
             Control::Welcome(welcome) => welcome,
             Control::Failure(error) => {
-                bail!("remote helper rejected connection: {}", error.message)
+                let missing = error.message == ABSENT_SESSION_REASON;
+                let error = anyhow::anyhow!("remote helper rejected connection: {}", error.message);
+                return Err(if missing {
+                    error.context(RemoteSessionMissing)
+                } else {
+                    error
+                });
             }
             _ => bail!("remote helper omitted Welcome"),
         };
         welcome.validate_for(&hello)?;
         Ok::<_, anyhow::Error>((control, welcome))
     };
-    let handshake = tokio::select! {
-        result = timeout(HANDSHAKE_TIMEOUT, handshake) => result.context("remote handshake deadline")?,
+    let (control, welcome) = tokio::select! {
+        result = timeout(HANDSHAKE_TIMEOUT, handshake) => result.context("remote handshake deadline")??,
         _ = stop.changed() => bail!("remote connection abandoned during handshake"),
-    };
-    let (control, welcome) = match handshake {
-        Ok(result) => result,
-        Err(error) => {
-            let _ = ready.send(Err(anyhow::anyhow!("{error:#}")));
-            return Err(error);
-        }
     };
     let heartbeat = Duration::from_millis(welcome.heartbeat_interval_ms.into());
     let lease = Duration::from_millis(welcome.lease_timeout_ms.into());
@@ -1206,3 +1264,110 @@ async fn helper_lease(
 #[cfg(test)]
 #[path = "remote_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod handshake_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn helper_failure_requires_the_exact_absent_session_reason() {
+        for (reason, missing) in [
+            (ABSENT_SESSION_REASON, true),
+            (
+                "checking a path: session runtime directory is absent",
+                false,
+            ),
+        ] {
+            let (client_io, server_io) = tokio::io::duplex(CHUNK * 2);
+            let (read, write) = tokio::io::split(client_io);
+            let (_sender, receiver) = mpsc::channel(1);
+            let (_stop, stop_rx) = watch::channel(false);
+            let (ready, _ready_rx) = sync::sync_channel(1);
+            let client = tokio::spawn(client_transport(
+                Duplex { read, write },
+                Hello {
+                    session_name: "existing".into(),
+                    native_family: PROTOCOL_VERSION,
+                    required_capabilities: wire::SUPPORTED_CAPABILITIES,
+                    connection_nonce: [7; 32],
+                    forward_agent: false,
+                },
+                receiver,
+                stop_rx,
+                ready,
+            ));
+            let (_opens, open_rx) = mpsc::channel(1);
+            let (incoming, mut incoming_rx) = mpsc::channel(1);
+            let mut workers = JoinSet::new();
+            workers.spawn(drive_mux(
+                yamux::Connection::new(server_io.compat(), mux_config(), yamux::Mode::Server),
+                open_rx,
+                incoming,
+            ));
+            let mut control = timeout(OPEN_TIMEOUT, incoming_rx.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                .compat();
+            assert!(matches!(
+                read_control(&mut control).await.unwrap(),
+                Control::Hello(_)
+            ));
+            write_control(
+                &mut control,
+                &Control::Failure(remote_wire::Failure {
+                    message: reason.into(),
+                }),
+            )
+            .await
+            .unwrap();
+            let error = client
+                .await
+                .unwrap()
+                .unwrap_err()
+                .context("remote admission");
+            assert_eq!(error.is::<RemoteSessionMissing>(), missing);
+            assert!(format!("{error:#}").contains(reason));
+        }
+    }
+
+    #[test]
+    fn early_ssh_eof_classifies_exact_legacy_stderr_after_cleanup() {
+        for (line, missing) in [
+            ("Error: session runtime directory is absent", true),
+            ("warning: Error: session runtime directory is absent", false),
+        ] {
+            let mut command = Command::new("/bin/sh");
+            command
+                .args([
+                    "-c",
+                    "printf '%10000s\\n%s\\n' '' \"$1\" >&2",
+                    "fake-ssh",
+                    line,
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            let cancellation = CancellationToken::new();
+            let error = RemoteSession::establish_command(
+                RemoteTarget {
+                    destination: "fixture".into(),
+                    session_name: "existing".into(),
+                    helper: None,
+                    ssh_config: None,
+                    forward_agent: false,
+                    detach_others: false,
+                },
+                cancellation.clone(),
+                command,
+            )
+            .err()
+            .expect("SSH closed without a Welcome");
+            assert_eq!(error.is::<RemoteSessionMissing>(), missing);
+            assert!(error.is::<HandshakeInterrupted>());
+            assert!(format!("{error:#}").contains(line));
+            assert!(!cancellation.is_cancelled());
+        }
+    }
+}
