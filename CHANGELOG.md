@@ -1,3 +1,42 @@
+## [0.10.0](https://github.com/calops/bkpr/compare/v0.9.0...v0.10.0) (2026-11-22)
+
+### ⚠ BREAKING CHANGES
+
+* **images:** clients must request planus_v1 or planus_v1_sources scenes. The
+planus_progressive_v1 encoding (scene version 2 with image descriptors) and
+ImageResource requests/payloads are retired and rejected.
+
+### Features
+
+* **client:** add sidebar context menus ([#56](https://github.com/calops/bkpr/issues/56)) ([a2a756e](https://github.com/calops/bkpr/commit/a2a756e371c8b86bd1f0a180f75817cb7f086e06))
+* **client:** show agent titles in alerts and recovery ([c4e6edc](https://github.com/calops/bkpr/commit/c4e6edc9811065ab95d75002434cf4768d0fce63))
+
+### Bug Fixes
+
+* **agents:** recover stalled inbox wakes ([be8c5cb](https://github.com/calops/bkpr/commit/be8c5cb754f4009eb2806a4f4b5972fdc83ef5a0))
+* **ci:** normalize macOS installer staging permissions ([adaf8e3](https://github.com/calops/bkpr/commit/adaf8e30935b54cc4a1b01522e8f92c591312f47))
+* **ci:** use system libiconv in the macOS installer ([f08fa76](https://github.com/calops/bkpr/commit/f08fa76274a412b53c66ea2a1267101332cdff77))
+* **client:** keep presenting an image while its replacement loads ([48c79ae](https://github.com/calops/bkpr/commit/48c79aefcc52b345bb617328b6a508b13cd13f8f))
+* **client:** make chrome shadows visible on both sides ([#58](https://github.com/calops/bkpr/issues/58)) ([7f669fb](https://github.com/calops/bkpr/commit/7f669fb1c2c4cf6b7699d828910f82c67ecb2cc1))
+* **cli:** retain the synchronous session manifest reader ([50c6b7d](https://github.com/calops/bkpr/commit/50c6b7df38cb725e8683bb4159a3fa4fa941b769))
+* **core:** confirm scoped process observations ([a8e1278](https://github.com/calops/bkpr/commit/a8e1278a0f426286ab441a599f151c7a35020eaf))
+* **daemon:** wait for readiness over stdout ([7ce408c](https://github.com/calops/bkpr/commit/7ce408c049774eb8d05de85150d9eb75f2907903))
+* **images:** close the held-image race and keep originals forwardable ([1ccfb42](https://github.com/calops/bkpr/commit/1ccfb42809fd53f52eb48dc3ce2eb713905899c5))
+* **macos:** observe daemon readiness and block on request reads ([013e16d](https://github.com/calops/bkpr/commit/013e16de3618c7a30fa6ee03f339d7211513d04c))
+* **terminal:** resolve installed terminfo through symlinks ([4633dfc](https://github.com/calops/bkpr/commit/4633dfcb7ed88275aa09764f3ada71c1d09b7d07))
+* **tui:** publish committed themes to pane apps ([#60](https://github.com/calops/bkpr/issues/60)) ([974da53](https://github.com/calops/bkpr/commit/974da5324aea022cc466f149b34a185ea3195a90)), closes [#59](https://github.com/calops/bkpr/issues/59)
+* **tui:** thin the sidebar bee wings ([#64](https://github.com/calops/bkpr/issues/64)) ([660a529](https://github.com/calops/bkpr/commit/660a529813d35e4b09d4bee006f944ad69b9c8de))
+
+### Performance Improvements
+
+* **core:** scope periodic Linux process scans ([fcae591](https://github.com/calops/bkpr/commit/fcae5918fb5402f6f0464702cc721484a4b6e549))
+* **images:** deliver pane images inline, in order with their scene ([f21c8a2](https://github.com/calops/bkpr/commit/f21c8a2d7824d657e81a29f50505ca6786b98c62))
+* **images:** forward Kitty image payloads without re-encoding ([8507b85](https://github.com/calops/bkpr/commit/8507b8582db9dccfd48a931e0c3cc514680d4549))
+
+### Code Refactoring
+
+* **images:** remove asynchronous image resource delivery ([bdddcbe](https://github.com/calops/bkpr/commit/bdddcbe0b9548ae482a79aadd7048ba09ebbce2f))
+
 ## [0.9.0](https://github.com/calops/bkpr/compare/v0.8.0...v0.9.0) (2026-11-20)
 
 ### ⚠ BREAKING CHANGES
