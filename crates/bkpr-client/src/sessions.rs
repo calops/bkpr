@@ -223,9 +223,9 @@ impl Session {
         self.status = format!(
             "{reason}\n{}\nCtrl-b !  Details",
             if !rejected && self.ever_active && self.stop == StopState::None {
-                "Retrying automatically. Press R to retry now."
+                "Retrying automatically. Press R in Sessions to retry now."
             } else {
-                "Press R to retry."
+                "Press R in Sessions to retry."
             },
         );
         self.last_error = Some(message);
@@ -2745,7 +2745,7 @@ mod tests {
                 .status
                 .contains("Check the name or start the session")
         );
-        assert!(session.status.contains("Press R to retry"));
+        assert!(session.status.contains("Press R in Sessions to retry"));
         assert!(!session.status.contains("early eof"));
         assert!(session.last_error.unwrap().contains("early eof"));
     }
