@@ -16,6 +16,7 @@ pub mod image_viewer;
 pub mod joined;
 mod joined_contour;
 pub mod loading;
+pub mod markdown;
 mod navigation;
 mod prepared_png;
 mod raster_cache;

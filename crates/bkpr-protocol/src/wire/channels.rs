@@ -89,6 +89,18 @@ pub(super) fn write_request(
             let offset = g::ChannelRequestListExplicitMembers::create(b, channel, after, *limit);
             G::create_channel_request_list_explicit_members(b, offset)
         }
+        ChannelRequest::UserRoster {
+            workspace_id,
+            channel_id,
+            after,
+            limit,
+        } => {
+            let workspace = write_text(b, workspace_id, budget)?;
+            let channel = write_optional_id(b, channel_id.as_ref(), budget)?;
+            let after = write_optional_id(b, after.as_ref(), budget)?;
+            let offset = g::ChannelRequestUserRoster::create(b, workspace, channel, after, *limit);
+            G::create_channel_request_user_roster(b, offset)
+        }
         ChannelRequest::Create {
             workspace_id,
             name,
@@ -139,6 +151,19 @@ pub(super) fn write_request(
             let post = write_post(b, post, budget, depth)?;
             let offset = g::ChannelRequestPost::create(b, channel, post);
             G::create_channel_request_post(b, offset)
+        }
+        ChannelRequest::PostUser {
+            channel_id,
+            post,
+            bindings,
+        } => {
+            let channel = write_text(b, channel_id.as_ref(), budget)?;
+            let post = write_post(b, post, budget, depth)?;
+            let bindings = write_vector(b, bindings, budget, |b, binding, budget| {
+                write_mention_binding(b, binding, budget, depth)
+            })?;
+            let offset = g::ChannelRequestPostUser::create(b, channel, post, bindings);
+            G::create_channel_request_post_user(b, offset)
         }
         ChannelRequest::History {
             channel_id,
@@ -254,6 +279,12 @@ pub(super) fn read_request(
             after: read_optional_id(v.after()?, ParticipantId, budget)?,
             limit: v.limit()?,
         },
+        R::ChannelRequestUserRoster(v) => ChannelRequest::UserRoster {
+            workspace_id: read_id(v.workspace_id()?, budget)?,
+            channel_id: read_optional_id(v.channel_id()?, ChannelId, budget)?,
+            after: read_optional_id(v.after()?, ParticipantId, budget)?,
+            limit: v.limit()?,
+        },
         R::ChannelRequestCreate(v) => ChannelRequest::Create {
             workspace_id: read_id(v.workspace_id()?, budget)?,
             name: read_name(v.name()?, budget)?,
@@ -273,6 +304,13 @@ pub(super) fn read_request(
         R::ChannelRequestPost(v) => ChannelRequest::Post {
             channel_id: ChannelId(read_id(v.channel_id()?, budget)?),
             post: read_post(v.post()?, budget, depth)?,
+        },
+        R::ChannelRequestPostUser(v) => ChannelRequest::PostUser {
+            channel_id: ChannelId(read_id(v.channel_id()?, budget)?),
+            post: read_post(v.post()?, budget, depth)?,
+            bindings: read_vector(v.bindings()?, MAX_MENTIONS, budget, |value, budget| {
+                read_mention_binding(value, budget, depth)
+            })?,
         },
         R::ChannelRequestHistory(v) => ChannelRequest::History {
             channel_id: ChannelId(read_id(v.channel_id()?, budget)?),
@@ -368,6 +406,15 @@ pub(super) fn write_response(
             let next_after = write_reply_id(b, next_after.as_ref(), budget)?;
             let offset = g::ChannelResponseMembers::create(b, participants, next_after);
             G::create_channel_response_members(b, offset)
+        }
+        ChannelResponse::UserRoster {
+            participants,
+            next_after,
+        } => {
+            let participants = write_page(b, participants, budget, write_roster_entry)?;
+            let next_after = write_reply_id(b, next_after.as_ref(), budget)?;
+            let offset = g::ChannelResponseUserRoster::create(b, participants, next_after);
+            G::create_channel_response_user_roster(b, offset)
         }
         ChannelResponse::ExplicitMembers {
             members,
@@ -515,6 +562,12 @@ pub(super) fn read_response(
         R::ChannelResponseMembers(v) => ChannelResponse::Members {
             participants: read_vector(v.participants()?, MAX_PAGE_LIMIT.into(), budget, |v, b| {
                 read_participant(v, b, 1)
+            })?,
+            next_after: read_optional_id(v.next_after()?, ParticipantId, budget)?,
+        },
+        R::ChannelResponseUserRoster(v) => ChannelResponse::UserRoster {
+            participants: read_vector(v.participants()?, MAX_PAGE_LIMIT.into(), budget, |v, b| {
+                read_roster_entry(v, b, 1)
             })?,
             next_after: read_optional_id(v.next_after()?, ParticipantId, budget)?,
         },
@@ -897,6 +950,78 @@ fn read_participant(
         kind: v.kind()?.into(),
         display_name: read_name(v.display_name()?, budget)?,
     })
+}
+
+fn write_mention_binding(
+    b: &mut Builder,
+    value: &ChannelMentionBinding,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Offset<g::ChannelMentionBinding>> {
+    budget.node(depth)?;
+    let participant_id = write_text(b, value.participant_id.as_ref(), budget)?;
+    let launch_id = write_text(b, &value.launch_id, budget)?;
+    Ok(g::ChannelMentionBinding::create(
+        b,
+        participant_id,
+        launch_id,
+        value.binding_generation,
+    ))
+}
+
+fn read_mention_binding(
+    value: g::ChannelMentionBindingRef<'_>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<ChannelMentionBinding> {
+    budget.node(depth)?;
+    let binding_generation = value.binding_generation()?;
+    ensure!(
+        binding_generation != 0,
+        "missing channel mention binding generation"
+    );
+    Ok(ChannelMentionBinding {
+        participant_id: ParticipantId(read_id(value.participant_id()?, budget)?),
+        launch_id: read_id(value.launch_id()?, budget)?,
+        binding_generation,
+    })
+}
+
+fn write_roster_entry(
+    b: &mut Builder,
+    entry: &ChannelRosterEntry,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Offset<g::ChannelRosterEntry>> {
+    budget.node(depth)?;
+    entry.validate_binding_relationship()?;
+    let participant = write_participant(b, &entry.participant, budget, depth + 1)?;
+    let binding = entry
+        .binding
+        .as_ref()
+        .map(|value| {
+            value.validate()?;
+            write_mention_binding(b, value, budget, depth + 1)
+        })
+        .transpose()?;
+    Ok(g::ChannelRosterEntry::create(b, participant, binding))
+}
+
+fn read_roster_entry(
+    value: g::ChannelRosterEntryRef<'_>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<ChannelRosterEntry> {
+    budget.node(depth)?;
+    let entry = ChannelRosterEntry {
+        participant: read_participant(value.participant()?, budget, depth + 1)?,
+        binding: value
+            .binding()?
+            .map(|value| read_mention_binding(value, budget, depth + 1))
+            .transpose()?,
+    };
+    entry.validate_binding_relationship()?;
+    Ok(entry)
 }
 
 fn write_settings(

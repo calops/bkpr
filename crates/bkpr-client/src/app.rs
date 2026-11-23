@@ -155,6 +155,14 @@ struct SidebarMenu {
     widget: bkpr_tui_framework::context_menu::ContextMenu<crate::keyguide::Action>,
 }
 
+#[path = "chat.rs"]
+mod chat;
+#[path = "chat_controls.rs"]
+mod chat_controls;
+#[path = "chat_draft.rs"]
+mod chat_draft;
+#[path = "chat_images.rs"]
+mod chat_images;
 #[path = "diagnostics.rs"]
 mod diagnostics;
 #[path = "identity_copy.rs"]
@@ -190,6 +198,7 @@ enum Background {
     Resize(management::Completion),
     SessionStop(Result<()>),
     Recovery(Box<recovery_ui::Completion>),
+    Chat(Box<Result<chat::Completion>>),
     CiRefresh {
         owner: TreeOwner,
         target: bkpr_protocol::CiRefreshTarget,
@@ -533,6 +542,7 @@ struct App {
     sidebar_has_workspace: bool,
     registry: RegistrySnapshot,
     state: Controller,
+    chat: chat::Chat,
     views: HashMap<String, Attached>,
     retiring: Vec<RetiringView>,
     pane_feedback: HashMap<String, pane_feedback::Feedback>,
@@ -1074,6 +1084,18 @@ impl App {
         if action == Action::ShowDiagnostics {
             return self.latest_diagnostic().is_some();
         }
+        if self.chat.visible()
+            && !self.state.sidebar.active
+            && matches!(
+                action,
+                Action::StartHistory | Action::StartSearch | Action::StartResize
+                    | Action::CopySelection | Action::ProjectDetails | Action::ReopenPane
+                    | Action::SplitHorizontal | Action::SplitVertical
+                    | Action::RemovePaneFromLayout | Action::MovePane(_) | Action::FocusPane(_)
+            )
+        {
+            return false;
+        }
         if self.diagnostic_active() {
             return matches!(action, Action::Navigate(_) | Action::Cancel);
         }
@@ -1367,6 +1389,11 @@ impl App {
     }
 
     fn local_repeat(&self, event: &KeyEvent) -> bool {
+        if self.chat.visible() && !self.state.prefix && !self.state.sidebar.active
+            && self.state.form.is_none() && !self.picker_open()
+        {
+            return true;
+        }
         use crate::keyguide::{self, Action, Context};
         let context = self.guide_context();
         matches!(
@@ -1531,6 +1558,7 @@ impl App {
         Ok(())
     }
     fn focus(&mut self, pane: String) {
+        self.chat.close();
         if self.state.focused.as_ref() != Some(&pane) {
             self.retire_resize();
             self.close_search();
@@ -1540,6 +1568,7 @@ impl App {
         self.select_current_lease();
     }
     fn switch(&mut self, workspace: String) {
+        self.chat.close();
         if self.state.workspace.as_ref() != Some(&workspace) {
             self.retire_resize();
             self.close_search();
@@ -1549,6 +1578,7 @@ impl App {
         self.select_current_lease();
     }
     fn switch_window(&mut self, window: String) {
+        self.chat.close();
         if self.state.window.as_ref() != Some(&window) {
             self.retire_resize();
             self.close_search();
@@ -1556,6 +1586,48 @@ impl App {
         self.selection_epoch = self.selection_epoch.wrapping_add(1);
         self.state.switch_window(window, &self.registry);
         self.select_current_lease();
+    }
+    fn open_chat(&mut self, workspace: String) {
+        if self.chat.workspace() != Some(workspace.as_str()) {
+            self.switch(workspace.clone());
+        }
+        self.retire_resize();
+        self.selection_focus_lost();
+        self.close_search();
+        self.popover.hide();
+        self.chat.open(workspace);
+        self.leave_sidebar();
+    }
+
+    fn submit_chat(&mut self, kind: chat::JobKind, job: chat::Job) {
+        let key = self.chat.track(kind);
+        let endpoint = self.socket.clone();
+        if let Err(error) = self.jobs.submit(key.clone(), move || {
+            Ok(Background::Chat(Box::new(job.run(&endpoint))))
+        }) {
+            self.complete_chat(&key, Err(error));
+        }
+    }
+
+    fn complete_chat(&mut self, key: &str, result: Result<chat::Completion>) {
+        self.chat.redraw();
+        if let Some((summary, error)) = self.chat.complete(key, result) {
+            self.report_failure(&summary, &error);
+        }
+    }
+
+    fn schedule_chat(&mut self) {
+        if !self.jobs.is_full() && let Some((kind, job)) = self.chat.next_job(self.options.read_only) {
+            self.submit_chat(kind, job);
+        }
+    }
+
+    fn chat_effect(&mut self, effect: chat::Effect) {
+        match effect {
+            chat::Effect::None => {}
+            chat::Effect::Native => self.chat.close(),
+            chat::Effect::Submit(kind, job) => self.submit_chat(kind, job),
+        }
     }
     fn select_current_lease(&mut self) {
         if self.host_focused
@@ -1707,6 +1779,7 @@ impl App {
                         && pane.window_id.as_ref() == Some(&selection.window)
                 })
             {
+                self.chat.close();
                 self.state.switch(selection.workspace, &self.registry);
                 self.state.switch_window(selection.window, &self.registry);
                 self.state.focus(selection.pane);
@@ -1716,6 +1789,14 @@ impl App {
     }
     fn complete_background(&mut self) -> Result<()> {
         for completion in self.jobs.latest()? {
+            if completion.key.starts_with("chat:") {
+                let result = completion.result.and_then(|value| match value {
+                    Background::Chat(result) => *result,
+                    _ => bail!("chat job returned an unrelated completion"),
+                });
+                self.complete_chat(&completion.key, result);
+                continue;
+            }
             if completion.key.starts_with("recovery:") {
                 self.complete_recovery(completion);
                 continue;
@@ -1770,6 +1851,7 @@ impl App {
                     bail!("session stop receipt escaped its coordinator")
                 }
                 Ok(Background::Recovery(_)) => bail!("recovery receipt escaped its owner"),
+                Ok(Background::Chat(_)) => bail!("chat receipt escaped its owner"),
                 Ok(Background::Attached { pane, attached }) => {
                     if self.views.contains_key(&pane) || attached.retirement_requested {
                         self.retiring_candidates.push(RetiringCandidate {
@@ -2308,6 +2390,9 @@ impl App {
             })
     }
     fn active(&self) -> Option<(String, String)> {
+        if self.chat.visible() {
+            return None;
+        }
         let id = self.state.focused.as_ref()?;
         if !self.input_enabled(id) || self.execution_completed(id) {
             return None;
@@ -2335,6 +2420,9 @@ impl App {
     fn rects(&self, size: Size) -> Vec<(String, Rect)> {
         let (_, content) = self.screen_geometry(size);
         let mut rects = Vec::new();
+        if self.chat.visible() {
+            return rects;
+        }
         if let Some(window) = self.state.current_window(&self.registry) {
             layout_rects(window.layout.as_ref(), content, &mut rects);
         }
@@ -3703,7 +3791,7 @@ impl App {
     }
     fn activate_sidebar(&mut self, target: SidebarTarget) -> Result<()> {
         match target {
-            SidebarTarget::Workspace(id) => self.switch(id),
+            SidebarTarget::Workspace(id) => self.open_chat(id),
             SidebarTarget::Window { workspace, window } => {
                 if !self.registry.workspaces.iter().any(|entry| {
                     entry.id == workspace && entry.windows.iter().any(|entry| entry.id == window)
@@ -3845,6 +3933,7 @@ impl App {
                 self.directional(direction.key(), &rects);
             }
             Action::PreviousWorkspace | Action::NextWorkspace => {
+                self.chat.close();
                 self.retire_resize();
                 self.selection_epoch = self.selection_epoch.wrapping_add(1);
                 self.state.cycle_workspace(
@@ -3858,6 +3947,7 @@ impl App {
                 self.select_current_lease();
             }
             Action::NextPane => {
+                self.chat.close();
                 self.retire_resize();
                 self.selection_epoch = self.selection_epoch.wrapping_add(1);
                 self.state.cycle_pane(&self.registry);
@@ -3974,6 +4064,7 @@ impl App {
             || self.focused_history()
             || self.resize_capturing()
             || self.search_open();
+        let local = local || self.chat.visible();
         match self.key(event, out, size, rects) {
             Err(error) if error.downcast_ref::<updates::InputRejected>().is_some() => {
                 self.scope_input_result(Err(error))?;
@@ -4389,18 +4480,21 @@ impl App {
                     })?;
                 }
                 Some(Action::PreviousWorkspace) => {
+                    self.chat.close();
                     self.retire_resize();
                     self.selection_epoch = self.selection_epoch.wrapping_add(1);
                     self.state.cycle_workspace(&self.registry, -1);
                     self.select_current_lease();
                 }
                 Some(Action::NextWorkspace) => {
+                    self.chat.close();
                     self.retire_resize();
                     self.selection_epoch = self.selection_epoch.wrapping_add(1);
                     self.state.cycle_workspace(&self.registry, 1);
                     self.select_current_lease();
                 }
                 Some(Action::NextPane) => {
+                    self.chat.close();
                     self.retire_resize();
                     self.selection_epoch = self.selection_epoch.wrapping_add(1);
                     self.state.cycle_pane(&self.registry);
@@ -4418,6 +4512,13 @@ impl App {
                 self.selection_focus_lost();
                 self.close_search();
             }
+            return Ok(false);
+        }
+        if self.chat.visible() {
+            self.state.suppressed.insert(event.key.clone());
+            self.chat.redraw();
+            let effect = self.chat.key(&event, self.options.read_only);
+            self.chat_effect(effect);
             return Ok(false);
         }
         if self.selection_key(&event)? {
@@ -4995,6 +5096,25 @@ impl App {
         if origin.is_none() {
             self.clear_tree_pointer();
         }
+        if origin.is_none() && self.chat.visible()
+            && hits.hit_test(mouse.x, mouse.y) == Some("ui:chat")
+        {
+            let rect = self.screen_geometry(size).1;
+            if self.chat.geometry() == rect && rect.contains(mouse.x, mouse.y) {
+                if !wheel && action == MouseAction::Press && self.state.sidebar.active {
+                    self.leave_sidebar();
+                }
+                let mut event = mouse;
+                event.x -= rect.x;
+                event.y -= rect.y;
+                if wheel || action == MouseAction::Press {
+                    self.chat.redraw();
+                    let effect = self.chat.mouse(event, event_button, action, self.options.read_only);
+                    self.chat_effect(effect);
+                }
+            }
+            return Ok(());
+        }
         let target = if let Some(origin) = origin {
             rects.iter().find(|(pane, _)| *pane == origin.pane)
         } else {
@@ -5383,6 +5503,7 @@ impl App {
             notification_source: None,
             registry,
             state,
+            chat: chat::Chat::default(),
             views: HashMap::new(),
             pane_feedback: HashMap::new(),
             retiring: Vec::new(),
@@ -5654,6 +5775,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     .as_ref()
                     .is_some_and(|consent| consent.state.paste);
             let local = app.sidebar_menu.is_some()
+                || app.chat.visible()
                 || app.guide_context() != crate::keyguide::Context::Application;
             terminal.set_enhanced_paste(
                 &mut out,
@@ -6556,6 +6678,16 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             };
             terminal.set_background(&mut out, background)?;
             app.paint_pane_feedback(size, &rects, &theme);
+            let chat_rect = app.screen_geometry(size).1;
+            let chat_active = app.chat.visible();
+            let chat_focused = app.host_focused && !sidebar_active && !popup
+                && !app.state.prefix && app.sidebar_menu.is_none();
+            if chat_active {
+                app.chat.paint(chat_rect, size, &theme, app.options.read_only,
+                    ui_colors.graphics.supported(), chat_focused);
+                terminal.register_prepared_transports(&app.chat.transports());
+                app.schedule_chat();
+            }
             fds.clear();
             fds.extend([
                 libc::pollfd {
@@ -6667,6 +6799,32 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         && app.sidebar_menu.is_none(),
                     faint: faint_background,
                 }];
+                if chat_active {
+                    surfaces.push(Surface {
+                        palette: None,
+                        id: "ui:chat",
+                        content: SurfaceContent::Cells,
+                        rect: chat_rect,
+                        frame: &app.chat.surface().frame,
+                        selection: &[],
+                        search: &[],
+                        focused: chat_focused,
+                        faint: faint_background,
+                    });
+                    if let Some((rect, frame)) = app.chat.image_surface() {
+                        surfaces.push(Surface {
+                            palette: None,
+                            id: "ui:chat-images",
+                            content: SurfaceContent::Graphics,
+                            rect,
+                            frame,
+                            selection: &[],
+                            search: &[],
+                            focused: false,
+                            faint: faint_background,
+                        });
+                    }
+                }
                 for (id, outer) in &rects {
                     let rect = app.pane_content(*outer);
                     if rect.height == 0 || rect.width == 0 {
@@ -7216,6 +7374,12 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     &mut terminal,
                     Some(&tree_artwork),
                 )?;
+                let hits = scene.hit_map();
+                if chat_active {
+                    app.chat.attend(chat_focused && terminal.observed_focus() == Some(true),
+                        app.options.read_only);
+                    app.schedule_chat();
+                }
                 let ready = unsafe {
                     libc::poll(
                         fds.as_mut_ptr(),
@@ -7232,7 +7396,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 if ready == 0 && now < presentation_deadline && title_animation.clock.advance(now) {
                     continue;
                 }
-                break scene.hit_map();
+                break hits;
             };
             let mut resized = [0u8; 64];
             let mut geometry_changed = false;
@@ -7463,6 +7627,7 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
                         accumulate_cleanup(&mut cleanup, result.context(completion.key));
                     }
                     Ok(Background::Management(_) | Background::Resize(_)) => {}
+                    Ok(Background::Chat(_)) => {}
                     Ok(Background::Recovery(result)) => {
                         if let recovery_ui::Completion::Resumed {
                             result: Err(failure),

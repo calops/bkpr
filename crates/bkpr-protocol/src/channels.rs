@@ -1,7 +1,7 @@
 //! Session-local channel requests, durable records and bounded read models.
 //!
 //! The receiving session supplies the authenticated actor and determines workspace
-//! access. No request carries an author, session selector or live launch authority.
+//! access. Mention bindings identify selected recipients; they confer no authority.
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -145,6 +145,53 @@ impl Participant {
     pub fn validate(&self) -> Result<()> {
         valid_id(self.id.as_ref())?;
         valid_name(&self.display_name)
+    }
+}
+
+/// Exact live recipient observed when selecting a structured user mention.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelMentionBinding {
+    /// Stable participant being mentioned.
+    pub participant_id: ParticipantId,
+    /// Exact launch observed for this participant.
+    pub launch_id: String,
+    /// Nonzero native binding generation observed on that launch.
+    pub binding_generation: u64,
+}
+
+impl ChannelMentionBinding {
+    pub(crate) fn validate(&self) -> Result<()> {
+        valid_id(self.participant_id.as_ref())?;
+        valid_id(&self.launch_id)?;
+        ensure!(
+            self.binding_generation != 0,
+            "missing channel mention binding generation"
+        );
+        Ok(())
+    }
+}
+
+/// Current workspace participant and the binding to retain when selecting an agent mention.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelRosterEntry {
+    /// Stable identity and current display label.
+    pub participant: Participant,
+    /// Exact observed agent binding, never a saved membership reference.
+    pub binding: Option<ChannelMentionBinding>,
+}
+
+impl ChannelRosterEntry {
+    pub(crate) fn validate_binding_relationship(&self) -> Result<()> {
+        if let Some(binding) = &self.binding {
+            ensure!(
+                self.participant.kind == ParticipantKind::Agent
+                    && binding.participant_id == self.participant.id,
+                "channel roster binding does not match its agent participant"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -524,7 +571,8 @@ pub enum ChannelRequest {
         /// Replacement explicit set; must be empty for workspace-wide membership.
         members: Vec<ParticipantId>,
     },
-    /// Commit one post and its notification work atomically.
+    /// Commit a post and its notification work atomically. User agent mentions
+    /// require [`Self::PostUser`] instead.
     Post {
         /// Channel to post in.
         channel_id: ChannelId,
@@ -600,6 +648,26 @@ pub enum ChannelRequest {
         limit: u16,
         /// At most [`MAX_WAIT_MS`], or zero for a nonblocking read.
         wait_ms: u32,
+    },
+    /// Observe current participants in a workspace or shared channel as the session user.
+    UserRoster {
+        /// Exact owning workspace identity.
+        workspace_id: String,
+        /// Restrict to members of this shared channel, or list the entire workspace.
+        channel_id: Option<ChannelId>,
+        /// Exclude this identity and earlier identities, or start at the first.
+        after: Option<ParticipantId>,
+        /// Maximum number of participants to return.
+        limit: u16,
+    },
+    /// Commit a user post only if every selected agent still has its exact observed binding.
+    PostUser {
+        /// Shared channel to post in.
+        channel_id: ChannelId,
+        /// Body, retry key and structured references.
+        post: ChannelPost,
+        /// One binding per mentioned agent, none for the session user. Part of the retry fingerprint.
+        bindings: Vec<ChannelMentionBinding>,
     },
 }
 
@@ -718,6 +786,13 @@ pub enum ChannelResponse {
     },
     /// The cursor cannot be continued. Discard partial or cached state and start a snapshot.
     CatalogReset {},
+    /// Page of current workspace or channel participants observed by the session user.
+    UserRoster {
+        /// Participants ordered by stable identity; only agents can have a binding.
+        participants: Vec<ChannelRosterEntry>,
+        /// Exclusive continuation when more records are available.
+        next_after: Option<ParticipantId>,
+    },
 }
 
 impl fmt::Debug for ChannelResponse {
@@ -738,6 +813,7 @@ impl fmt::Debug for ChannelResponse {
             Self::CatalogSnapshot { .. } => "CatalogSnapshot",
             Self::CatalogChanges { .. } => "CatalogChanges",
             Self::CatalogReset {} => "CatalogReset",
+            Self::UserRoster { .. } => "UserRoster",
         };
         f.debug_struct(variant).finish_non_exhaustive()
     }
@@ -795,6 +871,7 @@ impl ChannelRequest {
                 | Self::ListArchivedWorkspaces { .. }
                 | Self::ListMembers { .. }
                 | Self::ListExplicitMembers { .. }
+                | Self::UserRoster { .. }
                 | Self::History { .. }
                 | Self::Read { .. }
                 | Self::Subscribe { .. }
@@ -835,6 +912,17 @@ impl ChannelRequest {
                 valid_optional_id(after.as_ref())?;
                 valid_limit(*limit)
             }
+            Self::UserRoster {
+                workspace_id,
+                channel_id,
+                after,
+                limit,
+            } => {
+                valid_id(workspace_id)?;
+                valid_optional_id(channel_id.as_ref())?;
+                valid_optional_id(after.as_ref())?;
+                valid_limit(*limit)
+            }
             Self::Create {
                 workspace_id,
                 name,
@@ -860,6 +948,32 @@ impl ChannelRequest {
             Self::Post { channel_id, post } => {
                 valid_id(channel_id.as_ref())?;
                 post.validate()
+            }
+            Self::PostUser {
+                channel_id,
+                post,
+                bindings,
+            } => {
+                valid_id(channel_id.as_ref())?;
+                post.validate()?;
+                ensure!(
+                    bindings.len() <= post.mentions.len(),
+                    "channel mention binding count exceeds mention count"
+                );
+                for (index, binding) in bindings.iter().enumerate() {
+                    binding.validate()?;
+                    ensure!(
+                        post.mentions.contains(&binding.participant_id),
+                        "channel mention binding has no matching mention"
+                    );
+                    ensure!(
+                        !bindings[..index].iter().any(|previous| {
+                            previous.participant_id == binding.participant_id
+                        }),
+                        "duplicate channel mention binding"
+                    );
+                }
+                Ok(())
             }
             Self::History {
                 channel_id,

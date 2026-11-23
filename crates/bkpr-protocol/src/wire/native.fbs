@@ -467,6 +467,22 @@ table ChannelRequestCatalogSubscribe {
   limit:ushort;
   wait_ms:uint;
 }
+table ChannelMentionBinding {
+  participant_id:string (required);
+  launch_id:string (required);
+  binding_generation:ulong;
+}
+table ChannelRequestUserRoster {
+  workspace_id:string (required);
+  channel_id:string;
+  after:string;
+  limit:ushort;
+}
+table ChannelRequestPostUser {
+  channel_id:string (required);
+  post:ChannelPost (required);
+  bindings:[ChannelMentionBinding] (required);
+}
 union ChannelRequest {
   ChannelRequestList,
   ChannelRequestListMembers,
@@ -483,7 +499,9 @@ union ChannelRequest {
   ChannelRequestListArchivedWorkspaces,
   ChannelRequestListExplicitMembers,
   ChannelRequestCatalogSnapshot,
-  ChannelRequestCatalogSubscribe
+  ChannelRequestCatalogSubscribe,
+  ChannelRequestUserRoster,
+  ChannelRequestPostUser
 }
 table OperationChannels { request:ChannelRequest (required); }
 union Operation {
@@ -955,6 +973,14 @@ table ChannelResponseCatalogChanges {
   more:bool;
 }
 table ChannelResponseCatalogReset {}
+table ChannelRosterEntry {
+  participant:ChannelParticipant (required);
+  binding:ChannelMentionBinding;
+}
+table ChannelResponseUserRoster {
+  participants:[ChannelRosterEntry] (required);
+  next_after:string;
+}
 union ChannelResponse {
   ChannelResponseListed,
   ChannelResponseMembers,
@@ -970,7 +996,8 @@ union ChannelResponse {
   ChannelResponseExplicitMembers,
   ChannelResponseCatalogSnapshot,
   ChannelResponseCatalogChanges,
-  ChannelResponseCatalogReset
+  ChannelResponseCatalogReset,
+  ChannelResponseUserRoster
 }
 table ChannelPayload { response:ChannelResponse (required); }
 union Payload { ControlPayload, PanePayload, ImageResourcePayload, ChannelPayload }

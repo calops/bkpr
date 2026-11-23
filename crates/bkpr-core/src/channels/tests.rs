@@ -358,6 +358,18 @@ fn send(channel: &ChannelId, post: ChannelPost) -> ChannelRequest {
     }
 }
 
+fn send_user(
+    channel: &ChannelId,
+    post: ChannelPost,
+    bindings: Vec<ChannelMentionBinding>,
+) -> ChannelRequest {
+    ChannelRequest::PostUser {
+        channel_id: channel.clone(),
+        post,
+        bindings,
+    }
+}
+
 fn posted(response: ChannelResponse) -> MessageSummary {
     let ChannelResponse::Posted { message, .. } = response else {
         panic!("post reply")
@@ -554,30 +566,53 @@ fn typed_mentions_and_policy_select_only_current_agents_and_preserve_unread_atte
         ]
     );
 
-    let roster = |after| ChannelRequest::ListMembers {
-        channel_id: id.clone(),
+    let roster = |after| ChannelRequest::UserRoster {
+        workspace_id: WORKSPACE.into(),
+        channel_id: Some(id.clone()),
         after,
         limit: 2,
     };
+    let entry = |participant: &Participant, launch: &str| ChannelRosterEntry {
+        participant: participant.clone(),
+        binding: Some(ChannelMentionBinding {
+            participant_id: participant.id.clone(),
+            launch_id: launch.into(),
+            binding_generation: 1,
+        }),
+    };
+    let a = entry(&f.a, "launch-a");
+    let b = entry(&f.b, "launch-b");
     assert_eq!(
         f.request(roster(None)).unwrap(),
-        ChannelResponse::Members {
-            participants: vec![f.a.clone(), f.b.clone()],
+        ChannelResponse::UserRoster {
+            participants: vec![a, b.clone()],
             next_after: Some(f.b.id.clone()),
         }
     );
     assert_eq!(
         f.request(roster(Some(f.b.id.clone()))).unwrap(),
-        ChannelResponse::Members {
-            participants: vec![f.user.clone()],
+        ChannelResponse::UserRoster {
+            participants: vec![ChannelRosterEntry {
+                participant: f.user.clone(),
+                binding: None,
+            }],
             next_after: None,
         }
     );
+    let binding = b.binding.unwrap();
 
     let mut directed = post("directed");
     directed.mentions.push(f.b.id.clone());
     directed.reply_to = Some(literal.id.clone());
-    let addressed = posted(f.request(send(&id, directed)).unwrap());
+    let error = f
+        .request(send(&id, directed.clone()))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("require an exact binding"), "{error}");
+    let addressed = posted(
+        f.request(send_user(&id, directed, vec![binding.clone()]))
+            .unwrap(),
+    );
     assert_eq!(
         f.work(&addressed.id),
         [(f.b.id.0.clone(), Some("launch-b".into()), true, true)]
@@ -593,7 +628,7 @@ fn typed_mentions_and_policy_select_only_current_agents_and_preserve_unread_atte
     .unwrap();
     let mut broad = post("broad");
     broad.mentions.push(f.b.id.clone());
-    let broad = posted(f.request(send(&id, broad)).unwrap());
+    let broad = posted(f.request(send_user(&id, broad, vec![binding])).unwrap());
     assert_eq!(
         f.work(&broad.id),
         [
@@ -1011,6 +1046,64 @@ fn wake_native_outcomes_are_exact_durable_and_not_overwritten() {
             Some("native confirmation deadline elapsed".into())
         )
     );
+}
+
+#[test]
+fn user_roster_is_observational_but_scoped_to_workspace_and_channel_members() {
+    let f = Fixture::new();
+    let id = f.create(
+        &f.user,
+        WORKSPACE,
+        MembershipMode::Explicit,
+        vec![f.a.id.clone()],
+        quiet(),
+    );
+    let roster = |workspace_id: &str, channel_id| ChannelRequest::UserRoster {
+        workspace_id: workspace_id.into(),
+        channel_id,
+        after: None,
+        limit: MAX_PAGE_LIMIT,
+    };
+    let read_only = |workspace: &str| {
+        let mut authority = f.authority(&f.user, workspace)?;
+        authority.writable = false;
+        Ok(authority)
+    };
+    let observe = |request| f.engine.request(request, read_only, |_| true, || false);
+    let all = roster(WORKSPACE, None);
+    assert!(all.is_observational());
+    assert!(f.as_actor(&f.a, all.clone()).is_err());
+    let ids = |request| {
+        let ChannelResponse::UserRoster { participants, .. } = observe(request).unwrap() else {
+            panic!("expected roster");
+        };
+        participants
+            .into_iter()
+            .map(|entry| entry.participant.id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(all), [f.a.id.clone(), f.b.id.clone(), f.user.id.clone()]);
+    assert_eq!(
+        ids(roster(WORKSPACE, Some(id.clone()))),
+        [f.a.id.clone(), f.user.id.clone()]
+    );
+    assert!(observe(roster(OTHER_WORKSPACE, Some(id.clone()))).is_err());
+
+    let mut body = post("forged-unselected-agent");
+    body.mentions.push(f.b.id.clone());
+    let request = send_user(
+        &id,
+        body,
+        vec![ChannelMentionBinding {
+            participant_id: f.b.id.clone(),
+            launch_id: "launch-b".into(),
+            binding_generation: 1,
+        }],
+    );
+    assert!(!request.is_observational());
+    assert!(f.as_actor(&f.a, request.clone()).is_err());
+    let error = f.request(request).unwrap_err().to_string();
+    assert!(error.contains("left the channel"), "{error}");
 }
 
 #[test]
@@ -2034,6 +2127,7 @@ fn close_retires_old_and_racing_work_before_new_capacity_is_used() {
                         publish: &|_| {},
                         binding_live: &|_, _| true,
                         direct_peer: &|_| Ok(None),
+                        fence_user_mentions: &|_, _| unreachable!("no selected user mentions"),
                     },
                     None,
                     |store, workspace| {

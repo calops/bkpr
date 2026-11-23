@@ -212,7 +212,7 @@ impl Theme {
         }
     }
     /// Observed default RGB colors, or scene fallback RGB for unresolved channels.
-    pub(crate) fn defaults(&self) -> ([u8; 3], [u8; 3]) {
+    pub fn defaults(&self) -> ([u8; 3], [u8; 3]) {
         let fallback = default_style();
         (
             self.evidence.foreground.unwrap_or(fallback.foreground),

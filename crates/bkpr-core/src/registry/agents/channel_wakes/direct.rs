@@ -73,6 +73,7 @@ impl Registry {
                         publish: &|targets| self.inner.agents.publish_channel_work(targets),
                         binding_live: &|id, binding| self.channel_binding_live(id, binding),
                         direct_peer: &|_| Ok(None),
+                        fence_user_mentions: &|_, _| unreachable!("agent direct post"),
                     },
                     || self.channel_direct_target(launch, &launch_id, &workspace, connected),
                 )

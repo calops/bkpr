@@ -666,6 +666,54 @@ impl Registry {
         })
     }
 
+    pub(super) fn fence_user_mentions(
+        &self,
+        workspace: &str,
+        bindings: &[channels::ChannelMentionBinding],
+    ) -> Result<std::sync::MutexGuard<'_, ()>> {
+        use crate::channels::STALE_USER_MENTION;
+
+        let transaction = self.inner.transaction.lock().unwrap();
+        let writer = self.inner.agents.callback_guard()?;
+        {
+            let state = self.inner.state.lock().unwrap();
+            healthy(&state)?;
+            ensure!(
+                !state.closing
+                    && !self.session_end_requested()
+                    && workspace_exists(&state, workspace)
+                    && !state.closing_workspaces.contains(workspace),
+                STALE_USER_MENTION
+            );
+            let agents = self.inner.agents.state.lock().unwrap();
+            let captures = self.inner.captures.lock().unwrap();
+            for binding in bindings {
+                let launch = captures
+                    .launches
+                    .get(&binding.launch_id)
+                    .context(STALE_USER_MENTION)?;
+                let current = state
+                    .record
+                    .registry
+                    .panes
+                    .iter()
+                    .find(|pane| pane.id == launch.grant.pane_id)
+                    .and_then(|pane| live_channel_agent(&state, pane, workspace, &agents, &captures))
+                    .map(|(launch, _)| launch)
+                    .context(STALE_USER_MENTION)?;
+                ensure!(
+                    std::ptr::eq(current, launch)
+                        && current.binding_generation == binding.binding_generation
+                        && current.channel_participant.as_ref() == Some(&binding.participant_id),
+                    STALE_USER_MENTION
+                );
+            }
+        }
+        // The admission point is ordered with registry changes. Hold only the
+        // existing binding writer across the SQLite commit, not registry locks.
+        drop(transaction);
+        Ok(writer)
+    }
     pub(crate) fn agent_subscription_disconnected(
         &self,
         launch_id: &str,

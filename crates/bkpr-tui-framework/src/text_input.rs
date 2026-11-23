@@ -1,4 +1,4 @@
-//! Bounded single-line, grapheme-safe editor; applications own key bindings and byte limits.
+//! Bounded grapheme-safe editor; applications own key bindings and byte limits.
 //! Oversized insertions are rejected atomically, never truncated.
 
 use std::borrow::Cow;
@@ -22,7 +22,7 @@ pub enum EditAction {
     Clear,
 }
 
-/// Single-line editor with a UTF-8 byte bound and grapheme-aligned caret.
+/// UTF-8 byte-bounded editor with a grapheme-aligned caret.
 #[derive(Clone, Debug)]
 pub struct TextInput {
     /// Edited content; direct writes bypass sanitization and the byte bound.
@@ -30,6 +30,7 @@ pub struct TextInput {
     /// UTF-8 byte offset at a grapheme boundary, not a display column.
     pub cursor: usize,
     limit: usize,
+    multiline: bool,
     error: Option<String>,
 }
 impl TextInput {
@@ -42,6 +43,7 @@ impl TextInput {
                 value,
                 cursor,
                 limit,
+                multiline: false,
                 error: None,
             };
         }
@@ -49,10 +51,22 @@ impl TextInput {
             value: String::new(),
             cursor: 0,
             limit,
+            multiline: false,
             error: None,
         };
         input.insert(&value);
         input
+    }
+    /// Creates an empty editor accepting line feeds in addition to printable text.
+    /// Other controls are replaced with spaces, as in a single-line field.
+    pub fn multiline(limit: usize) -> Self {
+        Self {
+            value: String::new(),
+            cursor: 0,
+            limit,
+            multiline: true,
+            error: None,
+        }
     }
     /// Returns the last rejected-insertion error, cleared by successful edits.
     pub fn error(&self) -> Option<&str> {
@@ -62,7 +76,11 @@ impl TextInput {
     /// Replaces controls with spaces before checking the byte bound. On failure
     /// both value and cursor remain exactly unchanged. Returns content change.
     pub fn insert(&mut self, text: &str) -> bool {
-        let Some(text) = printable(text, self.limit.saturating_sub(self.value.len())) else {
+        let Some(text) = printable(
+            text,
+            self.limit.saturating_sub(self.value.len()),
+            self.multiline,
+        ) else {
             self.error = Some(format!(
                 "Input exceeds the {}-byte limit; insertion rejected",
                 self.limit
@@ -146,7 +164,7 @@ impl TextInput {
             .find(|&i| i >= self.cursor)
             .unwrap_or(self.value.len());
     }
-    /// Returns a grapheme-aligned horizontal viewport and caret cell column.
+    /// Returns a single-line grapheme-aligned horizontal viewport and caret cell column.
     /// Reserves a cell for the caret, including at the end of a full-width value.
     pub fn visible(&self, columns: usize) -> (String, usize) {
         if columns == 0 {
@@ -185,19 +203,20 @@ impl TextInput {
         (text, caret)
     }
 }
-fn printable(text: &str, limit: usize) -> Option<Cow<'_, str>> {
-    if text.chars().any(char::is_control) {
+fn printable(text: &str, limit: usize, multiline: bool) -> Option<Cow<'_, str>> {
+    let replace = |c: char| c.is_control() && !(multiline && c == '\n');
+    if text.chars().any(replace) {
         // Reject before allocating a sanitized copy of an arbitrary-size paste.
         let mut bytes = 0;
         for c in text.chars() {
-            bytes += if c.is_control() { 1 } else { c.len_utf8() };
+            bytes += if replace(c) { 1 } else { c.len_utf8() };
             if bytes > limit {
                 return None;
             }
         }
         Some(Cow::Owned(
             text.chars()
-                .map(|c| if c.is_control() { ' ' } else { c })
+                .map(|c| if replace(c) { ' ' } else { c })
                 .collect(),
         ))
     } else {

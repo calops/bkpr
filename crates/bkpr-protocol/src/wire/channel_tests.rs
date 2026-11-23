@@ -114,6 +114,14 @@ fn post() -> ChannelPost {
     }
 }
 
+fn mention_binding() -> ChannelMentionBinding {
+    ChannelMentionBinding {
+        participant_id: ParticipantId("stable-agent".into()),
+        launch_id: "selected-launch".into(),
+        binding_generation: 42,
+    }
+}
+
 #[test]
 fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
     let mut codec = Codec::new();
@@ -139,6 +147,18 @@ fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
         ChannelRequest::ListExplicitMembers {
             channel_id: channel(),
             after: Some(ParticipantId("inactive".into())),
+            limit: 2,
+        },
+        ChannelRequest::UserRoster {
+            workspace_id: "workspace".into(),
+            channel_id: Some(channel()),
+            after: Some(participant().id),
+            limit: 2,
+        },
+        ChannelRequest::UserRoster {
+            workspace_id: "workspace".into(),
+            channel_id: None,
+            after: None,
             limit: 2,
         },
         ChannelRequest::Create {
@@ -167,6 +187,11 @@ fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
                 source: Some(source()),
                 ..post()
             },
+        },
+        ChannelRequest::PostUser {
+            channel_id: channel(),
+            post: post(),
+            bindings: vec![mention_binding()],
         },
         ChannelRequest::History {
             channel_id: channel(),
@@ -376,6 +401,23 @@ fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
             participants: vec![participant()],
             next_after: None,
         },
+        ChannelResponse::UserRoster {
+            participants: vec![
+                ChannelRosterEntry {
+                    participant: Participant {
+                        id: mention_binding().participant_id,
+                        kind: ParticipantKind::Agent,
+                        display_name: "Agent".into(),
+                    },
+                    binding: Some(mention_binding()),
+                },
+                ChannelRosterEntry {
+                    participant: participant(),
+                    binding: None,
+                },
+            ],
+            next_after: Some(participant().id),
+        },
         ChannelResponse::ExplicitMembers {
             members: vec![ParticipantId("inactive".into())],
             next_after: Some(ParticipantId("inactive".into())),
@@ -579,6 +621,37 @@ fn channel_validation_rejects_client_authorship_and_invalid_reference_shapes() {
             channel_id: channel(),
             post: escapes,
         },
+        ChannelRequest::PostUser {
+            channel_id: channel(),
+            post: post(),
+            bindings: vec![ChannelMentionBinding {
+                binding_generation: 0,
+                ..mention_binding()
+            }],
+        },
+        ChannelRequest::PostUser {
+            channel_id: channel(),
+            post: post(),
+            bindings: vec![ChannelMentionBinding {
+                participant_id: ParticipantId("different-agent".into()),
+                ..mention_binding()
+            }],
+        },
+        ChannelRequest::PostUser {
+            channel_id: channel(),
+            post: {
+                let mut post = post();
+                post.mentions.push(participant().id);
+                post
+            },
+            bindings: vec![mention_binding(), mention_binding()],
+        },
+        ChannelRequest::UserRoster {
+            workspace_id: "workspace".into(),
+            channel_id: Some(ChannelId(String::new())),
+            after: None,
+            limit: 1,
+        },
         ChannelRequest::Subscribe {
             channel_id: channel(),
             after: Some(ChannelCursor {
@@ -738,6 +811,41 @@ fn malformed_native_channel_vectors_fail_before_expansion() {
     assert!(
         charged < 512,
         "charged {charged} before rejecting the aliased vector"
+    );
+}
+
+#[test]
+fn native_fenced_user_post_rejects_missing_generation_without_becoming_legacy_post() {
+    let mut b = Builder::new();
+    let channel = b.create_string("channel");
+    let key = b.create_string("key");
+    let text = b.create_string("@agent");
+    let participant = b.create_string("agent");
+    let launch = b.create_string("launch");
+    let mentions = b.create_vector([participant]);
+    let attachments = b.create_vector([] as [Offset<str>; 0]);
+    let post = g::ChannelPost::create(
+        &mut b,
+        key,
+        text,
+        g::PostIntent::Note,
+        mentions,
+        None::<Offset<str>>,
+        attachments,
+    );
+    let binding = g::ChannelMentionBinding::create(&mut b, participant, launch, 0);
+    let bindings = b.create_vector([binding]);
+    let post = g::ChannelRequestPostUser::create(&mut b, channel, post, bindings);
+    let request = g::ChannelRequest::create_channel_request_post_user(&mut b, post);
+    assert_eq!(request.tag(), 16);
+    let channels = g::OperationChannels::create(&mut b, request);
+    let operation = g::Operation::create_operation_channels(&mut b, channels);
+    let root = g::Request::create(&mut b, PROTOCOL_VERSION, operation);
+    let error = decode_request(b.finish(root, None)).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("missing channel mention binding generation")
     );
 }
 

@@ -994,7 +994,10 @@ impl Registry {
         }
 
         let with_roster = match &request {
-            ChannelRequest::ListMembers { .. } | ChannelRequest::Post { .. } => true,
+            ChannelRequest::ListMembers { .. }
+            | ChannelRequest::UserRoster { .. }
+            | ChannelRequest::Post { .. }
+            | ChannelRequest::PostUser { .. } => true,
             ChannelRequest::Create { members, .. }
             | ChannelRequest::SetMembership { members, .. } => !members.is_empty(),
             _ => false,
@@ -1051,6 +1054,11 @@ impl Registry {
                     direct_peer: &|participant| match caller {
                         Some(launch) => self.channel_direct_peer(launch, participant, connected),
                         None => Ok(None),
+                    },
+                    fence_user_mentions: &|workspace, bindings| {
+                        let guard = self.fence_user_mentions(workspace, bindings)?;
+                        ensure!(connected(), "channel request disconnected");
+                        Ok(guard)
                     },
                 },
             )

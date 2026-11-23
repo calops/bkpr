@@ -39,9 +39,9 @@ pub(crate) fn inflate_exact(body: &[u8], expected: usize) -> Result<Vec<u8>> {
     Ok(pixels)
 }
 
-/// Decode a PNG to 8-bit RGBA pixels, as the terminal engine stores it. Dimensions and the
-/// decoded size are checked against the declared shape before pixel allocation.
-pub(crate) fn decode_png_rgba(
+/// Decode a static PNG to canonical 8-bit RGBA pixels. The caller must bound the
+/// declared dimensions; the decoder rejects a mismatched shape, format or length.
+pub fn decode_png_rgba(
     body: &[u8],
     width: u32,
     height: u32,
@@ -57,7 +57,7 @@ pub(crate) fn decode_png_rgba(
         png::Transformations::EXPAND | png::Transformations::STRIP_16 | png::Transformations::ALPHA,
     );
     decoder.set_limits(png::Limits {
-        bytes: decoded_len + 1024 * 1024,
+        bytes: decoded_len.checked_add(1024 * 1024).context("PNG size limit")?,
     });
     let mut reader = decoder.read_info()?;
     let info = reader.info();
