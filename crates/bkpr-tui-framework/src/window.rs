@@ -354,9 +354,9 @@ pub fn border_rows(size: Size, title: &str, border: Border) -> Vec<TextLine> {
     rows
 }
 
-/// Append borders for tiled windows whose perimeters share cells.
+/// Append rounded borders for tiled windows whose perimeters share cells.
 /// Inactive borders join at split intersections. The active window owns its
-/// entire outline, including shared cells, and retains its rounded corners.
+/// entire outline, including shared cells.
 /// Rectangles must lie within `size`; bodies must not overlap.
 pub fn tiled_border_rows(
     size: Size,
@@ -370,24 +370,21 @@ pub fn tiled_border_rows(
             .filter(|rect| rect.width >= 3 && rect.height >= 3)
     };
     for rect in inactive().chain(active.iter()) {
-        let border = if Some(*rect) == active {
-            Border::Rounded
-        } else {
-            Border::Plain
-        };
-        out.extend(border_rows(rect.size(size), "", border).into_iter().map(
-            |(local, text, selected)| {
-                (
-                    Rect {
-                        x: rect.x + local.x,
-                        y: rect.y + local.y,
-                        ..local
-                    },
-                    text,
-                    selected,
-                )
-            },
-        ));
+        out.extend(
+            border_rows(rect.size(size), "", Border::Rounded)
+                .into_iter()
+                .map(|(local, text, selected)| {
+                    (
+                        Rect {
+                            x: rect.x + local.x,
+                            y: rect.y + local.y,
+                            ..local
+                        },
+                        text,
+                        selected,
+                    )
+                }),
+        );
     }
     let mut junctions: Vec<_> = inactive()
         .flat_map(|rect| {
@@ -605,6 +602,9 @@ mod tests {
             &panes[1..],
             Some(panes[0]),
             &[
+                (8, 0, "╮"),
+                (0, 8, "╰"),
+                (8, 8, "╯"),
                 (0, 0, "╭"),
                 (4, 0, "╮"),
                 (0, 4, "╰"),
