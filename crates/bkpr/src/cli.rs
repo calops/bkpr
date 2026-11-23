@@ -142,7 +142,7 @@ pub fn command() -> Command {
                 .value_parser(["ask", "allow", "deny"])
                 .value_name("POLICY")
                 .hide_possible_values(true)
-                .help("Clipboard access: ask, allow or deny [default: ask]"),
+                .help("Clipboard policy: ask for app reads (default), allow, or deny"),
         )
         .subcommand(
             Command::new("tui")

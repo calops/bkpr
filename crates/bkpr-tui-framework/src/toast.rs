@@ -52,11 +52,12 @@ pub struct ToastCard {
     /// Whether the current paint uses caller-provided graphical decoration.
     pub graphical: bool,
     message: String,
+    message_role: Role,
     action_label: Option<String>,
     action_text: String,
     deadline: Instant,
     rows: Vec<String>,
-    spans: [RoleSpan; 5],
+    spans: [RoleSpan; 6],
     painted: Option<(Size, bool)>,
 }
 
@@ -101,7 +102,18 @@ impl ToastStack {
     /// Insert bounded, control-safe text. Byte and visual truncation are marked
     /// with an ellipsis. A zero lifetime expires at `now` on the next `expire`.
     pub fn push(&mut self, message: &str, now: Instant, lifetime: Duration) -> ToastId {
-        self.insert(message, None, now, lifetime)
+        self.push_styled(message, Role::Panel, now, lifetime)
+    }
+
+    /// Insert bounded text with a theme role for the message, leaving the card chrome unchanged.
+    pub fn push_styled(
+        &mut self,
+        message: &str,
+        role: Role,
+        now: Instant,
+        lifetime: Duration,
+    ) -> ToastId {
+        self.insert(message, role, None, now, lifetime)
     }
 
     /// Insert a notice with one caller-defined action. Labels are bounded and
@@ -114,12 +126,13 @@ impl ToastStack {
         now: Instant,
         lifetime: Duration,
     ) -> ToastId {
-        self.insert(message, Some(action_label), now, lifetime)
+        self.insert(message, Role::Panel, Some(action_label), now, lifetime)
     }
 
     fn insert(
         &mut self,
         message: &str,
+        message_role: Role,
         action_label: Option<&str>,
         now: Instant,
         lifetime: Duration,
@@ -158,6 +171,7 @@ impl ToastStack {
             }),
             graphical: false,
             message: bounded_text(message),
+            message_role,
             action_label: action_label.map(bounded_text),
             action_text: String::new(),
             // An unrepresentable lifetime cannot be scheduled. Expiring now is
@@ -167,7 +181,7 @@ impl ToastStack {
             spans: [RoleSpan {
                 rect: Rect::default(),
                 role: Role::Panel,
-            }; 5],
+            }; 6],
             painted: None,
         });
         self.layout = None;
@@ -289,7 +303,15 @@ impl ToastStack {
                     ));
                 }
                 card.surface.paint(size, lines, None);
-                card.spans = window::theme_spans(size);
+                card.spans[..5].copy_from_slice(&window::theme_spans(size));
+                card.spans[5] = RoleSpan {
+                    rect: Rect {
+                        width: text_width,
+                        height: card.rows.len() as u16,
+                        ..body
+                    },
+                    role: card.message_role,
+                };
                 card.painted = Some((size, card.graphical));
             }
             card.surface.apply_theme(theme, Role::Panel, &card.spans);

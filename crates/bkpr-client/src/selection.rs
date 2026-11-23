@@ -547,9 +547,12 @@ impl App {
         if !answer.is_some_and(|answer| answer.result == ClipboardResult::Success) {
             bail!("clipboard export was not sent");
         }
-        self.notify(format!(
-            "{label} sent to host clipboard; host permissions remain authoritative"
-        ));
+        self.toasts.lock().unwrap().push_styled(
+            &format!("\u{f018f} {label} sent to clipboard"),
+            bkpr_tui_framework::Role::Accent,
+            Instant::now(),
+            Duration::from_secs(5),
+        );
         Ok(())
     }
 }
