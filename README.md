@@ -47,6 +47,17 @@ bkpr
 your existing shell and harness setup. It doesn't change your profiles, sign
 in to agent accounts or approve trust prompts.
 
+### Run from source
+
+```sh
+git clone https://github.com/calops/bkpr.git
+cd bkpr
+nix develop --command just run
+```
+
+This builds and runs the checkout, including its pinned terminal engine.
+See [Build from source](docs/reference.md#build) for prerequisites and build-only commands.
+
 ### First workspace
 
 1. Run `bkpr --session work` to start or attach to a named session.
