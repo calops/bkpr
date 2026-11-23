@@ -354,6 +354,87 @@ pub fn border_rows(size: Size, title: &str, border: Border) -> Vec<TextLine> {
     rows
 }
 
+/// Append borders for tiled windows whose perimeters share cells.
+/// Inactive borders join at split intersections. The active window owns its
+/// entire outline, including shared cells, and retains its rounded corners.
+/// Rectangles must lie within `size`; bodies must not overlap.
+pub fn tiled_border_rows(
+    size: Size,
+    inactive: &[Rect],
+    active: Option<Rect>,
+    out: &mut Vec<TextLine>,
+) {
+    let inactive = || {
+        inactive
+            .iter()
+            .filter(|rect| rect.width >= 3 && rect.height >= 3)
+    };
+    for rect in inactive().chain(active.iter()) {
+        let border = if Some(*rect) == active {
+            Border::Rounded
+        } else {
+            Border::Plain
+        };
+        out.extend(border_rows(rect.size(size), "", border).into_iter().map(
+            |(local, text, selected)| {
+                (
+                    Rect {
+                        x: rect.x + local.x,
+                        y: rect.y + local.y,
+                        ..local
+                    },
+                    text,
+                    selected,
+                )
+            },
+        ));
+    }
+    let mut junctions: Vec<_> = inactive()
+        .flat_map(|rect| {
+            let right = rect.x + rect.width - 1;
+            let bottom = rect.y + rect.height - 1;
+            [
+                (rect.y, rect.x),
+                (rect.y, right),
+                (bottom, rect.x),
+                (bottom, right),
+            ]
+        })
+        .collect();
+    junctions.sort_unstable();
+    junctions.dedup();
+    for (y, x) in junctions {
+        if active.is_some_and(|rect| rect.contains(x, y)) {
+            continue;
+        }
+        let mask = inactive().fold(0, |mask, rect| {
+            let right = rect.x + rect.width - 1;
+            let bottom = rect.y + rect.height - 1;
+            if x < rect.x || x > right || y < rect.y || y > bottom {
+                return mask;
+            }
+            let vertical = x == rect.x || x == right;
+            let horizontal = y == rect.y || y == bottom;
+            mask | u8::from(vertical && y > rect.y)
+                | (u8::from(vertical && y < bottom) << 1)
+                | (u8::from(horizontal && x > rect.x) << 2)
+                | (u8::from(horizontal && x < right) << 3)
+        });
+        if mask.count_ones() >= 3 {
+            out.push((
+                Rect {
+                    x,
+                    y,
+                    width: 1,
+                    height: 1,
+                },
+                edge_glyph(mask, '│').to_string(),
+                false,
+            ));
+        }
+    }
+}
+
 /// Decorate an existing local frame, preserving its content and cursor state.
 pub fn decorate(frame: &mut Frame, title: &str, border: Border) -> Rect {
     for (rect, label, selected) in border_rows(frame.size, title, border) {
@@ -451,21 +532,7 @@ pub fn paint_edge_feedback(frame: &mut Frame, segments: &[Rect], style: &Style) 
                         }
                     }
                 }
-                let glyph = match connections {
-                    5 => '┘',
-                    9 => '└',
-                    6 => '┐',
-                    10 => '┌',
-                    7 => '┤',
-                    11 => '├',
-                    13 => '┴',
-                    14 => '┬',
-                    15 => '┼',
-                    4 | 8 | 12 => '─',
-                    1..=3 => '│',
-                    _ if own == 2 => '─',
-                    _ => '│',
-                };
+                let glyph = edge_glyph(connections, if own == 2 { '─' } else { '│' });
                 cell.text.clear();
                 cell.text.push(glyph);
                 cell.width = 1;
@@ -476,8 +543,116 @@ pub fn paint_edge_feedback(frame: &mut Frame, segments: &[Rect], style: &Style) 
     }
 }
 
+fn edge_glyph(connections: u8, fallback: char) -> char {
+    match connections {
+        5 => '┘',
+        9 => '└',
+        6 => '┐',
+        10 => '┌',
+        7 => '┤',
+        11 => '├',
+        13 => '┴',
+        14 => '┬',
+        15 => '┼',
+        4 | 8 | 12 => '─',
+        1..=3 => '│',
+        _ => fallback,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tiled_borders_join_in_all_directions_without_overwriting_focus() {
+        let size = Size {
+            cols: 9,
+            rows: 9,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let tile = |x, y| Rect {
+            x,
+            y,
+            width: 5,
+            height: 5,
+        };
+        let panes = [tile(0, 0), tile(4, 0), tile(0, 4), tile(4, 4)];
+        let mut surface = crate::UiSurface::new(size);
+        let mut paint = |inactive: &[Rect], active, expected: &[(usize, usize, &str)]| {
+            let mut rows = Vec::new();
+            tiled_border_rows(size, inactive, active, &mut rows);
+            surface.paint(size, rows, None);
+            for &(x, y, glyph) in expected {
+                assert_eq!(
+                    surface.frame.rows[y].cells[x].text.as_str(),
+                    glyph,
+                    "{x},{y}"
+                );
+            }
+        };
+        paint(
+            &panes,
+            None,
+            &[
+                (4, 0, "┬"),
+                (0, 4, "├"),
+                (8, 4, "┤"),
+                (4, 8, "┴"),
+                (4, 4, "┼"),
+            ],
+        );
+        paint(
+            &panes[1..],
+            Some(panes[0]),
+            &[
+                (0, 0, "╭"),
+                (4, 0, "╮"),
+                (0, 4, "╰"),
+                (4, 4, "╯"),
+                (2, 4, "─"),
+                (4, 2, "│"),
+                (8, 4, "┤"),
+                (4, 8, "┴"),
+            ],
+        );
+        for (single, split, glyph) in [
+            (
+                Rect {
+                    width: 9,
+                    ..panes[0]
+                },
+                [panes[2], panes[3]],
+                "┬",
+            ),
+            (
+                Rect {
+                    width: 9,
+                    ..panes[2]
+                },
+                [panes[0], panes[1]],
+                "┴",
+            ),
+            (
+                Rect {
+                    height: 9,
+                    ..panes[0]
+                },
+                [panes[1], panes[3]],
+                "├",
+            ),
+            (
+                Rect {
+                    height: 9,
+                    ..panes[1]
+                },
+                [panes[0], panes[2]],
+                "┤",
+            ),
+        ] {
+            paint(&[single, split[0], split[1]], None, &[(4, 4, glyph)]);
+        }
+    }
+
     #[test]
     fn notice_rows_wrap_whole_graphemes_and_degrade_inside_tiny_areas() {
         let size = Size {
