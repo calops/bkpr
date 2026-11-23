@@ -1358,9 +1358,14 @@ completed native rendering. Geometry reconciles asynchronously: snapshots expose
 desired `size_owner.size` separately from actual `frame.size`. A blocked native
 callback must not prevent view management or unrelated pane interaction.
 
-`--clipboard ask|allow|deny` defaults to `ask`. Keep `ask` or `deny` unless the
-child is trusted. Consent and device responses remain bound to the originating
-pane/view even if local focus changes.
+`--clipboard ask|allow|deny` defaults to `ask`: Bkpr prompts only when an
+application asks to read the clipboard without a paste gesture. Application
+writes and clipboard offers from an explicit Paste action don't prompt in Bkpr.
+`allow` also skips the Bkpr prompt for application reads; use it only with trusted
+applications, including on remote hosts. The outer terminal can still prompt or
+deny. `deny` blocks application clipboard exchange, rich paste offers and Bkpr
+copy, but not plain-text paste delivered as terminal input. Paste offers and
+device replies remain bound to their original pane/view when focus changes.
 
 The client receives lossless compact scene updates on snapshot workers and
 composes panes and chrome through one framework. The renderer retains image

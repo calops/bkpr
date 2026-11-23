@@ -233,7 +233,8 @@ pub struct Options {
     pub read_only: bool,
     /// Request takeover when each session attachment activates.
     pub detach_others: bool,
-    /// Clipboard consent mode: `"ask"`, `"allow"` or `"deny"`.
+    /// Clipboard policy: `"ask"` prompts for unsolicited reads, `"allow"` skips those prompts,
+    /// and `"deny"` blocks clipboard exchange. Host terminal permissions still apply.
     pub clipboard_policy: String,
 }
 impl Default for Options {
@@ -3220,6 +3221,8 @@ impl App {
                 }
                 continue;
             }
+            let allowed = self.options.clipboard_policy == "allow"
+                || matches!(pending.request.operation, ClipboardOperation::Write { .. });
             self.consent = Some(DeviceConsent {
                 pane,
                 view,
@@ -3230,7 +3233,7 @@ impl App {
                     request: pending.request,
                     started: Instant::now(),
                     sent: false,
-                    allowed: self.options.clipboard_policy == "allow",
+                    allowed,
                     contents: Vec::new(),
                     available: Vec::new(),
                     enhanced_supported: self.enhanced_supported,
@@ -3241,9 +3244,6 @@ impl App {
         }
         if let Some(consent) = self.consent.as_mut() {
             consent.state.enhanced_supported = self.enhanced_supported;
-            if self.options.clipboard_policy == "allow" {
-                consent.state.allowed = true;
-            }
         }
         if self
             .consent
@@ -3257,11 +3257,12 @@ impl App {
     fn paste_reply(&mut self, response: &[u8]) -> Result<()> {
         let listing = self.paste_offer.is_some();
         match paste_offer_packet(&mut self.paste_offer, response) {
-            Ok(Some(consent)) => {
+            Ok(Some(mut consent)) => {
                 let (pane, view) = self
                     .paste_target
                     .take()
                     .context("enhanced paste listing lost its origin")?;
+                consent.allowed = true;
                 self.consent = Some(DeviceConsent {
                     pane,
                     view,
@@ -10453,6 +10454,7 @@ pub(super) mod tests {
     fn historical_paste_offer_keeps_its_original_target_when_focus_changes() {
         let (mut app, capture) = fixture();
         attach_fixture(&mut app);
+        app.enhanced_supported = Some(true);
         app.enter_history(&[]).unwrap();
         scroll(&capture, "focused-pane", "focused-view");
         app.paste_reply(b"5522;type=read:status=OK:pw=cHc=;")
@@ -10465,7 +10467,9 @@ pub(super) mod tests {
         let consent = app.consent.as_ref().unwrap();
         assert_eq!(consent.pane, "focused-pane");
         assert_eq!(consent.view, "focused-view");
-        assert!(!consent.state.allowed);
+        let mut host = Vec::new();
+        app.clipboard(&mut host).unwrap();
+        assert!(std::str::from_utf8(&host).unwrap().contains(":pw=cHc=;"));
         assert!(capture.try_recv().is_err());
     }
 
