@@ -260,6 +260,21 @@ avoid steady-state uploads; no demonstrated benefit warrants shared-memory/file
 probes, resource preparation, leases or reply-routing machinery. Keep the image
 caches, merged edges and asynchronous SVG rendering unchanged.
 
+Decision (2026-11-20): keep pane-side Kitty file, temporary-file and
+shared-memory media disabled in the engine adapter. The SDK can enable the
+temporary-file medium alone, but measurement shows no user-visible benefit.
+Isolated release daemons at 163×49 cells/1467×1008 px ran `kb bench` (40 steps,
+local page; median ms). kb's default changed-region PTY transfer already cost
+bkprd 0.6–0.7 ms of intake per frame and about 1 KB of PTY input. Temporary-file
+tiles cost 0.7–2.7 ms. Only whole-PNG PTY frames were expensive (31–43 ms,
+1.9 MB), and kb uses them only with `KB_TRANSFER=png`. Chrome screencast
+(~90 ms) and kb decoding (~25 ms) dominate end-to-end time; the
+bkprd-to-client leg is unaffected. Enabling the medium would let any pane
+output make the daemon read and delete matching temporary files. Ghostty opens
+the path before its regular-file check, so a matching FIFO could block the pane
+worker and its teardown. Evidence: `target/smoke/kitty-temp-file-medium/`.
+Revisit only with a workload whose PTY image intake is a measured bottleneck.
+
 The existing renderer retains source-valid inactive native projections by last visible use, bounded to 512 entries and 8 MiB of RGBA charge beyond the current visible requirements. Source disappearance retires data immediately; placement removal alone does not retransmit pixels. Current supported image quotas are unchanged, including visible projections exceeding that inactive-cache budget. The ordered container is maintained [`hashlink` 0.12.2](https://crates.io/api/v1/crates/hashlink/0.12.2) (MIT/Apache-2.0, Rust 1.85, September 2026 release), not a custom linked list: its [`retain`, `to_back` and `pop_front` APIs](https://docs.rs/hashlink/0.12.2/hashlink/linked_hash_map/struct.LinkedHashMap.html) fit source retirement, batched visible promotion and byte/count eviction together. Bkpr owns only admission/lifetime policy. GPU/driver overhead is not the RGBA charge, and newly required arbitrary projections can still rasterize/encode synchronously; this is not a claim that all native-image preparation is off-path.
 
 Actual debug rich/plain, live-theme, draft/gesture, local Git and framed two-client correction evidence is recorded in the [engine report](engine-proof.md#main-aligned-chrome-correction); the earlier functional pass is retained separately, not treated as visual parity. Provider-owned forge/PR/issues/CI snapshots and refresh remain unavailable; no frontend network calls, fake fields or no-op actions substitute for that deferred backend contract. Animation and a command palette remain outside this pass.
