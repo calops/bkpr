@@ -906,30 +906,10 @@ pub(crate) fn project_details(project: Option<&ProjectSnapshot>) -> Vec<String> 
     lines
 }
 
-fn wrapped(value: &str, width: usize) -> Vec<String> {
-    use unicode_segmentation::UnicodeSegmentation as _;
-    if width == 0 {
-        return Vec::new();
-    }
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    let mut used = 0;
-    for glyph in value.graphemes(true) {
-        let columns = unicode_width::UnicodeWidthStr::width(glyph);
-        if used + columns > width && !line.is_empty() {
-            lines.push(std::mem::take(&mut line));
-            used = 0;
-        }
-        if columns <= width {
-            line.push_str(glyph);
-            used += columns;
-        }
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
+fn wrapped(value: &str, width: usize) -> impl Iterator<Item = String> + '_ {
+    bkpr_tui_framework::window::wrap_cells(value, width.min(usize::from(u16::MAX)) as u16)
 }
+
 fn line(
     x: u16,
     y: u16,
@@ -1269,7 +1249,7 @@ fn render_chrome<'a>(
     } = context;
     project_spans.clear();
     working_titles.clear();
-    let (sidebar, area) = screen_geometry(size, tree.preferred_columns);
+    let sidebar = screen_geometry(size, tree.preferred_columns).0;
     let mut lines = Vec::new();
     // Hidden cursors still determine terminal cursor trails. Only a rendered
     // keyboard selection supplies an anchor; passive hover cards never do.
@@ -1402,32 +1382,6 @@ fn render_chrome<'a>(
         }
         if let Some(target) = &entry.target {
             hit(target.node.clone(), target.owner, row);
-        }
-    }
-    if rects.is_empty()
-        && let Some(group) = tree.session(active).map(|session| &session.group)
-        && group.status != SessionStatus::Online
-    {
-        let width = area.width.saturating_sub(4);
-        if width > 0 {
-            let title = format!("{} {}", group.name, group.status.badge());
-            let rows = wrapped(&title, usize::from(width)).into_iter()
-                .chain(std::iter::once(String::new()))
-                .chain(wrapped(&group.detail, usize::from(width)))
-                .chain(std::iter::once(String::new()))
-                .chain(wrapped("Ctrl-b S selects a session row. Arrows navigate the tree, Enter returns to the application, R forces reconnect. Quit detaches only.", usize::from(width)));
-            for (row, label) in rows
-                .take(usize::from(area.height.saturating_sub(4)))
-                .enumerate()
-            {
-                lines.push(line(
-                    area.x.saturating_add(2),
-                    row as u16 + 2,
-                    width,
-                    label,
-                    false,
-                ));
-            }
         }
     }
     for (id, rect) in rects {
@@ -2542,57 +2496,6 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_body_uses_active_owner_not_hovered_or_selected_session() {
-        use crate::tree::{Node, Owner, Target, Tree};
-        let active = Owner {
-            slot: 0,
-            generation: 4,
-        };
-        let other = Owner {
-            slot: 1,
-            generation: 8,
-        };
-        let mut first = session_fixture(active, "first");
-        let mut second = session_fixture(other, "second");
-        std::sync::Arc::get_mut(&mut first).unwrap().group.status = super::SessionStatus::Offline;
-        std::sync::Arc::get_mut(&mut second).unwrap().group.status = super::SessionStatus::Offline;
-        let state = Controller::new(&first.registry);
-        let mut tree = Tree::new();
-        tree.reconcile(vec![first.clone(), second], active);
-        tree.enter();
-        tree.select(Target {
-            owner: other,
-            node: Node::Session,
-        });
-        let mut surface = capture_surface();
-        let size = surface.frame.size;
-        super::tree_chrome(
-            &mut surface,
-            super::TreeChromeContext {
-                native: ChromeContext {
-                    size,
-                    state: &state,
-                    registry: &first.registry,
-                    rects: &[],
-                    pane_graphics: &[],
-                    guide_rows: 0,
-                },
-                tree: &tree,
-                active,
-                popup: None,
-            },
-            |_| panic!("No native pane frame"),
-            |_| panic!("Unavailable body cannot poll panes"),
-            |_| panic!("No native pane frame"),
-            &mut Vec::new(),
-            &mut Vec::new(),
-        );
-        let text = painted_text(&surface);
-        assert!(text.contains("first session details"));
-        assert!(!text.contains("second session details"));
-    }
-
-    #[test]
     fn unified_tree_uses_owner_metadata_and_one_geometry_for_hits_cursor_and_artwork() {
         use crate::tree::{Node, Owner, Target, Tree};
         let first = Owner {
@@ -2938,10 +2841,11 @@ mod tests {
 
     #[test]
     fn wrapped_details_keep_joined_emoji_and_combining_clusters_whole() {
-        assert_eq!(super::wrapped("a👩‍💻e\u{301}界", 3), ["a👩‍💻", "e\u{301}界"]);
-        assert_eq!(super::wrapped("👩‍💻x", 2), ["👩‍💻", "x"]);
-        assert_eq!(super::wrapped("a👩‍💻e\u{301}", 1), ["a", "e\u{301}"]);
-        assert!(super::wrapped("👩‍💻", 0).is_empty());
+        let wrap = |text, width| super::wrapped(text, width).collect::<Vec<_>>();
+        assert_eq!(wrap("a👩‍💻e\u{301}界", 3), ["a👩‍💻", "e\u{301}界"]);
+        assert_eq!(wrap("👩‍💻x", 2), ["👩‍💻", "x"]);
+        assert_eq!(wrap("a👩‍💻e\u{301}", 1), ["a", "e\u{301}"]);
+        assert!(wrap("👩‍💻", 0).is_empty());
     }
 
     #[test]

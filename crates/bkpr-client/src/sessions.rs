@@ -169,7 +169,7 @@ struct Session {
     retiring: usize,
     present: bool,
     ever_active: bool,
-    last_error: Option<String>,
+    diagnostic: Option<diagnostics::DiagnosticId>,
     membership: Membership,
     presentation: Option<Arc<crate::tree::Session>>,
     stop: StopState,
@@ -196,25 +196,43 @@ impl Session {
             retiring: 0,
             present: true,
             ever_active: false,
-            last_error: None,
+            diagnostic: None,
             membership: Membership::default(),
             presentation: None,
             stop: StopState::None,
         }
     }
 
-    fn record_failure(&mut self, error: anyhow::Error, now: Instant) {
+    fn record_failure(&mut self, error: &anyhow::Error, now: Instant) -> diagnostics::Outcome {
         let rejected =
             error.downcast_ref::<IdentityRejection>() == Some(&IdentityRejection::Replacement);
-        let message = format!("{error:#}");
-        self.last_error = Some(message.clone());
+        let outcome = diagnostics::Outcome::from_error(error);
         self.status = if rejected {
-            format!("rejected: {message}\nPress R to retry this target.")
-        } else if self.ever_active && self.stop == StopState::None {
-            format!("offline: {message}\nWaiting to reconnect.")
+            "This name now belongs to a different session. Bkpr did not switch to it.".into()
+        } else if error.is::<crate::remote::RemoteSessionMissing>()
+            && let SessionTarget::Remote(target) = &self.target
+        {
+            format!(
+                "No running session named {} on {}.\nCheck the name or start the session there.",
+                target.session_name, target.destination,
+            )
+        } else if matches!(self.target, SessionTarget::Remote(_)) {
+            "Could not connect to the session over SSH.".into()
         } else {
-            format!("offline: {message}\nPress R to retry this target.")
+            "Could not connect to the local session.".into()
         };
+        if outcome == diagnostics::Outcome::Unknown {
+            self.status
+                .push_str("\nThe last operation may already have happened.");
+        }
+        self.status.push_str(
+            if !rejected && self.ever_active && self.stop == StopState::None {
+                "\nRetrying automatically. Press R in Sessions to retry now."
+            } else {
+                "\nPress R in Sessions to retry."
+            },
+        );
+        self.status.push_str("\nCtrl-b !  Details");
         self.phase = if rejected {
             Phase::Rejected
         } else {
@@ -223,6 +241,7 @@ impl Session {
         self.failures = self.failures.saturating_add(1);
         self.next_attempt = (self.ever_active && !rejected && self.stop == StopState::None)
             .then(|| now + retry_delay(self.failures));
+        outcome
     }
 
     fn queue_reconnect(&mut self, now: Instant) -> Result<()> {
@@ -236,10 +255,7 @@ impl Session {
         self.cancellation = CancellationToken::new();
         self.stop = StopState::None;
         self.phase = Phase::Queued;
-        self.status = match &self.last_error {
-            Some(error) => format!("reconnect queued\nPrevious failure: {error}"),
-            None => "reconnect queued".into(),
-        };
+        self.status.clear();
         self.next_attempt = Some(now);
         Ok(())
     }
@@ -656,15 +672,7 @@ impl Coordinator {
         let generation = session.generation;
         session.next_attempt = None;
         session.phase = Phase::Connecting;
-        let state = if session.ever_active {
-            "reconnecting"
-        } else {
-            "connecting"
-        };
-        session.status = match &session.last_error {
-            Some(error) => format!("{state}\nPrevious failure: {error}"),
-            None => state.into(),
-        };
+        session.status.clear();
         let connect: Box<dyn FnOnce() -> Result<Validated> + Send> = match &mut session.target {
             SessionTarget::Local {
                 name,
@@ -749,10 +757,7 @@ impl Coordinator {
             .get_or_insert_with(|| info.session_id.clone());
         session.identity = Some(info);
         session.phase = Phase::Activating;
-        session.status = match &session.last_error {
-            Some(error) => format!("activating\nPrevious failure: {error}"),
-            None => "activating".into(),
-        };
+        session.status.clear();
         let generation = session.generation;
         let cancellation = session.cancellation.clone();
         let detach_others = session.initial_activation
@@ -792,11 +797,19 @@ impl Coordinator {
     /// owner is eligible for automatic reconnect; initial errors require R.
     fn fail(&mut self, index: usize, error: anyhow::Error) -> Result<()> {
         if self.sessions[index].stop == StopState::Pending {
-            self.sessions[index].last_error = Some(format!("{error:#}"));
             return Ok(());
         }
         self.retire_current(index, false)?;
-        self.sessions[index].record_failure(error, Instant::now());
+        let session = &mut self.sessions[index];
+        let outcome = session.record_failure(&error, Instant::now());
+        let summary = format!("Session connection failed: {}", session.target.label());
+        let details = diagnostics::technical(format_args!("{error:#}"));
+        session.diagnostic = Some(
+            self.diagnostics
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .record(&summary, &details, outcome),
+        );
         Ok(())
     }
 
@@ -1399,7 +1412,7 @@ impl Coordinator {
                     session.app = Some(app);
                     session.failures = 0;
                     session.ever_active = true;
-                    session.last_error = None;
+                    session.diagnostic = None;
                     session.membership = Membership::default();
                     session.phase = Phase::Online;
                     session.status = "online".into();
@@ -1524,6 +1537,7 @@ impl Coordinator {
         let spinner = self.spinner.glyph();
         let namespace = self.namespace();
         self.offline.namespace = namespace;
+        self.offline.session_diagnostic = self.sessions[self.selected].diagnostic;
         let app = self.app_mut();
         app.synchronize_tree_focus();
         app.state.session_spinner = spinner;
@@ -2714,12 +2728,74 @@ mod tests {
         session.initial_activation = false;
         session.phase = Phase::Activating;
         session.cancellation.cancel();
-        session.record_failure(anyhow::anyhow!("helper is missing"), now);
+        session.record_failure(&anyhow::anyhow!("helper is missing"), now);
         assert!(session.phase == Phase::Offline);
         assert!(session.next_attempt.is_none());
-        assert_eq!(session.last_error.as_deref(), Some("helper is missing"));
         assert!(session.status.contains("Press R"));
         assert!(session.present);
+    }
+
+    #[test]
+    fn missing_remote_session_explains_how_to_recover_without_transport_noise() {
+        let now = Instant::now();
+        let mut session = pending_session(now);
+        let error = anyhow::anyhow!("reading remote control header: early eof")
+            .context(crate::remote::RemoteSessionMissing);
+        session.record_failure(&error, now);
+        assert!(
+            session
+                .status
+                .contains("Check the name or start the session")
+        );
+        assert!(session.status.contains("Press R in Sessions to retry"));
+        assert!(!session.status.contains("early eof"));
+    }
+
+    #[test]
+    fn offline_details_follow_the_displayed_session_and_preserve_unknown_activation() {
+        let now = Instant::now();
+        let (app, _) = fixture();
+        let targets = ["alpha", "beta"].map(|name| {
+            let mut session = pending_session(now);
+            let SessionTarget::Remote(target) = &mut session.target else {
+                unreachable!();
+            };
+            target.session_name = name.into();
+            session.target
+        });
+        let mut coordinator =
+            Coordinator::new(targets.into(), app.options.clone(), size()).unwrap();
+        coordinator
+            .fail(
+                0,
+                transport::mark_outcome_unknown(anyhow::anyhow!("alpha activation reply lost")),
+            )
+            .unwrap();
+        coordinator
+            .fail(1, anyhow::anyhow!("beta refused"))
+            .unwrap();
+
+        for (index, text, outcome) in [
+            (
+                0,
+                "alpha activation reply lost",
+                diagnostics::Outcome::Unknown,
+            ),
+            (1, "beta refused", diagnostics::Outcome::NotApplicable),
+        ] {
+            coordinator.select(index, size()).unwrap();
+            coordinator.tick(size()).unwrap();
+            let id = coordinator.app().latest_diagnostic().unwrap();
+            let store = coordinator.diagnostics.lock().unwrap();
+            let incident = store.get(id).unwrap();
+            assert_eq!(incident.outcome, outcome);
+            assert!(incident.details.contains(text));
+        }
+        assert!(
+            coordinator.sessions[0]
+                .status
+                .contains("may already have happened")
+        );
     }
 
     #[test]
@@ -2728,9 +2804,9 @@ mod tests {
         let mut session = pending_session(now);
         session.expected_session = Some("pinned".into());
         session.ever_active = true;
-        session.record_failure(anyhow::anyhow!("transport lost"), now);
+        session.record_failure(&anyhow::anyhow!("transport lost"), now);
         assert_eq!(session.next_attempt, Some(now + Duration::from_millis(500)));
-        session.record_failure(IdentityRejection::Replacement.into(), now);
+        session.record_failure(&IdentityRejection::Replacement.into(), now);
         assert!(session.phase == Phase::Rejected);
         assert!(session.next_attempt.is_none());
         assert_eq!(session.expected_session.as_deref(), Some("pinned"));
@@ -2744,7 +2820,7 @@ mod tests {
         session.generation = 8;
         session.initial_activation = false;
         session.expected_session = Some("pinned".into());
-        session.record_failure(anyhow::anyhow!("old failure"), now);
+        session.record_failure(&anyhow::anyhow!("old failure"), now);
         let old = session.cancellation.clone();
         session.queue_reconnect(now).unwrap();
         assert!(old.is_cancelled());
@@ -2752,7 +2828,6 @@ mod tests {
         assert!(!session.cancellation.is_cancelled());
         assert!(session.phase == Phase::Queued);
         assert_eq!(session.next_attempt, Some(now));
-        assert!(session.status.contains("Previous failure: old failure"));
         assert!(!session.initial_activation);
         assert!(!session.ever_active);
         assert_eq!(session.expected_session.as_deref(), Some("pinned"));
@@ -2898,7 +2973,7 @@ mod tests {
         coordinator.app_mut().cancel_modal();
         assert!(coordinator.app().state.form.is_none());
         let session = &mut coordinator.sessions[1];
-        session.record_failure(anyhow::anyhow!("transport closed"), Instant::now());
+        session.record_failure(&anyhow::anyhow!("transport closed"), Instant::now());
         assert!(session.next_attempt.is_none());
         assert_eq!(session.stop, StopState::Finished);
         session.queue_reconnect(Instant::now()).unwrap();

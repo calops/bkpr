@@ -49,6 +49,117 @@ pub fn fit(value: &str, width: u16) -> String {
     result
 }
 
+/// Wrap a line of printable UI text by terminal cells, without splitting graphemes.
+/// Prefer whitespace breaks; omit graphemes too wide for the entire row.
+pub fn wrap_cells(value: &str, width: u16) -> impl Iterator<Item = String> + '_ {
+    use unicode_width::UnicodeWidthStr as _;
+
+    let value = if value.chars().all(printable) {
+        std::borrow::Cow::Borrowed(value)
+    } else {
+        std::borrow::Cow::Owned(clean(value))
+    };
+    let mut offset = 0;
+    std::iter::from_fn(move || {
+        while width != 0 && offset < value.len() {
+            let rest = value[offset..].trim_start();
+            offset = value.len() - rest.len();
+            let mut row = String::new();
+            let mut used = 0;
+            let mut boundary = None;
+            let mut end = rest.len();
+            for (index, glyph) in rest.grapheme_indices(true) {
+                let cells = glyph.width();
+                if cells > usize::from(width) || cells == 0 && row.is_empty() {
+                    continue;
+                }
+                if glyph.chars().all(char::is_whitespace) && !row.ends_with(' ') {
+                    boundary = Some((row.len(), index));
+                }
+                if used + cells > usize::from(width) {
+                    end = index;
+                    if let Some((keep, next)) = boundary.filter(|(keep, _)| *keep != 0) {
+                        row.truncate(keep);
+                        end = next;
+                    }
+                    break;
+                }
+                row.push_str(glyph);
+                used += cells;
+            }
+            offset += end;
+            if !row.is_empty() {
+                return Some(row);
+            }
+        }
+        None
+    })
+}
+
+/// Center a wrapped heading and body in the given area, prioritizing heading rows.
+/// Returns outer bounds, local paint rows and the local heading highlight region.
+/// Tiny areas fall back to unframed text.
+pub fn notice_rows<'a>(
+    area: Rect,
+    size: Size,
+    title: &str,
+    body: impl Iterator<Item = &'a str>,
+    framed: bool,
+) -> Option<(Rect, Vec<TextLine>, Rect)> {
+    if area.width == 0 || area.height == 0 {
+        return None;
+    }
+    let inset = u16::from(framed && area.width >= 3 && area.height >= 3);
+    let width = area.width.saturating_sub(2 * inset).min(72);
+    let capacity = usize::from(area.height - 2 * inset);
+    let mut labels: Vec<_> = wrap_cells(title, width).take(capacity).collect();
+    if labels.is_empty() {
+        labels.push(String::new());
+    }
+    let heading_rows = labels.len();
+    labels.extend(
+        body.flat_map(str::lines)
+            .flat_map(|line| wrap_cells(line, width))
+            .take(capacity - heading_rows),
+    );
+    let columns = |label: &str| crate::text_width(label) as u16;
+    let text_width = labels.iter().map(|label| columns(label)).max()?.max(1);
+    let min_width = text_width + 2 * inset;
+    let width = min_width + 2 * u16::from(inset != 0 && area.width - min_width >= 2);
+    let height = labels.len() as u16 + 2 * inset;
+    let outer = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+    let mut rows = if inset != 0 {
+        border_rows(outer.size(size), "", Border::Rounded)
+    } else {
+        Vec::new()
+    };
+    rows.extend(labels.into_iter().enumerate().map(|(index, label)| {
+        let cols = columns(&label);
+        (
+            Rect {
+                x: (width - cols) / 2,
+                y: inset + index as u16,
+                width: cols,
+                height: 1,
+            },
+            label,
+            false,
+        )
+    }));
+    let title = Rect {
+        x: inset,
+        y: inset,
+        width: width - 2 * inset,
+        height: heading_rows as u16,
+    };
+    Some((outer, rows, title))
+}
+
 /// Centers a rectangle after constraining its dimensions to the screen.
 pub fn centered(screen: Size, width: u16, height: u16) -> Rect {
     let width = width.min(screen.cols);
@@ -367,6 +478,51 @@ pub fn paint_edge_feedback(frame: &mut Frame, segments: &[Rect], style: &Style) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn notice_rows_wrap_whole_graphemes_and_degrade_inside_tiny_areas() {
+        let size = Size {
+            cols: 7,
+            rows: 5,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        let area = Rect {
+            x: 4,
+            y: 3,
+            width: 7,
+            height: 5,
+        };
+        let (outer, rows, title) =
+            notice_rows(area, size, "Error", ["界 👩‍💻e\u{301}"].into_iter(), true).unwrap();
+        assert_eq!(outer, area);
+        assert_eq!((title.x, title.y, title.width), (1, 1, 5));
+        assert!(rows.iter().any(|(_, text, _)| text == "╭─────╮"));
+        assert!(rows.iter().any(|(_, text, _)| text == "界"));
+        assert!(rows.iter().any(|(_, text, _)| text == "👩‍💻e\u{301}"));
+        assert!(rows.iter().all(|(rect, text, _)| {
+            rect.x + rect.width <= outer.width
+                && rect.y < outer.height
+                && crate::text_width(text) <= usize::from(rect.width)
+        }));
+
+        let (_, rows, title) =
+            notice_rows(area, size, "Offline now", ["body"].into_iter(), true).unwrap();
+        assert_eq!(title.height, 3);
+        assert!(rows.iter().any(|(_, text, _)| text == "now"));
+        assert!(!rows.iter().any(|(_, text, _)| text == "body"));
+
+        let tiny = Rect {
+            width: 2,
+            height: 1,
+            ..area
+        };
+        let (outer, rows, _) =
+            notice_rows(tiny, size, "👩‍💻x", ["omitted"].into_iter(), true).unwrap();
+        assert_eq!(outer, tiny);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, "👩‍💻");
+    }
+
     #[test]
     fn compact_separators_connect_to_both_rounded_edges_and_each_other() {
         let size = Size {

@@ -465,7 +465,9 @@ fn transport_failure_retires_every_endpoint_without_reconnect_or_empty_inspectio
             stop,
             thread: None,
             cancellation: CancellationToken::new(),
-            failure: Arc::new(Mutex::new(Some("SSH connection lost: fixture".into()))),
+            failure: Arc::new(Mutex::new(Some(anyhow::anyhow!(
+                "SSH connection lost: fixture"
+            )))),
         },
     };
     let endpoint = remote.endpoint();

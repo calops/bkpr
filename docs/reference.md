@@ -391,9 +391,10 @@ The eager `RemoteSession::connect` remains available to headless callers.
 Scene, image, input and clipboard frames stay binary through bounded connections;
 there is no administrative fallback or merged authority.
 
-Initial connection errors stay visibly offline with their cause and require an
-explicit `R` retry. A previously active attachment reconnects automatically after
-unintentional transport loss, with bounded backoff and fresh authority/snapshots.
+Connection errors show a short explanation in a centered popup within the session area.
+Use `Ctrl-b !` for the displayed session's diagnostic and `R` on its Sessions
+sidebar row to retry. A previously active attachment reconnects automatically
+after unintentional transport loss, with bounded backoff and fresh authority/snapshots.
 The logical session remains pinned; a replacement identity is rejected and aliases
 of the same live session are deduplicated. Reconnect never repeats local bootstrap,
 takeover, input or ambiguous mutations. A lost accepted reply remains an

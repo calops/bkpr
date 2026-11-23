@@ -550,6 +550,7 @@ struct App {
     overlays: OverlayStack<OverlayFocus>,
     toasts: Arc<Mutex<toast::ToastStack>>,
     diagnostics: Arc<Mutex<diagnostics::Store>>,
+    pub(super) session_diagnostic: Option<diagnostics::DiagnosticId>,
     diagnostic_view: Option<diagnostics::Viewer>,
     guide: GuideCache,
     chrome_graphics_enabled: bool,
@@ -575,17 +576,10 @@ impl App {
     }
 
     fn report_failure(&self, summary: &str, error: &anyhow::Error) -> diagnostics::DiagnosticId {
-        let outcome = if transport::outcome_unknown(error) {
-            diagnostics::Outcome::Unknown
-        } else if transport::shutdown_not_dispatched(error) {
-            diagnostics::Outcome::NotDispatched
-        } else {
-            diagnostics::Outcome::NotApplicable
-        };
         self.report_details(
             summary,
             &diagnostics::technical(format_args!("{error:#}")),
-            outcome,
+            diagnostics::Outcome::from_error(error),
         )
     }
 
@@ -647,6 +641,9 @@ impl App {
                 .map(|failure| failure.diagnostic)
         });
         let store = self.diagnostics.lock().unwrap();
+        if let Some(id) = self.session_diagnostic {
+            return store.get(id).map(|incident| incident.id);
+        }
         preferred
             .filter(|id| store.get(*id).is_some())
             .or_else(|| store.latest())
@@ -2303,19 +2300,51 @@ impl App {
                 .any(|candidate| candidate.pane == pane)
     }
     fn placeholder(&self, pane: &str) -> String {
+        let Some(notice) = self.pane_notice(pane, false) else {
+            return "Opening pane".into();
+        };
+        let title = notice
+            .title
+            .split_once(' ')
+            .map_or(notice.title, |(_, text)| text);
+        if notice.detail.is_empty() {
+            format!("{title} {}", notice.hint)
+        } else if notice.hint.is_empty() {
+            format!("{title} {}", notice.detail)
+        } else {
+            format!("{title} {}\n{}", notice.detail, notice.hint)
+        }
+    }
+
+    fn pane_notice(&self, pane: &str, has_frame: bool) -> Option<pane_feedback::NoticeText<'_>> {
+        use pane_feedback::NoticeText;
         if let Some(error) = self.view_failures.get(pane) {
-            return format!("{} Ctrl-b ! opens diagnostics.", error.summary);
+            return Some(NoticeText::pane(
+                "\u{f0026} Could not open pane",
+                &error.summary,
+                "Ctrl-b !  Details",
+                Role::Error,
+            ));
         }
         if let Some(failure) = self
             .input_failures
             .get(pane)
             .and_then(|failures| failures.iter().flatten().find(|failure| failure.stopped))
         {
-            return if failure.lane == updates::InputLane::Clipboard {
-                "Clipboard access stopped. Ctrl-b ! opens diagnostics.".into()
+            let title = if failure.lane == updates::InputLane::Clipboard {
+                "\u{f0026} Clipboard access stopped"
             } else {
-                "Input stopped for this pane. Ctrl-b ! opens diagnostics.".into()
+                "\u{f0026} Pane input stopped"
             };
+            return Some(NoticeText::pane(
+                title,
+                "",
+                "Ctrl-b !  Details",
+                Role::Error,
+            ));
+        }
+        if has_frame {
+            return None;
         }
         match self
             .registry
@@ -2324,17 +2353,18 @@ impl App {
             .find(|info| info.id == pane)
             .map(|info| &info.status)
         {
-            None | Some(PaneStatus::Stopped) => {
-                if self.options.read_only {
-                    return "Execution unavailable. Read-only client cannot open a new shell or change this layout.".into();
-                }
-                return "Execution unavailable. Ctrl-b R opens a new shell here after confirmation; Ctrl-b n splits a new pane.".into();
-            }
-            Some(PaneStatus::Exited) => {
-                if self.options.read_only {
-                    return "Execution exited; any retained scene is read-only. This client cannot open a new shell.".into();
-                }
-                return "Execution exited; any retained scene is read-only. Ctrl-b R opens a new shell here after confirmation.".into();
+            status @ (None | Some(PaneStatus::Stopped | PaneStatus::Exited)) => {
+                let title = if status == Some(&PaneStatus::Exited) {
+                    "\u{f0159} Process exited"
+                } else {
+                    "\u{f0159} No process running"
+                };
+                let body = if self.options.read_only {
+                    "This client is read-only."
+                } else {
+                    "Ctrl-b R  Open a new shell here"
+                };
+                return Some(NoticeText::pane(title, body, "", Role::Muted));
             }
             Some(PaneStatus::Running) => {}
         }
@@ -2342,13 +2372,16 @@ impl App {
             .views
             .get(pane)
             .is_some_and(|view| view.retirement_requested)
+            || self.pane_retiring(pane)
         {
-            return "Previous view retiring; accepted operations are still draining.".into();
+            return Some(NoticeText::pane(
+                "\u{f0150} Waiting for previous view",
+                "Finishing operations already accepted.",
+                "",
+                Role::Warning,
+            ));
         }
-        if self.pane_retiring(pane) {
-            return "Previous view retiring; accepted operations are still draining.".into();
-        }
-        "Attaching pane; waiting for its initial scene or a background worker slot.".into()
+        None
     }
     fn badge(&self, pane: &str) -> Option<&'static str> {
         if self.view_failures.contains_key(pane) {
@@ -5265,6 +5298,7 @@ impl App {
             overlays: OverlayStack::default(),
             toasts,
             diagnostics,
+            session_diagnostic: None,
             diagnostic_view: None,
             guide: GuideCache::default(),
             chrome_graphics_enabled: true,
@@ -5385,12 +5419,15 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         let mut guide_effects = graphics_frame(initial_size);
         let mut artwork_effects = graphics_frame(initial_size);
         let mut toast_effects = graphics_frame(initial_size);
+        let mut notice_effects = graphics_frame(initial_size);
+        let mut notice_theme = Theme::default();
         let mut toast_frames: [Option<ToastPresentation>; 3] = std::array::from_fn(|_| None);
         let mut toast_order = [0usize; 3];
         let mut resize_feedback_surface = UiSurface::new(initial_size);
         let mut resize_feedback_regions = Vec::new();
         let mut resize_feedback_style = None;
-        let mut placeholders = HashMap::<String, UiSurface>::new();
+        let mut placeholders = HashMap::<String, (pane_feedback::NoticeCard, bool)>::new();
+        let mut session_notice = pane_feedback::NoticeCard::new(initial_size);
         let mut session_fds = Vec::new();
         let mut fds = Vec::new();
         loop {
@@ -5430,6 +5467,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 &mut guide_effects,
                 &mut artwork_effects,
                 &mut toast_effects,
+                &mut notice_effects,
             ] {
                 frame.size = size;
                 frame.images.clear();
@@ -5663,39 +5701,43 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     u32::from(row) + 1,
                 );
             }
-            // Native application frames below deliberately bypass the UI theme.
-            placeholders.retain(|id, _| {
-                rects.iter().any(|(pane, _)| pane == id)
-                    && app.views.get(id).is_none_or(|view| view.frame.is_none())
-            });
-            for (id, rect) in &rects {
+            crate::appearance::update_region_theme(&mut notice_theme, ui_colors, Some(1));
+            let has_session_notice = if rects.is_empty()
+                && let Some(text) = tree
+                    .session(active_owner)
+                    .and_then(|session| pane_feedback::NoticeText::session(&session.group))
+            {
+                let area = screen_geometry(size, tree.preferred_columns).1;
+                session_notice.layout(area, size, text);
+                session_notice.decorate(&theme, &notice_theme, &graphics, &mut notice_effects, 1);
+                true
+            } else {
+                false
+            };
+            for (index, (id, rect)) in rects.iter().enumerate() {
                 let rect = content(*rect);
-                if app.views.get(id).is_some_and(|view| view.frame.is_some())
-                    || rect.height == 0
-                    || rect.width == 0
-                {
+                let has_frame = app.views.get(id).is_some_and(|view| view.frame.is_some());
+                let Some(text) = app
+                    .pane_notice(id, has_frame)
+                    .filter(|_| rect.height != 0 && rect.width != 0)
+                else {
                     continue;
+                };
+                if !placeholders.contains_key(id) {
+                    placeholders.insert(id.clone(), (pane_feedback::NoticeCard::new(size), false));
                 }
-                let local = rect.size(size);
-                let surface = placeholders
-                    .entry(id.clone())
-                    .or_insert_with(|| UiSurface::new(local));
-                surface.paint(
-                    local,
-                    vec![(
-                        Rect {
-                            x: 0,
-                            y: 0,
-                            width: local.cols,
-                            height: 1,
-                        },
-                        app.placeholder(id),
-                        false,
-                    )],
-                    None,
+                let (card, visible) = placeholders.get_mut(id).unwrap();
+                *visible = true;
+                card.layout(rect, size, text);
+                card.decorate(
+                    &theme,
+                    &notice_theme,
+                    &graphics,
+                    &mut notice_effects,
+                    1 + index as u32 * 1024,
                 );
-                surface.apply_theme(&theme, Role::Muted, &[]);
             }
+            placeholders.retain(|_, (_, visible)| std::mem::take(visible));
             if let Some(finder) = &mut app.finder {
                 finder.update_registry(&app.registry, tree.project_slots(active_owner), |pane| {
                     app.views.get(pane).map(|view| &view.metadata)
@@ -6482,12 +6524,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     } else {
                         None
                     };
-                    if let Some(frame) = app
-                        .views
-                        .get(id)
-                        .and_then(|v| v.frame.as_ref())
-                        .or_else(|| placeholders.get(id).map(|surface| &surface.frame))
-                    {
+                    if let Some(frame) = app.views.get(id).and_then(|v| v.frame.as_ref()) {
                         surfaces.push(Surface {
                             palette,
                             id,
@@ -6511,7 +6548,9 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                                     .any(|p| p.id == *id && p.status == PaneStatus::Running),
                         });
                     }
-                    if let Some(feedback) = app.pane_feedback.get(id)
+                    if let Some((card, _)) = placeholders.get(id) {
+                        surfaces.push(card.layer("ui:pane:notice", faint_background));
+                    } else if let Some(feedback) = app.pane_feedback.get(id)
                         && let Some(rect) = feedback.rect
                     {
                         surfaces.push(Surface {
@@ -6531,6 +6570,27 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             faint: faint_background,
                         });
                     }
+                }
+                if has_session_notice {
+                    surfaces.push(session_notice.layer("ui:session:notice", faint_background));
+                }
+                if !notice_effects.placements.is_empty() {
+                    surfaces.push(Surface {
+                        palette: None,
+                        id: "ui:notice:graphics",
+                        content: SurfaceContent::Graphics,
+                        rect: Rect {
+                            x: 0,
+                            y: 0,
+                            width: size.cols,
+                            height: size.rows,
+                        },
+                        frame: &notice_effects,
+                        selection: &[],
+                        search: &[],
+                        focused: false,
+                        faint: faint_background,
+                    });
                 }
                 surfaces.push(Surface {
                     palette: None,
@@ -7428,6 +7488,7 @@ pub(super) mod tests {
                 overlays: OverlayStack::default(),
                 toasts: Arc::new(Mutex::new(toast::ToastStack::default())),
                 diagnostics: Arc::new(Mutex::new(diagnostics::Store::default())),
+                session_diagnostic: None,
                 diagnostic_view: None,
                 guide: GuideCache::default(),
                 chrome_graphics_enabled: true,
