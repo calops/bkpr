@@ -45,9 +45,9 @@ fn codex_installs_transport_only_and_preserves_user_policy() -> Result<()> {
     assert!(value["mcp_servers"]["bkpr"].get("tools").is_none());
     let mut document = config::Document::parse(Format::Toml, Some(&fs::read(&config)?), &config)?;
     let tool_path = |tool: &str| ["mcp_servers", "bkpr", "tools", tool].map(String::from);
-    let mut send_mode = tool_path("send_message").to_vec();
-    send_mode.push("approval_mode".into());
-    document.set(&send_mode, Some(&Value::String("prompt".into())))?;
+    let mut post_mode = tool_path("channel_post").to_vec();
+    post_mode.push("approval_mode".into());
+    document.set(&post_mode, Some(&Value::String("prompt".into())))?;
     fs::write(&config, document.bytes())?;
     verify_record(&installed)?;
     paths.program = PathBuf::from("/fixture/bkpr-b");
@@ -58,10 +58,10 @@ fn codex_installs_transport_only_and_preserves_user_policy() -> Result<()> {
     let value = parse(&config)?;
     let tools = &value["mcp_servers"]["bkpr"]["tools"];
     assert_eq!(
-        tools["send_message"]["approval_mode"].as_str(),
+        tools["channel_post"]["approval_mode"].as_str(),
         Some("prompt")
     );
-    assert!(tools.get("ack_message").is_none());
+    assert!(tools.get("channel_ack").is_none());
     assert_eq!(
         value["mcp_servers"]["bkpr"]["command"].as_str(),
         Some("/fixture/bkpr-b")
@@ -86,11 +86,11 @@ fn codex_installs_transport_only_and_preserves_user_policy() -> Result<()> {
     assert!(
         error
             .to_string()
-            .contains("mcp_servers.bkpr.tools.send_message.approval_mode")
+            .contains("mcp_servers.bkpr.tools.channel_post.approval_mode")
     );
     assert!(error.to_string().contains("mcp_servers.bkpr.enabled"));
     assert_eq!(fs::read(&config)?, before);
-    document.set(&tool_path("send_message"), None)?;
+    document.set(&tool_path("channel_post"), None)?;
     document.set(
         &["mcp_servers".into(), "bkpr".into(), "enabled".into()],
         None,

@@ -126,6 +126,9 @@ fn request_has_channel_source(payload: &[u8]) -> planus::Result<bool> {
             }
             g::OperationRef::OperationAgent(agent) => match agent.request()? {
                 g::AgentRequestRef::AgentRequestChannels(channels) => channels.request()?,
+                g::AgentRequestRef::AgentRequestChannelDirectPost(post) => {
+                    return Ok(!matches!(post.post()?.source(), Ok(None)));
+                }
                 g::AgentRequestRef::AgentRequestControl(control) => {
                     operation = control.request()?;
                     continue;

@@ -45,6 +45,7 @@ fn summary() -> ChannelSummary {
         last_sequence: 9,
         read_through: 4,
         unread_attention: true,
+        direct: false,
     }
 }
 
@@ -307,6 +308,28 @@ fn source_post_frames_fail_legacy_header_admission_without_breaking_ordinary_pos
             panic!("expected agent channel post");
         };
         assert_eq!(*actual, request);
+
+        let direct = Request::new(Operation::Agent {
+            launch_id: "launch".into(),
+            token: "secret".into(),
+            guard: None,
+            request: crate::AgentRequest::ChannelDirectPost {
+                launch_id: "recipient".into(),
+                post: Box::new(ChannelPost {
+                    source: has_source.then(source),
+                    ..post()
+                }),
+            },
+        });
+        let decoded = check_frames(codec.encode_request(&direct).unwrap(), has_source);
+        let Operation::Agent {
+            request: crate::AgentRequest::ChannelDirectPost { post, .. },
+            ..
+        } = decoded.operation
+        else {
+            panic!("expected agent direct post");
+        };
+        assert_eq!(post.source, has_source.then(source));
     }
 }
 
@@ -335,9 +358,16 @@ fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
         },
         ChannelResponse::Channel { channel: summary() },
         ChannelResponse::Posted {
+            channel_id: Some(channel()),
             message: message(),
             wake_count: 2,
             attention: true,
+        },
+        ChannelResponse::Posted {
+            channel_id: None,
+            message: message(),
+            wake_count: 0,
+            attention: false,
         },
         ChannelResponse::History {
             messages: vec![linked_message],
@@ -390,6 +420,71 @@ fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
             assert!(wire_start <= start && start + bytes.len() <= wire_end);
         }
     }
+}
+
+#[test]
+fn direct_channel_summary_round_trips_and_legacy_json_defaults_to_shared() {
+    let mut channel = summary();
+    let legacy = serde_json::to_value(&channel).unwrap();
+    assert!(legacy.get("direct").is_none());
+    assert_eq!(
+        serde_json::from_value::<ChannelSummary>(legacy).unwrap(),
+        channel
+    );
+
+    channel.direct = true;
+    channel.membership = MembershipMode::Explicit;
+    let diagnostic = serde_json::to_value(&channel).unwrap();
+    assert_eq!(diagnostic["direct"], true);
+    assert_eq!(
+        serde_json::from_value::<ChannelSummary>(diagnostic).unwrap(),
+        channel
+    );
+
+    let response = reply(ChannelResponse::Listed {
+        channels: vec![channel],
+        next_after: None,
+    });
+    let mut codec = Codec::new();
+    let decoded = decode_response(codec.encode_response(&response).unwrap()).unwrap();
+    let Some(Payload::Channels(ChannelResponse::Listed { channels, .. })) = decoded.result else {
+        panic!("expected native channel list")
+    };
+    assert!(channels[0].direct);
+    assert_eq!(channels[0].membership, MembershipMode::Explicit);
+}
+
+#[test]
+fn native_retained_body_preserves_direct_size_and_text_without_widening_post_requests() {
+    let mut message = renderable_message();
+    message.text = "x".repeat(MAX_DIRECT_MESSAGE_BYTES - 1);
+    message.text.push('\r');
+    let retained = reply(ChannelResponse::Message {
+        message: message.clone(),
+    });
+    let mut codec = Codec::new();
+    let decoded = decode_response(codec.encode_response(&retained).unwrap()).unwrap();
+    let Some(Payload::Channels(ChannelResponse::Message { message: actual })) = decoded.result
+    else {
+        panic!("expected native channel message")
+    };
+    assert_eq!(actual, message);
+
+    let mut post = post();
+    post.text = "x".repeat(MAX_POST_BYTES + 1);
+    assert!(
+        ChannelRequest::Post {
+            channel_id: channel(),
+            post,
+        }
+        .validate()
+        .is_err()
+    );
+
+    message.text.push('x');
+    let oversized = reply(ChannelResponse::Message { message });
+    let error = codec.encode_response(&oversized).unwrap_err().to_string();
+    assert!(error.contains("retained channel message exceeds byte limit"));
 }
 
 fn reply(response: ChannelResponse) -> Response {
@@ -539,6 +634,7 @@ fn channel_source_requires_only_two_exact_bounded_ids() {
         assert!(
             codec
                 .encode_response(&reply(ChannelResponse::Posted {
+                    channel_id: Some(channel()),
                     message: MessageSummary {
                         source: Some(reference),
                         ..message()

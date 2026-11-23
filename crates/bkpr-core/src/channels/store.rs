@@ -6,7 +6,9 @@ use bkpr_protocol::channels::{
     ChannelSettings, ChannelSummary, MAX_HISTORY_BYTES, MembershipMode, MessageId, MessageSummary,
     Participant, ParticipantId, ParticipantKind, PostIntent, WakePolicy,
 };
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Transaction, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior, params,
+};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use std::{
@@ -22,8 +24,10 @@ use uuid::Uuid;
 mod wakes;
 
 const APPLICATION_ID: i64 = 0x424b4348;
-// Versions 1–6 predate staging. Version 7 predates wakes; version 8 combined revocation and outcome.
-const STORE_VERSION: i64 = 9;
+// Versions 1–6 predate staging. Version 7 predates wakes.
+const STORE_VERSION: i64 = 12;
+const FIRST_STAGING_VERSION: i64 = 7;
+const ORDERED_WAKE_VERSION: i64 = 9;
 const STORE_NAME: &str = "channels.sqlite3";
 const MAX_PENDING: usize = 4096;
 const READ_POST: &str = "SELECT summary,body FROM posts WHERE channel_id=?1 AND id=?2";
@@ -52,6 +56,43 @@ const PRESETS: [(&str, ChannelSettings); 2] = [
         },
     ),
 ];
+
+const DIRECT_SETTINGS: ChannelSettings = ChannelSettings {
+    user_wake: WakePolicy::None,
+    agent_wake: WakePolicy::All,
+    attention_questions: false,
+    attention_reports: false,
+};
+
+fn insert_direct_channel(
+    tx: &Transaction<'_>,
+    id: &ChannelId,
+    workspace: &str,
+    from: &Participant,
+    to: &Participant,
+) -> Result<()> {
+    let mut pair = [from.id.as_ref(), to.id.as_ref()];
+    pair.sort_unstable();
+    let short = |text: &str| text.floor_char_boundary(72);
+    let display = format!(
+        "DM: {} / {}",
+        &from.display_name[..short(&from.display_name)],
+        &to.display_name[..short(&to.display_name)]
+    );
+    insert_channel(
+        tx,
+        id,
+        workspace,
+        &format!("\u{1}{}", id.as_ref()),
+        false,
+        DIRECT_SETTINGS,
+    )?;
+    tx.execute(
+        "INSERT INTO direct_channels VALUES(?1,?2,?3,?4)",
+        params![id.as_ref(), pair[0], pair[1], display],
+    )?;
+    Ok(())
+}
 
 // Shared by fresh initialization and the one-time staging migration.
 const ATTACHMENT_STAGING_SCHEMA: &str = "
@@ -94,6 +135,7 @@ struct StoredChannel {
     workspace_id: String,
     name: String,
     workspace_wide: bool,
+    direct: bool,
     settings: ChannelSettings,
     last_sequence: u64,
     change_sequence: u64,
@@ -142,14 +184,7 @@ impl Store {
             | OpenFlags::from_bits_retain(rusqlite::ffi::SQLITE_OPEN_NOFOLLOW);
         let mut connection = Connection::open_with_flags(path, flags)?;
         connection.busy_timeout(Duration::from_millis(100))?;
-        let application: i64 =
-            connection.pragma_query_value(None, "application_id", |r| r.get(0))?;
-        let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        ensure!(
-            (empty && application == 0 && version == 0)
-                || (application == APPLICATION_ID && matches!(version, 1..=3 | 7..=STORE_VERSION)),
-            "foreign or unsupported channel store"
-        );
+        store_version(&connection, empty)?;
         connection.execute_batch(
             "PRAGMA trusted_schema=OFF;
              PRAGMA journal_mode=DELETE;
@@ -159,19 +194,15 @@ impl Store {
              PRAGMA mmap_size=0;
              PRAGMA cache_size=-1024;",
         )?;
-        if empty {
-            let tx = connection.transaction()?;
-            tx.execute_batch(include_str!("schema.sql"))?;
-            tx.execute_batch(include_str!("wakes.sql"))?;
-            tx.execute_batch(WAKE_QUEUE_SCHEMA)?;
-            tx.execute_batch(ATTACHMENT_STAGING_SCHEMA)?;
-            tx.pragma_update(None, "application_id", APPLICATION_ID)?;
-            tx.pragma_update(None, "user_version", STORE_VERSION)?;
-            tx.commit()?;
-            directory.sync_all()?;
-        } else if version < STORE_VERSION {
-            let tx = connection.transaction()?;
-            if version == 1 {
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let version = store_version(&tx, empty)?;
+        if version < STORE_VERSION {
+            if version == 0 {
+                tx.execute_batch(include_str!("schema.sql"))?;
+                tx.execute_batch(include_str!("wakes.sql"))?;
+                tx.execute_batch(ATTACHMENT_STAGING_SCHEMA)?;
+                tx.pragma_update(None, "application_id", APPLICATION_ID)?;
+            } else if version == 1 {
                 tx.execute_batch(
                     "ALTER TABLE members ADD COLUMN workspace_id TEXT NOT NULL DEFAULT '';
                      UPDATE members SET workspace_id=(SELECT workspace_id FROM channels WHERE id=members.channel_id);
@@ -179,25 +210,48 @@ impl Store {
                      CREATE INDEX visible_explicit_channels ON members(workspace_id,participant_id,channel_id);",
                 )?;
             }
-            if matches!(version, 1 | 2 | 7) {
+            if matches!(version, 1 | 2 | FIRST_STAGING_VERSION) {
                 tx.execute_batch(include_str!("wakes.sql"))?;
             }
-            if version < 7 {
+            if (1..FIRST_STAGING_VERSION).contains(&version) {
                 migrate_attachment_staging(&tx)?;
             }
-            // Prior work cannot be offered by a new runtime, so its new order fields need no backfill.
-            tx.execute_batch(RETIRE_OLD_WAKE_WORK)?;
-            tx.execute_batch(WAKE_QUEUE_SCHEMA)?;
-            if matches!(version, 3 | 8) {
-                tx.execute(
-                    "UPDATE channel_batches SET revoked=1,outcome='unknown' WHERE outcome='revoked'",
+            // Version 9 was used by both the ordered wake queue and the older direct store.
+            let legacy_direct_v9 = version == ORDERED_WAKE_VERSION
+                && tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema
+                     WHERE type='table' AND name='direct_channels')",
                     [],
+                    |row| row.get::<_, bool>(0),
                 )?;
+            if version < ORDERED_WAKE_VERSION || legacy_direct_v9 {
+                tx.execute_batch(WAKE_QUEUE_SCHEMA)?;
+                if matches!(version, 3 | 4 | 8) || legacy_direct_v9 {
+                    tx.execute(
+                        "UPDATE channel_batches SET revoked=1,outcome='unknown' WHERE outcome='revoked'",
+                        [],
+                    )?;
+                }
             }
+            if matches!(version, 0..=3 | 7 | 8)
+                || (version == ORDERED_WAKE_VERSION && !legacy_direct_v9)
+            {
+                tx.execute_batch(include_str!("direct.sql"))?;
+            }
+            tx.execute_batch(
+                "DROP TABLE IF EXISTS agent_state;
+                 ALTER TABLE notification_work ADD COLUMN read_at INTEGER;
+                 ALTER TABLE notification_work ADD COLUMN acknowledged_at INTEGER;",
+            )?;
             tx.pragma_update(None, "user_version", STORE_VERSION)?;
-            tx.commit()?;
-        } else {
-            connection.execute_batch(RETIRE_OLD_WAKE_WORK)?;
+        }
+        if version != 0 {
+            // A new runtime cannot offer abandoned work; old queue rows need no order backfill.
+            tx.execute_batch(RETIRE_OLD_WAKE_WORK)?;
+        }
+        tx.commit()?;
+        if version == 0 {
+            directory.sync_all()?;
         }
         Ok(Self {
             connection,
@@ -214,8 +268,10 @@ impl Store {
             let mut statement = self.connection.prepare(
                 "SELECT c.workspace_id FROM notification_work w
                  JOIN channels c ON c.id=w.channel_id WHERE w.pending=1
+                    AND NOT EXISTS(SELECT 1 FROM direct_channels d WHERE d.channel_id=c.id)
                  UNION SELECT c.workspace_id FROM channel_batches b
-                 JOIN channels c ON c.id=b.channel_id WHERE b.outcome IS NULL AND b.revoked=0",
+                 JOIN channels c ON c.id=b.channel_id WHERE b.outcome IS NULL AND b.revoked=0
+                    AND NOT EXISTS(SELECT 1 FROM direct_channels d WHERE d.channel_id=c.id)",
             )?;
             let mut rows = statement.query([])?;
             while let Some(row) = rows.next()? {
@@ -232,14 +288,14 @@ impl Store {
         {
             let mut statement = tx.prepare(
                 "UPDATE notification_work SET pending=0 WHERE pending=1 AND channel_id IN
-                    (SELECT id FROM channels WHERE workspace_id=?1)",
+                    (SELECT id FROM channels WHERE workspace_id=?1 AND id NOT IN (SELECT channel_id FROM direct_channels))",
             )?;
             for id in &closed {
                 statement.execute([id])?;
             }
             let mut batches = tx.prepare(
                 "UPDATE channel_batches SET revoked=1 WHERE outcome IS NULL AND revoked=0 AND channel_id IN
-                    (SELECT id FROM channels WHERE workspace_id=?1)",
+                    (SELECT id FROM channels WHERE workspace_id=?1 AND id NOT IN (SELECT channel_id FROM direct_channels))",
             )?;
             for id in &closed {
                 batches.execute([id])?;
@@ -313,8 +369,10 @@ impl Store {
         &self,
         id: &ChannelId,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+        caller_workspace: Option<&str>,
     ) -> Result<()> {
-        let (_, authority) = self.access(id, admit)?;
+        let (channel, authority) = self.access(id, admit, caller_workspace)?;
+        channel.require_shared()?;
         require_write(&authority)
     }
 
@@ -396,7 +454,16 @@ impl Store {
             | ChannelRequest::GetAttachment { channel_id, .. } => channel_id,
             _ => unreachable!("workspace and subscription routes are handled separately"),
         };
-        let (channel, authority) = self.access(channel_id, &admit)?;
+        let (channel, authority) = self.access(channel_id, &admit, routes.workspace)?;
+        if !matches!(
+            request,
+            ChannelRequest::History { .. }
+                | ChannelRequest::Read { .. }
+                | ChannelRequest::MarkRead { .. }
+                | ChannelRequest::Post { .. }
+        ) {
+            channel.require_shared()?;
+        }
         match request {
             ChannelRequest::ListMembers {
                 channel_id,
@@ -432,14 +499,23 @@ impl Store {
                 require_owner(&authority)?;
                 self.set_membership(channel_id, channel, membership, members, &authority)
             }
-            ChannelRequest::Post { channel_id, post } => self.post(
-                channel,
-                post,
-                authority,
-                retire,
-                routes,
-                (&channel_id, selector.as_ref()),
-            ),
+            ChannelRequest::Post { channel_id, post } => {
+                let fingerprint = fingerprint_for(&post, selector.as_ref());
+                if let Some(receipt) =
+                    self.retry_post(&authority.actor.id, &post, &fingerprint, Some(&channel_id))?
+                {
+                    return Ok((receipt, false));
+                }
+                self.post(
+                    channel,
+                    post,
+                    authority,
+                    retire,
+                    routes,
+                    (&channel_id, &fingerprint),
+                    None,
+                )
+            }
             ChannelRequest::History {
                 channel_id,
                 before,
@@ -507,19 +583,41 @@ impl Store {
         &self,
         id: &ChannelId,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+        caller_workspace: Option<&str>,
     ) -> Result<(StoredChannel, ChannelAuthority)> {
         let channel = self.connection.query_row(
-            "SELECT workspace_id,name,workspace_wide,settings,last_sequence,change_sequence,last_attention
-             FROM channels WHERE id=?1",
+            "SELECT c.workspace_id,COALESCE(d.display_name,c.name),c.workspace_wide,
+                    c.settings,c.last_sequence,c.change_sequence,c.last_attention,d.channel_id IS NOT NULL
+             FROM channels c LEFT JOIN direct_channels d ON d.channel_id=c.id WHERE c.id=?1",
             [id.as_ref()],
             |row| StoredChannel::read(row, 0),
         ).optional()?.context(ChannelAccessLost)?;
-        let authority = workspace_authority(&channel.workspace_id, admit)?;
-        if authority.actor.kind == ParticipantKind::Agent && !channel.workspace_wide {
-            ensure!(
-                self.explicit_member(id, &authority.actor.id)?,
-                ChannelAccessLost
-            );
+        // Direct membership is session-owned. An agent proves its binding in its
+        // own workspace; the creator's workspace only groups the user's discovery.
+        let workspace = if channel.direct {
+            caller_workspace.unwrap_or(&channel.workspace_id)
+        } else {
+            &channel.workspace_id
+        };
+        let authority = workspace_authority(workspace, admit)?;
+        if authority.actor.kind == ParticipantKind::Agent {
+            if channel.direct {
+                ensure!(
+                    exists(
+                        &self.connection,
+                        "SELECT EXISTS(SELECT 1 FROM direct_channels WHERE channel_id=?1
+                         AND (first_participant=?2 OR second_participant=?2))",
+                        id,
+                        authority.actor.id.as_ref(),
+                    )?,
+                    ChannelAccessLost
+                );
+            } else if !channel.workspace_wide {
+                ensure!(
+                    self.explicit_member(id, &authority.actor.id)?,
+                    ChannelAccessLost
+                );
+            }
         }
         Ok((channel, authority))
     }
@@ -548,11 +646,18 @@ impl Store {
                  UNION ALL
                  SELECT channel_id FROM members
                    WHERE NOT ?4 AND workspace_id=?1 AND participant_id=?2 AND channel_id>?3
+                 UNION ALL
+                 SELECT channel_id FROM direct_channels
+                   WHERE NOT ?4 AND first_participant=?2 AND channel_id>?3
+                 UNION ALL
+                 SELECT channel_id FROM direct_channels
+                   WHERE NOT ?4 AND second_participant=?2 AND channel_id>?3
                  ORDER BY 1 LIMIT ?5
              )
-             SELECT c.id,c.workspace_id,c.name,c.workspace_wide,c.settings,c.last_sequence,c.change_sequence,
-                    c.last_attention,COALESCE(p.through,0)
+             SELECT c.id,c.workspace_id,COALESCE(d.display_name,c.name),c.workspace_wide,c.settings,
+                    c.last_sequence,c.change_sequence,c.last_attention,d.channel_id IS NOT NULL,COALESCE(p.through,0)
              FROM visible v JOIN channels c ON c.id=v.id
+               LEFT JOIN direct_channels d ON d.channel_id=c.id
                LEFT JOIN positions p ON p.channel_id=c.id AND p.participant_id=?2
              ORDER BY v.id",
         )?;
@@ -566,7 +671,7 @@ impl Store {
                     user,
                     limit + 1
                 ],
-                |r| Ok(StoredChannel::read(r, 1)?.summary(ChannelId(r.get(0)?), r.get(8)?, user)),
+                |r| Ok(StoredChannel::read(r, 1)?.summary(ChannelId(r.get(0)?), r.get(9)?, user)),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let next_after =
@@ -683,6 +788,7 @@ impl Store {
                     last_sequence: 0,
                     read_through: 0,
                     unread_attention: false,
+                    direct: false,
                 },
             },
             false,
@@ -779,6 +885,7 @@ impl Store {
         Ok(Some(members))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn post(
         &mut self,
         channel: StoredChannel,
@@ -786,36 +893,39 @@ impl Store {
         authority: ChannelAuthority,
         retire: impl FnOnce(&mut Self, &str) -> Result<bool>,
         routes: ChannelRoutes<'_>,
-        (id, selector): (&ChannelId, Option<&ChannelId>),
+        (id, fingerprint): (&ChannelId, &[u8]),
+        new_pair: Option<(&Participant, &Participant)>,
     ) -> Result<(ChannelResponse, bool)> {
-        let fingerprint = fingerprint_for(&post, selector);
-        let retry = self
-            .connection
-            .query_row(
-                "SELECT channel_id,fingerprint,summary,wake_count,attention
-             FROM posts WHERE author_id=?1 AND request_key=?2",
-                params![authority.actor.id.as_ref(), post.idempotency_key],
-                |row| {
-                    if row.get_ref(0)?.as_str()? != id.as_ref()
-                        || row.get_ref(1)?.as_blob()? != fingerprint
-                    {
-                        return Ok(None);
-                    }
-                    Ok(Some(ChannelResponse::Posted {
-                        message: json(row, 2)?,
-                        wake_count: row.get(3)?,
-                        attention: row.get(4)?,
-                    }))
-                },
-            )
-            .optional()?;
-        if let Some(response) = retry {
-            return Ok((
-                response.context("channel post conflicts with an existing retry key")?,
-                false,
-            ));
-        }
         require_write(&authority)?;
+        if channel.direct {
+            ensure!(
+                authority.actor.kind == ParticipantKind::Agent,
+                "direct channels are read-only for users"
+            );
+            ensure!(
+                post.attachments.is_empty(),
+                "direct channels do not support attachments"
+            );
+        }
+        let mut authority = authority;
+        let direct_members = if channel.direct {
+            let pair = match new_pair {
+                Some((a, b)) => [a.id.clone(), b.id.clone()],
+                None => self.direct_pair(id)?.context(ChannelAccessLost)?,
+            };
+            let peer = pair
+                .iter()
+                .find(|p| **p != authority.actor.id)
+                .context(ChannelAccessLost)?;
+            if !authority.participants.iter().any(|p| p.actor.id == *peer)
+                && let Some(participant) = (routes.direct_peer)(peer)?
+            {
+                authority.participants.push(participant);
+            }
+            Some(pair)
+        } else {
+            None
+        };
         let (policy, attention) = match authority.actor.kind {
             ParticipantKind::User => (channel.settings.user_wake, false),
             ParticipantKind::Agent => (
@@ -830,13 +940,17 @@ impl Store {
         let may_wake = !authority.participants.is_empty()
             && policy != WakePolicy::None
             && (policy != WakePolicy::AddressedOnly || !post.mentions.is_empty());
-        let explicit_members = if may_wake || !post.mentions.is_empty() {
+        let shared_members = if direct_members.is_none() && (may_wake || !post.mentions.is_empty())
+        {
             self.members_if_explicit(id, &channel)?
         } else {
             None
         };
-        let can_mention =
-            |participant: &Participant| member(participant, explicit_members.as_deref());
+        let explicit_members = direct_members
+            .as_ref()
+            .map(|pair| pair.as_slice())
+            .or(shared_members.as_deref());
+        let can_mention = |participant: &Participant| member(participant, explicit_members);
         let mut addressed_agent = false;
         for mention in &mut post.mentions {
             let target = if let Some(caller) = routes.exact_mentions {
@@ -879,7 +993,7 @@ impl Store {
                         launch,
                         binding: entry.binding_revision,
                         participant: target.id.as_ref(),
-                        addressed,
+                        addressed: addressed || channel.direct,
                     });
                 }
             }
@@ -897,11 +1011,14 @@ impl Store {
             source: post.source,
         };
         let needed = wakes.len() + usize::from(attention);
-        let pending_work = needed != 0 && !retire(self, &channel.workspace_id)?;
+        let pending_work = needed != 0 && (channel.direct || !retire(self, &channel.workspace_id)?);
         if pending_work {
             self.reclaim_wake_capacity(needed, routes.binding_live)?;
         }
         let tx = self.connection.transaction()?;
+        if let Some((a, b)) = new_pair {
+            insert_direct_channel(&tx, id, &channel.workspace_id, a, b)?;
+        }
         if let Some(reply) = &message.reply_to {
             ensure!(
                 exists(
@@ -917,15 +1034,14 @@ impl Store {
             promote_attachments(&tx, id, &message.attachments, message.posted_at_ms)?;
         }
         let wake_count = u32::try_from(wakes.len())?;
-        tx.execute(
-            "INSERT INTO posts(id,channel_id,sequence,author_id,request_key,fingerprint,summary,body,wake_count,attention)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            params![message.id.as_ref(), id.as_ref(), sequence, message.author.id.as_ref(), post.idempotency_key,
-                    fingerprint.as_slice(), serde_json::to_string(&message)?, post.text, wake_count, attention],
-        )?;
-        tx.execute(
-            "UPDATE channels SET last_sequence=?2,last_attention=CASE WHEN ?3 THEN ?2 ELSE last_attention END WHERE id=?1",
-            params![id.as_ref(), sequence, attention],
+        insert_post(
+            &tx,
+            id,
+            &message,
+            &post.idempotency_key,
+            fingerprint,
+            &post.text,
+            (wake_count, attention),
         )?;
         if needed != 0 {
             // `posts` is the last rowid table inserted into by this transaction.
@@ -961,13 +1077,13 @@ impl Store {
                 ])?;
             }
         }
-        add_change(&tx, id, ChannelChangeKind::Post, None)?;
         tx.commit()?;
         if pending_work && !wakes.is_empty() {
             (routes.publish)(&wakes);
         }
         Ok((
             ChannelResponse::Posted {
+                channel_id: Some(id.clone()),
                 message,
                 wake_count,
                 attention,
@@ -976,12 +1092,183 @@ impl Store {
         ))
     }
 
+    fn retry_post(
+        &self,
+        actor: &ParticipantId,
+        post: &ChannelPost,
+        fingerprint: &[u8],
+        expected: Option<&ChannelId>,
+    ) -> Result<Option<ChannelResponse>> {
+        let retry = self
+            .connection
+            .query_row(
+                "SELECT channel_id,fingerprint,summary,wake_count,attention
+             FROM posts WHERE author_id=?1 AND request_key=?2",
+                params![actor.as_ref(), post.idempotency_key],
+                |row| {
+                    let id = row.get_ref(0)?.as_str()?;
+                    if expected.is_some_and(|expected| id != expected.as_ref())
+                        || row.get_ref(1)?.as_blob()? != fingerprint
+                    {
+                        return Ok(None);
+                    }
+                    Ok(Some(ChannelResponse::Posted {
+                        channel_id: Some(ChannelId(id.to_owned())),
+                        message: json(row, 2)?,
+                        wake_count: row.get(3)?,
+                        attention: row.get(4)?,
+                    }))
+                },
+            )
+            .optional()?;
+        retry
+            .map(|receipt| receipt.context("channel post conflicts with an existing retry key"))
+            .transpose()
+    }
+
+    fn direct_pair(&self, channel: &ChannelId) -> Result<Option<[ParticipantId; 2]>> {
+        Ok(self.connection.query_row(
+            "SELECT first_participant,second_participant FROM direct_channels WHERE channel_id=?1",
+            [channel.as_ref()],
+            |row| Ok([ParticipantId(row.get(0)?), ParticipantId(row.get(1)?)]),
+        ).optional()?)
+    }
+
+    pub(crate) fn post_direct(
+        &mut self,
+        post: ChannelPost,
+        authority: ChannelAuthority,
+        launch_id: &str,
+        workspace: &str,
+        routes: ChannelRoutes<'_>,
+    ) -> Result<(ChannelResponse, bool)> {
+        let selector = ChannelId(format!("\u{1}{launch_id}"));
+        let fingerprint = fingerprint_for(&post, Some(&selector));
+        if let Some(receipt) = self.retry_post(&authority.actor.id, &post, &fingerprint, None)? {
+            return Ok((receipt, false));
+        }
+        let target = authority
+            .participants
+            .iter()
+            .find(|p| p.launch_id.as_deref() == Some(launch_id))
+            .context("direct recipient is not a live launch in your workspace")?
+            .actor
+            .clone();
+        ensure!(
+            target.id != authority.actor.id,
+            "cannot post a direct message to yourself"
+        );
+        let mut pair = [authority.actor.id.as_ref(), target.id.as_ref()];
+        pair.sort_unstable();
+        let existing = self.connection.query_row(
+            "SELECT c.id,c.workspace_id,d.display_name,c.workspace_wide,c.settings,c.last_sequence,
+                    c.change_sequence,c.last_attention,1
+             FROM direct_channels d JOIN channels c ON c.id=d.channel_id
+             WHERE d.first_participant=?1 AND d.second_participant=?2",
+            pair, |row| Ok((ChannelId(row.get(0)?), StoredChannel::read(row, 1)?)),
+        ).optional()?;
+        let author = authority.actor.clone();
+        let is_new = existing.is_none();
+        let (id, channel) = existing.unwrap_or_else(|| {
+            (
+                ChannelId(new_id()),
+                StoredChannel {
+                    workspace_id: workspace.to_owned(),
+                    name: String::new(),
+                    workspace_wide: false,
+                    direct: true,
+                    settings: DIRECT_SETTINGS,
+                    last_sequence: 0,
+                    change_sequence: 0,
+                    last_attention: 0,
+                },
+            )
+        });
+        self.post(
+            channel,
+            post,
+            authority,
+            |_, _| Ok(false),
+            routes,
+            (&id, &fingerprint),
+            is_new.then_some((&author, &target)),
+        )
+    }
+
+    pub(crate) fn record_channel_read(
+        &self,
+        message: &MessageId,
+        recipient: super::ChannelRecipient<'_>,
+    ) -> Result<()> {
+        self.connection.execute(
+            "UPDATE notification_work SET read_at=?5
+             WHERE message_id=?1 AND participant_id=?2
+                AND launch_id=?3 AND binding_revision=?4 AND read_at IS NULL",
+            params![
+                message.as_ref(),
+                recipient.participant,
+                recipient.launch,
+                recipient.binding,
+                unix_time_ms()?
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn acknowledge_channel_post(
+        &self,
+        channel: &ChannelId,
+        message: &MessageId,
+        recipient: super::ChannelRecipient<'_>,
+        workspace: &str,
+        admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+    ) -> Result<bool> {
+        self.access(channel, admit, Some(workspace))?;
+        let (read, acknowledged): (bool, bool) = self
+            .connection
+            .query_row(
+                "SELECT read_at IS NOT NULL,acknowledged_at IS NOT NULL FROM notification_work
+             WHERE channel_id=?1 AND message_id=?2 AND participant_id=?3
+                AND launch_id=?4 AND binding_revision=?5",
+                params![
+                    channel.as_ref(),
+                    message.as_ref(),
+                    recipient.participant,
+                    recipient.launch,
+                    recipient.binding
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .context("no delivery for this channel post and binding")?;
+        ensure!(
+            read,
+            "read the delivered channel post before acknowledging it"
+        );
+        if acknowledged {
+            return Ok(false);
+        }
+        Ok(self.connection.execute(
+            "UPDATE notification_work SET acknowledged_at=?6,pending=0
+             WHERE channel_id=?1 AND message_id=?2 AND participant_id=?3
+                AND launch_id=?4 AND binding_revision=?5",
+            params![
+                channel.as_ref(),
+                message.as_ref(),
+                recipient.participant,
+                recipient.launch,
+                recipient.binding,
+                unix_time_ms()?
+            ],
+        )? == 1)
+    }
+
     pub(crate) fn compact_members(
         &mut self,
         request: ChannelRequest,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
         caller: (&str, u64),
-        workspace: Option<&str>,
+        caller_workspace: Option<&str>,
     ) -> Result<serde_json::Value> {
         let ChannelRequest::ListMembers {
             channel_id,
@@ -992,9 +1279,10 @@ impl Store {
             unreachable!("compact roster requires a members request");
         };
         let channel_id = self
-            .resolve_builtin(&channel_id, workspace, admit)?
+            .resolve_builtin(&channel_id, caller_workspace, admit)?
             .unwrap_or(channel_id);
-        let (channel, authority) = self.access(&channel_id, admit)?;
+        let (channel, authority) = self.access(&channel_id, admit, caller_workspace)?;
+        channel.require_shared()?;
         let members = self.members_if_explicit(&channel_id, &channel)?;
         let (entries, next_after) =
             members_page(authority, members.as_deref(), after.as_ref(), limit)?;
@@ -1023,7 +1311,7 @@ impl Store {
         &mut self,
         request: ChannelRequest,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
-        workspace: Option<&str>,
+        caller_workspace: Option<&str>,
     ) -> Result<serde_json::Value> {
         let ChannelRequest::History {
             channel_id,
@@ -1035,18 +1323,20 @@ impl Store {
             unreachable!("compact history requires a history request");
         };
         let channel_id = self
-            .resolve_builtin(&channel_id, workspace, admit)?
+            .resolve_builtin(&channel_id, caller_workspace, admit)?
             .unwrap_or(channel_id);
-        let (channel, _) = self.access(&channel_id, admit)?;
-        let bound = history_bound(&channel, before, after);
+        let (channel, _) = self.access(&channel_id, admit, caller_workspace)?;
+        let (lower, upper) = history_bounds(&channel, before, after);
         let sql = if after.is_some() {
-            "SELECT summary FROM posts WHERE channel_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3"
+            "SELECT summary FROM posts WHERE channel_id=?1 AND sequence>?2 AND sequence<=?3
+             ORDER BY sequence LIMIT ?4"
         } else {
-            "SELECT summary FROM posts WHERE channel_id=?1 AND sequence<=?2 ORDER BY sequence DESC LIMIT ?3"
+            "SELECT summary FROM posts WHERE channel_id=?1 AND sequence>?2 AND sequence<=?3
+             ORDER BY sequence DESC LIMIT ?4"
         };
         let mut statement = self.connection.prepare(sql)?;
         let mut messages = statement
-            .query_map(params![channel_id.as_ref(), bound, limit], |row| {
+            .query_map(params![channel_id.as_ref(), lower, upper, limit], |row| {
                 json::<MessageSummary>(row, 0)
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1071,13 +1361,15 @@ impl Store {
         limit: u16,
     ) -> Result<ChannelResponse> {
         let sql = if after.is_some() {
-            "SELECT summary,body FROM posts WHERE channel_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3"
+            "SELECT summary,body FROM posts WHERE channel_id=?1 AND sequence>?2 AND sequence<=?3
+             ORDER BY sequence LIMIT ?4"
         } else {
-            "SELECT summary,body FROM posts WHERE channel_id=?1 AND sequence<=?2 ORDER BY sequence DESC LIMIT ?3"
+            "SELECT summary,body FROM posts WHERE channel_id=?1 AND sequence>?2 AND sequence<=?3
+             ORDER BY sequence DESC LIMIT ?4"
         };
-        let bound = history_bound(channel, before, after);
+        let (lower, upper) = history_bounds(channel, before, after);
         let mut statement = self.connection.prepare(sql)?;
-        let mut rows = statement.query(params![id.as_ref(), bound, limit])?;
+        let mut rows = statement.query(params![id.as_ref(), lower, upper, limit])?;
         let mut messages = Vec::new();
         let mut content_bytes = 0;
         while let Some(row) = rows.next()? {
@@ -1127,7 +1419,7 @@ impl Store {
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
         offset: usize,
         maximum: usize,
-        workspace: Option<&str>,
+        caller_workspace: Option<&str>,
     ) -> Result<serde_json::Value> {
         let ChannelRequest::Read {
             channel_id,
@@ -1137,9 +1429,9 @@ impl Store {
             unreachable!("compact message requires a read request");
         };
         let channel_id = self
-            .resolve_builtin(&channel_id, workspace, admit)?
+            .resolve_builtin(&channel_id, caller_workspace, admit)?
             .unwrap_or(channel_id);
-        self.access(&channel_id, admit)?;
+        self.access(&channel_id, admit, caller_workspace)?;
         self.with_message_page(&channel_id, &message_id, offset, maximum, |page| {
             #[derive(serde::Serialize)]
             struct Reply<'a> {
@@ -1259,8 +1551,9 @@ impl Store {
         after: Option<u64>,
         limit: u16,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+        caller_workspace: Option<&str>,
     ) -> Result<(u64, Vec<ChannelChange>, bool, bool)> {
-        let (channel, authority) = self.access(id, admit)?;
+        let (channel, authority) = self.access(id, admit, caller_workspace)?;
         let after = after.unwrap_or(channel.change_sequence);
         ensure!(
             after <= channel.change_sequence,
@@ -1270,14 +1563,22 @@ impl Store {
             return Ok((after, Vec::new(), false, authority.workspace_open));
         }
         let mut statement = self.connection.prepare(
-            "SELECT sequence,kind FROM changes WHERE channel_id=?1 AND participant_id IS NULL AND sequence>?3
+            "SELECT sequence,kind FROM changes
+             WHERE channel_id=?1 AND participant_id IS NULL AND sequence>?3 AND sequence<=?4
              UNION ALL
-             SELECT sequence,kind FROM changes WHERE channel_id=?1 AND participant_id=?2 AND sequence>?3
-             ORDER BY sequence LIMIT ?4",
+             SELECT sequence,kind FROM changes
+             WHERE channel_id=?1 AND participant_id=?2 AND sequence>?3 AND sequence<=?4
+             ORDER BY sequence LIMIT ?5",
         )?;
         let mut changes = statement
             .query_map(
-                params![id.as_ref(), authority.actor.id.as_ref(), after, limit + 1],
+                params![
+                    id.as_ref(),
+                    authority.actor.id.as_ref(),
+                    after,
+                    channel.change_sequence,
+                    limit + 1
+                ],
                 |r| {
                     Ok(ChannelChange {
                         sequence: r.get(0)?,
@@ -1479,7 +1780,22 @@ fn migrate_attachment_staging(tx: &Transaction<'_>) -> Result<()> {
     set_staged_bytes(tx, staged)
 }
 
-fn insert_channel(
+fn store_version(connection: &Connection, empty: bool) -> Result<i64> {
+    let (application, version): (i64, i64) = connection.query_row(
+        "SELECT application_id,user_version FROM pragma_application_id(),pragma_user_version()",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    ensure!(
+        (empty && application == 0 && version == 0)
+            || (application == APPLICATION_ID
+                && matches!(version, 1..=4 | FIRST_STAGING_VERSION..=9 | STORE_VERSION)),
+        "foreign or unsupported channel store"
+    );
+    Ok(version)
+}
+
+pub(super) fn insert_channel(
     tx: &Transaction<'_>,
     id: &ChannelId,
     workspace: &str,
@@ -1500,6 +1816,28 @@ fn insert_channel(
     Ok(())
 }
 
+pub(super) fn insert_post(
+    tx: &Transaction<'_>,
+    id: &ChannelId,
+    message: &MessageSummary,
+    request_key: &str,
+    fingerprint: &[u8],
+    text: &str,
+    (wake_count, attention): (u32, bool),
+) -> Result<()> {
+    tx.execute(
+        "INSERT INTO posts(id,channel_id,sequence,author_id,request_key,fingerprint,summary,body,wake_count,attention)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        params![message.id.as_ref(), id.as_ref(), message.sequence, message.author.id.as_ref(),
+                request_key, fingerprint, serde_json::to_string(message)?, text, wake_count, attention],
+    )?;
+    tx.execute(
+        "UPDATE channels SET last_sequence=?2,last_attention=CASE WHEN ?3 THEN ?2 ELSE last_attention END WHERE id=?1",
+        params![id.as_ref(), message.sequence, attention],
+    )?;
+    add_change(tx, id, ChannelChangeKind::Post, None)
+}
+
 impl StoredChannel {
     fn read(row: &Row<'_>, start: usize) -> rusqlite::Result<Self> {
         Ok(Self {
@@ -1510,6 +1848,7 @@ impl StoredChannel {
             last_sequence: row.get(start + 4)?,
             change_sequence: row.get(start + 5)?,
             last_attention: row.get(start + 6)?,
+            direct: row.get(start + 7)?,
         })
     }
 
@@ -1527,7 +1866,16 @@ impl StoredChannel {
             last_sequence: self.last_sequence,
             read_through,
             unread_attention: user && self.last_attention > read_through,
+            direct: self.direct,
         }
+    }
+
+    fn require_shared(&self) -> Result<()> {
+        ensure!(
+            !self.direct,
+            "direct channel does not support this operation"
+        );
+        Ok(())
     }
 }
 
@@ -1797,9 +2145,14 @@ fn fingerprint_for(post: &ChannelPost, selector: Option<&ChannelId>) -> [u8; 32]
     writer.finalize().into()
 }
 
-fn history_bound(channel: &StoredChannel, before: Option<u64>, after: Option<u64>) -> i64 {
-    let bound = after.unwrap_or_else(|| before.map_or(channel.last_sequence, |value| value - 1));
-    i64::try_from(bound).unwrap_or(i64::MAX)
+fn history_bounds(channel: &StoredChannel, before: Option<u64>, after: Option<u64>) -> (i64, u64) {
+    // Direct posts can commit from another connection. Exclude rows newer than
+    // the channel metadata read by access, including its returned change cursor.
+    let lower = i64::try_from(after.unwrap_or(0)).unwrap_or(i64::MAX);
+    let upper = before.map_or(channel.last_sequence, |value| {
+        (value - 1).min(channel.last_sequence)
+    });
+    (lower, upper)
 }
 
 fn new_id() -> String {

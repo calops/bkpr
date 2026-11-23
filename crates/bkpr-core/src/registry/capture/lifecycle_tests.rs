@@ -774,7 +774,7 @@ fn authenticated_bind_storage_failure_revokes_capture_and_poison_does_not_stop_n
 }
 
 #[test]
-fn authenticated_end_revokes_even_if_agent_retirement_storage_fails_and_keeps_verified_recovery() {
+fn authenticated_end_revokes_capture_and_keeps_verified_recovery() {
     let fixture = Fixture::new();
     let (pane_id, grant, peer) = seed_launch(&fixture);
     let launch = fixture.registry.inner.captures.lock().unwrap().launches[&grant.launch_id].clone();
@@ -799,22 +799,20 @@ fn authenticated_end_revokes_even_if_agent_retirement_storage_fails_and_keeps_ve
         .unwrap()
         .into_json()
         .unwrap();
-    let path = fixture._root.path().join("agents/state.json");
-    fs::remove_file(&path).unwrap();
-    fs::create_dir(&path).unwrap();
-    assert!(
-        fixture
-            .registry
-            .request_authenticated(
-                Request::new(Operation::HarnessEvent {
-                    launch_id: grant.launch_id.clone(),
-                    token: grant.token.clone(),
-                    event: CaptureEvent::End,
-                }),
-                &peer
-            )
-            .is_err()
-    );
+    let ended = fixture
+        .registry
+        .request_authenticated(
+            Request::new(Operation::HarnessEvent {
+                launch_id: grant.launch_id.clone(),
+                token: grant.token.clone(),
+                event: CaptureEvent::End,
+            }),
+            &peer,
+        )
+        .unwrap()
+        .into_json()
+        .unwrap();
+    assert_eq!(ended["accepted"], true);
     assert!(
         fixture
             .registry

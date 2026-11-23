@@ -156,9 +156,11 @@ but unmanaged harnesses, native modes that pass through without capture, and
 
 ### Let agents hand work to each other
 
-Launch two managed harnesses in the same workspace. Ask one to find the other
-with its Bkpr tools and send it a task. The recipient reads its inbox and
-acknowledges the task after processing it. The sender can check `inspect_outbox`.
+Launch two managed harnesses in the same workspace. Ask one to find the other's
+launch ID with `discover_agents` and send a task using `channel_post` with
+`recipient: {launch_id}`. The recipient resolves the native `channel_wake`,
+reads the message, and calls `channel_ack` after processing it. Either agent
+can reply using the message's `reply_target`.
 
 Bkpr delivers messages through the harness integration, not by typing into its
 terminal. Every direct message requests a wake, but an accepted message hasn't

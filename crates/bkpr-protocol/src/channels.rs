@@ -19,8 +19,10 @@ pub const MAX_MEMBERS: usize = 256;
 pub const MAX_MENTIONS: usize = 32;
 /// Maximum attachment references in one post.
 pub const MAX_ATTACHMENTS: usize = 8;
-/// Maximum UTF-8 bytes in one post body.
+/// Maximum UTF-8 bytes in a shared-channel post request.
 pub const MAX_POST_BYTES: usize = 16 * 1024;
+/// Maximum UTF-8 bytes in a retained direct message.
+pub const MAX_DIRECT_MESSAGE_BYTES: usize = 64 * 1024;
 /// Maximum encoded bytes in one raster attachment.
 pub const MAX_ATTACHMENT_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum UTF-8 bytes in an opaque identifier or idempotency key.
@@ -193,6 +195,22 @@ pub struct ChannelPost {
     pub source: Option<Box<ChannelSource>>,
 }
 
+impl ChannelPost {
+    /// Validate body, retry key and references without checking channel membership or existence.
+    pub fn validate(&self) -> Result<()> {
+        valid_id(&self.idempotency_key)?;
+        valid_post_text(&self.text)?;
+        ensure!(
+            !self.text.trim().is_empty() || !self.attachments.is_empty(),
+            "channel post requires text or an attachment"
+        );
+        if let Some(source) = &self.source {
+            valid_source_ids(source.channel_id.as_ref(), source.message_id.as_ref())?;
+        }
+        valid_references(&self.mentions, self.reply_to.as_ref(), &self.attachments)
+    }
+}
+
 impl fmt::Debug for ChannelPost {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ChannelPost").finish_non_exhaustive()
@@ -297,6 +315,10 @@ pub struct ChannelSummary {
     pub read_through: u64,
     /// An unread post qualified for user attention at commit time; false for agents.
     pub unread_attention: bool,
+    /// Whether this is a direct channel. Member agents can post by exact channel ID;
+    /// users have read-only access.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub direct: bool,
 }
 
 /// Ordered message metadata, without the body or attachment bytes.
@@ -566,6 +588,9 @@ pub enum ChannelResponse {
     },
     /// Durable acceptance of a post, not delivery or processing acknowledgement.
     Posted {
+        /// Exact owning channel, absent in receipts from older peers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        channel_id: Option<ChannelId>,
         /// Original committed post metadata, including on an identical retry.
         message: MessageSummary,
         /// Number of frozen wake targets, not the number reached.
@@ -755,16 +780,7 @@ impl ChannelRequest {
             }
             Self::Post { channel_id, post } => {
                 valid_id(channel_id.as_ref())?;
-                valid_id(&post.idempotency_key)?;
-                valid_post_text(&post.text)?;
-                ensure!(
-                    !post.text.trim().is_empty() || !post.attachments.is_empty(),
-                    "channel post requires text or an attachment"
-                );
-                if let Some(source) = &post.source {
-                    valid_source_ids(source.channel_id.as_ref(), source.message_id.as_ref())?;
-                }
-                valid_references(&post.mentions, post.reply_to.as_ref(), &post.attachments)
+                post.validate()
             }
             Self::History {
                 channel_id,

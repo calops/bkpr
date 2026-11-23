@@ -267,8 +267,12 @@ fn diagnostic_operation(operation: &Operation) -> Option<DiagnosticOperation> {
         } => match request {
             AgentRequest::Control { request, .. } => return diagnostic_operation(request),
             AgentRequest::SetTitle { .. } => ("agent.title", Some(launch_id.as_str()), "success"),
-            AgentRequest::SendMessage { to, .. } => ("agent.send", Some(to.as_str()), "success"),
-            AgentRequest::AckMessage { .. } => ("agent.ack", Some(launch_id.as_str()), "success"),
+            AgentRequest::ChannelDirectPost { launch_id, .. } => {
+                ("channel.direct_post", Some(launch_id.as_str()), "success")
+            }
+            AgentRequest::ChannelAck { channel_id, .. } => {
+                ("channel.ack", Some(channel_id.as_ref()), "success")
+            }
             AgentRequest::ReceiverRegister { .. } => {
                 ("agent.receiver", Some(launch_id.as_str()), "success")
             }

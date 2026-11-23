@@ -170,7 +170,7 @@ fn bootstrap(capture: &Capture) -> Result<String> {
         .context("AGY receiver path is not UTF-8")?;
     let command = format!("'{}' capture agy-receiver", program.replace('\'', "'\\''"));
     Ok(format!(
-        "First call Bkpr whoami to bind this launch from authoritative root-conversation metadata. If native receiver readiness is false, bootstrap once for this root using AGY's native run_command tool with CommandLine={}, IsDaemon:true, under ordinary native approvals. Never type this command into a terminal. Do not start another receiver while one is ready. The native child alone retains its local language-server credentials and sends only opaque inbox pointers through SendAgentMessage, including during active turns. Binding, active subscription, native acceptance, reading, explicit processed acknowledgement and semantic status are separate facts.",
+        "First call Bkpr whoami to bind this launch from authoritative root-conversation metadata. If native receiver readiness is false, bootstrap once for this root using AGY's native run_command tool with CommandLine={}, IsDaemon:true, under ordinary native approvals. Never type this command into a terminal. Do not start another receiver while one is ready. The native child alone retains its local language-server credentials and sends only body-free channel wake hints through SendAgentMessage, including during active turns. Binding, active subscription, native acceptance, reading, explicit processed acknowledgement and semantic status are separate facts.",
         serde_json::to_string(&command)?,
     ))
 }

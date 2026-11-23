@@ -437,31 +437,50 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
     let original_receiver = receiver(&registry, &old);
     let interrupted = subscribe(&registry, &old, &original_receiver);
     assert_eq!(interrupted["channel_wake"]["channel_id"], team.0);
-    let direct = agent(
+    let body = "東京\n".repeat(90);
+    let send_direct = || direct_post(&old.grant.launch_id, &body, "dm");
+    let direct = agent(&registry, &other, send_direct());
+    assert_eq!(direct["wake_count"], 1);
+    let ChannelResponse::Listed { channels, .. } = channel(&registry, None, list()).unwrap() else {
+        panic!("expected workspace channels");
+    };
+    let direct_channel = channels.into_iter().find(|entry| entry.direct).unwrap().id;
+    let message_id = direct["message"]["id"].as_str().unwrap().to_owned();
+    let ack = || AgentRequest::ChannelAck {
+        channel_id: direct_channel.clone(),
+        message_id: channels::MessageId(message_id.clone()),
+    };
+    assert!(agent_result(&registry, &old, ack()).is_err());
+    let page = agent(
         &registry,
-        &other,
-        AgentRequest::SendMessage {
-            to: old.grant.launch_id.clone(),
-            text: "old launch only".into(),
-            idempotency_key: "dm".into(),
-            scope: AgentScope::Workspace,
+        &old,
+        AgentRequest::ChannelRead {
+            channel_id: direct_channel.clone(),
+            message_id: channels::MessageId(message_id.clone()),
+            offset: None,
+            max_bytes: Some(1024),
         },
     );
-    assert_eq!(direct["durable"], true);
-    let read_inbox = || AgentRequest::ReadInbox {
-        after: None,
-        limit: None,
-        ack_ids: Vec::new(),
-        include_read: true,
-    };
-    assert_eq!(
-        agent(&registry, &old, read_inbox())["messages"][0]["id"],
-        direct["message_id"]
-    );
+    assert_eq!(page["text"], body);
+    assert_eq!(agent(&registry, &old, ack())["acknowledged"], true);
+    assert_eq!(agent(&registry, &old, ack())["acknowledged"], false);
+    assert_eq!(agent(&registry, &other, send_direct()), direct);
     let pane = old.grant.pane_id.clone();
     let window = &workspace.windows[0];
     drop(server);
     drop(registry);
+    // A v9 store has the history but used a separate launch delivery ledger.
+    let old_disk = rusqlite::Connection::open(root.join("state/channels.sqlite3")).unwrap();
+    old_disk
+        .execute_batch(
+            "ALTER TABLE notification_work DROP COLUMN read_at;
+         ALTER TABLE notification_work DROP COLUMN acknowledged_at;
+         CREATE TABLE agent_state(singleton INTEGER PRIMARY KEY, snapshot BLOB);
+         INSERT INTO agent_state VALUES(1,x'00');
+         PRAGMA user_version=9;",
+        )
+        .unwrap();
+    drop(old_disk);
 
     let (registry, server) = open(root);
     let expected = registry
@@ -500,6 +519,24 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
         panic!("expected retained history")
     };
     assert_eq!(messages[0].text, "prior shared history");
+    for caller in [None, Some(&recovered)] {
+        let ChannelResponse::History { messages, .. } =
+            channel(&registry, caller, history(&direct_channel)).unwrap()
+        else {
+            panic!("expected retained direct history");
+        };
+        assert_eq!(messages[0].message.id.0, message_id);
+        assert_eq!(messages[0].text, body);
+    }
+    assert!(agent_result(&registry, &recovered, ack()).is_err());
+    assert!(
+        agent_result(
+            &registry,
+            &recovered,
+            direct_post(&other.grant.launch_id, "retired", "new-key")
+        )
+        .is_err()
+    );
     let (live_mention, recovered_selector) =
         mention_and_launch(&registry, &recovered, &team, &old_id);
     assert_eq!(recovered_selector, recovered.grant.launch_id);
@@ -525,8 +562,6 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
     assert!(error.contains("refresh the roster"), "{error}");
     assert!(channel(&registry, Some(&recovered), history(&removed)).is_err());
     assert!(channel(&registry, Some(&old), history(&kept)).is_err());
-    let inbox = agent(&registry, &recovered, read_inbox());
-    assert_eq!(inbox["messages"], json!([]));
     let recovered_receiver = receiver(&registry, &recovered);
     assert!(subscribe(&registry, &recovered, &recovered_receiver).is_null());
     let old_batch = interrupted["channel_wake"]["batch_id"]
@@ -678,6 +713,7 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
     let replacement = live(&registry, &a.home);
     assert_ne!(replacement.root.pid, replacement.pane_root.pid);
     assert!(channel(&registry, Some(&replacement), history(&kept)).is_err());
+    assert!(channel(&registry, Some(&replacement), history(&direct_channel)).is_err());
     assert!(channel(&registry, Some(&replacement), history(&desk)).is_ok());
     let replacement_id = replacement.channel_participant.as_ref().unwrap().clone();
     let addressed = |key: &str| {
@@ -1375,15 +1411,10 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
             .is_none()
     );
 
-    agent(
+    let dm = agent(
         &registry,
         &sender,
-        AgentRequest::SendMessage {
-            to: a.grant.launch_id.clone(),
-            text: "separate direct message".into(),
-            idempotency_key: "direct".into(),
-            scope: AgentScope::Workspace,
-        },
+        direct_post(&a.grant.launch_id, "direct message", "direct"),
     );
     let mut wrong = a_wake.clone();
     wrong["notification_id"] = b_wake["notification_id"].clone();
@@ -1401,8 +1432,13 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         true
     );
     let direct = subscribe(&registry, &a, &a_receiver);
-    assert!(direct.get("channel_wake").is_none());
+    assert_eq!(direct["channel_wake"]["channel_id"], dm["channel_id"]);
+    assert_eq!(
+        direct["channel_wake"]["addressed_message_id"],
+        dm["message"]["id"]
+    );
     assert!(direct["generation"].as_u64().unwrap() > a_wake["generation"].as_u64().unwrap());
+    settle_wake(&registry, &a, &a_receiver, &direct);
     assert_eq!(agent(&registry, &a, lookup(a_pointer)), detail);
 
     let created = agent_channel(
@@ -2057,5 +2093,229 @@ fn authenticated_channel_attachments_require_live_member() {
             call(&member, request).unwrap_err().to_string(),
             "unknown or ended launch"
         );
+    }
+}
+
+#[test]
+fn concurrent_direct_sends_share_one_private_thread_and_keep_exact_receipts() {
+    let root = private_root();
+    let root = root.path();
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.join("omp")).unwrap();
+    let (registry, _server) = open(root);
+    let add = |name| {
+        let spec = launch_spec(root, name, name);
+        let workspace = send(
+            &registry,
+            Operation::WorkspaceCreate {
+                name: None,
+                initial: Some(spec.clone()),
+            },
+        )["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        (live(&registry, &spec.home), workspace)
+    };
+    let (a, a_workspace) = add("first");
+    let add_peer = |name| {
+        let spec = launch_spec(root, name, name);
+        let revision = registry
+            .snapshot()
+            .unwrap()
+            .workspaces
+            .into_iter()
+            .find(|workspace| workspace.id == a_workspace)
+            .unwrap()
+            .revision;
+        send(
+            &registry,
+            Operation::WindowCreate {
+                workspace_id: a_workspace.clone(),
+                expected_revision: revision,
+                name: None,
+                spec: spec.clone(),
+            },
+        );
+        live(&registry, &spec.home)
+    };
+    let b = add_peer("second");
+    let outsider = add_peer("unrelated");
+    let alias = &b.managed.conversation.as_ref().unwrap().id;
+    let original = || direct_post(&b.grant.launch_id, "from A", "first-send");
+    assert!(agent_result(&registry, &a, direct_post(alias, "from A", "first-send")).is_err());
+    let start = std::sync::Barrier::new(2);
+    let (a_post, b_post) = thread::scope(|scope| {
+        let to_b = scope.spawn(|| {
+            start.wait();
+            agent(&registry, &a, original())
+        });
+        let to_a = scope.spawn(|| {
+            start.wait();
+            agent(
+                &registry,
+                &b,
+                direct_post(&a.grant.launch_id, "from B", "first-send"),
+            )
+        });
+        (to_b.join().unwrap(), to_a.join().unwrap())
+    });
+    assert_ne!(a_post["message"]["id"], b_post["message"]["id"]);
+    assert_eq!(a_post["channel_id"], b_post["channel_id"]);
+    assert_eq!(agent(&registry, &a, original()), a_post);
+    assert!(
+        agent_result(
+            &registry,
+            &a,
+            direct_post(&outsider.grant.launch_id, "from A", "first-send")
+        )
+        .is_err()
+    );
+
+    let list = |workspace_id: &str| ChannelRequest::List {
+        workspace_id: workspace_id.into(),
+        after: None,
+        limit: 10,
+    };
+    let ChannelResponse::Listed { channels, .. } =
+        channel(&registry, None, list(&a_workspace)).unwrap()
+    else {
+        panic!("expected workspace channels")
+    };
+    let human_threads: Vec<_> = channels.into_iter().filter(|entry| entry.direct).collect();
+    assert_eq!(human_threads.len(), 1);
+    let id = &human_threads[0].id;
+    assert_ne!(id.as_ref(), alias);
+    let ChannelResponse::History { messages, .. } = channel(&registry, None, history(id)).unwrap()
+    else {
+        panic!("expected direct history");
+    };
+    assert_eq!(messages.len(), 2);
+    for (receipt, body) in [(&a_post, "from A"), (&b_post, "from B")] {
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.message.id.0 == receipt["message"]["id"] && m.text == body)
+        );
+    }
+    for caller in [&a, &b] {
+        let listed = agent_channel(&registry, caller, list(&a_workspace)).unwrap();
+        assert!(
+            listed["channels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["id"] == id.0)
+        );
+        assert!(agent_channel(&registry, caller, history(id)).is_ok());
+    }
+    let listed = agent_channel(&registry, &outsider, list(&a_workspace)).unwrap();
+    assert!(
+        listed["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["id"] != id.0)
+    );
+    assert!(agent_channel(&registry, &outsider, history(id)).is_err());
+    assert!(
+        agent_channel(
+            &registry,
+            &outsider,
+            post(id, "foreign post", PostIntent::Note)
+        )
+        .is_err()
+    );
+    assert!(
+        channel(
+            &registry,
+            None,
+            post(id, "not a human channel", PostIntent::Note)
+        )
+        .is_err()
+    );
+
+    let receiving = receiver(&registry, &b);
+    let wake = subscribe(&registry, &b, &receiving);
+    assert_eq!(
+        wake["channel_wake"]["addressed_message_id"],
+        a_post["message"]["id"]
+    );
+    assert_eq!(wake["message_count"], 1);
+    assert_eq!(
+        validate_wake(&registry, &b, &receiving, &wake)["current"],
+        true
+    );
+    assert!(wake.get("text").is_none());
+    assert_eq!(
+        settle_wake(&registry, &b, &receiving, &wake)["recorded"],
+        true
+    );
+    assert_eq!(agent(&registry, &a, original()), a_post);
+    assert!(subscribe(&registry, &b, &receiving).is_null());
+
+    // Failure inserting mandatory wake work rolls back both the thread and post.
+    let disk = rusqlite::Connection::open(root.join("state/channels.sqlite3")).unwrap();
+    disk.execute_batch(
+        "CREATE TRIGGER reject_agent_update BEFORE INSERT ON notification_work
+         BEGIN SELECT RAISE(ABORT,'fixture write rejected'); END;",
+    )
+    .unwrap();
+    assert!(
+        agent_result(
+            &registry,
+            &a,
+            direct_post(
+                &outsider.grant.launch_id,
+                "must not enter history",
+                "storage-failure"
+            ),
+        )
+        .is_err()
+    );
+    disk.execute_batch("DROP TRIGGER reject_agent_update")
+        .unwrap();
+    let count: usize = disk
+        .query_row("SELECT count(*) FROM direct_channels", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+    let count: usize = disk
+        .query_row("SELECT count(*) FROM posts", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 2);
+    let ChannelRequest::Post {
+        channel_id,
+        post: mut reply,
+    } = post(id, "reply on thread", PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    reply.reply_to = Some(channels::MessageId(
+        a_post["message"]["id"].as_str().unwrap().into(),
+    ));
+    let receipt = agent_channel(
+        &registry,
+        &b,
+        ChannelRequest::Post {
+            channel_id,
+            post: reply,
+        },
+    )
+    .unwrap();
+    assert_eq!(receipt["channel_id"], id.0);
+    assert_eq!(receipt["wake_count"], 1);
+}
+
+fn direct_post(launch_id: &str, text: &str, key: &str) -> AgentRequest {
+    AgentRequest::ChannelDirectPost {
+        launch_id: launch_id.into(),
+        post: Box::new(ChannelPost {
+            idempotency_key: key.into(),
+            text: text.into(),
+            intent: PostIntent::Note,
+            mentions: Vec::new(),
+            reply_to: None,
+            attachments: Vec::new(),
+            source: None,
+        }),
     }
 }

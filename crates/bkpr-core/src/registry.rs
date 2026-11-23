@@ -33,7 +33,6 @@ const MAX_RECORD: u64 = 4 * 1024 * 1024;
 enum ChannelProjection {
     Native,
     Agent,
-    MessagePage { offset: usize, maximum: usize },
 }
 
 #[derive(Debug)]
@@ -217,9 +216,7 @@ impl Drop for Inner {
         self.ci_cancel
             .store(true, std::sync::atomic::Ordering::Release);
         let _ = self.ci_wake.try_send(());
-        // The retention worker owns only Agents, not the registry lease. Drain its
-        // writer and close admission before releasing ownership of the durable root.
-        let _ = self.agents.shutdown();
+        self.agents.shutdown();
         if let Some(relay) = self.ssh_agent.get_mut().unwrap().take() {
             let _ = relay.shutdown();
         }
@@ -619,7 +616,7 @@ impl Registry {
         let (status_wake, status_events) = crossbeam_channel::bounded(1);
         let (project_wake, project_events) = crossbeam_channel::bounded(1);
         let (ci_wake, ci_events) = crossbeam_channel::bounded(1);
-        let agents = Arc::new(agents::Agents::open(root)?);
+        let agents = Arc::new(agents::Agents::new());
         let channels = crate::channels::ChannelEngine::new(root.to_owned());
         if !record.registry.workspaces.is_empty() {
             channels.provision(record.registry.workspaces.iter().map(|w| w.id.as_str()));
@@ -707,7 +704,6 @@ impl Registry {
                     .is_some_and(crate::harness::Launch::channel_launch_alive)
             })
         });
-        registry.start_agent_maintenance()?;
         registry.start_projects(project_events)?;
         registry.start_ci(ci_events)?;
         Ok(registry)
@@ -989,16 +985,6 @@ impl Registry {
                 })
                 .map(Payload::Control);
         }
-        if let ChannelProjection::MessagePage { offset, maximum } = projection {
-            request.validate()?;
-            return self
-                .inner
-                .channels
-                .with_delivery_store(&cancelled, &workspace_open, |store| {
-                    store.compact_message(request, &admit, offset, maximum, workspace.as_deref())
-                })
-                .map(Payload::Control);
-        }
 
         self.inner
             .channels
@@ -1012,6 +998,10 @@ impl Registry {
                     exact_mentions,
                     publish: &|targets| self.inner.agents.publish_channel_work(targets),
                     binding_live: &|launch, binding| self.channel_binding_live(launch, binding),
+                    direct_peer: &|participant| match caller {
+                        Some(launch) => self.channel_direct_peer(launch, participant, connected),
+                        None => Ok(None),
+                    },
                 },
             )
             .map(Payload::Channels)
@@ -2017,7 +2007,7 @@ impl Registry {
             }
             unbound || state.failed_restores.contains(id)
         };
-        let agent_retirement = self.inner.agents.retire_pane(id);
+        self.inner.agents.retire_pane(id);
         {
             let mut published = pane.shared.published.lock().unwrap();
             published.recovery_title.end();
@@ -2105,7 +2095,6 @@ impl Registry {
         drop(_transaction);
         self.notify_session_end();
         // Keep the final in-memory scene readable until daemon shutdown; no pixels go to disk.
-        agent_retirement?;
         Ok(())
     }
     fn close_documents(
@@ -2395,14 +2384,13 @@ impl Registry {
         };
         self.inner.channels.invalidate();
         self.detach_all_clients("shutdown");
-        let agent_shutdown = self.inner.agents.shutdown();
+        self.inner.agents.shutdown();
         let forwarding = self.inner.ssh_agent.lock().unwrap().clone();
         let forwarding_shutdown = forwarding.map(|relay| relay.shutdown()).transpose();
         self.stop_projects();
         self.stop_ci();
         let mut first_error = directory_capture
             .err()
-            .or_else(|| agent_shutdown.err())
             .or_else(|| forwarding_shutdown.err());
         for pane in panes {
             if let Err(error) = pane.request(PaneRequest::Shutdown)

@@ -2,12 +2,10 @@ use super::*;
 use crate::channels::{ChannelClaim, ChannelRecipient, WakeTarget};
 use bkpr_protocol::channels::{ChannelId, ChannelRequest, MessageId};
 
+mod direct;
+
 const BATCH_PREFIX: &str = "channel-";
 const MCP_PAGE: u16 = 10;
-
-pub(super) fn is_channel_batch(id: &str) -> bool {
-    id.starts_with(BATCH_PREFIX)
-}
 
 #[derive(Default)]
 pub(super) struct ChannelLane {
@@ -51,7 +49,7 @@ impl Agents {
         let mut state = self.state.lock().unwrap();
         let mut changed = false;
         for target in targets {
-            if Self::require_live(&state.store, target.launch).is_err() {
+            if Self::require_live(&state, target.launch).is_err() {
                 continue;
             }
             let lane = if let Some(lane) = state.channel_lanes.get_mut(target.launch) {
@@ -179,7 +177,7 @@ impl Registry {
         if attachment {
             Ok(payload)
         } else {
-            payload.into_json().map(Payload::Control)
+            channel_tool_reply(payload).map(Payload::Control)
         }
     }
 
@@ -198,17 +196,31 @@ impl Registry {
             "channel body page must be between 4 and 4096 bytes"
         );
         let offset = offset.unwrap_or(0) as usize;
+        let workspace = self.channel_caller_workspace(launch)?;
         let request = ChannelRequest::Read {
             channel_id,
-            message_id,
+            message_id: message_id.clone(),
         };
-        self.request_channels_for(
-            request,
-            Some(launch),
-            connected,
-            ChannelProjection::MessagePage { offset, maximum },
-        )?
-        .into_json()
+        request.validate()?;
+        self.inner.channels.with_delivery_store(
+            &|| !connected() || self.session_end_requested(),
+            &|id| self.delivery_workspace_open(id),
+            |store| {
+                let result = store.compact_message(
+                    request,
+                    &|id| {
+                        ensure!(id == workspace, crate::channels::ChannelAccessLost);
+                        self.channel_authority(id, Some(launch), false, connected)
+                    },
+                    offset,
+                    maximum,
+                    Some(&workspace),
+                )?;
+                self.channel_authority(&workspace, Some(launch), false, connected)?;
+                store.record_channel_read(&message_id, recipient(launch)?)?;
+                Ok(result)
+            },
+        )
     }
 
     fn delivery_workspace_open(&self, workspace: &str) -> bool {
@@ -233,6 +245,8 @@ impl Registry {
             max_body_bytes.is_none_or(|maximum| (4..=4096).contains(&maximum)),
             "channel body page must be between 4 and 4096 bytes"
         );
+        let workspace = self.channel_caller_workspace(launch)?;
+        let source_workspace = include_source.then_some(workspace.as_str());
         self.inner.channels.with_delivery_store(
             &|| !connected() || self.session_end_requested(),
             &|workspace| self.delivery_workspace_open(workspace),
@@ -241,7 +255,8 @@ impl Registry {
                     recipient(launch)?,
                     batch_id,
                     max_body_bytes.map(|maximum| maximum as usize),
-                    include_source,
+                    Some(&workspace),
+                    source_workspace,
                     crate::channels::ChannelWakeAccess {
                         admit: &|workspace| {
                             self.channel_authority(workspace, Some(launch), false, connected)
@@ -270,6 +285,7 @@ impl Registry {
         wait_until: Instant,
     ) -> Result<ChannelClaimPoll> {
         let recipient = recipient(launch)?;
+        let workspace = self.channel_caller_workspace(launch)?;
         let service = &self.inner.agents;
         let (batch_id, generation) = {
             let _writer = match service.writer.try_lock() {
@@ -280,17 +296,15 @@ impl Registry {
             self.with_current_agent_receiver(launch, &receiver.id, |_| ())?;
             let mut state = service.state.lock().unwrap();
             let (pending, active, _) = ChannelLane::availability(&state, launch);
-            let agent = &state.store.agents[recipient.launch];
-            if !pending || active || agent.notification.is_some() {
+            if !pending || active {
                 return Ok(ChannelClaimPoll::Empty);
             }
-            let last = agent.generation;
             let lane = state
                 .channel_lanes
                 .get_mut(recipient.launch)
                 .expect("pending channel work");
-            let generation = last
-                .max(lane.last_generation)
+            let generation = lane
+                .last_generation
                 .checked_add(1)
                 .context("notification generation exhausted")?;
             let batch_id = format!("{BATCH_PREFIX}{}", Uuid::new_v4());
@@ -317,6 +331,7 @@ impl Registry {
                 };
                 let wake = store.claim_wakes(
                     &claim,
+                    Some(&workspace),
                     &|workspace| {
                         self.with_current_agent_receiver(launch, &receiver.id, |_| ())?;
                         self.channel_authority(workspace, Some(launch), false, connected)
@@ -398,6 +413,7 @@ impl Registry {
         generation: u64,
     ) -> Result<bool> {
         let recipient = recipient(launch)?;
+        let workspace = self.channel_caller_workspace(launch)?;
         let current = self.inner.channels.with_delivery_store(
             &|| self.session_end_requested(),
             &|workspace| self.delivery_workspace_open(workspace),
@@ -409,9 +425,10 @@ impl Registry {
                     generation,
                     deadline: 0,
                 };
-                let current = store.channel_wake_current(&claim, now(), &|workspace| {
-                    self.channel_authority(workspace, Some(launch), false, &|| true)
-                })?;
+                let current =
+                    store.channel_wake_current(&claim, now(), Some(&workspace), &|workspace| {
+                        self.channel_authority(workspace, Some(launch), false, &|| true)
+                    })?;
                 #[cfg(test)]
                 self.inner
                     .agents
@@ -497,4 +514,15 @@ impl Registry {
             .release_channel_dispatch(launch, batch, generation);
         Ok(())
     }
+}
+
+fn channel_tool_reply(payload: Payload) -> Result<Value> {
+    let mut value = payload.into_json()?;
+    if value["kind"] == "posted" {
+        value["reply_target"] = json!({
+            "channel_id": value["channel_id"],
+            "reply_to": value["message"]["id"],
+        });
+    }
+    Ok(value)
 }

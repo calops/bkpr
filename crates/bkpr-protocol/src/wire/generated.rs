@@ -72924,31 +72924,19 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestDiscoverAgentsRef<'a> {
 /// The table `AgentRequestSendMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestSendMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:707`
+/// * Table `AgentRequestSendMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:708`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
 )]
 pub struct AgentRequestSendMessage{
-    
-        /// The field `to` in the table `AgentRequestSendMessage`
-        pub to: ::planus::alloc::string::String,
-        /// The field `text` in the table `AgentRequestSendMessage`
-        pub text: ::planus::alloc::string::String,
-        /// The field `idempotency_key` in the table `AgentRequestSendMessage`
-        pub idempotency_key: ::planus::alloc::string::String,
-        /// The field `scope` in the table `AgentRequestSendMessage`
-        pub scope: self::AgentScope,}
+    }
 
 
 #[allow(clippy::derivable_impls)]
 impl ::core::default::Default for AgentRequestSendMessage {
     fn default() -> Self {
         Self {
-        to: ::core::default::Default::default(),
-        text: ::core::default::Default::default(),
-        idempotency_key: ::core::default::Default::default(),
-        scope: self::AgentScope::Workspace,
         
         }
     }
@@ -72965,20 +72953,12 @@ impl AgentRequestSendMessage {
     #[allow(clippy::too_many_arguments)]
     pub fn create(
         builder: &mut ::planus::Builder,
-        field_to: impl ::planus::WriteAs<::planus::Offset<str>>,
-        field_text: impl ::planus::WriteAs<::planus::Offset<str>>,
-        field_idempotency_key: impl ::planus::WriteAs<::planus::Offset<str>>,
-        field_scope: impl ::planus::WriteAsDefault<self::AgentScope, self::AgentScope>,
         
-    ) -> ::planus::Offset<Self> {let prepared_to = field_to.prepare(builder);let prepared_text = field_text.prepare(builder);let prepared_idempotency_key = field_idempotency_key.prepare(builder);let prepared_scope = field_scope.prepare(builder, &self::AgentScope::Workspace);
+    ) -> ::planus::Offset<Self> {
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<14> = ::core::default::Default::default();
-        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<str>>(2);if prepared_scope.is_some() {table_writer.write_entry::<self::AgentScope>(3);}
-
+        let table_writer: ::planus::table_writer::TableWriter::<14> = ::core::default::Default::default();
         unsafe {
-            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_to);object_writer.write::<_, _, 4>(&prepared_text);object_writer.write::<_, _, 4>(&prepared_idempotency_key);if let ::core::option::Option::Some(prepared_scope) = prepared_scope {object_writer.write::<_, _, 1>(&prepared_scope);}
-                
-            });
+            table_writer.finish(builder, |_table_writer| {});
         }builder.current_offset()
     }
 }
@@ -73007,22 +72987,6 @@ impl ::planus::WriteAsOffset<AgentRequestSendMessage> for AgentRequestSendMessag
         AgentRequestSendMessage::create(
             builder,
         
-            
-            &self.to,
-            
-        
-            
-            &self.text,
-            
-        
-            
-            &self.idempotency_key,
-            
-        
-            
-            self.scope,
-            
-        
         )
     }
 }
@@ -73034,233 +72998,11 @@ impl ::planus::WriteAsOffset<AgentRequestSendMessage> for AgentRequestSendMessag
 #[must_use]
 pub struct AgentRequestSendMessageBuilder<State>(State);
 
-impl<
-    
-> AgentRequestSendMessageBuilder
-<
-    (
-    
-    )
->
-{
-    /// Setter for the [`to` field](AgentRequestSendMessage#structfield.to).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn to<T0>(self, value: T0) -> AgentRequestSendMessageBuilder<(
-    
-        T0,
-    
-    )>
-    where T0: ::planus::WriteAs<::planus::Offset<str>>
-    {
-        AgentRequestSendMessageBuilder((
-            
-            value,
-        ))
-    }
-
-    
-
-    
-}
-
-impl<
-    
-        T0,
-    
-> AgentRequestSendMessageBuilder
-<
-    (
-    
-        T0,
-    
-    )
->
-{
-    /// Setter for the [`text` field](AgentRequestSendMessage#structfield.text).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn text<T1>(self, value: T1) -> AgentRequestSendMessageBuilder<(
-    
-        T0,
-    
-        T1,
-    
-    )>
-    where T1: ::planus::WriteAs<::planus::Offset<str>>
-    {
-        
-        let (
-            
-                v0,
-            
-        ) = self.0;AgentRequestSendMessageBuilder((
-            
-                v0,
-            
-            value,
-        ))
-    }
-
-    
-
-    
-}
-
-impl<
-    
-        T0,
-    
-        T1,
-    
-> AgentRequestSendMessageBuilder
-<
-    (
-    
-        T0,
-    
-        T1,
-    
-    )
->
-{
-    /// Setter for the [`idempotency_key` field](AgentRequestSendMessage#structfield.idempotency_key).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn idempotency_key<T2>(self, value: T2) -> AgentRequestSendMessageBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-    )>
-    where T2: ::planus::WriteAs<::planus::Offset<str>>
-    {
-        
-        let (
-            
-                v0,
-            
-                v1,
-            
-        ) = self.0;AgentRequestSendMessageBuilder((
-            
-                v0,
-            
-                v1,
-            
-            value,
-        ))
-    }
-
-    
-
-    
-}
-
-impl<
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-> AgentRequestSendMessageBuilder
-<
-    (
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-    )
->
-{
-    /// Setter for the [`scope` field](AgentRequestSendMessage#structfield.scope).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn scope<T3>(self, value: T3) -> AgentRequestSendMessageBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
-    
-    )>
-    where T3: ::planus::WriteAsDefault<self::AgentScope, self::AgentScope>
-    {
-        
-        let (
-            
-                v0,
-            
-                v1,
-            
-                v2,
-            
-        ) = self.0;AgentRequestSendMessageBuilder((
-            
-                v0,
-            
-                v1,
-            
-                v2,
-            
-            value,
-        ))
-    }
-
-    
-    /// Sets the [`scope` field](AgentRequestSendMessage#structfield.scope) to the default value.
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn scope_as_default(self) -> AgentRequestSendMessageBuilder<(
-        
-            T0,
-        
-            T1,
-        
-            T2,
-        
-        ::planus::DefaultValue,
-    )>
-    {
-        self.scope(::planus::DefaultValue)
-    }
-    
-
-    
-}
-
 
 
 impl<
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
     
 > AgentRequestSendMessageBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [AgentRequestSendMessage].
@@ -73274,23 +73016,7 @@ impl<
 
 impl<
     
-        T0: ::planus::WriteAs<::planus::Offset<str>>,
-    
-        T1: ::planus::WriteAs<::planus::Offset<str>>,
-    
-        T2: ::planus::WriteAs<::planus::Offset<str>>,
-    
-        T3: ::planus::WriteAsDefault<self::AgentScope, self::AgentScope>,
-    
 > ::planus::WriteAs<::planus::Offset<AgentRequestSendMessage>> for AgentRequestSendMessageBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
     
 )> {
     type Prepared = ::planus::Offset<AgentRequestSendMessage>;
@@ -73303,23 +73029,7 @@ impl<
 
 impl<
     
-        T0: ::planus::WriteAs<::planus::Offset<str>>,
-    
-        T1: ::planus::WriteAs<::planus::Offset<str>>,
-    
-        T2: ::planus::WriteAs<::planus::Offset<str>>,
-    
-        T3: ::planus::WriteAsDefault<self::AgentScope, self::AgentScope>,
-    
 > ::planus::WriteAsOptional<::planus::Offset<AgentRequestSendMessage>> for AgentRequestSendMessageBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
     
 )> {
     type Prepared = ::planus::Offset<AgentRequestSendMessage>;
@@ -73332,48 +73042,13 @@ impl<
 
 impl<
     
-        T0: ::planus::WriteAs<::planus::Offset<str>>,
-    
-        T1: ::planus::WriteAs<::planus::Offset<str>>,
-    
-        T2: ::planus::WriteAs<::planus::Offset<str>>,
-    
-        T3: ::planus::WriteAsDefault<self::AgentScope, self::AgentScope>,
-    
 > ::planus::WriteAsOffset<AgentRequestSendMessage> for AgentRequestSendMessageBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
     
 )> {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestSendMessage> {
-        
-        let (
-            
-                v0,
-            
-                v1,
-            
-                v2,
-            
-                v3,
-            
-        ) = &self.0;AgentRequestSendMessage::create(
+        AgentRequestSendMessage::create(
             builder,
-            
-                v0,
-            
-                v1,
-            
-                v2,
-            
-                v3,
             
         )
     }
@@ -73388,64 +73063,12 @@ pub struct AgentRequestSendMessageRef<'a>(
 
 impl<'a> AgentRequestSendMessageRef<'a> {
     
-        /// Getter for the [`to` field](AgentRequestSendMessage#structfield.to).
-        #[inline]
-        pub fn to(&self) -> ::planus::Result<&'a ::core::primitive::str> {
-            
-            
-              
-              self.0.access_required(0, "AgentRequestSendMessage", "to")
-              
-            
-            
-            
-        }
-    
-        /// Getter for the [`text` field](AgentRequestSendMessage#structfield.text).
-        #[inline]
-        pub fn text(&self) -> ::planus::Result<&'a ::core::primitive::str> {
-            
-            
-              
-              self.0.access_required(1, "AgentRequestSendMessage", "text")
-              
-            
-            
-            
-        }
-    
-        /// Getter for the [`idempotency_key` field](AgentRequestSendMessage#structfield.idempotency_key).
-        #[inline]
-        pub fn idempotency_key(&self) -> ::planus::Result<&'a ::core::primitive::str> {
-            
-            
-              
-              self.0.access_required(2, "AgentRequestSendMessage", "idempotency_key")
-              
-            
-            
-            
-        }
-    
-        /// Getter for the [`scope` field](AgentRequestSendMessage#structfield.scope).
-        #[inline]
-        pub fn scope(&self) -> ::planus::Result<self::AgentScope> {
-             ::core::result::Result::Ok( 
-            
-              
-              self.0.access(3, "AgentRequestSendMessage", "scope")
-              
-            
-            ?.unwrap_or(self::AgentScope::Workspace))
-            
-        }
-    
 }
 
 impl<'a> ::core::fmt::Debug for AgentRequestSendMessageRef<'a> {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         let mut f = f.debug_struct("AgentRequestSendMessageRef");
-        f.field("to", &self.to());f.field("text", &self.text());f.field("idempotency_key", &self.idempotency_key());f.field("scope", &self.scope());
+        
         f.finish()
     }
 }
@@ -73454,11 +73077,10 @@ impl<'a> ::core::convert::TryFrom<AgentRequestSendMessageRef<'a>> for AgentReque
     type Error = ::planus::Error;
 
 
-    #[allow(unreachable_code)]
-    fn try_from(value: AgentRequestSendMessageRef<'a>) -> ::planus::Result<Self> {
+    fn try_from(_value: AgentRequestSendMessageRef<'a>) -> ::planus::Result<Self> {
 
         ::core::result::Result::Ok(Self {
-            to: ::core::convert::Into::into(value.to()?),text: ::core::convert::Into::into(value.text()?),idempotency_key: ::core::convert::Into::into(value.idempotency_key()?),scope: ::core::convert::TryInto::try_into(value.scope()?)?,
+            
         })
     }
 }
@@ -73528,31 +73150,19 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestSendMessageRef<'a> {
 /// The table `AgentRequestReadInbox` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReadInbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:714`
+/// * Table `AgentRequestReadInbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:715`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
 )]
 pub struct AgentRequestReadInbox{
-    
-        /// The field `after` in the table `AgentRequestReadInbox`
-        pub after: ::core::option::Option<::planus::alloc::string::String>,
-        /// The field `limit` in the table `AgentRequestReadInbox`
-        pub limit: ::core::option::Option<::planus::alloc::boxed::Box<self::OptionalUsize>>,
-        /// The field `ack_ids` in the table `AgentRequestReadInbox`
-        pub ack_ids: ::planus::alloc::vec::Vec<::planus::alloc::string::String>,
-        /// The field `include_read` in the table `AgentRequestReadInbox`
-        pub include_read: bool,}
+    }
 
 
 #[allow(clippy::derivable_impls)]
 impl ::core::default::Default for AgentRequestReadInbox {
     fn default() -> Self {
         Self {
-        after: ::core::default::Default::default(),
-        limit: ::core::default::Default::default(),
-        ack_ids: ::core::default::Default::default(),
-        include_read: false,
         
         }
     }
@@ -73569,20 +73179,12 @@ impl AgentRequestReadInbox {
     #[allow(clippy::too_many_arguments)]
     pub fn create(
         builder: &mut ::planus::Builder,
-        field_after: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
-        field_limit: impl ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>,
-        field_ack_ids: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
-        field_include_read: impl ::planus::WriteAsDefault<bool, bool>,
         
-    ) -> ::planus::Offset<Self> {let prepared_after = field_after.prepare(builder);let prepared_limit = field_limit.prepare(builder);let prepared_ack_ids = field_ack_ids.prepare(builder);let prepared_include_read = field_include_read.prepare(builder, &false);
+    ) -> ::planus::Offset<Self> {
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<12> = ::core::default::Default::default();
-        if prepared_after.is_some() {table_writer.write_entry::<::planus::Offset<str>>(0);}if prepared_limit.is_some() {table_writer.write_entry::<::planus::Offset<self::OptionalUsize>>(1);}table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(2);if prepared_include_read.is_some() {table_writer.write_entry::<bool>(3);}
-
+        let table_writer: ::planus::table_writer::TableWriter::<14> = ::core::default::Default::default();
         unsafe {
-            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_after) = prepared_after {object_writer.write::<_, _, 4>(&prepared_after);}if let ::core::option::Option::Some(prepared_limit) = prepared_limit {object_writer.write::<_, _, 4>(&prepared_limit);}object_writer.write::<_, _, 4>(&prepared_ack_ids);if let ::core::option::Option::Some(prepared_include_read) = prepared_include_read {object_writer.write::<_, _, 1>(&prepared_include_read);}
-                
-            });
+            table_writer.finish(builder, |_table_writer| {});
         }builder.current_offset()
     }
 }
@@ -73611,22 +73213,6 @@ impl ::planus::WriteAsOffset<AgentRequestReadInbox> for AgentRequestReadInbox {
         AgentRequestReadInbox::create(
             builder,
         
-            
-            &self.after,
-            
-        
-            
-            &self.limit,
-            
-        
-            
-            &self.ack_ids,
-            
-        
-            
-            self.include_read,
-            
-        
         )
     }
 }
@@ -73638,257 +73224,11 @@ impl ::planus::WriteAsOffset<AgentRequestReadInbox> for AgentRequestReadInbox {
 #[must_use]
 pub struct AgentRequestReadInboxBuilder<State>(State);
 
-impl<
-    
-> AgentRequestReadInboxBuilder
-<
-    (
-    
-    )
->
-{
-    /// Setter for the [`after` field](AgentRequestReadInbox#structfield.after).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn after<T0>(self, value: T0) -> AgentRequestReadInboxBuilder<(
-    
-        T0,
-    
-    )>
-    where T0: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>
-    {
-        AgentRequestReadInboxBuilder((
-            
-            value,
-        ))
-    }
-
-    
-
-    
-    /// Sets the [`after` field](AgentRequestReadInbox#structfield.after) to null.
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn after_as_null(self) -> AgentRequestReadInboxBuilder<(
-        
-        (),
-    )>
-    {
-        self.after(())
-    }
-    
-}
-
-impl<
-    
-        T0,
-    
-> AgentRequestReadInboxBuilder
-<
-    (
-    
-        T0,
-    
-    )
->
-{
-    /// Setter for the [`limit` field](AgentRequestReadInbox#structfield.limit).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn limit<T1>(self, value: T1) -> AgentRequestReadInboxBuilder<(
-    
-        T0,
-    
-        T1,
-    
-    )>
-    where T1: ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>
-    {
-        
-        let (
-            
-                v0,
-            
-        ) = self.0;AgentRequestReadInboxBuilder((
-            
-                v0,
-            
-            value,
-        ))
-    }
-
-    
-
-    
-    /// Sets the [`limit` field](AgentRequestReadInbox#structfield.limit) to null.
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn limit_as_null(self) -> AgentRequestReadInboxBuilder<(
-        
-            T0,
-        
-        (),
-    )>
-    {
-        self.limit(())
-    }
-    
-}
-
-impl<
-    
-        T0,
-    
-        T1,
-    
-> AgentRequestReadInboxBuilder
-<
-    (
-    
-        T0,
-    
-        T1,
-    
-    )
->
-{
-    /// Setter for the [`ack_ids` field](AgentRequestReadInbox#structfield.ack_ids).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn ack_ids<T2>(self, value: T2) -> AgentRequestReadInboxBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-    )>
-    where T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>
-    {
-        
-        let (
-            
-                v0,
-            
-                v1,
-            
-        ) = self.0;AgentRequestReadInboxBuilder((
-            
-                v0,
-            
-                v1,
-            
-            value,
-        ))
-    }
-
-    
-
-    
-}
-
-impl<
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-> AgentRequestReadInboxBuilder
-<
-    (
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-    )
->
-{
-    /// Setter for the [`include_read` field](AgentRequestReadInbox#structfield.include_read).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn include_read<T3>(self, value: T3) -> AgentRequestReadInboxBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
-    
-    )>
-    where T3: ::planus::WriteAsDefault<bool, bool>
-    {
-        
-        let (
-            
-                v0,
-            
-                v1,
-            
-                v2,
-            
-        ) = self.0;AgentRequestReadInboxBuilder((
-            
-                v0,
-            
-                v1,
-            
-                v2,
-            
-            value,
-        ))
-    }
-
-    
-    /// Sets the [`include_read` field](AgentRequestReadInbox#structfield.include_read) to the default value.
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn include_read_as_default(self) -> AgentRequestReadInboxBuilder<(
-        
-            T0,
-        
-            T1,
-        
-            T2,
-        
-        ::planus::DefaultValue,
-    )>
-    {
-        self.include_read(::planus::DefaultValue)
-    }
-    
-
-    
-}
-
 
 
 impl<
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
     
 > AgentRequestReadInboxBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [AgentRequestReadInbox].
@@ -73902,23 +73242,7 @@ impl<
 
 impl<
     
-        T0: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
-    
-        T1: ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>,
-    
-        T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
-    
-        T3: ::planus::WriteAsDefault<bool, bool>,
-    
 > ::planus::WriteAs<::planus::Offset<AgentRequestReadInbox>> for AgentRequestReadInboxBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
     
 )> {
     type Prepared = ::planus::Offset<AgentRequestReadInbox>;
@@ -73931,23 +73255,7 @@ impl<
 
 impl<
     
-        T0: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
-    
-        T1: ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>,
-    
-        T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
-    
-        T3: ::planus::WriteAsDefault<bool, bool>,
-    
 > ::planus::WriteAsOptional<::planus::Offset<AgentRequestReadInbox>> for AgentRequestReadInboxBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
     
 )> {
     type Prepared = ::planus::Offset<AgentRequestReadInbox>;
@@ -73960,48 +73268,13 @@ impl<
 
 impl<
     
-        T0: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
-    
-        T1: ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>,
-    
-        T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
-    
-        T3: ::planus::WriteAsDefault<bool, bool>,
-    
 > ::planus::WriteAsOffset<AgentRequestReadInbox> for AgentRequestReadInboxBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
     
 )> {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestReadInbox> {
-        
-        let (
-            
-                v0,
-            
-                v1,
-            
-                v2,
-            
-                v3,
-            
-        ) = &self.0;AgentRequestReadInbox::create(
+        AgentRequestReadInbox::create(
             builder,
-            
-                v0,
-            
-                v1,
-            
-                v2,
-            
-                v3,
             
         )
     }
@@ -74016,68 +73289,12 @@ pub struct AgentRequestReadInboxRef<'a>(
 
 impl<'a> AgentRequestReadInboxRef<'a> {
     
-        /// Getter for the [`after` field](AgentRequestReadInbox#structfield.after).
-        #[inline]
-        pub fn after(&self) -> ::planus::Result<::core::option::Option<&'a ::core::primitive::str>> {
-            
-            
-              
-              self.0.access(0, "AgentRequestReadInbox", "after")
-              
-            
-            
-            
-        }
-    
-        /// Getter for the [`limit` field](AgentRequestReadInbox#structfield.limit).
-        #[inline]
-        pub fn limit(&self) -> ::planus::Result<::core::option::Option<self::OptionalUsizeRef<'a>>> {
-            
-            
-              
-              self.0.access(1, "AgentRequestReadInbox", "limit")
-              
-            
-            
-            
-        }
-    
-        /// Getter for the [`ack_ids` field](AgentRequestReadInbox#structfield.ack_ids).
-        #[inline]
-        pub fn ack_ids(&self) -> ::planus::Result<::planus::Vector<'a, ::planus::Result<&'a ::core::primitive::str>>> {
-            
-            
-              
-              self.0.access_required(2, "AgentRequestReadInbox", "ack_ids")
-              
-            
-            
-            
-        }
-    
-        /// Getter for the [`include_read` field](AgentRequestReadInbox#structfield.include_read).
-        #[inline]
-        pub fn include_read(&self) -> ::planus::Result<bool> {
-             ::core::result::Result::Ok( 
-            
-              
-              self.0.access(3, "AgentRequestReadInbox", "include_read")
-              
-            
-            ?.unwrap_or(false))
-            
-        }
-    
 }
 
 impl<'a> ::core::fmt::Debug for AgentRequestReadInboxRef<'a> {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         let mut f = f.debug_struct("AgentRequestReadInboxRef");
-        if let ::core::option::Option::Some(field_after) = self.after().transpose() {
-                f.field("after", &field_after);
-            }if let ::core::option::Option::Some(field_limit) = self.limit().transpose() {
-                f.field("limit", &field_limit);
-            }f.field("ack_ids", &self.ack_ids());f.field("include_read", &self.include_read());
+        
         f.finish()
     }
 }
@@ -74086,19 +73303,10 @@ impl<'a> ::core::convert::TryFrom<AgentRequestReadInboxRef<'a>> for AgentRequest
     type Error = ::planus::Error;
 
 
-    #[allow(unreachable_code)]
-    fn try_from(value: AgentRequestReadInboxRef<'a>) -> ::planus::Result<Self> {
+    fn try_from(_value: AgentRequestReadInboxRef<'a>) -> ::planus::Result<Self> {
 
         ::core::result::Result::Ok(Self {
-            after: 
-                                value.after()?.map(::core::convert::Into::into)
-                            ,limit: 
-                                if let ::core::option::Option::Some(limit) = value.limit()? {
-                                    ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(limit)?))
-                                } else {
-                                    ::core::option::Option::None
-                                }
-                            ,ack_ids: value.ack_ids()?.to_vec_result()?,include_read: ::core::convert::TryInto::try_into(value.include_read()?)?,
+            
         })
     }
 }
@@ -74168,28 +73376,19 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReadInboxRef<'a> {
 /// The table `AgentRequestReadMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReadMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:720`
+/// * Table `AgentRequestReadMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:722`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
 )]
 pub struct AgentRequestReadMessage{
-    
-        /// The field `message_id` in the table `AgentRequestReadMessage`
-        pub message_id: ::planus::alloc::string::String,
-        /// The field `offset` in the table `AgentRequestReadMessage`
-        pub offset: ::core::option::Option<::planus::alloc::boxed::Box<self::OptionalUsize>>,
-        /// The field `max_bytes` in the table `AgentRequestReadMessage`
-        pub max_bytes: ::core::option::Option<::planus::alloc::boxed::Box<self::OptionalUsize>>,}
+    }
 
 
 #[allow(clippy::derivable_impls)]
 impl ::core::default::Default for AgentRequestReadMessage {
     fn default() -> Self {
         Self {
-        message_id: ::core::default::Default::default(),
-        offset: ::core::default::Default::default(),
-        max_bytes: ::core::default::Default::default(),
         
         }
     }
@@ -74206,19 +73405,12 @@ impl AgentRequestReadMessage {
     #[allow(clippy::too_many_arguments)]
     pub fn create(
         builder: &mut ::planus::Builder,
-        field_message_id: impl ::planus::WriteAs<::planus::Offset<str>>,
-        field_offset: impl ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>,
-        field_max_bytes: impl ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_message_id = field_message_id.prepare(builder);let prepared_offset = field_offset.prepare(builder);let prepared_max_bytes = field_max_bytes.prepare(builder);
+    ) -> ::planus::Offset<Self> {
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
-        table_writer.write_entry::<::planus::Offset<str>>(0);if prepared_offset.is_some() {table_writer.write_entry::<::planus::Offset<self::OptionalUsize>>(1);}if prepared_max_bytes.is_some() {table_writer.write_entry::<::planus::Offset<self::OptionalUsize>>(2);}
-
+        let table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
         unsafe {
-            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_message_id);if let ::core::option::Option::Some(prepared_offset) = prepared_offset {object_writer.write::<_, _, 4>(&prepared_offset);}if let ::core::option::Option::Some(prepared_max_bytes) = prepared_max_bytes {object_writer.write::<_, _, 4>(&prepared_max_bytes);}
-                
-            });
+            table_writer.finish(builder, |_table_writer| {});
         }builder.current_offset()
     }
 }
@@ -74247,18 +73439,6 @@ impl ::planus::WriteAsOffset<AgentRequestReadMessage> for AgentRequestReadMessag
         AgentRequestReadMessage::create(
             builder,
         
-            
-            &self.message_id,
-            
-        
-            
-            &self.offset,
-            
-        
-            
-            &self.max_bytes,
-            
-        
         )
     }
 }
@@ -74270,177 +73450,11 @@ impl ::planus::WriteAsOffset<AgentRequestReadMessage> for AgentRequestReadMessag
 #[must_use]
 pub struct AgentRequestReadMessageBuilder<State>(State);
 
-impl<
-    
-> AgentRequestReadMessageBuilder
-<
-    (
-    
-    )
->
-{
-    /// Setter for the [`message_id` field](AgentRequestReadMessage#structfield.message_id).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn message_id<T0>(self, value: T0) -> AgentRequestReadMessageBuilder<(
-    
-        T0,
-    
-    )>
-    where T0: ::planus::WriteAs<::planus::Offset<str>>
-    {
-        AgentRequestReadMessageBuilder((
-            
-            value,
-        ))
-    }
-
-    
-
-    
-}
-
-impl<
-    
-        T0,
-    
-> AgentRequestReadMessageBuilder
-<
-    (
-    
-        T0,
-    
-    )
->
-{
-    /// Setter for the [`offset` field](AgentRequestReadMessage#structfield.offset).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn offset<T1>(self, value: T1) -> AgentRequestReadMessageBuilder<(
-    
-        T0,
-    
-        T1,
-    
-    )>
-    where T1: ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>
-    {
-        
-        let (
-            
-                v0,
-            
-        ) = self.0;AgentRequestReadMessageBuilder((
-            
-                v0,
-            
-            value,
-        ))
-    }
-
-    
-
-    
-    /// Sets the [`offset` field](AgentRequestReadMessage#structfield.offset) to null.
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn offset_as_null(self) -> AgentRequestReadMessageBuilder<(
-        
-            T0,
-        
-        (),
-    )>
-    {
-        self.offset(())
-    }
-    
-}
-
-impl<
-    
-        T0,
-    
-        T1,
-    
-> AgentRequestReadMessageBuilder
-<
-    (
-    
-        T0,
-    
-        T1,
-    
-    )
->
-{
-    /// Setter for the [`max_bytes` field](AgentRequestReadMessage#structfield.max_bytes).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn max_bytes<T2>(self, value: T2) -> AgentRequestReadMessageBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-    )>
-    where T2: ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>
-    {
-        
-        let (
-            
-                v0,
-            
-                v1,
-            
-        ) = self.0;AgentRequestReadMessageBuilder((
-            
-                v0,
-            
-                v1,
-            
-            value,
-        ))
-    }
-
-    
-
-    
-    /// Sets the [`max_bytes` field](AgentRequestReadMessage#structfield.max_bytes) to null.
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn max_bytes_as_null(self) -> AgentRequestReadMessageBuilder<(
-        
-            T0,
-        
-            T1,
-        
-        (),
-    )>
-    {
-        self.max_bytes(())
-    }
-    
-}
-
 
 
 impl<
-    
-        T0,
-    
-        T1,
-    
-        T2,
     
 > AgentRequestReadMessageBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [AgentRequestReadMessage].
@@ -74454,19 +73468,7 @@ impl<
 
 impl<
     
-        T0: ::planus::WriteAs<::planus::Offset<str>>,
-    
-        T1: ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>,
-    
-        T2: ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>,
-    
 > ::planus::WriteAs<::planus::Offset<AgentRequestReadMessage>> for AgentRequestReadMessageBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
     
 )> {
     type Prepared = ::planus::Offset<AgentRequestReadMessage>;
@@ -74479,19 +73481,7 @@ impl<
 
 impl<
     
-        T0: ::planus::WriteAs<::planus::Offset<str>>,
-    
-        T1: ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>,
-    
-        T2: ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>,
-    
 > ::planus::WriteAsOptional<::planus::Offset<AgentRequestReadMessage>> for AgentRequestReadMessageBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
     
 )> {
     type Prepared = ::planus::Offset<AgentRequestReadMessage>;
@@ -74504,40 +73494,13 @@ impl<
 
 impl<
     
-        T0: ::planus::WriteAs<::planus::Offset<str>>,
-    
-        T1: ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>,
-    
-        T2: ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>,
-    
 > ::planus::WriteAsOffset<AgentRequestReadMessage> for AgentRequestReadMessageBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
     
 )> {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestReadMessage> {
-        
-        let (
-            
-                v0,
-            
-                v1,
-            
-                v2,
-            
-        ) = &self.0;AgentRequestReadMessage::create(
+        AgentRequestReadMessage::create(
             builder,
-            
-                v0,
-            
-                v1,
-            
-                v2,
             
         )
     }
@@ -74552,55 +73515,12 @@ pub struct AgentRequestReadMessageRef<'a>(
 
 impl<'a> AgentRequestReadMessageRef<'a> {
     
-        /// Getter for the [`message_id` field](AgentRequestReadMessage#structfield.message_id).
-        #[inline]
-        pub fn message_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
-            
-            
-              
-              self.0.access_required(0, "AgentRequestReadMessage", "message_id")
-              
-            
-            
-            
-        }
-    
-        /// Getter for the [`offset` field](AgentRequestReadMessage#structfield.offset).
-        #[inline]
-        pub fn offset(&self) -> ::planus::Result<::core::option::Option<self::OptionalUsizeRef<'a>>> {
-            
-            
-              
-              self.0.access(1, "AgentRequestReadMessage", "offset")
-              
-            
-            
-            
-        }
-    
-        /// Getter for the [`max_bytes` field](AgentRequestReadMessage#structfield.max_bytes).
-        #[inline]
-        pub fn max_bytes(&self) -> ::planus::Result<::core::option::Option<self::OptionalUsizeRef<'a>>> {
-            
-            
-              
-              self.0.access(2, "AgentRequestReadMessage", "max_bytes")
-              
-            
-            
-            
-        }
-    
 }
 
 impl<'a> ::core::fmt::Debug for AgentRequestReadMessageRef<'a> {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         let mut f = f.debug_struct("AgentRequestReadMessageRef");
-        f.field("message_id", &self.message_id());if let ::core::option::Option::Some(field_offset) = self.offset().transpose() {
-                f.field("offset", &field_offset);
-            }if let ::core::option::Option::Some(field_max_bytes) = self.max_bytes().transpose() {
-                f.field("max_bytes", &field_max_bytes);
-            }
+        
         f.finish()
     }
 }
@@ -74609,23 +73529,10 @@ impl<'a> ::core::convert::TryFrom<AgentRequestReadMessageRef<'a>> for AgentReque
     type Error = ::planus::Error;
 
 
-    #[allow(unreachable_code)]
-    fn try_from(value: AgentRequestReadMessageRef<'a>) -> ::planus::Result<Self> {
+    fn try_from(_value: AgentRequestReadMessageRef<'a>) -> ::planus::Result<Self> {
 
         ::core::result::Result::Ok(Self {
-            message_id: ::core::convert::Into::into(value.message_id()?),offset: 
-                                if let ::core::option::Option::Some(offset) = value.offset()? {
-                                    ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(offset)?))
-                                } else {
-                                    ::core::option::Option::None
-                                }
-                            ,max_bytes: 
-                                if let ::core::option::Option::Some(max_bytes) = value.max_bytes()? {
-                                    ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(max_bytes)?))
-                                } else {
-                                    ::core::option::Option::None
-                                }
-                            ,
+            
         })
     }
 }
@@ -74695,22 +73602,19 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReadMessageRef<'a> {
 /// The table `AgentRequestAckMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestAckMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:725`
+/// * Table `AgentRequestAckMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:727`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
 )]
 pub struct AgentRequestAckMessage{
-    
-        /// The field `ids` in the table `AgentRequestAckMessage`
-        pub ids: ::planus::alloc::vec::Vec<::planus::alloc::string::String>,}
+    }
 
 
 #[allow(clippy::derivable_impls)]
 impl ::core::default::Default for AgentRequestAckMessage {
     fn default() -> Self {
         Self {
-        ids: ::core::default::Default::default(),
         
         }
     }
@@ -74727,17 +73631,12 @@ impl AgentRequestAckMessage {
     #[allow(clippy::too_many_arguments)]
     pub fn create(
         builder: &mut ::planus::Builder,
-        field_ids: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_ids = field_ids.prepare(builder);
+    ) -> ::planus::Offset<Self> {
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<6> = ::core::default::Default::default();
-        table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(0);
-
+        let table_writer: ::planus::table_writer::TableWriter::<6> = ::core::default::Default::default();
         unsafe {
-            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_ids);
-                
-            });
+            table_writer.finish(builder, |_table_writer| {});
         }builder.current_offset()
     }
 }
@@ -74766,10 +73665,6 @@ impl ::planus::WriteAsOffset<AgentRequestAckMessage> for AgentRequestAckMessage 
         AgentRequestAckMessage::create(
             builder,
         
-            
-            &self.ids,
-            
-        
         )
     }
 }
@@ -74781,45 +73676,11 @@ impl ::planus::WriteAsOffset<AgentRequestAckMessage> for AgentRequestAckMessage 
 #[must_use]
 pub struct AgentRequestAckMessageBuilder<State>(State);
 
-impl<
-    
-> AgentRequestAckMessageBuilder
-<
-    (
-    
-    )
->
-{
-    /// Setter for the [`ids` field](AgentRequestAckMessage#structfield.ids).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn ids<T0>(self, value: T0) -> AgentRequestAckMessageBuilder<(
-    
-        T0,
-    
-    )>
-    where T0: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>
-    {
-        AgentRequestAckMessageBuilder((
-            
-            value,
-        ))
-    }
-
-    
-
-    
-}
-
 
 
 impl<
-    
-        T0,
     
 > AgentRequestAckMessageBuilder<(
-    
-        T0,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [AgentRequestAckMessage].
@@ -74833,11 +73694,7 @@ impl<
 
 impl<
     
-        T0: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
-    
 > ::planus::WriteAs<::planus::Offset<AgentRequestAckMessage>> for AgentRequestAckMessageBuilder<(
-    
-        T0,
     
 )> {
     type Prepared = ::planus::Offset<AgentRequestAckMessage>;
@@ -74850,11 +73707,7 @@ impl<
 
 impl<
     
-        T0: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
-    
 > ::planus::WriteAsOptional<::planus::Offset<AgentRequestAckMessage>> for AgentRequestAckMessageBuilder<(
-    
-        T0,
     
 )> {
     type Prepared = ::planus::Offset<AgentRequestAckMessage>;
@@ -74867,24 +73720,13 @@ impl<
 
 impl<
     
-        T0: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
-    
 > ::planus::WriteAsOffset<AgentRequestAckMessage> for AgentRequestAckMessageBuilder<(
-    
-        T0,
     
 )> {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestAckMessage> {
-        
-        let (
-            
-                v0,
-            
-        ) = &self.0;AgentRequestAckMessage::create(
+        AgentRequestAckMessage::create(
             builder,
-            
-                v0,
             
         )
     }
@@ -74899,25 +73741,12 @@ pub struct AgentRequestAckMessageRef<'a>(
 
 impl<'a> AgentRequestAckMessageRef<'a> {
     
-        /// Getter for the [`ids` field](AgentRequestAckMessage#structfield.ids).
-        #[inline]
-        pub fn ids(&self) -> ::planus::Result<::planus::Vector<'a, ::planus::Result<&'a ::core::primitive::str>>> {
-            
-            
-              
-              self.0.access_required(0, "AgentRequestAckMessage", "ids")
-              
-            
-            
-            
-        }
-    
 }
 
 impl<'a> ::core::fmt::Debug for AgentRequestAckMessageRef<'a> {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         let mut f = f.debug_struct("AgentRequestAckMessageRef");
-        f.field("ids", &self.ids());
+        
         f.finish()
     }
 }
@@ -74926,11 +73755,10 @@ impl<'a> ::core::convert::TryFrom<AgentRequestAckMessageRef<'a>> for AgentReques
     type Error = ::planus::Error;
 
 
-    #[allow(unreachable_code)]
-    fn try_from(value: AgentRequestAckMessageRef<'a>) -> ::planus::Result<Self> {
+    fn try_from(_value: AgentRequestAckMessageRef<'a>) -> ::planus::Result<Self> {
 
         ::core::result::Result::Ok(Self {
-            ids: value.ids()?.to_vec_result()?,
+            
         })
     }
 }
@@ -75000,28 +73828,19 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestAckMessageRef<'a> {
 /// The table `AgentRequestInspectOutbox` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestInspectOutbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:728`
+/// * Table `AgentRequestInspectOutbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:730`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
 )]
 pub struct AgentRequestInspectOutbox{
-    
-        /// The field `message_id` in the table `AgentRequestInspectOutbox`
-        pub message_id: ::core::option::Option<::planus::alloc::string::String>,
-        /// The field `after` in the table `AgentRequestInspectOutbox`
-        pub after: ::core::option::Option<::planus::alloc::string::String>,
-        /// The field `limit` in the table `AgentRequestInspectOutbox`
-        pub limit: ::core::option::Option<::planus::alloc::boxed::Box<self::OptionalUsize>>,}
+    }
 
 
 #[allow(clippy::derivable_impls)]
 impl ::core::default::Default for AgentRequestInspectOutbox {
     fn default() -> Self {
         Self {
-        message_id: ::core::default::Default::default(),
-        after: ::core::default::Default::default(),
-        limit: ::core::default::Default::default(),
         
         }
     }
@@ -75038,19 +73857,12 @@ impl AgentRequestInspectOutbox {
     #[allow(clippy::too_many_arguments)]
     pub fn create(
         builder: &mut ::planus::Builder,
-        field_message_id: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
-        field_after: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
-        field_limit: impl ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_message_id = field_message_id.prepare(builder);let prepared_after = field_after.prepare(builder);let prepared_limit = field_limit.prepare(builder);
+    ) -> ::planus::Offset<Self> {
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
-        if prepared_message_id.is_some() {table_writer.write_entry::<::planus::Offset<str>>(0);}if prepared_after.is_some() {table_writer.write_entry::<::planus::Offset<str>>(1);}if prepared_limit.is_some() {table_writer.write_entry::<::planus::Offset<self::OptionalUsize>>(2);}
-
+        let table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
         unsafe {
-            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_message_id) = prepared_message_id {object_writer.write::<_, _, 4>(&prepared_message_id);}if let ::core::option::Option::Some(prepared_after) = prepared_after {object_writer.write::<_, _, 4>(&prepared_after);}if let ::core::option::Option::Some(prepared_limit) = prepared_limit {object_writer.write::<_, _, 4>(&prepared_limit);}
-                
-            });
+            table_writer.finish(builder, |_table_writer| {});
         }builder.current_offset()
     }
 }
@@ -75079,18 +73891,6 @@ impl ::planus::WriteAsOffset<AgentRequestInspectOutbox> for AgentRequestInspectO
         AgentRequestInspectOutbox::create(
             builder,
         
-            
-            &self.message_id,
-            
-        
-            
-            &self.after,
-            
-        
-            
-            &self.limit,
-            
-        
         )
     }
 }
@@ -75102,188 +73902,11 @@ impl ::planus::WriteAsOffset<AgentRequestInspectOutbox> for AgentRequestInspectO
 #[must_use]
 pub struct AgentRequestInspectOutboxBuilder<State>(State);
 
-impl<
-    
-> AgentRequestInspectOutboxBuilder
-<
-    (
-    
-    )
->
-{
-    /// Setter for the [`message_id` field](AgentRequestInspectOutbox#structfield.message_id).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn message_id<T0>(self, value: T0) -> AgentRequestInspectOutboxBuilder<(
-    
-        T0,
-    
-    )>
-    where T0: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>
-    {
-        AgentRequestInspectOutboxBuilder((
-            
-            value,
-        ))
-    }
-
-    
-
-    
-    /// Sets the [`message_id` field](AgentRequestInspectOutbox#structfield.message_id) to null.
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn message_id_as_null(self) -> AgentRequestInspectOutboxBuilder<(
-        
-        (),
-    )>
-    {
-        self.message_id(())
-    }
-    
-}
-
-impl<
-    
-        T0,
-    
-> AgentRequestInspectOutboxBuilder
-<
-    (
-    
-        T0,
-    
-    )
->
-{
-    /// Setter for the [`after` field](AgentRequestInspectOutbox#structfield.after).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn after<T1>(self, value: T1) -> AgentRequestInspectOutboxBuilder<(
-    
-        T0,
-    
-        T1,
-    
-    )>
-    where T1: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>
-    {
-        
-        let (
-            
-                v0,
-            
-        ) = self.0;AgentRequestInspectOutboxBuilder((
-            
-                v0,
-            
-            value,
-        ))
-    }
-
-    
-
-    
-    /// Sets the [`after` field](AgentRequestInspectOutbox#structfield.after) to null.
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn after_as_null(self) -> AgentRequestInspectOutboxBuilder<(
-        
-            T0,
-        
-        (),
-    )>
-    {
-        self.after(())
-    }
-    
-}
-
-impl<
-    
-        T0,
-    
-        T1,
-    
-> AgentRequestInspectOutboxBuilder
-<
-    (
-    
-        T0,
-    
-        T1,
-    
-    )
->
-{
-    /// Setter for the [`limit` field](AgentRequestInspectOutbox#structfield.limit).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn limit<T2>(self, value: T2) -> AgentRequestInspectOutboxBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-    )>
-    where T2: ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>
-    {
-        
-        let (
-            
-                v0,
-            
-                v1,
-            
-        ) = self.0;AgentRequestInspectOutboxBuilder((
-            
-                v0,
-            
-                v1,
-            
-            value,
-        ))
-    }
-
-    
-
-    
-    /// Sets the [`limit` field](AgentRequestInspectOutbox#structfield.limit) to null.
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn limit_as_null(self) -> AgentRequestInspectOutboxBuilder<(
-        
-            T0,
-        
-            T1,
-        
-        (),
-    )>
-    {
-        self.limit(())
-    }
-    
-}
-
 
 
 impl<
-    
-        T0,
-    
-        T1,
-    
-        T2,
     
 > AgentRequestInspectOutboxBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [AgentRequestInspectOutbox].
@@ -75297,19 +73920,7 @@ impl<
 
 impl<
     
-        T0: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
-    
-        T1: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
-    
-        T2: ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>,
-    
 > ::planus::WriteAs<::planus::Offset<AgentRequestInspectOutbox>> for AgentRequestInspectOutboxBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
     
 )> {
     type Prepared = ::planus::Offset<AgentRequestInspectOutbox>;
@@ -75322,19 +73933,7 @@ impl<
 
 impl<
     
-        T0: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
-    
-        T1: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
-    
-        T2: ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>,
-    
 > ::planus::WriteAsOptional<::planus::Offset<AgentRequestInspectOutbox>> for AgentRequestInspectOutboxBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
     
 )> {
     type Prepared = ::planus::Offset<AgentRequestInspectOutbox>;
@@ -75347,40 +73946,13 @@ impl<
 
 impl<
     
-        T0: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
-    
-        T1: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
-    
-        T2: ::planus::WriteAsOptional<::planus::Offset<self::OptionalUsize>>,
-    
 > ::planus::WriteAsOffset<AgentRequestInspectOutbox> for AgentRequestInspectOutboxBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
     
 )> {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestInspectOutbox> {
-        
-        let (
-            
-                v0,
-            
-                v1,
-            
-                v2,
-            
-        ) = &self.0;AgentRequestInspectOutbox::create(
+        AgentRequestInspectOutbox::create(
             builder,
-            
-                v0,
-            
-                v1,
-            
-                v2,
             
         )
     }
@@ -75395,57 +73967,12 @@ pub struct AgentRequestInspectOutboxRef<'a>(
 
 impl<'a> AgentRequestInspectOutboxRef<'a> {
     
-        /// Getter for the [`message_id` field](AgentRequestInspectOutbox#structfield.message_id).
-        #[inline]
-        pub fn message_id(&self) -> ::planus::Result<::core::option::Option<&'a ::core::primitive::str>> {
-            
-            
-              
-              self.0.access(0, "AgentRequestInspectOutbox", "message_id")
-              
-            
-            
-            
-        }
-    
-        /// Getter for the [`after` field](AgentRequestInspectOutbox#structfield.after).
-        #[inline]
-        pub fn after(&self) -> ::planus::Result<::core::option::Option<&'a ::core::primitive::str>> {
-            
-            
-              
-              self.0.access(1, "AgentRequestInspectOutbox", "after")
-              
-            
-            
-            
-        }
-    
-        /// Getter for the [`limit` field](AgentRequestInspectOutbox#structfield.limit).
-        #[inline]
-        pub fn limit(&self) -> ::planus::Result<::core::option::Option<self::OptionalUsizeRef<'a>>> {
-            
-            
-              
-              self.0.access(2, "AgentRequestInspectOutbox", "limit")
-              
-            
-            
-            
-        }
-    
 }
 
 impl<'a> ::core::fmt::Debug for AgentRequestInspectOutboxRef<'a> {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         let mut f = f.debug_struct("AgentRequestInspectOutboxRef");
-        if let ::core::option::Option::Some(field_message_id) = self.message_id().transpose() {
-                f.field("message_id", &field_message_id);
-            }if let ::core::option::Option::Some(field_after) = self.after().transpose() {
-                f.field("after", &field_after);
-            }if let ::core::option::Option::Some(field_limit) = self.limit().transpose() {
-                f.field("limit", &field_limit);
-            }
+        
         f.finish()
     }
 }
@@ -75454,21 +73981,10 @@ impl<'a> ::core::convert::TryFrom<AgentRequestInspectOutboxRef<'a>> for AgentReq
     type Error = ::planus::Error;
 
 
-    #[allow(unreachable_code)]
-    fn try_from(value: AgentRequestInspectOutboxRef<'a>) -> ::planus::Result<Self> {
+    fn try_from(_value: AgentRequestInspectOutboxRef<'a>) -> ::planus::Result<Self> {
 
         ::core::result::Result::Ok(Self {
-            message_id: 
-                                value.message_id()?.map(::core::convert::Into::into)
-                            ,after: 
-                                value.after()?.map(::core::convert::Into::into)
-                            ,limit: 
-                                if let ::core::option::Option::Some(limit) = value.limit()? {
-                                    ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(limit)?))
-                                } else {
-                                    ::core::option::Option::None
-                                }
-                            ,
+            
         })
     }
 }
@@ -75538,7 +74054,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestInspectOutboxRef<'a> {
 /// The table `AgentRequestReceiverRegister` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReceiverRegister` in the file `crates/bkpr-protocol/src/wire/native.fbs:733`
+/// * Table `AgentRequestReceiverRegister` in the file `crates/bkpr-protocol/src/wire/native.fbs:735`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -76049,7 +74565,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReceiverRegisterRef<'a> {
 /// The table `AgentRequestReceiverSubscribe` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReceiverSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:738`
+/// * Table `AgentRequestReceiverSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:740`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -76451,7 +74967,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReceiverSubscribeRef<'a> {
 /// The table `AgentRequestWakeValidate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWakeValidate` in the file `crates/bkpr-protocol/src/wire/native.fbs:742`
+/// * Table `AgentRequestWakeValidate` in the file `crates/bkpr-protocol/src/wire/native.fbs:744`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -76949,7 +75465,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeValidateRef<'a> {
 /// The table `AgentRequestWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:747`
+/// * Table `AgentRequestWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:749`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -77538,7 +76054,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeOutcomeRef<'a> {
 /// The table `AgentRequestChannels` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestChannels` in the file `crates/bkpr-protocol/src/wire/native.fbs:753`
+/// * Table `AgentRequestChannels` in the file `crates/bkpr-protocol/src/wire/native.fbs:755`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -77833,7 +76349,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelsRef<'a> {
 /// The table `AgentRequestChannelWake` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestChannelWake` in the file `crates/bkpr-protocol/src/wire/native.fbs:756`
+/// * Table `AgentRequestChannelWake` in the file `crates/bkpr-protocol/src/wire/native.fbs:758`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -78352,7 +76868,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelWakeRef<'a> {
 /// The table `AgentRequestChannelRead` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestChannelRead` in the file `crates/bkpr-protocol/src/wire/native.fbs:761`
+/// * Table `AgentRequestChannelRead` in the file `crates/bkpr-protocol/src/wire/native.fbs:763`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -78984,10 +77500,788 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelReadRef<'a> {
 }
 
     
+/// The table `AgentRequestChannelDirectPost` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `AgentRequestChannelDirectPost` in the file `crates/bkpr-protocol/src/wire/native.fbs:769`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct AgentRequestChannelDirectPost{
+    
+        /// The field `launch_id` in the table `AgentRequestChannelDirectPost`
+        pub launch_id: ::planus::alloc::string::String,
+        /// The field `post` in the table `AgentRequestChannelDirectPost`
+        pub post: ::planus::alloc::boxed::Box<self::ChannelPost>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for AgentRequestChannelDirectPost {
+    fn default() -> Self {
+        Self {
+        launch_id: ::core::default::Default::default(),
+        post: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl AgentRequestChannelDirectPost {
+    /// Creates a [AgentRequestChannelDirectPostBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> AgentRequestChannelDirectPostBuilder<()> {
+        AgentRequestChannelDirectPostBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_launch_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_post: impl ::planus::WriteAs<::planus::Offset<self::ChannelPost>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_launch_id = field_launch_id.prepare(builder);let prepared_post = field_post.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<self::ChannelPost>>(1);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_launch_id);object_writer.write::<_, _, 4>(&prepared_post);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<AgentRequestChannelDirectPost>> for AgentRequestChannelDirectPost {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelDirectPost> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<AgentRequestChannelDirectPost>> for AgentRequestChannelDirectPost {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<AgentRequestChannelDirectPost>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<AgentRequestChannelDirectPost> for AgentRequestChannelDirectPost {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelDirectPost> {
+        AgentRequestChannelDirectPost::create(
+            builder,
+        
+            
+            &self.launch_id,
+            
+        
+            
+            &self.post,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [AgentRequestChannelDirectPost] type.
+///
+/// Can be created using the [AgentRequestChannelDirectPost::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct AgentRequestChannelDirectPostBuilder<State>(State);
+
+impl<
+    
+> AgentRequestChannelDirectPostBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`launch_id` field](AgentRequestChannelDirectPost#structfield.launch_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn launch_id<T0>(self, value: T0) -> AgentRequestChannelDirectPostBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        AgentRequestChannelDirectPostBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> AgentRequestChannelDirectPostBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`post` field](AgentRequestChannelDirectPost#structfield.post).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn post<T1>(self, value: T1) -> AgentRequestChannelDirectPostBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<self::ChannelPost>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;AgentRequestChannelDirectPostBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> AgentRequestChannelDirectPostBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [AgentRequestChannelDirectPost].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelDirectPost>
+        where Self: ::planus::WriteAsOffset<AgentRequestChannelDirectPost>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ChannelPost>>,
+    
+> ::planus::WriteAs<::planus::Offset<AgentRequestChannelDirectPost>> for AgentRequestChannelDirectPostBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<AgentRequestChannelDirectPost>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelDirectPost> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ChannelPost>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<AgentRequestChannelDirectPost>> for AgentRequestChannelDirectPostBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<AgentRequestChannelDirectPost>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<AgentRequestChannelDirectPost>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ChannelPost>>,
+    
+> ::planus::WriteAsOffset<AgentRequestChannelDirectPost> for AgentRequestChannelDirectPostBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelDirectPost> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = &self.0;AgentRequestChannelDirectPost::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [AgentRequestChannelDirectPost].
+#[derive(Copy, Clone)]
+pub struct AgentRequestChannelDirectPostRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> AgentRequestChannelDirectPostRef<'a> {
+    
+        /// Getter for the [`launch_id` field](AgentRequestChannelDirectPost#structfield.launch_id).
+        #[inline]
+        pub fn launch_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "AgentRequestChannelDirectPost", "launch_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`post` field](AgentRequestChannelDirectPost#structfield.post).
+        #[inline]
+        pub fn post(&self) -> ::planus::Result<self::ChannelPostRef<'a>> {
+            
+            
+              
+              self.0.access_required(1, "AgentRequestChannelDirectPost", "post")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for AgentRequestChannelDirectPostRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("AgentRequestChannelDirectPostRef");
+        f.field("launch_id", &self.launch_id());f.field("post", &self.post());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<AgentRequestChannelDirectPostRef<'a>> for AgentRequestChannelDirectPost {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: AgentRequestChannelDirectPostRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            launch_id: ::core::convert::Into::into(value.launch_id()?),post: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.post()?)?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for AgentRequestChannelDirectPostRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for AgentRequestChannelDirectPostRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[AgentRequestChannelDirectPostRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<AgentRequestChannelDirectPost>> for AgentRequestChannelDirectPost {
+    type Value = ::planus::Offset<AgentRequestChannelDirectPost>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<AgentRequestChannelDirectPost>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelDirectPostRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[AgentRequestChannelDirectPostRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `AgentRequestChannelAck` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `AgentRequestChannelAck` in the file `crates/bkpr-protocol/src/wire/native.fbs:773`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct AgentRequestChannelAck{
+    
+        /// The field `channel_id` in the table `AgentRequestChannelAck`
+        pub channel_id: ::planus::alloc::string::String,
+        /// The field `message_id` in the table `AgentRequestChannelAck`
+        pub message_id: ::planus::alloc::string::String,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for AgentRequestChannelAck {
+    fn default() -> Self {
+        Self {
+        channel_id: ::core::default::Default::default(),
+        message_id: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl AgentRequestChannelAck {
+    /// Creates a [AgentRequestChannelAckBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> AgentRequestChannelAckBuilder<()> {
+        AgentRequestChannelAckBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_channel_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_message_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_channel_id = field_channel_id.prepare(builder);let prepared_message_id = field_message_id.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_channel_id);object_writer.write::<_, _, 4>(&prepared_message_id);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<AgentRequestChannelAck>> for AgentRequestChannelAck {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelAck> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<AgentRequestChannelAck>> for AgentRequestChannelAck {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<AgentRequestChannelAck>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<AgentRequestChannelAck> for AgentRequestChannelAck {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelAck> {
+        AgentRequestChannelAck::create(
+            builder,
+        
+            
+            &self.channel_id,
+            
+        
+            
+            &self.message_id,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [AgentRequestChannelAck] type.
+///
+/// Can be created using the [AgentRequestChannelAck::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct AgentRequestChannelAckBuilder<State>(State);
+
+impl<
+    
+> AgentRequestChannelAckBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`channel_id` field](AgentRequestChannelAck#structfield.channel_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn channel_id<T0>(self, value: T0) -> AgentRequestChannelAckBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        AgentRequestChannelAckBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> AgentRequestChannelAckBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`message_id` field](AgentRequestChannelAck#structfield.message_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn message_id<T1>(self, value: T1) -> AgentRequestChannelAckBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;AgentRequestChannelAckBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> AgentRequestChannelAckBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [AgentRequestChannelAck].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelAck>
+        where Self: ::planus::WriteAsOffset<AgentRequestChannelAck>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAs<::planus::Offset<AgentRequestChannelAck>> for AgentRequestChannelAckBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<AgentRequestChannelAck>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelAck> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<AgentRequestChannelAck>> for AgentRequestChannelAckBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<AgentRequestChannelAck>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<AgentRequestChannelAck>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOffset<AgentRequestChannelAck> for AgentRequestChannelAckBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelAck> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = &self.0;AgentRequestChannelAck::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [AgentRequestChannelAck].
+#[derive(Copy, Clone)]
+pub struct AgentRequestChannelAckRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> AgentRequestChannelAckRef<'a> {
+    
+        /// Getter for the [`channel_id` field](AgentRequestChannelAck#structfield.channel_id).
+        #[inline]
+        pub fn channel_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "AgentRequestChannelAck", "channel_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`message_id` field](AgentRequestChannelAck#structfield.message_id).
+        #[inline]
+        pub fn message_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(1, "AgentRequestChannelAck", "message_id")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for AgentRequestChannelAckRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("AgentRequestChannelAckRef");
+        f.field("channel_id", &self.channel_id());f.field("message_id", &self.message_id());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<AgentRequestChannelAckRef<'a>> for AgentRequestChannelAck {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: AgentRequestChannelAckRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            channel_id: ::core::convert::Into::into(value.channel_id()?),message_id: ::core::convert::Into::into(value.message_id()?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for AgentRequestChannelAckRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for AgentRequestChannelAckRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[AgentRequestChannelAckRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<AgentRequestChannelAck>> for AgentRequestChannelAck {
+    type Value = ::planus::Offset<AgentRequestChannelAck>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<AgentRequestChannelAck>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelAckRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[AgentRequestChannelAckRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
 /// The union `AgentRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:767`
+/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:777`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -79040,6 +78334,12 @@ pub enum AgentRequest{
     
         /// The variant of type `AgentRequestChannelRead` in the union `AgentRequest`
         AgentRequestChannelRead(::planus::alloc::boxed::Box<self::AgentRequestChannelRead>),
+    
+        /// The variant of type `AgentRequestChannelDirectPost` in the union `AgentRequest`
+        AgentRequestChannelDirectPost(::planus::alloc::boxed::Box<self::AgentRequestChannelDirectPost>),
+    
+        /// The variant of type `AgentRequestChannelAck` in the union `AgentRequest`
+        AgentRequestChannelAck(::planus::alloc::boxed::Box<self::AgentRequestChannelAck>),
     
 }
 
@@ -79179,6 +78479,22 @@ impl AgentRequest {
         ::planus::UnionOffset::new(16, value.prepare(builder).downcast())
     }
 
+    #[inline]
+    pub fn create_agent_request_channel_direct_post(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::AgentRequestChannelDirectPost>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(17, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_agent_request_channel_ack(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::AgentRequestChannelAck>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(18, value.prepare(builder).downcast())
+    }
+
     
 }
 
@@ -79204,6 +78520,8 @@ impl ::planus::WriteAsUnion<AgentRequest> for AgentRequest {
             Self::AgentRequestChannels(value) => Self::create_agent_request_channels(builder, value),
             Self::AgentRequestChannelWake(value) => Self::create_agent_request_channel_wake(builder, value),
             Self::AgentRequestChannelRead(value) => Self::create_agent_request_channel_read(builder, value),
+            Self::AgentRequestChannelDirectPost(value) => Self::create_agent_request_channel_direct_post(builder, value),
+            Self::AgentRequestChannelAck(value) => Self::create_agent_request_channel_ack(builder, value),
             
         }
     }
@@ -79382,6 +78700,26 @@ impl AgentRequestBuilder<::planus::Uninitialized> {
         value: T,
     ) -> AgentRequestBuilder<::planus::Initialized<16, T>>
         where T: ::planus::WriteAsOffset<self::AgentRequestChannelRead> {
+        AgentRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`AgentRequestChannelDirectPost` variant](AgentRequest#variant.AgentRequestChannelDirectPost).
+    #[inline]
+    pub fn agent_request_channel_direct_post<T>(
+        self,
+        value: T,
+    ) -> AgentRequestBuilder<::planus::Initialized<17, T>>
+        where T: ::planus::WriteAsOffset<self::AgentRequestChannelDirectPost> {
+        AgentRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`AgentRequestChannelAck` variant](AgentRequest#variant.AgentRequestChannelAck).
+    #[inline]
+    pub fn agent_request_channel_ack<T>(
+        self,
+        value: T,
+    ) -> AgentRequestBuilder<::planus::Initialized<18, T>>
+        where T: ::planus::WriteAsOffset<self::AgentRequestChannelAck> {
         AgentRequestBuilder(::planus::Initialized(value))
     }
 
@@ -79670,6 +79008,40 @@ impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::p
         ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
     }
 }
+impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<17, T>>
+    where T: ::planus::WriteAsOffset<self::AgentRequestChannelDirectPost>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<AgentRequest> {
+        ::planus::UnionOffset::new(17, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<17, T>>
+    where T: ::planus::WriteAsOffset<self::AgentRequestChannelDirectPost>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<AgentRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<18, T>>
+    where T: ::planus::WriteAsOffset<self::AgentRequestChannelAck>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<AgentRequest> {
+        ::planus::UnionOffset::new(18, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<18, T>>
+    where T: ::planus::WriteAsOffset<self::AgentRequestChannelAck>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<AgentRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
 
 
 /// Reference to a deserialized [AgentRequest].
@@ -79691,6 +79063,8 @@ pub enum AgentRequestRef<'a>{
     AgentRequestChannels(self::AgentRequestChannelsRef<'a>),
     AgentRequestChannelWake(self::AgentRequestChannelWakeRef<'a>),
     AgentRequestChannelRead(self::AgentRequestChannelReadRef<'a>),
+    AgentRequestChannelDirectPost(self::AgentRequestChannelDirectPostRef<'a>),
+    AgentRequestChannelAck(self::AgentRequestChannelAckRef<'a>),
     
 }
 
@@ -79749,6 +79123,12 @@ impl<'a> ::core::convert::TryFrom<AgentRequestRef<'a>> for AgentRequest {
                 AgentRequestRef::AgentRequestChannelRead(value) => Self::AgentRequestChannelRead(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
                 
             
+                AgentRequestRef::AgentRequestChannelDirectPost(value) => Self::AgentRequestChannelDirectPost(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                AgentRequestRef::AgentRequestChannelAck(value) => Self::AgentRequestChannelAck(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
         })
     }
 }
@@ -79758,7 +79138,7 @@ impl<'a> ::core::convert::TryFrom<AgentRequestRef<'a>> for AgentRequest {
 impl<'a> ::planus::TableReadUnion<'a> for AgentRequestRef<'a> {
     fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
         match tag {
-            1 => ::core::result::Result::Ok(Self::AgentRequestWhoami(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::AgentRequestControl(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::AgentRequestSetTitle(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::AgentRequestDiscoverAgents(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::AgentRequestSendMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::AgentRequestReadInbox(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::AgentRequestAckMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::AgentRequestInspectOutbox(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::AgentRequestReceiverRegister(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::AgentRequestReceiverSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::AgentRequestWakeValidate(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::AgentRequestWakeOutcome(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::AgentRequestReadMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::AgentRequestChannels(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::AgentRequestChannelWake(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::AgentRequestChannelRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+            1 => ::core::result::Result::Ok(Self::AgentRequestWhoami(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::AgentRequestControl(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::AgentRequestSetTitle(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::AgentRequestDiscoverAgents(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::AgentRequestSendMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::AgentRequestReadInbox(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::AgentRequestAckMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::AgentRequestInspectOutbox(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::AgentRequestReceiverRegister(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::AgentRequestReceiverSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::AgentRequestWakeValidate(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::AgentRequestWakeOutcome(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::AgentRequestReadMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::AgentRequestChannels(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::AgentRequestChannelWake(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::AgentRequestChannelRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),17 => ::core::result::Result::Ok(Self::AgentRequestChannelDirectPost(::planus::TableRead::from_buffer(buffer, field_offset)?)),18 => ::core::result::Result::Ok(Self::AgentRequestChannelAck(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
         }
     }
 }
@@ -79774,7 +79154,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentRequestRef<'a> {
 /// The table `AgentWakeOutcomeAccepted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:768`
+/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:778`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -80000,7 +79380,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeAcceptedRef<'a> {
 /// The table `AgentWakeOutcomeFailed` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:771`
+/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:781`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -80305,7 +79685,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeFailedRef<'a> {
 /// The table `AgentWakeOutcomeUnknown` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:774`
+/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:784`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -80610,7 +79990,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeUnknownRef<'a> {
 /// The union `AgentWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:777`
+/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:787`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -80838,7 +80218,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentWakeOutcomeRef<'a> {
 /// The table `RequestFailureSessionClosing` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:778`
+/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:788`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -81154,7 +80534,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureSessionClosingRef<'a> {
 /// The table `RequestFailureBusy` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureBusy` in the file `crates/bkpr-protocol/src/wire/native.fbs:781`
+/// * Table `RequestFailureBusy` in the file `crates/bkpr-protocol/src/wire/native.fbs:791`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -81459,7 +80839,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureBusyRef<'a> {
 /// The union `RequestFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:784`
+/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:794`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -81644,7 +81024,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for RequestFailureRef<'a> {
 /// The table `OptionalU32` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalU32` in the file `crates/bkpr-protocol/src/wire/native.fbs:785`
+/// * Table `OptionalU32` in the file `crates/bkpr-protocol/src/wire/native.fbs:795`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -81960,7 +81340,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalU32Ref<'a> {
 /// The table `OptionalU64` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:788`
+/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:798`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -82276,7 +81656,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalU64Ref<'a> {
 /// The table `OptionalPalette` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:791`
+/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:801`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -82581,7 +81961,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPaletteRef<'a> {
 /// The table `OptionalUsize` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:794`
+/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:804`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -82897,7 +82277,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalUsizeRef<'a> {
 /// The table `NullValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:799`
+/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:809`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -83123,7 +82503,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for NullValueRef<'a> {
 /// The table `BoolValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:800`
+/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:810`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -83439,7 +82819,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for BoolValueRef<'a> {
 /// The table `SignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:801`
+/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:811`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -83755,7 +83135,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SignedValueRef<'a> {
 /// The table `UnsignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:802`
+/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:812`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -84071,7 +83451,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for UnsignedValueRef<'a> {
 /// The table `FloatValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:803`
+/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:813`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -84387,7 +83767,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for FloatValueRef<'a> {
 /// The table `StringValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:804`
+/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:814`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -84692,7 +84072,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for StringValueRef<'a> {
 /// The table `ArrayValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:805`
+/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:815`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -84997,7 +84377,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ArrayValueRef<'a> {
 /// The table `Entry` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:806`
+/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:816`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -85375,7 +84755,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for EntryRef<'a> {
 /// The table `ObjectValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:807`
+/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:817`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -85680,7 +85060,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ObjectValueRef<'a> {
 /// The union `ValueBody` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:808`
+/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:818`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -86123,7 +85503,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ValueBodyRef<'a> {
 /// The table `Value` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:809`
+/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:819`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -86418,7 +85798,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ValueRef<'a> {
 /// The table `ControlPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:810`
+/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:820`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -86713,7 +86093,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ControlPayloadRef<'a> {
 /// The table `PanePayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:811`
+/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:821`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -87106,7 +86486,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PanePayloadRef<'a> {
 /// The enum `ImagePixelFormat` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Enum `ImagePixelFormat` in the file `crates/bkpr-protocol/src/wire/native.fbs:815`
+/// * Enum `ImagePixelFormat` in the file `crates/bkpr-protocol/src/wire/native.fbs:825`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum ImagePixelFormat {
     
         /// The variant `Rgb` in the enum `ImagePixelFormat`
@@ -87257,7 +86637,7 @@ unsafe impl ::planus::VectorWrite<ImagePixelFormat> for ImagePixelFormat {
 /// The enum `ImageEncoding` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Enum `ImageEncoding` in the file `crates/bkpr-protocol/src/wire/native.fbs:816`
+/// * Enum `ImageEncoding` in the file `crates/bkpr-protocol/src/wire/native.fbs:826`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum ImageEncoding {
     
         /// The variant `Raw` in the enum `ImageEncoding`
@@ -87400,7 +86780,7 @@ unsafe impl ::planus::VectorWrite<ImageEncoding> for ImageEncoding {
 /// The table `ImageDescriptor` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:817`
+/// * Table `ImageDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:827`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -88165,7 +87545,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageDescriptorRef<'a> {
 /// The table `ImagePreparing` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImagePreparing` in the file `crates/bkpr-protocol/src/wire/native.fbs:824`
+/// * Table `ImagePreparing` in the file `crates/bkpr-protocol/src/wire/native.fbs:834`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -88470,7 +87850,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImagePreparingRef<'a> {
 /// The table `ImageStart` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageStart` in the file `crates/bkpr-protocol/src/wire/native.fbs:825`
+/// * Table `ImageStart` in the file `crates/bkpr-protocol/src/wire/native.fbs:835`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -88981,7 +88361,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageStartRef<'a> {
 /// The table `ImageData` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageData` in the file `crates/bkpr-protocol/src/wire/native.fbs:830`
+/// * Table `ImageData` in the file `crates/bkpr-protocol/src/wire/native.fbs:840`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -89477,7 +88857,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageDataRef<'a> {
 /// The table `ImageEnd` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:831`
+/// * Table `ImageEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:841`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -89879,7 +89259,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageEndRef<'a> {
 /// The union `ImageResource` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ImageResource` in the file `crates/bkpr-protocol/src/wire/native.fbs:832`
+/// * Union `ImageResource` in the file `crates/bkpr-protocol/src/wire/native.fbs:842`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -90150,7 +89530,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ImageResourceRef<'a> {
 /// The table `ImageResourcePayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageResourcePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:833`
+/// * Table `ImageResourcePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:843`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -90445,7 +89825,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageResourcePayloadRef<'a> {
 /// The table `ChannelParticipant` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelParticipant` in the file `crates/bkpr-protocol/src/wire/native.fbs:834`
+/// * Table `ChannelParticipant` in the file `crates/bkpr-protocol/src/wire/native.fbs:844`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -90941,7 +90321,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelParticipantRef<'a> {
 /// The table `ChannelSummary` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelSummary` in the file `crates/bkpr-protocol/src/wire/native.fbs:839`
+/// * Table `ChannelSummary` in the file `crates/bkpr-protocol/src/wire/native.fbs:849`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -90963,7 +90343,9 @@ pub struct ChannelSummary{
         /// The field `read_through` in the table `ChannelSummary`
         pub read_through: u64,
         /// The field `unread_attention` in the table `ChannelSummary`
-        pub unread_attention: bool,}
+        pub unread_attention: bool,
+        /// The field `direct` in the table `ChannelSummary`
+        pub direct: bool,}
 
 
 #[allow(clippy::derivable_impls)]
@@ -90978,6 +90360,7 @@ impl ::core::default::Default for ChannelSummary {
         last_sequence: 0,
         read_through: 0,
         unread_attention: false,
+        direct: false,
         
         }
     }
@@ -91002,14 +90385,15 @@ impl ChannelSummary {
         field_last_sequence: impl ::planus::WriteAsDefault<u64, u64>,
         field_read_through: impl ::planus::WriteAsDefault<u64, u64>,
         field_unread_attention: impl ::planus::WriteAsDefault<bool, bool>,
+        field_direct: impl ::planus::WriteAsDefault<bool, bool>,
         
-    ) -> ::planus::Offset<Self> {let prepared_id = field_id.prepare(builder);let prepared_workspace_id = field_workspace_id.prepare(builder);let prepared_name = field_name.prepare(builder);let prepared_membership = field_membership.prepare(builder, &self::MembershipMode::Explicit);let prepared_settings = field_settings.prepare(builder);let prepared_last_sequence = field_last_sequence.prepare(builder, &0);let prepared_read_through = field_read_through.prepare(builder, &0);let prepared_unread_attention = field_unread_attention.prepare(builder, &false);
+    ) -> ::planus::Offset<Self> {let prepared_id = field_id.prepare(builder);let prepared_workspace_id = field_workspace_id.prepare(builder);let prepared_name = field_name.prepare(builder);let prepared_membership = field_membership.prepare(builder, &self::MembershipMode::Explicit);let prepared_settings = field_settings.prepare(builder);let prepared_last_sequence = field_last_sequence.prepare(builder, &0);let prepared_read_through = field_read_through.prepare(builder, &0);let prepared_unread_attention = field_unread_attention.prepare(builder, &false);let prepared_direct = field_direct.prepare(builder, &false);
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<20> = ::core::default::Default::default();
-        if prepared_last_sequence.is_some() {table_writer.write_entry::<u64>(5);}if prepared_read_through.is_some() {table_writer.write_entry::<u64>(6);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<str>>(2);table_writer.write_entry::<::planus::Offset<self::ChannelSettings>>(4);if prepared_membership.is_some() {table_writer.write_entry::<self::MembershipMode>(3);}if prepared_unread_attention.is_some() {table_writer.write_entry::<bool>(7);}
+        let mut table_writer: ::planus::table_writer::TableWriter::<22> = ::core::default::Default::default();
+        if prepared_last_sequence.is_some() {table_writer.write_entry::<u64>(5);}if prepared_read_through.is_some() {table_writer.write_entry::<u64>(6);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<str>>(2);table_writer.write_entry::<::planus::Offset<self::ChannelSettings>>(4);if prepared_membership.is_some() {table_writer.write_entry::<self::MembershipMode>(3);}if prepared_unread_attention.is_some() {table_writer.write_entry::<bool>(7);}if prepared_direct.is_some() {table_writer.write_entry::<bool>(8);}
 
         unsafe {
-            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_last_sequence) = prepared_last_sequence {object_writer.write::<_, _, 8>(&prepared_last_sequence);}if let ::core::option::Option::Some(prepared_read_through) = prepared_read_through {object_writer.write::<_, _, 8>(&prepared_read_through);}object_writer.write::<_, _, 4>(&prepared_id);object_writer.write::<_, _, 4>(&prepared_workspace_id);object_writer.write::<_, _, 4>(&prepared_name);object_writer.write::<_, _, 4>(&prepared_settings);if let ::core::option::Option::Some(prepared_membership) = prepared_membership {object_writer.write::<_, _, 1>(&prepared_membership);}if let ::core::option::Option::Some(prepared_unread_attention) = prepared_unread_attention {object_writer.write::<_, _, 1>(&prepared_unread_attention);}
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_last_sequence) = prepared_last_sequence {object_writer.write::<_, _, 8>(&prepared_last_sequence);}if let ::core::option::Option::Some(prepared_read_through) = prepared_read_through {object_writer.write::<_, _, 8>(&prepared_read_through);}object_writer.write::<_, _, 4>(&prepared_id);object_writer.write::<_, _, 4>(&prepared_workspace_id);object_writer.write::<_, _, 4>(&prepared_name);object_writer.write::<_, _, 4>(&prepared_settings);if let ::core::option::Option::Some(prepared_membership) = prepared_membership {object_writer.write::<_, _, 1>(&prepared_membership);}if let ::core::option::Option::Some(prepared_unread_attention) = prepared_unread_attention {object_writer.write::<_, _, 1>(&prepared_unread_attention);}if let ::core::option::Option::Some(prepared_direct) = prepared_direct {object_writer.write::<_, _, 1>(&prepared_direct);}
                 
             });
         }builder.current_offset()
@@ -91070,6 +90454,10 @@ impl ::planus::WriteAsOffset<ChannelSummary> for ChannelSummary {
         
             
             self.unread_attention,
+            
+        
+            
+            self.direct,
             
         
         )
@@ -91710,6 +91098,146 @@ impl<
     
 }
 
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+> ChannelSummaryBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+    )
+>
+{
+    /// Setter for the [`direct` field](ChannelSummary#structfield.direct).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn direct<T8>(self, value: T8) -> ChannelSummaryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+    )>
+    where T8: ::planus::WriteAsDefault<bool, bool>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+        ) = self.0;ChannelSummaryBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`direct` field](ChannelSummary#structfield.direct) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn direct_as_default(self) -> ChannelSummaryBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+            T5,
+        
+            T6,
+        
+            T7,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.direct(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
 
 
 impl<
@@ -91730,6 +91258,8 @@ impl<
     
         T7,
     
+        T8,
+    
 > ChannelSummaryBuilder<(
     
         T0,
@@ -91747,6 +91277,8 @@ impl<
         T6,
     
         T7,
+    
+        T8,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelSummary].
@@ -91776,6 +91308,8 @@ impl<
     
         T7: ::planus::WriteAsDefault<bool, bool>,
     
+        T8: ::planus::WriteAsDefault<bool, bool>,
+    
 > ::planus::WriteAs<::planus::Offset<ChannelSummary>> for ChannelSummaryBuilder<(
     
         T0,
@@ -91793,6 +91327,8 @@ impl<
         T6,
     
         T7,
+    
+        T8,
     
 )> {
     type Prepared = ::planus::Offset<ChannelSummary>;
@@ -91821,6 +91357,8 @@ impl<
     
         T7: ::planus::WriteAsDefault<bool, bool>,
     
+        T8: ::planus::WriteAsDefault<bool, bool>,
+    
 > ::planus::WriteAsOptional<::planus::Offset<ChannelSummary>> for ChannelSummaryBuilder<(
     
         T0,
@@ -91838,6 +91376,8 @@ impl<
         T6,
     
         T7,
+    
+        T8,
     
 )> {
     type Prepared = ::planus::Offset<ChannelSummary>;
@@ -91866,6 +91406,8 @@ impl<
     
         T7: ::planus::WriteAsDefault<bool, bool>,
     
+        T8: ::planus::WriteAsDefault<bool, bool>,
+    
 > ::planus::WriteAsOffset<ChannelSummary> for ChannelSummaryBuilder<(
     
         T0,
@@ -91883,6 +91425,8 @@ impl<
         T6,
     
         T7,
+    
+        T8,
     
 )> {
     #[inline]
@@ -91906,6 +91450,8 @@ impl<
             
                 v7,
             
+                v8,
+            
         ) = &self.0;ChannelSummary::create(
             builder,
             
@@ -91924,6 +91470,8 @@ impl<
                 v6,
             
                 v7,
+            
+                v8,
             
         )
     }
@@ -92042,12 +91590,25 @@ impl<'a> ChannelSummaryRef<'a> {
             
         }
     
+        /// Getter for the [`direct` field](ChannelSummary#structfield.direct).
+        #[inline]
+        pub fn direct(&self) -> ::planus::Result<bool> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(8, "ChannelSummary", "direct")
+              
+            
+            ?.unwrap_or(false))
+            
+        }
+    
 }
 
 impl<'a> ::core::fmt::Debug for ChannelSummaryRef<'a> {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         let mut f = f.debug_struct("ChannelSummaryRef");
-        f.field("id", &self.id());f.field("workspace_id", &self.workspace_id());f.field("name", &self.name());f.field("membership", &self.membership());f.field("settings", &self.settings());f.field("last_sequence", &self.last_sequence());f.field("read_through", &self.read_through());f.field("unread_attention", &self.unread_attention());
+        f.field("id", &self.id());f.field("workspace_id", &self.workspace_id());f.field("name", &self.name());f.field("membership", &self.membership());f.field("settings", &self.settings());f.field("last_sequence", &self.last_sequence());f.field("read_through", &self.read_through());f.field("unread_attention", &self.unread_attention());f.field("direct", &self.direct());
         f.finish()
     }
 }
@@ -92060,7 +91621,7 @@ impl<'a> ::core::convert::TryFrom<ChannelSummaryRef<'a>> for ChannelSummary {
     fn try_from(value: ChannelSummaryRef<'a>) -> ::planus::Result<Self> {
 
         ::core::result::Result::Ok(Self {
-            id: ::core::convert::Into::into(value.id()?),workspace_id: ::core::convert::Into::into(value.workspace_id()?),name: ::core::convert::Into::into(value.name()?),membership: ::core::convert::TryInto::try_into(value.membership()?)?,settings: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.settings()?)?),last_sequence: ::core::convert::TryInto::try_into(value.last_sequence()?)?,read_through: ::core::convert::TryInto::try_into(value.read_through()?)?,unread_attention: ::core::convert::TryInto::try_into(value.unread_attention()?)?,
+            id: ::core::convert::Into::into(value.id()?),workspace_id: ::core::convert::Into::into(value.workspace_id()?),name: ::core::convert::Into::into(value.name()?),membership: ::core::convert::TryInto::try_into(value.membership()?)?,settings: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.settings()?)?),last_sequence: ::core::convert::TryInto::try_into(value.last_sequence()?)?,read_through: ::core::convert::TryInto::try_into(value.read_through()?)?,unread_attention: ::core::convert::TryInto::try_into(value.unread_attention()?)?,direct: ::core::convert::TryInto::try_into(value.direct()?)?,
         })
     }
 }
@@ -92130,7 +91691,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelSummaryRef<'a> {
 /// The table `ChannelMessageSummary` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelMessageSummary` in the file `crates/bkpr-protocol/src/wire/native.fbs:849`
+/// * Table `ChannelMessageSummary` in the file `crates/bkpr-protocol/src/wire/native.fbs:860`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -93498,7 +93059,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelMessageSummaryRef<'a> {
 /// The table `ChannelChange` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelChange` in the file `crates/bkpr-protocol/src/wire/native.fbs:861`
+/// * Table `ChannelChange` in the file `crates/bkpr-protocol/src/wire/native.fbs:872`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -93911,7 +93472,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelChangeRef<'a> {
 /// The table `AttachmentDescriptor` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AttachmentDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:862`
+/// * Table `AttachmentDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:873`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -94547,7 +94108,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AttachmentDescriptorRef<'a> {
 /// The table `ChannelMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:868`
+/// * Table `ChannelMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:879`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -95030,7 +94591,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelMessageRef<'a> {
 /// The table `ChannelResponseListed` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseListed` in the file `crates/bkpr-protocol/src/wire/native.fbs:873`
+/// * Table `ChannelResponseListed` in the file `crates/bkpr-protocol/src/wire/native.fbs:884`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -95436,7 +94997,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseListedRef<'a> {
 /// The table `ChannelResponseMembers` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseMembers` in the file `crates/bkpr-protocol/src/wire/native.fbs:877`
+/// * Table `ChannelResponseMembers` in the file `crates/bkpr-protocol/src/wire/native.fbs:888`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -95842,7 +95403,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseMembersRef<'a> {
 /// The table `ChannelResponseChannel` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseChannel` in the file `crates/bkpr-protocol/src/wire/native.fbs:881`
+/// * Table `ChannelResponseChannel` in the file `crates/bkpr-protocol/src/wire/native.fbs:892`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -96147,7 +95708,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseChannelRef<'a> {
 /// The table `ChannelResponsePosted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponsePosted` in the file `crates/bkpr-protocol/src/wire/native.fbs:882`
+/// * Table `ChannelResponsePosted` in the file `crates/bkpr-protocol/src/wire/native.fbs:893`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -96159,7 +95720,9 @@ pub struct ChannelResponsePosted{
         /// The field `wake_count` in the table `ChannelResponsePosted`
         pub wake_count: u32,
         /// The field `attention` in the table `ChannelResponsePosted`
-        pub attention: bool,}
+        pub attention: bool,
+        /// The field `channel_id` in the table `ChannelResponsePosted`
+        pub channel_id: ::core::option::Option<::planus::alloc::string::String>,}
 
 
 #[allow(clippy::derivable_impls)]
@@ -96169,6 +95732,7 @@ impl ::core::default::Default for ChannelResponsePosted {
         message: ::core::default::Default::default(),
         wake_count: 0,
         attention: false,
+        channel_id: ::core::default::Default::default(),
         
         }
     }
@@ -96188,14 +95752,15 @@ impl ChannelResponsePosted {
         field_message: impl ::planus::WriteAs<::planus::Offset<self::ChannelMessageSummary>>,
         field_wake_count: impl ::planus::WriteAsDefault<u32, u32>,
         field_attention: impl ::planus::WriteAsDefault<bool, bool>,
+        field_channel_id: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_message = field_message.prepare(builder);let prepared_wake_count = field_wake_count.prepare(builder, &0);let prepared_attention = field_attention.prepare(builder, &false);
+    ) -> ::planus::Offset<Self> {let prepared_message = field_message.prepare(builder);let prepared_wake_count = field_wake_count.prepare(builder, &0);let prepared_attention = field_attention.prepare(builder, &false);let prepared_channel_id = field_channel_id.prepare(builder);
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
-        table_writer.write_entry::<::planus::Offset<self::ChannelMessageSummary>>(0);if prepared_wake_count.is_some() {table_writer.write_entry::<u32>(1);}if prepared_attention.is_some() {table_writer.write_entry::<bool>(2);}
+        let mut table_writer: ::planus::table_writer::TableWriter::<12> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::ChannelMessageSummary>>(0);if prepared_wake_count.is_some() {table_writer.write_entry::<u32>(1);}if prepared_channel_id.is_some() {table_writer.write_entry::<::planus::Offset<str>>(3);}if prepared_attention.is_some() {table_writer.write_entry::<bool>(2);}
 
         unsafe {
-            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_message);if let ::core::option::Option::Some(prepared_wake_count) = prepared_wake_count {object_writer.write::<_, _, 4>(&prepared_wake_count);}if let ::core::option::Option::Some(prepared_attention) = prepared_attention {object_writer.write::<_, _, 1>(&prepared_attention);}
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_message);if let ::core::option::Option::Some(prepared_wake_count) = prepared_wake_count {object_writer.write::<_, _, 4>(&prepared_wake_count);}if let ::core::option::Option::Some(prepared_channel_id) = prepared_channel_id {object_writer.write::<_, _, 4>(&prepared_channel_id);}if let ::core::option::Option::Some(prepared_attention) = prepared_attention {object_writer.write::<_, _, 1>(&prepared_attention);}
                 
             });
         }builder.current_offset()
@@ -96236,6 +95801,10 @@ impl ::planus::WriteAsOffset<ChannelResponsePosted> for ChannelResponsePosted {
         
             
             self.attention,
+            
+        
+            
+            &self.channel_id,
             
         
         )
@@ -96403,6 +95972,86 @@ impl<
     
 }
 
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> ChannelResponsePostedBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )
+>
+{
+    /// Setter for the [`channel_id` field](ChannelResponsePosted#structfield.channel_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn channel_id<T3>(self, value: T3) -> ChannelResponsePostedBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )>
+    where T3: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = self.0;ChannelResponsePostedBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`channel_id` field](ChannelResponsePosted#structfield.channel_id) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn channel_id_as_null(self) -> ChannelResponsePostedBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+        (),
+    )>
+    {
+        self.channel_id(())
+    }
+    
+}
+
 
 
 impl<
@@ -96413,6 +96062,8 @@ impl<
     
         T2,
     
+        T3,
+    
 > ChannelResponsePostedBuilder<(
     
         T0,
@@ -96420,6 +96071,8 @@ impl<
         T1,
     
         T2,
+    
+        T3,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelResponsePosted].
@@ -96439,6 +96092,8 @@ impl<
     
         T2: ::planus::WriteAsDefault<bool, bool>,
     
+        T3: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
 > ::planus::WriteAs<::planus::Offset<ChannelResponsePosted>> for ChannelResponsePostedBuilder<(
     
         T0,
@@ -96446,6 +96101,8 @@ impl<
         T1,
     
         T2,
+    
+        T3,
     
 )> {
     type Prepared = ::planus::Offset<ChannelResponsePosted>;
@@ -96464,6 +96121,8 @@ impl<
     
         T2: ::planus::WriteAsDefault<bool, bool>,
     
+        T3: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
 > ::planus::WriteAsOptional<::planus::Offset<ChannelResponsePosted>> for ChannelResponsePostedBuilder<(
     
         T0,
@@ -96471,6 +96130,8 @@ impl<
         T1,
     
         T2,
+    
+        T3,
     
 )> {
     type Prepared = ::planus::Offset<ChannelResponsePosted>;
@@ -96489,6 +96150,8 @@ impl<
     
         T2: ::planus::WriteAsDefault<bool, bool>,
     
+        T3: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
 > ::planus::WriteAsOffset<ChannelResponsePosted> for ChannelResponsePostedBuilder<(
     
         T0,
@@ -96496,6 +96159,8 @@ impl<
         T1,
     
         T2,
+    
+        T3,
     
 )> {
     #[inline]
@@ -96509,6 +96174,8 @@ impl<
             
                 v2,
             
+                v3,
+            
         ) = &self.0;ChannelResponsePosted::create(
             builder,
             
@@ -96517,6 +96184,8 @@ impl<
                 v1,
             
                 v2,
+            
+                v3,
             
         )
     }
@@ -96570,12 +96239,27 @@ impl<'a> ChannelResponsePostedRef<'a> {
             
         }
     
+        /// Getter for the [`channel_id` field](ChannelResponsePosted#structfield.channel_id).
+        #[inline]
+        pub fn channel_id(&self) -> ::planus::Result<::core::option::Option<&'a ::core::primitive::str>> {
+            
+            
+              
+              self.0.access(3, "ChannelResponsePosted", "channel_id")
+              
+            
+            
+            
+        }
+    
 }
 
 impl<'a> ::core::fmt::Debug for ChannelResponsePostedRef<'a> {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         let mut f = f.debug_struct("ChannelResponsePostedRef");
-        f.field("message", &self.message());f.field("wake_count", &self.wake_count());f.field("attention", &self.attention());
+        f.field("message", &self.message());f.field("wake_count", &self.wake_count());f.field("attention", &self.attention());if let ::core::option::Option::Some(field_channel_id) = self.channel_id().transpose() {
+                f.field("channel_id", &field_channel_id);
+            }
         f.finish()
     }
 }
@@ -96588,7 +96272,9 @@ impl<'a> ::core::convert::TryFrom<ChannelResponsePostedRef<'a>> for ChannelRespo
     fn try_from(value: ChannelResponsePostedRef<'a>) -> ::planus::Result<Self> {
 
         ::core::result::Result::Ok(Self {
-            message: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.message()?)?),wake_count: ::core::convert::TryInto::try_into(value.wake_count()?)?,attention: ::core::convert::TryInto::try_into(value.attention()?)?,
+            message: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.message()?)?),wake_count: ::core::convert::TryInto::try_into(value.wake_count()?)?,attention: ::core::convert::TryInto::try_into(value.attention()?)?,channel_id: 
+                                value.channel_id()?.map(::core::convert::Into::into)
+                            ,
         })
     }
 }
@@ -96658,7 +96344,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponsePostedRef<'a> {
 /// The table `ChannelResponseHistory` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseHistory` in the file `crates/bkpr-protocol/src/wire/native.fbs:887`
+/// * Table `ChannelResponseHistory` in the file `crates/bkpr-protocol/src/wire/native.fbs:899`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -97289,7 +96975,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseHistoryRef<'a> {
 /// The table `ChannelResponseMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:893`
+/// * Table `ChannelResponseMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:905`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -97594,7 +97280,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseMessageRef<'a> {
 /// The table `ChannelResponseReadPosition` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseReadPosition` in the file `crates/bkpr-protocol/src/wire/native.fbs:896`
+/// * Table `ChannelResponseReadPosition` in the file `crates/bkpr-protocol/src/wire/native.fbs:908`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -97910,7 +97596,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseReadPositionRef<'a> {
 /// The table `ChannelResponseChanges` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseChanges` in the file `crates/bkpr-protocol/src/wire/native.fbs:897`
+/// * Table `ChannelResponseChanges` in the file `crates/bkpr-protocol/src/wire/native.fbs:909`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -98529,7 +98215,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseChangesRef<'a> {
 /// The table `ChannelResponseAttachmentUploaded` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseAttachmentUploaded` in the file `crates/bkpr-protocol/src/wire/native.fbs:903`
+/// * Table `ChannelResponseAttachmentUploaded` in the file `crates/bkpr-protocol/src/wire/native.fbs:915`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -98834,7 +98520,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseAttachmentUploadedRef<'a> {
 /// The table `ChannelResponseAttachment` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseAttachment` in the file `crates/bkpr-protocol/src/wire/native.fbs:904`
+/// * Table `ChannelResponseAttachment` in the file `crates/bkpr-protocol/src/wire/native.fbs:916`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -99223,7 +98909,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseAttachmentRef<'a> {
 /// The table `ChannelResponseArchivedWorkspaces` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseArchivedWorkspaces` in the file `crates/bkpr-protocol/src/wire/native.fbs:908`
+/// * Table `ChannelResponseArchivedWorkspaces` in the file `crates/bkpr-protocol/src/wire/native.fbs:920`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -99629,7 +99315,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseArchivedWorkspacesRef<'a> {
 /// The table `ChannelResponseExplicitMembers` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseExplicitMembers` in the file `crates/bkpr-protocol/src/wire/native.fbs:912`
+/// * Table `ChannelResponseExplicitMembers` in the file `crates/bkpr-protocol/src/wire/native.fbs:924`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -100035,7 +99721,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseExplicitMembersRef<'a> {
 /// The union `ChannelResponse` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ChannelResponse` in the file `crates/bkpr-protocol/src/wire/native.fbs:916`
+/// * Union `ChannelResponse` in the file `crates/bkpr-protocol/src/wire/native.fbs:928`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -100650,7 +100336,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ChannelResponseRef<'a> {
 /// The table `ChannelPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:930`
+/// * Table `ChannelPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:942`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -100945,7 +100631,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelPayloadRef<'a> {
 /// The union `Payload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:931`
+/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:943`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -101216,7 +100902,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PayloadRef<'a> {
 /// The table `Request` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:932`
+/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:944`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -101605,7 +101291,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestRef<'a> {
 /// The table `OptionalPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:933`
+/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:945`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -101900,7 +101586,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPayloadRef<'a> {
 /// The table `OptionalFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:934`
+/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:946`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -102195,7 +101881,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalFailureRef<'a> {
 /// The table `Response` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:935`
+/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:947`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
