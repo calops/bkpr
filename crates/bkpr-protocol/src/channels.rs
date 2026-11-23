@@ -59,6 +59,21 @@ identity! {
     AttachmentId,
 }
 
+/// Recipient-specific, body-free metadata for one native channel wake batch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelWake {
+    /// Exact opaque batch identifier for authenticated lookup.
+    pub batch_id: String,
+    /// Owning channel of the coalesced posts.
+    pub channel_id: ChannelId,
+    /// Number of posts represented by this batch for the recipient.
+    pub pending_count: u32,
+    /// A message directly addressing this recipient, when the batch contains one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub addressed_message_id: Option<MessageId>,
+}
+
 /// Which authorized workspace agents are channel members. The session user
 /// retains access regardless of membership mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

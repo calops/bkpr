@@ -6,6 +6,9 @@ use crate::{
 };
 use sha2::{Digest, Sha256};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+mod channel_wakes;
+use channel_wakes::{ChannelLane, is_channel_batch};
 mod messages;
 
 const RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1000;
@@ -85,6 +88,7 @@ struct AgentState {
     store: Store,
     receivers: BTreeMap<String, Receiver>,
     waiters: BTreeMap<String, BTreeMap<String, usize>>,
+    channel_lanes: BTreeMap<String, ChannelLane>,
     failure: Option<String>,
     closing: bool,
     maintenance_at: Option<u64>,
@@ -284,6 +288,7 @@ impl Agents {
                 store,
                 receivers: BTreeMap::new(),
                 waiters: BTreeMap::new(),
+                channel_lanes: BTreeMap::new(),
                 failure: None,
                 closing: false,
                 maintenance_at: None,
@@ -502,6 +507,7 @@ impl Agents {
         let mut state = self.state.lock().unwrap();
         for id in ids {
             state.receivers.remove(id);
+            state.channel_lanes.remove(id);
         }
         self.changed.notify_all();
         Ok(())
@@ -930,7 +936,8 @@ impl Registry {
             ensure!(
                 current.grant.launch_id == caller.grant.launch_id
                     && current.binding_generation == caller.binding_generation
-                    && current.channel_participant == caller.channel_participant,
+                    && current.channel_participant == caller.channel_participant
+                    && current.control.same_authority(&caller.control),
                 ChannelAccessLost
             );
             channel_agent(current, agent)
@@ -943,6 +950,7 @@ impl Registry {
                 participants.push(WorkspaceParticipant {
                     actor: user(),
                     launch_id: None,
+                    binding_revision: 0,
                 });
             }
             if healthy_agents(&agents).is_ok() {
@@ -961,6 +969,7 @@ impl Registry {
                         .map(|(launch, agent)| WorkspaceParticipant {
                             actor: channel_agent(launch, agent),
                             launch_id: Some(launch.grant.launch_id.clone()),
+                            binding_revision: launch.binding_generation,
                         }),
                 );
             }
@@ -1021,6 +1030,14 @@ impl Registry {
         notification_id: &str,
         generation: u64,
     ) -> Result<()> {
+        if is_channel_batch(notification_id) {
+            return self.channel_subscription_disconnected(
+                launch_id,
+                receiver_id,
+                notification_id,
+                generation,
+            );
+        }
         self.inner.agents.transaction_maybe(|store| {
             let changed = settle_unknown(
                 store,
@@ -1313,6 +1330,10 @@ impl Registry {
                 {
                     let mut state = self.inner.agents.state.lock().unwrap();
                     state.receivers.remove(launch_id);
+                    if let Some(lane) = state.channel_lanes.get_mut(launch_id) {
+                        lane.pending_binding = None;
+                        lane.active = None;
+                    }
                     state.revision = state.revision.wrapping_add(1);
                 }
                 let timestamp = now();
@@ -1411,6 +1432,25 @@ impl Registry {
             }
         }
         match request {
+            AgentRequest::Channels { request } => {
+                self.agent_channel_request(&launch, *request, is_connected)
+            }
+            AgentRequest::ChannelRead {
+                channel_id,
+                message_id,
+                offset,
+                max_bytes,
+            } => self.agent_channel_read(
+                &launch,
+                channel_id,
+                message_id,
+                offset,
+                max_bytes,
+                is_connected,
+            ),
+            AgentRequest::ChannelWake { batch_id } => {
+                self.agent_channel_wake_lookup(&launch, batch_id, is_connected)
+            }
             AgentRequest::Control {
                 request,
                 scope,
@@ -1515,6 +1555,16 @@ impl Registry {
                 notification_id,
                 generation,
             } => {
+                if is_channel_batch(&notification_id) {
+                    let current = self.channel_wake_current(
+                        &launch,
+                        peer,
+                        &receiver_id,
+                        &notification_id,
+                        generation,
+                    )?;
+                    return Ok(json!({"current":current}));
+                }
                 self.agent_receiver_peer(&launch, peer, &receiver_id)?;
                 let state = self.agent_request_state(&launch)?;
                 let current = state.store.agents[id]
@@ -1535,6 +1585,14 @@ impl Registry {
                 generation,
                 outcome,
             } => {
+                if is_channel_batch(&notification_id) {
+                    return self.channel_wake_outcome(
+                        &launch,
+                        peer,
+                        (&receiver_id, &notification_id, generation),
+                        outcome,
+                    );
+                }
                 self.agent_receiver_peer(&launch, peer, &receiver_id)?;
                 self.inner.agents.transaction(|store| {
                     self.authorize_agent_guard(&launch)?;
@@ -1887,6 +1945,9 @@ impl Registry {
             json!({"receiver_id":receiver.id,"registered":true,"notification_ready":false});
         {
             let mut state = self.inner.agents.state.lock().unwrap();
+            if let Some(lane) = state.channel_lanes.get_mut(&launch.grant.launch_id) {
+                lane.active = None;
+            }
             state
                 .receivers
                 .insert(launch.grant.launch_id.clone(), receiver);
@@ -1895,37 +1956,41 @@ impl Registry {
         self.inner.agents.changed.notify_all();
         Ok(result)
     }
-    fn agent_receiver(&self, launch: &Launch, receiver_id: &str) -> Result<Receiver> {
-        self.authorize_agent_guard(launch)?;
-        let receiver = {
-            let state = self.inner.agents.state.lock().unwrap();
-            healthy_agents(&state)?;
-            Agents::require_live(&state.store, &launch.grant.launch_id)?;
-            state
-                .receivers
-                .get(&launch.grant.launch_id)
-                .filter(|r| r.id == receiver_id)
-                .context("stale native receiver")?
-                .clone()
-        };
-        let current_launch = self
-            .inner
-            .captures
-            .lock()
-            .unwrap()
+    fn with_current_agent_receiver<T>(
+        &self,
+        launch: &Launch,
+        receiver_id: &str,
+        use_receiver: impl FnOnce(&Receiver) -> T,
+    ) -> Result<T> {
+        let state = self.inner.agents.state.lock().unwrap();
+        healthy_agents(&state)?;
+        Agents::require_live(&state.store, &launch.grant.launch_id)?;
+        let receiver = state
+            .receivers
+            .get(&launch.grant.launch_id)
+            .filter(|r| r.id == receiver_id)
+            .context("stale native receiver")?;
+        let captures = self.inner.captures.lock().unwrap();
+        captures.authorize(launch)?;
+        let current = captures
             .launches
             .get(&launch.grant.launch_id)
-            .cloned()
             .context("launch ended")?;
         ensure!(
-            current_launch
-                .managed
-                .conversation
-                .as_ref()
-                .is_some_and(|c| c.id == receiver.session_id
-                    && c.generation == receiver.conversation_generation),
+            current.binding_generation == launch.binding_generation
+                && current
+                    .managed
+                    .conversation
+                    .as_ref()
+                    .is_some_and(|conversation| conversation.id == receiver.session_id
+                        && conversation.generation == receiver.conversation_generation),
             "receiver conversation binding changed"
         );
+        Ok(use_receiver(receiver))
+    }
+
+    fn agent_receiver(&self, launch: &Launch, receiver_id: &str) -> Result<Receiver> {
+        let receiver = self.with_current_agent_receiver(launch, receiver_id, Receiver::clone)?;
         let current = proc::process(receiver.process.pid)?.context("native receiver exited")?;
         ensure!(
             current.identity == receiver.process.identity && current.tty == receiver.process.tty,
@@ -2010,28 +2075,50 @@ impl Registry {
                 let state = service.state.lock().unwrap();
                 self.authorize_agent_guard(launch)?;
                 healthy_agents(&state)?;
-                state.revision
+                (state.revision, ChannelLane::availability(&state, launch))
             };
             if observed_revision != Some(revision) {
                 self.agent_receiver_peer(launch, peer, &receiver_id)?;
-                let available = {
+                let (direct, channel_first, channel) = {
                     let state = service.state.lock().unwrap();
                     healthy_agents(&state)?;
-                    if state.revision != revision {
+                    if (state.revision, ChannelLane::availability(&state, launch)) != revision {
                         continue;
                     }
                     observed_revision = Some(revision);
-                    state.store.agents[id].notification.is_none()
+                    let (channel, busy) = revision.1;
+                    let agent = &state.store.agents[id];
+                    let free = !busy && agent.notification.is_none();
+                    let direct = free
                         && state
                             .store
                             .messages
                             .values()
-                            .any(|m| m.to == *id && claimable(m))
+                            .any(|m| m.to == *id && claimable(m));
+                    let channel = free && channel;
+                    let channel_first = channel
+                        && (!direct || state.channel_lanes[id].last_generation < agent.generation);
+                    (direct, channel_first, channel)
                 };
-                if available {
+                if channel_first
+                    && let Some(wake) =
+                        self.claim_channel_wake(launch, peer, &receiver, is_connected)?
+                {
+                    return Ok(wake);
+                }
+                if direct {
                     let notification = service.transaction_maybe(|store| {
                         self.authorize_agent_guard(launch)?;
                         self.agent_receiver_peer(launch, peer, &receiver_id)?;
+                        let state = service.state.lock().unwrap();
+                        if ChannelLane::availability(&state, launch).1 {
+                            return Ok((None, false));
+                        }
+                        if let Some(lane) = state.channel_lanes.get(id) {
+                            let agent = store.agents.get_mut(id).expect("admitted live agent");
+                            agent.generation = agent.generation.max(lane.last_generation);
+                        }
+                        drop(state);
                         let notification = messages::claim(store, id, &receiver_id, now())?;
                         let changed = notification.is_some();
                         Ok((notification, changed))
@@ -2043,10 +2130,19 @@ impl Registry {
                         );
                     }
                 }
+                if channel
+                    && !channel_first
+                    && let Some(wake) =
+                        self.claim_channel_wake(launch, peer, &receiver, is_connected)?
+                {
+                    return Ok(wake);
+                }
             }
             let state = service.state.lock().unwrap();
             healthy_agents(&state)?;
-            if observed_revision != Some(state.revision) {
+            if observed_revision
+                != Some((state.revision, ChannelLane::availability(&state, launch)))
+            {
                 continue;
             }
             if Instant::now() >= deadline {

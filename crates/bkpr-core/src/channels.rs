@@ -30,6 +30,8 @@ pub struct WorkspaceParticipant {
     pub actor: Participant,
     /// Exact live launch eligible for wake work, if any; never restored from channel storage.
     pub launch_id: Option<String>,
+    /// Native binding revision of the launch at roster admission.
+    pub binding_revision: u64,
 }
 
 /// Authority and routing snapshot for the workspace resolved by the channel engine.
@@ -57,6 +59,35 @@ impl std::fmt::Display for ChannelAccessLost {
 }
 
 impl std::error::Error for ChannelAccessLost {}
+
+pub(crate) struct WakeTarget<'a> {
+    pub(crate) launch: &'a str,
+    pub(crate) binding: u64,
+    participant: &'a str,
+    addressed: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ChannelRecipient<'a> {
+    pub(crate) launch: &'a str,
+    pub(crate) binding: u64,
+    pub(crate) participant: &'a str,
+}
+
+pub(crate) struct ChannelClaim<'a> {
+    pub(crate) recipient: ChannelRecipient<'a>,
+    pub(crate) batch_id: &'a str,
+    pub(crate) receiver_id: &'a str,
+    pub(crate) generation: u64,
+    pub(crate) deadline: u64,
+}
+
+pub(crate) struct ChannelRoutes<'a> {
+    pub(crate) workspace: Option<&'a str>,
+    pub(crate) exact_mentions: Option<(&'a str, u64)>,
+    pub(crate) publish: &'a dyn Fn(&[WakeTarget<'_>]),
+    pub(crate) binding_live: &'a dyn Fn(&str, u64) -> bool,
+}
 
 /// Channel storage and bounded subscription admission for one exclusively leased session.
 pub struct ChannelEngine {
@@ -133,12 +164,35 @@ impl ChannelEngine {
     /// presence independently of the caller or a provisional close reservation. The caller
     /// must not hold a registry lock around this call. `cancelled` stops pending waits but
     /// does not roll back admitted mutations.
+    #[cfg(test)]
     pub fn request(
         &self,
         request: ChannelRequest,
         admit: impl Fn(&str) -> Result<ChannelAuthority>,
         workspace_open: impl Fn(&str) -> bool,
         cancelled: impl Fn() -> bool,
+    ) -> Result<ChannelResponse> {
+        self.request_routed(
+            request,
+            admit,
+            workspace_open,
+            cancelled,
+            ChannelRoutes {
+                workspace: None,
+                exact_mentions: None,
+                publish: &|_| {},
+                binding_live: &|_, _| true,
+            },
+        )
+    }
+
+    pub(crate) fn request_routed(
+        &self,
+        request: ChannelRequest,
+        admit: impl Fn(&str) -> Result<ChannelAuthority>,
+        workspace_open: impl Fn(&str) -> bool,
+        cancelled: impl Fn() -> bool,
+        routes: ChannelRoutes<'_>,
     ) -> Result<ChannelResponse> {
         request.validate()?;
         if let ChannelRequest::Subscribe {
@@ -176,15 +230,29 @@ impl ChannelEngine {
         }
         let mut writer = with_store(Instant::now() + STORE_WAIT)?;
         writer.run(&workspace_open, |store| {
-            let (response, changed) = store.request(request, admit, |store, workspace| {
-                self.flush_retirements(store, &workspace_open)?;
-                Ok(!workspace_open(workspace))
-            })?;
+            let (response, changed) =
+                store.request(request, admit, routes, |store, workspace| {
+                    self.flush_retirements(store, &workspace_open)?;
+                    Ok(!workspace_open(workspace))
+                })?;
             if changed {
                 self.invalidate();
             }
             Ok(response)
         })
+    }
+
+    pub(crate) fn with_delivery_store<T>(
+        &self,
+        cancelled: &impl Fn() -> bool,
+        workspace_open: &impl Fn(&str) -> bool,
+        work: impl FnOnce(&mut store::Store) -> Result<T>,
+    ) -> Result<T> {
+        let _permit = Permit::acquire(&self.requests, MAX_REQUESTS)?;
+        let mut writer = self
+            .acquire_store(Instant::now() + STORE_WAIT, cancelled)
+            .map_err(StoreAdmission::into_error)?;
+        writer.run(workspace_open, work)
     }
 
     /// Wake waiters to recheck authority after workspace, attachment or session invalidation.

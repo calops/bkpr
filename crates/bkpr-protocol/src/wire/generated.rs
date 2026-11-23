@@ -76981,10 +76981,1245 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeOutcomeRef<'a> {
 }
 
     
+/// The table `AgentRequestChannels` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `AgentRequestChannels` in the file `crates/bkpr-protocol/src/wire/native.fbs:747`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct AgentRequestChannels{
+    
+        /// The field `request` in the table `AgentRequestChannels`
+        pub request: self::ChannelRequest,}
+
+
+
+impl AgentRequestChannels {
+    /// Creates a [AgentRequestChannelsBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> AgentRequestChannelsBuilder<()> {
+        AgentRequestChannelsBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_request: impl ::planus::WriteAsUnion<self::ChannelRequest>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_request = field_request.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::ChannelRequest>>(1);table_writer.write_entry::<u8>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_request.offset());object_writer.write::<_, _, 1>(&prepared_request.tag());
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<AgentRequestChannels>> for AgentRequestChannels {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannels> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<AgentRequestChannels>> for AgentRequestChannels {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<AgentRequestChannels>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<AgentRequestChannels> for AgentRequestChannels {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannels> {
+        AgentRequestChannels::create(
+            builder,
+        
+            
+            &self.request,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [AgentRequestChannels] type.
+///
+/// Can be created using the [AgentRequestChannels::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct AgentRequestChannelsBuilder<State>(State);
+
+impl<
+    
+> AgentRequestChannelsBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`request` field](AgentRequestChannels#structfield.request).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn request<T0>(self, value: T0) -> AgentRequestChannelsBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsUnion<self::ChannelRequest>
+    {
+        AgentRequestChannelsBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> AgentRequestChannelsBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [AgentRequestChannels].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannels>
+        where Self: ::planus::WriteAsOffset<AgentRequestChannels>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::ChannelRequest>,
+    
+> ::planus::WriteAs<::planus::Offset<AgentRequestChannels>> for AgentRequestChannelsBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<AgentRequestChannels>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannels> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::ChannelRequest>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<AgentRequestChannels>> for AgentRequestChannelsBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<AgentRequestChannels>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<AgentRequestChannels>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::ChannelRequest>,
+    
+> ::planus::WriteAsOffset<AgentRequestChannels> for AgentRequestChannelsBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannels> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;AgentRequestChannels::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [AgentRequestChannels].
+#[derive(Copy, Clone)]
+pub struct AgentRequestChannelsRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> AgentRequestChannelsRef<'a> {
+    
+        /// Getter for the [`request` field](AgentRequestChannels#structfield.request).
+        #[inline]
+        pub fn request(&self) -> ::planus::Result<self::ChannelRequestRef<'a>> {
+            
+            
+              
+              self.0.access_union_required(0, "AgentRequestChannels", "request")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for AgentRequestChannelsRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("AgentRequestChannelsRef");
+        f.field("request", &self.request());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<AgentRequestChannelsRef<'a>> for AgentRequestChannels {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: AgentRequestChannelsRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            request: ::core::convert::TryInto::try_into(value.request()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for AgentRequestChannelsRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for AgentRequestChannelsRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[AgentRequestChannelsRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<AgentRequestChannels>> for AgentRequestChannels {
+    type Value = ::planus::Offset<AgentRequestChannels>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<AgentRequestChannels>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelsRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[AgentRequestChannelsRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `AgentRequestChannelWake` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `AgentRequestChannelWake` in the file `crates/bkpr-protocol/src/wire/native.fbs:750`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct AgentRequestChannelWake{
+    
+        /// The field `batch_id` in the table `AgentRequestChannelWake`
+        pub batch_id: ::planus::alloc::string::String,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for AgentRequestChannelWake {
+    fn default() -> Self {
+        Self {
+        batch_id: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl AgentRequestChannelWake {
+    /// Creates a [AgentRequestChannelWakeBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> AgentRequestChannelWakeBuilder<()> {
+        AgentRequestChannelWakeBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_batch_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_batch_id = field_batch_id.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<6> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_batch_id);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<AgentRequestChannelWake>> for AgentRequestChannelWake {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelWake> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<AgentRequestChannelWake>> for AgentRequestChannelWake {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<AgentRequestChannelWake>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<AgentRequestChannelWake> for AgentRequestChannelWake {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelWake> {
+        AgentRequestChannelWake::create(
+            builder,
+        
+            
+            &self.batch_id,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [AgentRequestChannelWake] type.
+///
+/// Can be created using the [AgentRequestChannelWake::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct AgentRequestChannelWakeBuilder<State>(State);
+
+impl<
+    
+> AgentRequestChannelWakeBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`batch_id` field](AgentRequestChannelWake#structfield.batch_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn batch_id<T0>(self, value: T0) -> AgentRequestChannelWakeBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        AgentRequestChannelWakeBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> AgentRequestChannelWakeBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [AgentRequestChannelWake].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelWake>
+        where Self: ::planus::WriteAsOffset<AgentRequestChannelWake>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAs<::planus::Offset<AgentRequestChannelWake>> for AgentRequestChannelWakeBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<AgentRequestChannelWake>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelWake> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<AgentRequestChannelWake>> for AgentRequestChannelWakeBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<AgentRequestChannelWake>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<AgentRequestChannelWake>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOffset<AgentRequestChannelWake> for AgentRequestChannelWakeBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelWake> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;AgentRequestChannelWake::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [AgentRequestChannelWake].
+#[derive(Copy, Clone)]
+pub struct AgentRequestChannelWakeRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> AgentRequestChannelWakeRef<'a> {
+    
+        /// Getter for the [`batch_id` field](AgentRequestChannelWake#structfield.batch_id).
+        #[inline]
+        pub fn batch_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "AgentRequestChannelWake", "batch_id")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for AgentRequestChannelWakeRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("AgentRequestChannelWakeRef");
+        f.field("batch_id", &self.batch_id());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<AgentRequestChannelWakeRef<'a>> for AgentRequestChannelWake {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: AgentRequestChannelWakeRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            batch_id: ::core::convert::Into::into(value.batch_id()?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for AgentRequestChannelWakeRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for AgentRequestChannelWakeRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[AgentRequestChannelWakeRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<AgentRequestChannelWake>> for AgentRequestChannelWake {
+    type Value = ::planus::Offset<AgentRequestChannelWake>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<AgentRequestChannelWake>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelWakeRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[AgentRequestChannelWakeRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `AgentRequestChannelRead` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `AgentRequestChannelRead` in the file `crates/bkpr-protocol/src/wire/native.fbs:753`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct AgentRequestChannelRead{
+    
+        /// The field `channel_id` in the table `AgentRequestChannelRead`
+        pub channel_id: ::planus::alloc::string::String,
+        /// The field `message_id` in the table `AgentRequestChannelRead`
+        pub message_id: ::planus::alloc::string::String,
+        /// The field `offset` in the table `AgentRequestChannelRead`
+        pub offset: ::core::option::Option<u32>,
+        /// The field `max_bytes` in the table `AgentRequestChannelRead`
+        pub max_bytes: ::core::option::Option<u32>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for AgentRequestChannelRead {
+    fn default() -> Self {
+        Self {
+        channel_id: ::core::default::Default::default(),
+        message_id: ::core::default::Default::default(),
+        offset: ::core::default::Default::default(),
+        max_bytes: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl AgentRequestChannelRead {
+    /// Creates a [AgentRequestChannelReadBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> AgentRequestChannelReadBuilder<()> {
+        AgentRequestChannelReadBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_channel_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_message_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_offset: impl ::planus::WriteAsOptional<u32>,
+        field_max_bytes: impl ::planus::WriteAsOptional<u32>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_channel_id = field_channel_id.prepare(builder);let prepared_message_id = field_message_id.prepare(builder);let prepared_offset = field_offset.prepare(builder);let prepared_max_bytes = field_max_bytes.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<12> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);if prepared_offset.is_some() {table_writer.write_entry::<u32>(2);}if prepared_max_bytes.is_some() {table_writer.write_entry::<u32>(3);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_channel_id);object_writer.write::<_, _, 4>(&prepared_message_id);if let ::core::option::Option::Some(prepared_offset) = prepared_offset {object_writer.write::<_, _, 4>(&prepared_offset);}if let ::core::option::Option::Some(prepared_max_bytes) = prepared_max_bytes {object_writer.write::<_, _, 4>(&prepared_max_bytes);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<AgentRequestChannelRead>> for AgentRequestChannelRead {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelRead> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<AgentRequestChannelRead>> for AgentRequestChannelRead {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<AgentRequestChannelRead>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<AgentRequestChannelRead> for AgentRequestChannelRead {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelRead> {
+        AgentRequestChannelRead::create(
+            builder,
+        
+            
+            &self.channel_id,
+            
+        
+            
+            &self.message_id,
+            
+        
+            
+            self.offset,
+            
+        
+            
+            self.max_bytes,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [AgentRequestChannelRead] type.
+///
+/// Can be created using the [AgentRequestChannelRead::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct AgentRequestChannelReadBuilder<State>(State);
+
+impl<
+    
+> AgentRequestChannelReadBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`channel_id` field](AgentRequestChannelRead#structfield.channel_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn channel_id<T0>(self, value: T0) -> AgentRequestChannelReadBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        AgentRequestChannelReadBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> AgentRequestChannelReadBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`message_id` field](AgentRequestChannelRead#structfield.message_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn message_id<T1>(self, value: T1) -> AgentRequestChannelReadBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;AgentRequestChannelReadBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> AgentRequestChannelReadBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`offset` field](AgentRequestChannelRead#structfield.offset).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn offset<T2>(self, value: T2) -> AgentRequestChannelReadBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsOptional<u32>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;AgentRequestChannelReadBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`offset` field](AgentRequestChannelRead#structfield.offset) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn offset_as_null(self) -> AgentRequestChannelReadBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        (),
+    )>
+    {
+        self.offset(())
+    }
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> AgentRequestChannelReadBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )
+>
+{
+    /// Setter for the [`max_bytes` field](AgentRequestChannelRead#structfield.max_bytes).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn max_bytes<T3>(self, value: T3) -> AgentRequestChannelReadBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )>
+    where T3: ::planus::WriteAsOptional<u32>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = self.0;AgentRequestChannelReadBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`max_bytes` field](AgentRequestChannelRead#structfield.max_bytes) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn max_bytes_as_null(self) -> AgentRequestChannelReadBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+        (),
+    )>
+    {
+        self.max_bytes(())
+    }
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+> AgentRequestChannelReadBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [AgentRequestChannelRead].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelRead>
+        where Self: ::planus::WriteAsOffset<AgentRequestChannelRead>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsOptional<u32>,
+    
+        T3: ::planus::WriteAsOptional<u32>,
+    
+> ::planus::WriteAs<::planus::Offset<AgentRequestChannelRead>> for AgentRequestChannelReadBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+)> {
+    type Prepared = ::planus::Offset<AgentRequestChannelRead>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelRead> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsOptional<u32>,
+    
+        T3: ::planus::WriteAsOptional<u32>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<AgentRequestChannelRead>> for AgentRequestChannelReadBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+)> {
+    type Prepared = ::planus::Offset<AgentRequestChannelRead>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<AgentRequestChannelRead>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsOptional<u32>,
+    
+        T3: ::planus::WriteAsOptional<u32>,
+    
+> ::planus::WriteAsOffset<AgentRequestChannelRead> for AgentRequestChannelReadBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestChannelRead> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+        ) = &self.0;AgentRequestChannelRead::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [AgentRequestChannelRead].
+#[derive(Copy, Clone)]
+pub struct AgentRequestChannelReadRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> AgentRequestChannelReadRef<'a> {
+    
+        /// Getter for the [`channel_id` field](AgentRequestChannelRead#structfield.channel_id).
+        #[inline]
+        pub fn channel_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "AgentRequestChannelRead", "channel_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`message_id` field](AgentRequestChannelRead#structfield.message_id).
+        #[inline]
+        pub fn message_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(1, "AgentRequestChannelRead", "message_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`offset` field](AgentRequestChannelRead#structfield.offset).
+        #[inline]
+        pub fn offset(&self) -> ::planus::Result<::core::option::Option<u32>> {
+            
+            
+              
+              self.0.access(2, "AgentRequestChannelRead", "offset")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`max_bytes` field](AgentRequestChannelRead#structfield.max_bytes).
+        #[inline]
+        pub fn max_bytes(&self) -> ::planus::Result<::core::option::Option<u32>> {
+            
+            
+              
+              self.0.access(3, "AgentRequestChannelRead", "max_bytes")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for AgentRequestChannelReadRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("AgentRequestChannelReadRef");
+        f.field("channel_id", &self.channel_id());f.field("message_id", &self.message_id());if let ::core::option::Option::Some(field_offset) = self.offset().transpose() {
+                f.field("offset", &field_offset);
+            }if let ::core::option::Option::Some(field_max_bytes) = self.max_bytes().transpose() {
+                f.field("max_bytes", &field_max_bytes);
+            }
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<AgentRequestChannelReadRef<'a>> for AgentRequestChannelRead {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: AgentRequestChannelReadRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            channel_id: ::core::convert::Into::into(value.channel_id()?),message_id: ::core::convert::Into::into(value.message_id()?),offset: 
+                    if let ::core::option::Option::Some(offset) = value.offset()? {
+                        ::core::option::Option::Some(::core::convert::TryInto::try_into(offset)?)
+                    } else {
+                        ::core::option::Option::None
+                    }
+                ,max_bytes: 
+                    if let ::core::option::Option::Some(max_bytes) = value.max_bytes()? {
+                        ::core::option::Option::Some(::core::convert::TryInto::try_into(max_bytes)?)
+                    } else {
+                        ::core::option::Option::None
+                    }
+                ,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for AgentRequestChannelReadRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for AgentRequestChannelReadRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[AgentRequestChannelReadRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<AgentRequestChannelRead>> for AgentRequestChannelRead {
+    type Value = ::planus::Offset<AgentRequestChannelRead>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<AgentRequestChannelRead>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelReadRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[AgentRequestChannelReadRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
 /// The union `AgentRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:747`
+/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:759`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -77028,6 +78263,15 @@ pub enum AgentRequest{
     
         /// The variant of type `AgentRequestReadMessage` in the union `AgentRequest`
         AgentRequestReadMessage(::planus::alloc::boxed::Box<self::AgentRequestReadMessage>),
+    
+        /// The variant of type `AgentRequestChannels` in the union `AgentRequest`
+        AgentRequestChannels(::planus::alloc::boxed::Box<self::AgentRequestChannels>),
+    
+        /// The variant of type `AgentRequestChannelWake` in the union `AgentRequest`
+        AgentRequestChannelWake(::planus::alloc::boxed::Box<self::AgentRequestChannelWake>),
+    
+        /// The variant of type `AgentRequestChannelRead` in the union `AgentRequest`
+        AgentRequestChannelRead(::planus::alloc::boxed::Box<self::AgentRequestChannelRead>),
     
 }
 
@@ -77143,6 +78387,30 @@ impl AgentRequest {
         ::planus::UnionOffset::new(13, value.prepare(builder).downcast())
     }
 
+    #[inline]
+    pub fn create_agent_request_channels(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::AgentRequestChannels>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(14, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_agent_request_channel_wake(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::AgentRequestChannelWake>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(15, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_agent_request_channel_read(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::AgentRequestChannelRead>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(16, value.prepare(builder).downcast())
+    }
+
     
 }
 
@@ -77165,6 +78433,9 @@ impl ::planus::WriteAsUnion<AgentRequest> for AgentRequest {
             Self::AgentRequestWakeValidate(value) => Self::create_agent_request_wake_validate(builder, value),
             Self::AgentRequestWakeOutcome(value) => Self::create_agent_request_wake_outcome(builder, value),
             Self::AgentRequestReadMessage(value) => Self::create_agent_request_read_message(builder, value),
+            Self::AgentRequestChannels(value) => Self::create_agent_request_channels(builder, value),
+            Self::AgentRequestChannelWake(value) => Self::create_agent_request_channel_wake(builder, value),
+            Self::AgentRequestChannelRead(value) => Self::create_agent_request_channel_read(builder, value),
             
         }
     }
@@ -77313,6 +78584,36 @@ impl AgentRequestBuilder<::planus::Uninitialized> {
         value: T,
     ) -> AgentRequestBuilder<::planus::Initialized<13, T>>
         where T: ::planus::WriteAsOffset<self::AgentRequestReadMessage> {
+        AgentRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`AgentRequestChannels` variant](AgentRequest#variant.AgentRequestChannels).
+    #[inline]
+    pub fn agent_request_channels<T>(
+        self,
+        value: T,
+    ) -> AgentRequestBuilder<::planus::Initialized<14, T>>
+        where T: ::planus::WriteAsOffset<self::AgentRequestChannels> {
+        AgentRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`AgentRequestChannelWake` variant](AgentRequest#variant.AgentRequestChannelWake).
+    #[inline]
+    pub fn agent_request_channel_wake<T>(
+        self,
+        value: T,
+    ) -> AgentRequestBuilder<::planus::Initialized<15, T>>
+        where T: ::planus::WriteAsOffset<self::AgentRequestChannelWake> {
+        AgentRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`AgentRequestChannelRead` variant](AgentRequest#variant.AgentRequestChannelRead).
+    #[inline]
+    pub fn agent_request_channel_read<T>(
+        self,
+        value: T,
+    ) -> AgentRequestBuilder<::planus::Initialized<16, T>>
+        where T: ::planus::WriteAsOffset<self::AgentRequestChannelRead> {
         AgentRequestBuilder(::planus::Initialized(value))
     }
 
@@ -77550,6 +78851,57 @@ impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::p
         ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
     }
 }
+impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<14, T>>
+    where T: ::planus::WriteAsOffset<self::AgentRequestChannels>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<AgentRequest> {
+        ::planus::UnionOffset::new(14, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<14, T>>
+    where T: ::planus::WriteAsOffset<self::AgentRequestChannels>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<AgentRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<15, T>>
+    where T: ::planus::WriteAsOffset<self::AgentRequestChannelWake>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<AgentRequest> {
+        ::planus::UnionOffset::new(15, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<15, T>>
+    where T: ::planus::WriteAsOffset<self::AgentRequestChannelWake>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<AgentRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<16, T>>
+    where T: ::planus::WriteAsOffset<self::AgentRequestChannelRead>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<AgentRequest> {
+        ::planus::UnionOffset::new(16, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<16, T>>
+    where T: ::planus::WriteAsOffset<self::AgentRequestChannelRead>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<AgentRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
 
 
 /// Reference to a deserialized [AgentRequest].
@@ -77568,6 +78920,9 @@ pub enum AgentRequestRef<'a>{
     AgentRequestWakeValidate(self::AgentRequestWakeValidateRef<'a>),
     AgentRequestWakeOutcome(self::AgentRequestWakeOutcomeRef<'a>),
     AgentRequestReadMessage(self::AgentRequestReadMessageRef<'a>),
+    AgentRequestChannels(self::AgentRequestChannelsRef<'a>),
+    AgentRequestChannelWake(self::AgentRequestChannelWakeRef<'a>),
+    AgentRequestChannelRead(self::AgentRequestChannelReadRef<'a>),
     
 }
 
@@ -77617,6 +78972,15 @@ impl<'a> ::core::convert::TryFrom<AgentRequestRef<'a>> for AgentRequest {
                 AgentRequestRef::AgentRequestReadMessage(value) => Self::AgentRequestReadMessage(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
                 
             
+                AgentRequestRef::AgentRequestChannels(value) => Self::AgentRequestChannels(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                AgentRequestRef::AgentRequestChannelWake(value) => Self::AgentRequestChannelWake(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                AgentRequestRef::AgentRequestChannelRead(value) => Self::AgentRequestChannelRead(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
         })
     }
 }
@@ -77626,7 +78990,7 @@ impl<'a> ::core::convert::TryFrom<AgentRequestRef<'a>> for AgentRequest {
 impl<'a> ::planus::TableReadUnion<'a> for AgentRequestRef<'a> {
     fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
         match tag {
-            1 => ::core::result::Result::Ok(Self::AgentRequestWhoami(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::AgentRequestControl(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::AgentRequestSetTitle(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::AgentRequestDiscoverAgents(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::AgentRequestSendMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::AgentRequestReadInbox(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::AgentRequestAckMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::AgentRequestInspectOutbox(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::AgentRequestReceiverRegister(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::AgentRequestReceiverSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::AgentRequestWakeValidate(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::AgentRequestWakeOutcome(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::AgentRequestReadMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+            1 => ::core::result::Result::Ok(Self::AgentRequestWhoami(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::AgentRequestControl(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::AgentRequestSetTitle(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::AgentRequestDiscoverAgents(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::AgentRequestSendMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::AgentRequestReadInbox(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::AgentRequestAckMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::AgentRequestInspectOutbox(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::AgentRequestReceiverRegister(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::AgentRequestReceiverSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::AgentRequestWakeValidate(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::AgentRequestWakeOutcome(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::AgentRequestReadMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::AgentRequestChannels(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::AgentRequestChannelWake(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::AgentRequestChannelRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
         }
     }
 }
@@ -77642,7 +79006,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentRequestRef<'a> {
 /// The table `AgentWakeOutcomeAccepted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:748`
+/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:760`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -77868,7 +79232,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeAcceptedRef<'a> {
 /// The table `AgentWakeOutcomeFailed` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:751`
+/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:763`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -78173,7 +79537,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeFailedRef<'a> {
 /// The table `AgentWakeOutcomeUnknown` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:754`
+/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:766`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -78478,7 +79842,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeUnknownRef<'a> {
 /// The union `AgentWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:757`
+/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:769`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -78706,7 +80070,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentWakeOutcomeRef<'a> {
 /// The table `RequestFailureSessionClosing` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:758`
+/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:770`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -79022,7 +80386,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureSessionClosingRef<'a> {
 /// The table `RequestFailureBusy` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureBusy` in the file `crates/bkpr-protocol/src/wire/native.fbs:761`
+/// * Table `RequestFailureBusy` in the file `crates/bkpr-protocol/src/wire/native.fbs:773`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -79327,7 +80691,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureBusyRef<'a> {
 /// The union `RequestFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:764`
+/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:776`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -79512,7 +80876,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for RequestFailureRef<'a> {
 /// The table `OptionalU64` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:765`
+/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:777`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -79828,7 +81192,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalU64Ref<'a> {
 /// The table `OptionalPalette` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:768`
+/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:780`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -80133,7 +81497,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPaletteRef<'a> {
 /// The table `OptionalUsize` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:771`
+/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:783`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -80449,7 +81813,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalUsizeRef<'a> {
 /// The table `NullValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:776`
+/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:788`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -80675,7 +82039,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for NullValueRef<'a> {
 /// The table `BoolValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:777`
+/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:789`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -80991,7 +82355,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for BoolValueRef<'a> {
 /// The table `SignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:778`
+/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:790`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -81307,7 +82671,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SignedValueRef<'a> {
 /// The table `UnsignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:779`
+/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:791`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -81623,7 +82987,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for UnsignedValueRef<'a> {
 /// The table `FloatValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:780`
+/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:792`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -81939,7 +83303,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for FloatValueRef<'a> {
 /// The table `StringValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:781`
+/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:793`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -82244,7 +83608,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for StringValueRef<'a> {
 /// The table `ArrayValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:782`
+/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:794`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -82549,7 +83913,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ArrayValueRef<'a> {
 /// The table `Entry` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:783`
+/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:795`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -82927,7 +84291,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for EntryRef<'a> {
 /// The table `ObjectValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:784`
+/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:796`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -83232,7 +84596,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ObjectValueRef<'a> {
 /// The union `ValueBody` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:785`
+/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:797`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -83675,7 +85039,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ValueBodyRef<'a> {
 /// The table `Value` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:786`
+/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:798`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -83970,7 +85334,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ValueRef<'a> {
 /// The table `ControlPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:787`
+/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:799`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -84265,7 +85629,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ControlPayloadRef<'a> {
 /// The table `PanePayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:788`
+/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:800`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -84658,7 +86022,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PanePayloadRef<'a> {
 /// The enum `ImagePixelFormat` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Enum `ImagePixelFormat` in the file `crates/bkpr-protocol/src/wire/native.fbs:792`
+/// * Enum `ImagePixelFormat` in the file `crates/bkpr-protocol/src/wire/native.fbs:804`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum ImagePixelFormat {
     
         /// The variant `Rgb` in the enum `ImagePixelFormat`
@@ -84809,7 +86173,7 @@ unsafe impl ::planus::VectorWrite<ImagePixelFormat> for ImagePixelFormat {
 /// The enum `ImageEncoding` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Enum `ImageEncoding` in the file `crates/bkpr-protocol/src/wire/native.fbs:793`
+/// * Enum `ImageEncoding` in the file `crates/bkpr-protocol/src/wire/native.fbs:805`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum ImageEncoding {
     
         /// The variant `Raw` in the enum `ImageEncoding`
@@ -84952,7 +86316,7 @@ unsafe impl ::planus::VectorWrite<ImageEncoding> for ImageEncoding {
 /// The table `ImageDescriptor` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:794`
+/// * Table `ImageDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:806`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -85717,7 +87081,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageDescriptorRef<'a> {
 /// The table `ImagePreparing` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImagePreparing` in the file `crates/bkpr-protocol/src/wire/native.fbs:801`
+/// * Table `ImagePreparing` in the file `crates/bkpr-protocol/src/wire/native.fbs:813`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -86022,7 +87386,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImagePreparingRef<'a> {
 /// The table `ImageStart` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageStart` in the file `crates/bkpr-protocol/src/wire/native.fbs:802`
+/// * Table `ImageStart` in the file `crates/bkpr-protocol/src/wire/native.fbs:814`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -86533,7 +87897,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageStartRef<'a> {
 /// The table `ImageData` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageData` in the file `crates/bkpr-protocol/src/wire/native.fbs:807`
+/// * Table `ImageData` in the file `crates/bkpr-protocol/src/wire/native.fbs:819`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -87029,7 +88393,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageDataRef<'a> {
 /// The table `ImageEnd` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:808`
+/// * Table `ImageEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:820`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -87431,7 +88795,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageEndRef<'a> {
 /// The union `ImageResource` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ImageResource` in the file `crates/bkpr-protocol/src/wire/native.fbs:809`
+/// * Union `ImageResource` in the file `crates/bkpr-protocol/src/wire/native.fbs:821`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -87702,7 +89066,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ImageResourceRef<'a> {
 /// The table `ImageResourcePayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageResourcePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:810`
+/// * Table `ImageResourcePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:822`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -87997,7 +89361,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageResourcePayloadRef<'a> {
 /// The table `ChannelParticipant` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelParticipant` in the file `crates/bkpr-protocol/src/wire/native.fbs:811`
+/// * Table `ChannelParticipant` in the file `crates/bkpr-protocol/src/wire/native.fbs:823`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -88493,7 +89857,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelParticipantRef<'a> {
 /// The table `ChannelSummary` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelSummary` in the file `crates/bkpr-protocol/src/wire/native.fbs:816`
+/// * Table `ChannelSummary` in the file `crates/bkpr-protocol/src/wire/native.fbs:828`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -89682,7 +91046,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelSummaryRef<'a> {
 /// The table `ChannelMessageSummary` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelMessageSummary` in the file `crates/bkpr-protocol/src/wire/native.fbs:826`
+/// * Table `ChannelMessageSummary` in the file `crates/bkpr-protocol/src/wire/native.fbs:838`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -90861,7 +92225,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelMessageSummaryRef<'a> {
 /// The table `ChannelChange` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelChange` in the file `crates/bkpr-protocol/src/wire/native.fbs:836`
+/// * Table `ChannelChange` in the file `crates/bkpr-protocol/src/wire/native.fbs:848`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -91274,7 +92638,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelChangeRef<'a> {
 /// The table `AttachmentDescriptor` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AttachmentDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:837`
+/// * Table `AttachmentDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:849`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -91910,7 +93274,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AttachmentDescriptorRef<'a> {
 /// The table `ChannelMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:843`
+/// * Table `ChannelMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:855`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -92393,7 +93757,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelMessageRef<'a> {
 /// The table `ChannelResponseListed` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseListed` in the file `crates/bkpr-protocol/src/wire/native.fbs:848`
+/// * Table `ChannelResponseListed` in the file `crates/bkpr-protocol/src/wire/native.fbs:860`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -92799,7 +94163,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseListedRef<'a> {
 /// The table `ChannelResponseMembers` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseMembers` in the file `crates/bkpr-protocol/src/wire/native.fbs:852`
+/// * Table `ChannelResponseMembers` in the file `crates/bkpr-protocol/src/wire/native.fbs:864`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -93205,7 +94569,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseMembersRef<'a> {
 /// The table `ChannelResponseChannel` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseChannel` in the file `crates/bkpr-protocol/src/wire/native.fbs:856`
+/// * Table `ChannelResponseChannel` in the file `crates/bkpr-protocol/src/wire/native.fbs:868`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -93510,7 +94874,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseChannelRef<'a> {
 /// The table `ChannelResponsePosted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponsePosted` in the file `crates/bkpr-protocol/src/wire/native.fbs:857`
+/// * Table `ChannelResponsePosted` in the file `crates/bkpr-protocol/src/wire/native.fbs:869`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -94021,7 +95385,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponsePostedRef<'a> {
 /// The table `ChannelResponseHistory` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseHistory` in the file `crates/bkpr-protocol/src/wire/native.fbs:862`
+/// * Table `ChannelResponseHistory` in the file `crates/bkpr-protocol/src/wire/native.fbs:874`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -94652,7 +96016,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseHistoryRef<'a> {
 /// The table `ChannelResponseMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:868`
+/// * Table `ChannelResponseMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:880`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -94957,7 +96321,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseMessageRef<'a> {
 /// The table `ChannelResponseReadPosition` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseReadPosition` in the file `crates/bkpr-protocol/src/wire/native.fbs:871`
+/// * Table `ChannelResponseReadPosition` in the file `crates/bkpr-protocol/src/wire/native.fbs:883`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -95273,7 +96637,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseReadPositionRef<'a> {
 /// The table `ChannelResponseChanges` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseChanges` in the file `crates/bkpr-protocol/src/wire/native.fbs:872`
+/// * Table `ChannelResponseChanges` in the file `crates/bkpr-protocol/src/wire/native.fbs:884`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -95892,7 +97256,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseChangesRef<'a> {
 /// The table `ChannelResponseAttachmentUploaded` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseAttachmentUploaded` in the file `crates/bkpr-protocol/src/wire/native.fbs:878`
+/// * Table `ChannelResponseAttachmentUploaded` in the file `crates/bkpr-protocol/src/wire/native.fbs:890`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -96197,7 +97561,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseAttachmentUploadedRef<'a> {
 /// The table `ChannelResponseAttachment` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseAttachment` in the file `crates/bkpr-protocol/src/wire/native.fbs:879`
+/// * Table `ChannelResponseAttachment` in the file `crates/bkpr-protocol/src/wire/native.fbs:891`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -96586,7 +97950,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseAttachmentRef<'a> {
 /// The table `ChannelResponseArchivedWorkspaces` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseArchivedWorkspaces` in the file `crates/bkpr-protocol/src/wire/native.fbs:883`
+/// * Table `ChannelResponseArchivedWorkspaces` in the file `crates/bkpr-protocol/src/wire/native.fbs:895`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -96992,7 +98356,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseArchivedWorkspacesRef<'a> {
 /// The table `ChannelResponseExplicitMembers` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseExplicitMembers` in the file `crates/bkpr-protocol/src/wire/native.fbs:887`
+/// * Table `ChannelResponseExplicitMembers` in the file `crates/bkpr-protocol/src/wire/native.fbs:899`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -97398,7 +98762,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseExplicitMembersRef<'a> {
 /// The union `ChannelResponse` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ChannelResponse` in the file `crates/bkpr-protocol/src/wire/native.fbs:891`
+/// * Union `ChannelResponse` in the file `crates/bkpr-protocol/src/wire/native.fbs:903`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -98013,7 +99377,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ChannelResponseRef<'a> {
 /// The table `ChannelPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:905`
+/// * Table `ChannelPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:917`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -98308,7 +99672,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelPayloadRef<'a> {
 /// The union `Payload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:906`
+/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:918`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -98579,7 +99943,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PayloadRef<'a> {
 /// The table `Request` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:907`
+/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:919`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -98968,7 +100332,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestRef<'a> {
 /// The table `OptionalPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:908`
+/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:920`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -99263,7 +100627,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPayloadRef<'a> {
 /// The table `OptionalFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:909`
+/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:921`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -99558,7 +100922,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalFailureRef<'a> {
 /// The table `Response` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:910`
+/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:922`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize

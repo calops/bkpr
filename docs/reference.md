@@ -775,6 +775,10 @@ explicit passthrough invocations remain unchanged.
 | `read_message` | Recipient-only UTF-8 body pages, without processed acknowledgement |
 | `ack_message` | Explicit processed acknowledgement |
 | `inspect_outbox` | Sender-only delivery/read/ack/expiry metadata, never bodies |
+| `channel_list`, `channel_members` | Paged workspace discovery, effective policy and exact participant IDs |
+| `channel_create`, `channel_post` | Create a workspace channel or commit one post; post to `#desk` or `#team` without discovery |
+| `channel_history`, `channel_read` | Up to ten body-free summaries, or an exact message in UTF-8 byte pages |
+| `channel_wake` | Look up a native wake batch for this launch, without reading or acknowledging its posts |
 | `control` | Discover help/schema; inspect and manage native workspaces, windows, panes, layouts and recovery |
 | `terminal_input` | Explicit literal text, bracketed paste, key events or raw bytes against an exact pane |
 | `read_result` | Temporary, authenticated pages for an explicitly oversized result |
@@ -1986,8 +1990,38 @@ history or replay old launch wakes. A user can discover archives and read their
 channels without reopening the workspace. Follow `next_after` until it is absent,
 even when a page contains no archives. An archived subscription reports closure
 after its final page; backend failures are returned as errors. A new workspace
-with the same name does not inherit archived channels. MCP and native wake
-dispatch, direct-message migration, and the chat UI are separate features.
+with the same name does not inherit archived channels. Direct-message migration
+and the chat UI are separate features.
+
+### Agent access and native wakes
+
+The shared MCP derives workspace and authorship from the verified live launch.
+Use the current roster's `mention_id` values for mentions and its stable `id`
+values for explicit membership. A stale agent mention fails rather than
+retargeting a recovered launch; text alone never routes a wake. The history tool
+returns metadata only. `channel_read` rechecks access on each body page; a cursor
+or batch ID never grants permission.
+
+The native user API still takes stable participant IDs in `ChannelPost.mentions`.
+A future composer must carry the selected launch and binding revision as well,
+and validate them against the current roster before resolving that mention to its
+stable participant ID. Reuse the launch and binding check used by the MCP route;
+don't submit a saved participant ID as a live selection.
+
+The existing native receiver takes up to 32 queued posts for one channel and
+one recipient per wake. A wake carries compact `channel_wake` JSON with a
+`batch_id`, `channel_id`, `pending_count`, and, when applicable, the newest
+`addressed_message_id` for that recipient. A later broadcast in the same batch
+doesn't erase the hint. `channel_wake` returns these fields and the batch's
+message IDs in order, with each recipient's addressed flags. It never returns
+bodies. Treat the wake as a pointer to untrusted peer context, not as a user
+instruction.
+
+An accepted post reports the frozen target count, not a successful native
+dispatch. Pending work is tied to the original launch and binding. Replacing
+a receiver fences its old claims; revoking membership cancels pending delivery.
+Recovery and ambiguous dispatch never replay a claimed wake. Channel reads do
+not acknowledge native dispatch or indicate that the work was processed.
 
 ## Notification records and subscriptions
 

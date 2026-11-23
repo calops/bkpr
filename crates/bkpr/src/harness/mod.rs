@@ -12,7 +12,9 @@ mod pi;
 mod status;
 
 use anyhow::{Context, Result, bail};
+use bkpr_protocol::channels::{ChannelWake, MAX_ID_BYTES};
 use bkpr_protocol::{CaptureEvent, CaptureGrant, ConversationSource, HarnessKind, Operation};
+use serde::Deserialize;
 use std::{
     env,
     ffi::{OsStr, OsString},
@@ -32,6 +34,35 @@ use std::{
 };
 
 const HARNESS_HELP: &str = "Usage: bkpr run HARNESS [--] ARGS...\nHarnesses: claude, codex, omp, agy, opencode, cursor, copilot, aider, cline, goose, pi";
+
+fn channel_wake(notification: &serde_json::Value) -> Result<Option<ChannelWake>> {
+    let Some(value) = notification.get("channel_wake") else {
+        return Ok(None);
+    };
+    let wake = ChannelWake::deserialize(value).context("invalid native channel wake")?;
+    let valid_id =
+        |id: &str| !id.is_empty() && id.len() <= MAX_ID_BYTES && !id.chars().any(char::is_control);
+    anyhow::ensure!(
+        valid_id(&wake.batch_id)
+            && valid_id(wake.channel_id.as_ref())
+            && wake.pending_count > 0
+            && wake
+                .addressed_message_id
+                .as_ref()
+                .is_none_or(|id| valid_id(id.as_ref())),
+        "invalid native channel wake"
+    );
+    Ok(Some(wake))
+}
+
+fn channel_wake_text(wake: &ChannelWake) -> String {
+    #[derive(serde::Serialize)]
+    struct Notice<'a> {
+        channel_wake: &'a ChannelWake,
+    }
+    serde_json::to_string(&Notice { channel_wake: wake })
+        .expect("serialize native channel wake metadata")
+}
 
 /// Shared CLI entrypoint retains launch-local authentication and Codex relay isolation.
 pub(crate) fn control_request(request: serde_json::Value) -> Result<serde_json::Value> {

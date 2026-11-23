@@ -1,4 +1,5 @@
 use super::{Budget, generated::native_wire as g};
+use crate::channels::{ChannelId, MessageId, valid_id};
 use crate::*;
 use anyhow::Result;
 use planus::{Builder, UnionOffset};
@@ -231,6 +232,29 @@ pub(super) fn write_agent_request(
             );
             g::AgentRequest::create_agent_request_wake_outcome(builder, offset)
         }
+        AgentRequest::Channels { request } => {
+            let request = super::channels::write_request(builder, request, budget, depth + 1)?;
+            let offset = g::AgentRequestChannels::create(builder, request);
+            g::AgentRequest::create_agent_request_channels(builder, offset)
+        }
+        AgentRequest::ChannelWake { batch_id } => {
+            let batch_id = write_channel_identity(builder, batch_id, budget)?;
+            let offset = g::AgentRequestChannelWake::create(builder, batch_id);
+            g::AgentRequest::create_agent_request_channel_wake(builder, offset)
+        }
+        AgentRequest::ChannelRead {
+            channel_id,
+            message_id,
+            offset,
+            max_bytes,
+        } => {
+            let channel_id = write_channel_identity(builder, channel_id.as_ref(), budget)?;
+            let message_id = write_channel_identity(builder, message_id.as_ref(), budget)?;
+            let table = g::AgentRequestChannelRead::create(
+                builder, channel_id, message_id, *offset, *max_bytes,
+            );
+            g::AgentRequest::create_agent_request_channel_read(builder, table)
+        }
     })
 }
 
@@ -390,7 +414,37 @@ pub(super) fn read_agent_request(
             generation: value.generation()?,
             outcome: read_agent_wake_outcome(value.outcome()?, budget, depth + 1)?,
         },
+        g::AgentRequestRef::AgentRequestChannels(value) => AgentRequest::Channels {
+            request: Box::new(super::channels::read_request(
+                value.request()?,
+                budget,
+                depth + 1,
+            )?),
+        },
+        g::AgentRequestRef::AgentRequestChannelWake(value) => AgentRequest::ChannelWake {
+            batch_id: read_channel_identity(value.batch_id()?, budget)?,
+        },
+        g::AgentRequestRef::AgentRequestChannelRead(value) => AgentRequest::ChannelRead {
+            channel_id: ChannelId(read_channel_identity(value.channel_id()?, budget)?),
+            message_id: MessageId(read_channel_identity(value.message_id()?, budget)?),
+            offset: value.offset()?,
+            max_bytes: value.max_bytes()?,
+        },
     })
+}
+
+fn write_channel_identity(
+    builder: &mut Builder,
+    value: &str,
+    budget: &mut Budget,
+) -> Result<planus::Offset<str>> {
+    valid_id(value)?;
+    write_text(builder, value, budget)
+}
+
+fn read_channel_identity(value: &str, budget: &mut Budget) -> Result<String> {
+    valid_id(value)?;
+    read_text(value, budget)
 }
 
 pub(super) fn write_agent_wake_outcome(

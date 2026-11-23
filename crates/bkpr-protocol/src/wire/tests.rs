@@ -337,6 +337,75 @@ fn appended_notification_union_preserves_existing_operation_ordinals() {
 }
 
 #[test]
+fn agent_channel_requests_append_ordinals_and_roundtrip() {
+    use crate::channels::{ChannelId, ChannelRequest, MessageId};
+
+    let mut codec = Codec::new();
+    for (request, tag) in [
+        (
+            AgentRequest::ReadMessage {
+                message_id: "dm".into(),
+                offset: None,
+                max_bytes: None,
+            },
+            13,
+        ),
+        (
+            AgentRequest::Channels {
+                request: Box::new(ChannelRequest::History {
+                    channel_id: ChannelId("channel".into()),
+                    before: None,
+                    after: Some(0),
+                    limit: 10,
+                }),
+            },
+            14,
+        ),
+        (
+            AgentRequest::ChannelWake {
+                batch_id: "wake:1".into(),
+            },
+            15,
+        ),
+        (
+            AgentRequest::ChannelRead {
+                channel_id: ChannelId("channel".into()),
+                message_id: MessageId("message".into()),
+                offset: Some(0),
+                max_bytes: Some(4096),
+            },
+            16,
+        ),
+        (
+            AgentRequest::ChannelRead {
+                channel_id: ChannelId("channel".into()),
+                message_id: MessageId("message".into()),
+                offset: None,
+                max_bytes: None,
+            },
+            16,
+        ),
+    ] {
+        let operation = Operation::Agent {
+            launch_id: "launch".into(),
+            token: "secret".into(),
+            guard: None,
+            request,
+        };
+        let framed = Request::new(operation);
+        let bytes = codec.encode_request(&framed).unwrap();
+        let (_, operation_value) = root_field(bytes, 2);
+        let (_, agent_request_tag) = table_field(bytes, indirect(bytes, operation_value), 2);
+        assert_eq!(bytes[agent_request_tag], tag);
+        let decoded = decode_request(bytes).unwrap();
+        assert_eq!(
+            serde_json::to_value(framed).unwrap(),
+            serde_json::to_value(decoded).unwrap()
+        );
+    }
+}
+
+#[test]
 fn registration_cannot_omit_the_session_instance_fence() {
     let request = Request::new(Operation::ClientRegister {
         session_id: "persistent-session".into(),

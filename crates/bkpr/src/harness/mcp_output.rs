@@ -146,7 +146,7 @@ impl Write for BoundedJson {
         Ok(())
     }
 }
-fn envelope(value: Value, text: String, error: bool) -> Value {
+pub(super) fn envelope(value: Value, text: String, error: bool) -> Value {
     json!({"content":[{"type":"text","text":text}],"structuredContent":value,"isError":error})
 }
 fn small(value: Value, error: bool) -> Value {

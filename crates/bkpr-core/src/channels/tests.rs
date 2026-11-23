@@ -82,14 +82,17 @@ impl Fixture {
                 WorkspaceParticipant {
                     actor: self.user.clone(),
                     launch_id: None,
+                    binding_revision: 0,
                 },
                 WorkspaceParticipant {
                     actor: self.a.clone(),
                     launch_id: Some("launch-a".into()),
+                    binding_revision: 1,
                 },
                 WorkspaceParticipant {
                     actor: self.b.clone(),
                     launch_id: Some("launch-b".into()),
+                    binding_revision: 1,
                 },
             ]
         } else {
@@ -1525,6 +1528,12 @@ fn close_retires_old_and_racing_work_before_new_capacity_is_used() {
                 let (response, changed) = store.request(
                     send(&active, post("racing-close")),
                     active_authority,
+                    super::ChannelRoutes {
+                        workspace: None,
+                        exact_mentions: None,
+                        publish: &|_| {},
+                        binding_live: &|_, _| true,
+                    },
                     |store, workspace| {
                         f.engine.flush_retirements(store, &workspace_open)?;
                         let closed = !workspace_open(workspace);
@@ -1639,7 +1648,12 @@ fn visibility_index_migration_preserves_member_access_and_durable_history() {
     let original = post("migrated");
     let accepted = f.as_actor(&f.a, send(&id, original.clone())).unwrap();
     f.sql(
-        "DROP INDEX visible_explicit_channels;
+        "DROP INDEX pending_launch_wakes;
+         DROP INDEX claimed_wake_items;
+         DROP TABLE channel_batches;
+         ALTER TABLE notification_work DROP COLUMN batch_id;
+         ALTER TABLE notification_work DROP COLUMN binding_revision;
+         DROP INDEX visible_explicit_channels;
          DROP TABLE staged_attachments;
          DROP TABLE attachment_budget;
          DROP INDEX workspace_wide_channels;
@@ -1663,7 +1677,7 @@ fn visibility_index_migration_preserves_member_access_and_durable_history() {
             ))
         })
         .unwrap();
-    assert_eq!((sync, version), (3, 7));
+    assert_eq!((sync, version), (3, 8));
 }
 
 #[test]
@@ -1683,12 +1697,12 @@ fn legacy_attachment_migration_caps_staged_bytes_and_retains_posted_history() {
     let mut attached = post("legacy-posted");
     attached.attachments.push(kept.id.clone());
     let message = posted(f.request(send(&original, attached)).unwrap());
-    // Simulate a version-two store with the full staging budget plus one extra
-    // unreferenced row. Only the two small real PNGs will be fetched or posted.
+    // A legacy store has the full budget plus one extra unreferenced row.
+    // Only the two small real PNGs will be fetched or posted.
     f.sql(
         "DROP TABLE staged_attachments;
          DROP TABLE attachment_budget;
-         PRAGMA user_version=2;",
+         PRAGMA user_version=3;",
     );
     f.engine
         .with_store(|store| {

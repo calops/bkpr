@@ -744,7 +744,19 @@ table AgentRequestWakeOutcome {
   generation:ulong;
   outcome:AgentWakeOutcome (required);
 }
-union AgentRequest { AgentRequestWhoami, AgentRequestControl, AgentRequestSetTitle, AgentRequestDiscoverAgents, AgentRequestSendMessage, AgentRequestReadInbox, AgentRequestAckMessage, AgentRequestInspectOutbox, AgentRequestReceiverRegister, AgentRequestReceiverSubscribe, AgentRequestWakeValidate, AgentRequestWakeOutcome, AgentRequestReadMessage }
+table AgentRequestChannels {
+  request:ChannelRequest (required);
+}
+table AgentRequestChannelWake {
+  batch_id:string (required);
+}
+table AgentRequestChannelRead {
+  channel_id:string (required);
+  message_id:string (required);
+  offset:uint = null;
+  max_bytes:uint = null;
+}
+union AgentRequest { AgentRequestWhoami, AgentRequestControl, AgentRequestSetTitle, AgentRequestDiscoverAgents, AgentRequestSendMessage, AgentRequestReadInbox, AgentRequestAckMessage, AgentRequestInspectOutbox, AgentRequestReceiverRegister, AgentRequestReceiverSubscribe, AgentRequestWakeValidate, AgentRequestWakeOutcome, AgentRequestReadMessage, AgentRequestChannels, AgentRequestChannelWake, AgentRequestChannelRead }
 table AgentWakeOutcomeAccepted {
 
 }

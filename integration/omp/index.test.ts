@@ -179,6 +179,18 @@ test('native root prompt facts and batched wake pointers remain body-free and la
   expect(requests.find(request => request.method === 'wake_outcome')).toMatchObject({
     notification_id: 'notice', outcome: { state: 'unknown' },
   });
+  const wake = { batch_id: 'batch', channel_id: 'channel', pending_count: 3 };
+  fixture.subscribers[0].stdout.write(JSON.stringify({ notification: {
+    notification_id: 'channel-notice', generation: 2, session_id: 'native-one',
+    channel_wake: wake, text: 'PRIVATE_PEER_BODY', recipients: ['PRIVATE_RECIPIENT'],
+  } }) + '\n');
+  await settle();
+  expect(messages).toHaveLength(2);
+  expect(messages[1].content).toBe(JSON.stringify({ channel_wake: wake }));
+  expect(requests.slice(-2)).toMatchObject([
+    { method: 'wake_validate', notification_id: 'channel-notice', generation: 2 },
+    { method: 'wake_outcome', notification_id: 'channel-notice', generation: 2, outcome: { state: 'unknown' } },
+  ]);
   fixture.session = 'native-two';
   await fixture.emit('session_switch');
   await fixture.emit('before_agent_start', { reason: 'prompt', prompt: 'PRIVATE_PROMPT' });
@@ -195,6 +207,9 @@ test('native root prompt facts and batched wake pointers remain body-free and la
     { ...validPointer, session_id: '' },
     { ...validPointer, session_id: '\n' }, { ...validPointer, message_count: 0 },
     { ...validPointer, unread_count: 1 },
+    { ...validPointer, channel_wake: null },
+    { ...validPointer, channel_wake: { ...wake, pending_count: 0x100000000 } },
+    { ...validPointer, channel_wake: { ...wake, addressed_message_id: '\x1bsecret' } },
   ]) expect(() => parseInboxPointer(invalid)).toThrow();
 
   process.env.BKPR_CAPTURE_HARNESS = 'omp';
