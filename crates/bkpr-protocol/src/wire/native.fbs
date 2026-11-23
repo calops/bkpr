@@ -359,6 +359,99 @@ union NotificationRequest {
 table OperationNotifications {
   request:NotificationRequest (required);
 }
+// Session-local channels, independent of the remote attachment envelope.
+enum MembershipMode : ubyte { Explicit, WorkspaceWide }
+enum WakePolicy : ubyte { All, AddressedOrAll, AddressedOnly, None }
+enum ParticipantKind : ubyte { User, Agent }
+enum PostIntent : ubyte { Note, Question, Report }
+enum AttachmentMediaType : ubyte { Png }
+enum ChannelChangeKind : ubyte { Post, Settings, Membership, ReadPosition }
+table ChannelSettings {
+  user_wake:WakePolicy;
+  agent_wake:WakePolicy;
+  attention_questions:bool;
+  attention_reports:bool;
+}
+table ChannelPost {
+  idempotency_key:string (required);
+  text:string (required);
+  intent:PostIntent;
+  mentions:[string] (required);
+  reply_to:string;
+  attachments:[string] (required);
+}
+table ChannelCursor { channel_id:string (required); sequence:ulong; }
+table ChannelRequestList {
+  workspace_id:string (required);
+  after:string;
+  limit:ushort;
+}
+table ChannelRequestListMembers {
+  channel_id:string (required);
+  after:string;
+  limit:ushort;
+}
+table ChannelRequestCreate {
+  workspace_id:string (required);
+  name:string (required);
+  membership:MembershipMode;
+  members:[string] (required);
+  settings:ChannelSettings (required);
+}
+table ChannelRequestSetSettings {
+  channel_id:string (required);
+  settings:ChannelSettings (required);
+}
+table ChannelRequestSetMembership {
+  channel_id:string (required);
+  membership:MembershipMode;
+  members:[string] (required);
+}
+table ChannelRequestPost {
+  channel_id:string (required);
+  post:ChannelPost (required);
+}
+table ChannelRequestHistory {
+  channel_id:string (required);
+  before:OptionalU64;
+  limit:ushort;
+}
+table ChannelRequestRead {
+  channel_id:string (required);
+  message_id:string (required);
+}
+table ChannelRequestMarkRead { channel_id:string (required); through:ulong; }
+table ChannelRequestSubscribe {
+  channel_id:string (required);
+  after:ChannelCursor;
+  limit:ushort;
+  wait_ms:uint;
+}
+table ChannelRequestUploadAttachment {
+  channel_id:string (required);
+  media_type:AttachmentMediaType;
+  alt_text:string;
+  bytes:[ubyte] (required);
+}
+table ChannelRequestGetAttachment {
+  channel_id:string (required);
+  attachment_id:string (required);
+}
+union ChannelRequest {
+  ChannelRequestList,
+  ChannelRequestListMembers,
+  ChannelRequestCreate,
+  ChannelRequestSetSettings,
+  ChannelRequestSetMembership,
+  ChannelRequestPost,
+  ChannelRequestHistory,
+  ChannelRequestRead,
+  ChannelRequestMarkRead,
+  ChannelRequestSubscribe,
+  ChannelRequestUploadAttachment,
+  ChannelRequestGetAttachment
+}
+table OperationChannels { request:ChannelRequest (required); }
 union Operation {
   OperationSessionInfo,
   OperationClientRegister,
@@ -394,7 +487,8 @@ union Operation {
   OperationDaemonInfo,
   OperationSessionOpen,
   OperationDaemonShutdown,
-  OperationNotifications
+  OperationNotifications,
+  OperationChannels
 }
 table PaneRequestInspect {
 
@@ -701,7 +795,85 @@ table ImageData { key:ImageKey (required); offset:ulong; data:[ubyte] (required)
 table ImageEnd { key:ImageKey (required); encoded_len:ulong; }
 union ImageResource { ImagePreparing, ImageStart, ImageData, ImageEnd }
 table ImageResourcePayload { value:ImageResource (required); }
-union Payload { ControlPayload, PanePayload, ImageResourcePayload }
+table ChannelParticipant {
+  id:string (required);
+  kind:ParticipantKind;
+  display_name:string (required);
+}
+table ChannelSummary {
+  id:string (required);
+  workspace_id:string (required);
+  name:string (required);
+  membership:MembershipMode;
+  settings:ChannelSettings (required);
+  last_sequence:ulong;
+  read_through:ulong;
+  unread_attention:bool;
+}
+table ChannelMessageSummary {
+  id:string (required);
+  sequence:ulong;
+  author:ChannelParticipant (required);
+  posted_at_ms:ulong;
+  intent:PostIntent;
+  mentions:[string] (required);
+  reply_to:string;
+  attachments:[string] (required);
+}
+table ChannelChange { sequence:ulong; kind:ChannelChangeKind; }
+table AttachmentDescriptor {
+  id:string (required);
+  media_type:AttachmentMediaType;
+  alt_text:string;
+  byte_len:uint;
+}
+table ChannelResponseListed {
+  channels:[ChannelSummary] (required);
+  next_after:string;
+}
+table ChannelResponseMembers {
+  participants:[ChannelParticipant] (required);
+  next_after:string;
+}
+table ChannelResponseChannel { channel:ChannelSummary (required); }
+table ChannelResponsePosted {
+  message:ChannelMessageSummary (required);
+  wake_count:uint;
+  attention:bool;
+}
+table ChannelResponseHistory {
+  messages:[ChannelMessageSummary] (required);
+  next_before:OptionalU64;
+}
+table ChannelResponseMessage {
+  message:ChannelMessageSummary (required);
+  text:string (required);
+}
+table ChannelResponseReadPosition { through:ulong; }
+table ChannelResponseChanges {
+  cursor:ChannelCursor (required);
+  changes:[ChannelChange] (required);
+  more:bool;
+}
+table ChannelResponseAttachmentUploaded { attachment:AttachmentDescriptor (required); }
+table ChannelResponseAttachment {
+  attachment:AttachmentDescriptor (required);
+  bytes:[ubyte] (required);
+}
+union ChannelResponse {
+  ChannelResponseListed,
+  ChannelResponseMembers,
+  ChannelResponseChannel,
+  ChannelResponsePosted,
+  ChannelResponseHistory,
+  ChannelResponseMessage,
+  ChannelResponseReadPosition,
+  ChannelResponseChanges,
+  ChannelResponseAttachmentUploaded,
+  ChannelResponseAttachment
+}
+table ChannelPayload { response:ChannelResponse (required); }
+union Payload { ControlPayload, PanePayload, ImageResourcePayload, ChannelPayload }
 table Request { version:uint; operation:Operation (required); }
 table OptionalPayload { value:Payload (required); }
 table OptionalFailure { value:RequestFailure (required); }

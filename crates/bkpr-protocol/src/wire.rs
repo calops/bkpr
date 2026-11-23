@@ -4,6 +4,9 @@
 //! Framing validates admission headers, not dispatch, effect completion or replay safety.
 pub mod administration_legacy;
 mod agents;
+#[cfg(test)]
+mod channel_tests;
+mod channels;
 mod framing;
 #[rustfmt::skip]
 #[allow(dead_code, unused_imports, clippy::all)]
@@ -163,6 +166,12 @@ impl Codec {
                         let payload = g::PanePayload::create(&mut self.builder, metadata, scene);
                         g::Payload::create_pane_payload(&mut self.builder, payload)
                     }
+                    Payload::Channels(response) => {
+                        let response =
+                            channels::write_response(&mut self.builder, response, &mut budget)?;
+                        let payload = g::ChannelPayload::create(&mut self.builder, response);
+                        g::Payload::create_channel_payload(&mut self.builder, payload)
+                    }
                 };
                 Ok(g::OptionalPayload::create(&mut self.builder, value))
             })
@@ -245,13 +254,13 @@ fn decode_request_inner(
     let operation = operations::read_operation(root.operation()?, &mut budget, 0)?;
     Ok(Request { version, operation })
 }
-/// Decode an unframed response with version and codec limits, copying any nested scene bytes.
+/// Decode an unframed response with version and codec limits, copying binary payload bytes.
 /// Scene contents require separate [`crate::scene_wire::decode`] validation.
 pub fn decode_response(bytes: &[u8]) -> Result<Response> {
     decode_response_inner(bytes, None)
 }
 
-/// Decode an owned unframed response, retaining nested scene slices in its receive allocation.
+/// Decode an owned unframed response, retaining nested binary slices in its receive allocation.
 /// Enforces version and codec limits but does not validate nested scene contents.
 pub fn decode_response_owned(bytes: Vec<u8>) -> Result<Response> {
     let owner = bytes::Bytes::from(bytes);
@@ -278,35 +287,16 @@ fn decode_response_inner(bytes: &[u8], owner: Option<&bytes::Bytes>) -> Result<R
                     let metadata = value::read_value(payload.metadata()?, &mut budget, 0)?;
                     let scene = payload
                         .scene()?
-                        .map(|scene| -> Result<_> {
-                            budget.bytes(scene.len())?;
-                            match owner {
-                                Some(owner) => {
-                                    let start = (scene.as_ptr() as usize)
-                                        .checked_sub(owner.as_ptr() as usize)
-                                        .ok_or_else(|| {
-                                            anyhow::anyhow!(
-                                                "native scene precedes response allocation"
-                                            )
-                                        })?;
-                                    let end = start.checked_add(scene.len()).ok_or_else(|| {
-                                        anyhow::anyhow!("native scene range overflow")
-                                    })?;
-                                    ensure!(
-                                        end <= owner.len(),
-                                        "native scene outside response allocation"
-                                    );
-                                    Ok(owner.slice(start..end))
-                                }
-                                None => Ok(bytes::Bytes::copy_from_slice(scene)),
-                            }
-                        })
+                        .map(|scene| retain_binary(scene, owner, &mut budget))
                         .transpose()?;
                     Payload::Pane(PanePayload { metadata, scene })
                 }
                 g::PayloadRef::ImageResourcePayload(_) => {
                     anyhow::bail!("retired image resource payload")
                 }
+                g::PayloadRef::ChannelPayload(payload) => Payload::Channels(
+                    channels::read_response(payload.response()?, &mut budget, owner)?,
+                ),
             })
         })
         .transpose()?;
@@ -329,6 +319,29 @@ fn decode_response_inner(bytes: &[u8], owner: Option<&bytes::Bytes>) -> Result<R
         failure,
     })
 }
+
+fn retain_binary(
+    value: &[u8],
+    owner: Option<&bytes::Bytes>,
+    budget: &mut Budget,
+) -> Result<bytes::Bytes> {
+    budget.bytes(value.len())?;
+    let Some(owner) = owner else {
+        return Ok(bytes::Bytes::copy_from_slice(value));
+    };
+    let start = (value.as_ptr() as usize)
+        .checked_sub(owner.as_ptr() as usize)
+        .ok_or_else(|| anyhow::anyhow!("native binary slice precedes response allocation"))?;
+    let end = start
+        .checked_add(value.len())
+        .ok_or_else(|| anyhow::anyhow!("native binary slice range overflow"))?;
+    ensure!(
+        end <= owner.len(),
+        "native binary slice outside response allocation"
+    );
+    Ok(owner.slice(start..end))
+}
+
 /// Decode an unframed client event into owned fields with traversal and allocation limits.
 pub fn decode_client_event(bytes: &[u8]) -> Result<ClientEvent> {
     ensure!(

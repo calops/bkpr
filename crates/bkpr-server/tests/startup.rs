@@ -1984,3 +1984,76 @@ fn corrupt_notification_storage_does_not_disable_session_execution() {
     #[cfg(target_os = "linux")]
     assert!(!Path::new("/proc").join(pid.to_string()).exists());
 }
+
+#[test]
+fn channel_history_reopens_on_the_same_session_only() {
+    use bkpr_protocol::{
+        Payload,
+        channels::{ChannelPost, ChannelRequest, ChannelResponse, MembershipMode},
+    };
+
+    let fixture = Fixture::new();
+    let mut daemon = fixture.start_host();
+    let endpoint = daemon.open(
+        bkpr_protocol::DEFAULT_SESSION_NAME,
+        Some(sleeping_spec(&fixture)),
+    );
+    let workspace_id = daemon.snapshot().workspaces[0].id.clone();
+    let operation = |request| Operation::Channels { request };
+    let send = |socket: &Path, channel_request| {
+        let response = request(socket, operation(channel_request)).unwrap();
+        assert!(response.ok, "{:?}", response.error);
+        let Some(Payload::Channels(result)) = response.result else {
+            panic!("expected a typed channel response");
+        };
+        result
+    };
+    let ChannelResponse::Channel { channel } = send(
+        &endpoint.socket,
+        ChannelRequest::Create {
+            workspace_id,
+            name: "build review".into(),
+            membership: MembershipMode::WorkspaceWide,
+            members: vec![],
+            settings: Default::default(),
+        },
+    ) else {
+        panic!("channel was not created");
+    };
+    let post = ChannelRequest::Post {
+        channel_id: channel.id.clone(),
+        post: ChannelPost {
+            idempotency_key: "review-1".into(),
+            text: "Ready for review.".into(),
+            intent: Default::default(),
+            mentions: vec![],
+            reply_to: None,
+            attachments: vec![],
+        },
+    };
+    let receipt = send(&endpoint.socket, post.clone());
+    let ChannelResponse::Posted { message, .. } = &receipt else {
+        panic!("post was not accepted");
+    };
+    let read = ChannelRequest::Read {
+        channel_id: channel.id,
+        message_id: message.id.clone(),
+    };
+    let other = daemon.open("unrelated", None);
+    assert!(!request(&other.socket, operation(read.clone())).unwrap().ok);
+
+    daemon.shutdown_host();
+    let mut daemon = fixture.start_host();
+    let reopened = daemon.open(bkpr_protocol::DEFAULT_SESSION_NAME, None);
+    assert_eq!(reopened.session.session_id, endpoint.session.session_id);
+    assert_ne!(
+        reopened.session.session_instance_id,
+        endpoint.session.session_instance_id
+    );
+    assert_eq!(send(&reopened.socket, post), receipt);
+    let ChannelResponse::Message { text, .. } = send(&reopened.socket, read) else {
+        panic!("message did not survive reopening");
+    };
+    assert_eq!(text, "Ready for review.");
+    daemon.shutdown_host();
+}

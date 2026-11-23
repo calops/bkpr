@@ -263,20 +263,27 @@ pub enum Operation {
         /// Validated structural notification request; policy writes require the host endpoint.
         request: crate::NotificationRequest,
     },
+    /// Read or modify channels in the authenticated caller's session.
+    /// Requires a channel-capable daemon; sharing a native family does not establish support.
+    Channels {
+        /// Session-scoped channel operation; authority comes from the caller.
+        request: crate::channels::ChannelRequest,
+    },
 }
 impl std::fmt::Debug for Operation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fn contains_push(operation: &Operation) -> bool {
+        fn private_operation(operation: &Operation) -> Option<&'static str> {
             match operation {
                 Operation::Notifications {
                     request: crate::NotificationRequest::Push { .. },
-                } => true,
-                Operation::Client { request, .. } => contains_push(request),
-                _ => false,
+                } => Some("Operation::Notifications(Push([REDACTED]))"),
+                Operation::Channels { .. } => Some("Operation::Channels([REDACTED])"),
+                Operation::Client { request, .. } => private_operation(request),
+                _ => None,
             }
         }
-        if contains_push(self) {
-            return f.write_str("Operation::Notifications(Push([REDACTED]))");
+        if let Some(redacted) = private_operation(self) {
+            return f.write_str(redacted);
         }
         let mut value = serde_json::to_value(self).map_err(|_| std::fmt::Error)?;
         fn redact(value: &mut serde_json::Value) {

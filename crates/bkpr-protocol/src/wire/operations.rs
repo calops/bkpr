@@ -47,6 +47,11 @@ pub(super) fn write_operation(
             let offset = g::OperationNotifications::create(builder, request);
             g::Operation::create_operation_notifications(builder, offset)
         }
+        Operation::Channels { request } => {
+            let request = super::channels::write_request(builder, request, budget, depth + 1)?;
+            let offset = g::OperationChannels::create(builder, request);
+            g::Operation::create_operation_channels(builder, offset)
+        }
         Operation::SessionInfo => {
             let offset = g::OperationSessionInfo::create(builder);
             g::Operation::create_operation_session_info(builder, offset)
@@ -598,6 +603,9 @@ pub(super) fn read_operation(
         },
         g::OperationRef::OperationNotifications(value) => Operation::Notifications {
             request: super::notifications::read_request(value.request()?, budget, depth + 1)?,
+        },
+        g::OperationRef::OperationChannels(value) => Operation::Channels {
+            request: super::channels::read_request(value.request()?, budget, depth + 1)?,
         },
         g::OperationRef::OperationSessionInfo(_value) => Operation::SessionInfo,
         g::OperationRef::OperationClientRegister(value) => Operation::ClientRegister {

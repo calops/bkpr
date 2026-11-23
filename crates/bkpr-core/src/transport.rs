@@ -748,6 +748,11 @@ impl BoundSocket {
                                     !shutdown.load(Ordering::Acquire) && peer_connected(&stream)
                                 })?
                             }
+                            Operation::Channels { request } => {
+                                registry.request_channels(request, &|| {
+                                    !shutdown.load(Ordering::Acquire) && peer_connected(&stream)
+                                })?
+                            }
                             operation @ (Operation::Context { .. } | Operation::HarnessBegin { .. } | Operation::HarnessEvent { .. }
                             | Operation::HarnessContext { .. } | Operation::Agent { .. }) => {
                                 let peer = authenticated_peer(&stream)?;

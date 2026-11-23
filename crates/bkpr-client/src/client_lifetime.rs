@@ -67,6 +67,9 @@ struct ActiveRequest {
 }
 
 fn observational(operation: &Operation) -> bool {
+    if let Operation::Channels { request } = operation {
+        return request.is_observational();
+    }
     matches!(
         operation,
         Operation::Inspect

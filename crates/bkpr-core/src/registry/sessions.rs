@@ -314,6 +314,11 @@ impl Registry {
                     && crate::transport::lifetime_connected(stream)
                     && crate::transport::lifetime_connected(&client.lifetime)
             }),
+            Operation::Channels { request } => self.request_channels(request, &|| {
+                client.is_active()
+                    && crate::transport::lifetime_connected(stream)
+                    && crate::transport::lifetime_connected(&client.lifetime)
+            }),
             Operation::Client { .. }
             | Operation::ClientRegister { .. }
             | Operation::Shutdown

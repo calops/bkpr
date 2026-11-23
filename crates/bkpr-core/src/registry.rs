@@ -158,6 +158,7 @@ struct Inner {
     transaction: Mutex<()>,
     captures: Mutex<crate::harness::Captures>,
     notifications: std::sync::OnceLock<crate::notifications::NotificationService>,
+    channels: crate::channels::ChannelEngine,
     agents: Arc<agents::Agents>,
     spawn_environment: Mutex<Option<crate::harness::SpawnEnvironment>>,
     ssh_agent: Mutex<Option<Arc<crate::ssh_agent::Relay>>>,
@@ -635,6 +636,7 @@ impl Registry {
                 transaction: Mutex::new(()),
                 captures: Mutex::new(crate::harness::Captures::default()),
                 notifications: std::sync::OnceLock::new(),
+                channels: crate::channels::ChannelEngine::new(root.to_owned()),
                 agents,
                 spawn_environment: Mutex::new(None),
                 ssh_agent: Mutex::new(None),
@@ -883,6 +885,49 @@ impl Registry {
     pub fn request(&self, request: Request) -> Result<Payload> {
         self.request_for_client(request, None)
     }
+    pub(crate) fn request_channels(
+        &self,
+        request: bkpr_protocol::channels::ChannelRequest,
+        connected: &impl Fn() -> bool,
+    ) -> Result<Payload> {
+        use crate::channels::ChannelAuthority;
+        use bkpr_protocol::channels::{Participant, ParticipantId, ParticipantKind};
+
+        self.inner
+            .channels
+            .request(
+                request,
+                |workspace_id| {
+                    ensure!(connected(), "channel request disconnected");
+                    let state = self.inner.state.lock().unwrap();
+                    healthy(&state)?;
+                    ensure!(
+                        !state.closing && !self.session_end_requested(),
+                        SessionClosing("session is shutting down")
+                    );
+                    let workspace_open = !state.closing_workspaces.contains(workspace_id)
+                        && state
+                            .record
+                            .registry
+                            .workspaces
+                            .iter()
+                            .any(|w| w.id == workspace_id);
+                    Ok(ChannelAuthority {
+                        actor: Participant {
+                            id: ParticipantId(self.inner.session.session_id.clone()),
+                            kind: ParticipantKind::User,
+                            display_name: "User".into(),
+                        },
+                        writable: true,
+                        workspace_open,
+                        participants: Vec::new(),
+                    })
+                },
+                || !connected() || self.session_end_requested(),
+            )
+            .map(Payload::Channels)
+    }
+
     fn request_for_client(
         &self,
         request: Request,
@@ -914,6 +959,12 @@ impl Registry {
         match request.operation {
             Operation::Notifications { request } => {
                 return self.request_notifications(request, &|| {
+                    client.as_ref().is_none_or(|client| client.is_active())
+                });
+            }
+            Operation::Channels { request } => {
+                ensure!(control.is_none(), "channel operations require user authority");
+                return self.request_channels(request, &|| {
                     client.as_ref().is_none_or(|client| client.is_active())
                 });
             }
@@ -2150,6 +2201,9 @@ impl Registry {
                 .closing_document_panes
                 .retain(|id| !closing_documents.contains(id));
         }
+        if reserves_workspace {
+            self.inner.channels.invalidate();
+        }
         let drained = self.drain_completions();
         self.notify_session_end();
         let registry = result.context("close may already have terminated executions; inspect durable registry before another action")?;
@@ -2223,6 +2277,7 @@ impl Registry {
             self.inner.changed.notify_all();
             state.live.values().cloned().collect::<Vec<_>>()
         };
+        self.inner.channels.invalidate();
         self.detach_all_clients("shutdown");
         let agent_shutdown = self.inner.agents.shutdown();
         let forwarding = self.inner.ssh_agent.lock().unwrap().clone();

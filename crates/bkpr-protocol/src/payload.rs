@@ -3,7 +3,7 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-/// Reply metadata or pane scenes.
+/// Reply metadata, pane scenes or typed channel replies.
 /// Serde emits diagnostic JSON; deserialization always produces [`Self::Control`].
 #[derive(Clone, Debug)]
 pub enum Payload {
@@ -16,6 +16,11 @@ pub enum Payload {
     Pane(
         /// Pane reply with optional binary scene bytes.
         PanePayload,
+    ),
+    /// Session-local channel response; raster bytes stay binary on the native wire.
+    Channels(
+        /// Channel reply, independent of terminal and registry state.
+        crate::channels::ChannelResponse,
     ),
 }
 /// Pane reply whose binary scene is kept outside its metadata object.
@@ -54,6 +59,7 @@ impl Payload {
                 }
                 Ok(pane.metadata)
             }
+            Self::Channels(reply) => Ok(serde_json::to_value(reply)?),
         }
     }
 }
@@ -71,6 +77,7 @@ impl Serialize for Payload {
                 }
                 value.serialize(serializer)
             }
+            Self::Channels(reply) => reply.serialize(serializer),
         }
     }
 }

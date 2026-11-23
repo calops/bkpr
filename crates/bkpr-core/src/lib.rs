@@ -2,6 +2,7 @@
 #![deny(missing_docs)]
 
 pub mod authority;
+mod channels;
 pub mod daemon;
 pub mod diagnostics;
 pub mod notifications;

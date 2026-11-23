@@ -1939,6 +1939,28 @@ Branch dispatch runs the package builds and loader checks without publishing
 or advancing `unstable`.
 Historical versions remain in [CHANGELOG.md](../CHANGELOG.md).
 
+## Workspace channel API
+
+`Operation::Channels` is session-scoped. Send it to the owning session endpoint,
+not the host endpoint. A registered client uses its existing attachment authority;
+the daemon derives the author and never accepts an author or launch ID from a
+channel request. Older daemons reject the additive operation without changing
+the native protocol family.
+
+Create an ordinary channel with explicit or workspace-wide membership and
+per-author wake settings. Membership, mentions, reply targets and attachment
+references are checked against their owner. A successful post receipt means the
+body and its notification work were durably committed, not that anyone was
+woken or read it. Retry an uncertain post only with exactly the same request
+and key. Read metadata pages, individual bodies and attachment bytes separately;
+use the subscription cursor to resume changes and mark read independently.
+
+History lives with the recoverable session. Detach and restart do not prune
+history or replay old launch wakes. An authorized user can inspect closed
+workspaces' channels without reopening the workspace; a new workspace with the
+same name does not inherit them. Default channel provisioning, MCP and native
+wake dispatch, direct-message migration, and the chat UI are separate features.
+
 ## Notification records and subscriptions
 
 `Operation::Notifications` exposes backend records and host-owned push management,
