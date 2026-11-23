@@ -958,7 +958,16 @@ table ChannelResponseExplicitMembers {
   members:[string] (required);
   next_after:string;
 }
-table ChannelCatalogUpsert { channel:ChannelSummary (required); }
+table ChannelAttention {
+  message_id:string (required);
+  sequence:ulong;
+  intent:PostIntent;
+  posted_at_ms:ulong;
+}
+table ChannelCatalogUpsert {
+  channel:ChannelSummary (required);
+  attention:ChannelAttention;
+}
 table ChannelCatalogWorkspaceClosed { workspace_id:string (required); }
 union ChannelCatalogChangeBody { ChannelCatalogUpsert, ChannelCatalogWorkspaceClosed }
 table ChannelCatalogChange { body:ChannelCatalogChangeBody (required); }

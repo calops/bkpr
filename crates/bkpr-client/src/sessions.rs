@@ -159,7 +159,8 @@ struct Session {
     owner: Option<Attachment>,
     app: Option<App>,
     registry: Option<Pump<RegistrySnapshot>>,
-    notifications: Option<crate::notification_updates::Observer>,
+    notifications: Option<crate::observation::Observer<bkpr_protocol::NotificationPage>>,
+    catalog: Option<crate::observation::Observer<crate::catalog_updates::Update>>,
     notifications_attempted: bool,
     phase: Phase,
     status: String,
@@ -187,6 +188,7 @@ impl Session {
             app: None,
             registry: None,
             notifications: None,
+            catalog: None,
             notifications_attempted: false,
             phase: Phase::Queued,
             status: "queued".into(),
@@ -463,8 +465,12 @@ fn refresh_presentation(index: usize, session: &mut Session, empty: &EmptyMetada
                 statuses,
                 history,
                 app.state.workspace.as_ref(),
-                app.state.window.as_ref(),
-                app.state.focused.as_ref(),
+                (!app.chat.visible())
+                    .then_some(app.state.window.as_ref())
+                    .flatten(),
+                (!app.chat.visible())
+                    .then_some(app.state.focused.as_ref())
+                    .flatten(),
             )
         } else {
             (
@@ -852,6 +858,18 @@ impl Coordinator {
         };
         session.registry.take();
         session.notifications.take();
+        session.catalog.take();
+        self.desktop.cancel_channels(crate::tree::Owner {
+            slot: index,
+            generation: session.generation,
+        });
+        self.tree.lock().unwrap().set_channel_attention(
+            crate::tree::Owner {
+                slot: index,
+                generation: session.generation,
+            },
+            HashSet::new(),
+        );
         session.notifications_attempted = false;
         let mut app = session.app.take();
         if let Some(app) = &mut app {
@@ -1409,6 +1427,10 @@ impl Coordinator {
                     let session = &mut self.sessions[index];
                     session.owner = Some(owner);
                     session.registry = Some(registry_pump);
+                    match crate::catalog_updates::start(app.socket.clone()) {
+                        Ok(catalog) => session.catalog = Some(catalog),
+                        Err(error) => app.chat.catalog_error(&error),
+                    }
                     session.app = Some(app);
                     session.failures = 0;
                     session.ever_active = true;
@@ -1491,6 +1513,13 @@ impl Coordinator {
                     self.remove(index, size, true)?;
                 }
             }
+            if let Some(update) = self.sessions[index]
+                .catalog
+                .as_mut()
+                .and_then(|catalog| catalog.next())
+            {
+                self.apply_channel_catalog(index, update);
+            }
         }
         if self.started {
             for remote in [false, true] {
@@ -1544,6 +1573,67 @@ impl Coordinator {
         Ok(())
     }
 
+    fn apply_channel_catalog(
+        &mut self,
+        index: usize,
+        update: Result<crate::catalog_updates::Update>,
+    ) {
+        use crate::catalog_updates::Update;
+        use bkpr_protocol::channels::ChannelCatalogChange;
+        let session = &mut self.sessions[index];
+        let Some(app) = &mut session.app else { return };
+        let owner = crate::tree::Owner {
+            slot: index,
+            generation: session.generation,
+        };
+        let replace_badges = match update {
+            Ok(Update::Snapshot(catalog)) => {
+                app.chat.replace_catalog(catalog);
+                true
+            }
+            Ok(Update::Reset) => {
+                self.desktop.cancel_channels(owner);
+                app.chat.reset_catalog();
+                true
+            }
+            Ok(Update::Changes(changes)) => {
+                let mut changed = false;
+                for change in changes {
+                    match change {
+                        ChannelCatalogChange::Upsert { channel, attention } => {
+                            if let Some(attention) = attention {
+                                self.desktop.queue_channel(
+                                    owner,
+                                    channel.workspace_id.clone(),
+                                    channel.id.clone(),
+                                    attention,
+                                );
+                            }
+                            changed |= app.chat.upsert(channel);
+                        }
+                        ChannelCatalogChange::WorkspaceClosed { workspace_id } => {
+                            changed |= app.chat.workspace_closed(&workspace_id);
+                        }
+                    }
+                }
+                changed
+            }
+            Err(error) => {
+                session.catalog.take();
+                self.desktop.cancel_channels(owner);
+                app.chat.catalog_error(&error);
+                true
+            }
+        };
+        if replace_badges {
+            let workspaces = app.chat.attention().map(str::to_owned).collect();
+            self.tree
+                .lock()
+                .unwrap()
+                .set_channel_attention(owner, workspaces);
+        }
+    }
+
     pub fn append_poll_fds(&self, fds: &mut Vec<libc::pollfd>) {
         fds.push(libc::pollfd {
             fd: self.connections.as_ref().unwrap().wake.as_raw_fd(),
@@ -1574,6 +1664,10 @@ impl Coordinator {
             for fd in [
                 session.owner.as_ref().map(Attachment::lifetime_fd),
                 session.registry.as_ref().map(|pump| pump.wake.as_raw_fd()),
+                session
+                    .catalog
+                    .as_ref()
+                    .map(|observer| observer.wake.as_raw_fd()),
                 session
                     .notifications
                     .as_ref()
@@ -1641,6 +1735,7 @@ impl Coordinator {
             terminal,
             out,
         )?;
+        self.channel_notifications(terminal, out)?;
         if !terminal
             .notification_capabilities()
             .is_some_and(|caps| caps.title)
@@ -1656,7 +1751,7 @@ impl Coordinator {
                 continue;
             };
             session.notifications_attempted = true;
-            match crate::notification_updates::Observer::start(owner.endpoint()) {
+            match crate::notification_updates::start(owner.endpoint()) {
                 Ok(observer) => session.notifications = Some(observer),
                 Err(error) => self.app_mut().notify(format!(
                     "Desktop notification subscription unavailable: {error:#}"
@@ -1744,6 +1839,115 @@ impl Coordinator {
         Ok(())
     }
 
+    fn channel_notifications(
+        &mut self,
+        terminal: &mut TerminalGuard,
+        out: &mut impl Write,
+    ) -> Result<()> {
+        let now = Instant::now();
+        let mut attempted = false;
+        for _ in 0..bkpr_protocol::channels::MAX_PAGE_LIMIT {
+            let Some(alert) = self.desktop.next_channel(now) else {
+                break;
+            };
+            let Some(session) = self.sessions.get(alert.owner.slot).filter(|session| {
+                session.present
+                    && session.phase == Phase::Online
+                    && session.generation == alert.owner.generation
+            }) else {
+                continue;
+            };
+            let Some(app) = &session.app else { continue };
+            let Some(workspace) = app
+                .registry
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.id == alert.target.workspace)
+            else {
+                continue;
+            };
+            let Some(channel) = app.chat.channel(&workspace.id, &alert.target.channel) else {
+                continue;
+            };
+            if channel.read_through >= alert.target.attention.sequence {
+                continue;
+            }
+            let attending = alert.owner.slot == self.selected
+                && terminal.observed_focus() == Some(true)
+                && app.chat.is_attending()
+                && !app.state.sidebar.active
+                && !app.state.prefix
+                && app.session_navigation_allowed()
+                && !app.diagnostic_active()
+                && app.image_viewer.is_none()
+                && app
+                    .chat
+                    .rendered(&channel.id, alert.target.attention.sequence);
+            if attending {
+                continue;
+            }
+            let context = format!(
+                "{} · {} · {}",
+                safe_text(
+                    session
+                        .identity
+                        .as_ref()
+                        .map_or("Session", |info| info.name.as_str())
+                ),
+                safe_text(&workspace.name),
+                safe_text(&channel.name),
+            );
+            self.desktop.show_channel(alert, &context, terminal, out)?;
+            attempted = true;
+        }
+        if attempted {
+            out.flush()?;
+        }
+        Ok(())
+    }
+
+    fn open_channel_notification(
+        &mut self,
+        owner: crate::tree::Owner,
+        target: crate::desktop::ChannelTarget,
+        size: Size,
+    ) -> Result<()> {
+        let current = self.sessions.get(owner.slot).is_some_and(|session| {
+            session.present
+                && session.phase == Phase::Online
+                && session.generation == owner.generation
+                && session.app.as_ref().is_some_and(|app| {
+                    app.registry
+                        .workspaces
+                        .iter()
+                        .any(|workspace| workspace.id == target.workspace)
+                        && app
+                            .chat
+                            .contains_channel(&target.workspace, &target.channel)
+                })
+        });
+        if !current {
+            self.app_mut()
+                .notify("The original channel is no longer available.".into());
+        } else if !self.app().session_navigation_allowed() {
+            self.app_mut()
+                .notify("Close the active dialog before opening the channel.".into());
+        } else {
+            self.select(owner.slot, size)?;
+            if self.selected == owner.slot {
+                let app = self.app_mut();
+                app.open_chat(target.workspace.clone());
+                app.chat.jump(
+                    target.workspace,
+                    target.channel,
+                    target.attention.message_id,
+                    target.attention.sequence,
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn notification_reply(
         &mut self,
         response: &[u8],
@@ -1760,6 +1964,13 @@ impl Coordinator {
             return Ok(false);
         };
         terminal.close_notification(out, id)?;
+        let source = match target.source {
+            crate::desktop::Source::Pane(source) => source,
+            crate::desktop::Source::Channel(channel) => {
+                self.open_channel_notification(target.owner, channel, size)?;
+                return Ok(true);
+            }
+        };
         let current = self.sessions.get(target.owner.slot).is_some_and(|session| {
             session.present
                 && session.generation == target.owner.generation
@@ -1771,13 +1982,9 @@ impl Coordinator {
                         app.registry
                             .panes
                             .iter()
-                            .find(|pane| pane.id == target.source.pane_id)
+                            .find(|pane| pane.id == source.pane_id)
                             .is_some_and(|pane| {
-                                crate::desktop::source_is_current(
-                                    &target.source,
-                                    attachment.info(),
-                                    pane,
-                                )
+                                crate::desktop::source_is_current(&source, attachment.info(), pane)
                             })
                     })
         });
@@ -1787,13 +1994,13 @@ impl Coordinator {
         } else if !self.app().session_navigation_allowed() {
             self.app_mut()
                 .notify("Close the active dialog before opening the notification source".into());
-        } else if let Some(workspace) = target.source.workspace_id {
+        } else if let Some(workspace) = source.workspace_id {
             self.dispatch_tree(
                 crate::tree::Target {
                     owner: target.owner,
                     node: crate::tree::Node::Native(SidebarTarget::Pane {
                         workspace,
-                        pane: target.source.pane_id,
+                        pane: source.pane_id,
                     }),
                 },
                 crate::keyguide::Action::ActivateSelected,
@@ -2157,6 +2364,7 @@ impl App {
         self.state.form.is_none()
             && self.sidebar_menu.is_none()
             && !self.picker_open()
+            && !self.chat.is_editing()
             && self
                 .consent
                 .as_ref()

@@ -892,7 +892,7 @@ mod tests {
         fn prepare(&self, name: &str) -> SessionInfo {
             let paths = self.roots.named(name).unwrap();
             let defaults = SpawnDefaults {
-                argv: vec!["/bin/sh".into(), "-c".into(), "exec sleep 60".into()],
+                argv: vec!["/bin/sh".into(), "-c".into(), "read -r unused".into()],
                 cwd: self._directory.path().to_owned(),
                 home: self.home.clone(),
                 isolated_environment: true,

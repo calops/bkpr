@@ -5,6 +5,7 @@ mod app;
 mod appearance;
 /// Attachment destinations and deferred local bootstrap.
 pub mod attachments;
+mod catalog_updates;
 mod chrome_graphics;
 mod ci;
 mod controller;
@@ -14,6 +15,7 @@ mod form_fields;
 mod keyguide;
 mod metadata;
 mod notification_updates;
+mod observation;
 mod popover;
 mod project_colors;
 const TEXT_INPUT_LIMIT: usize = 4096;

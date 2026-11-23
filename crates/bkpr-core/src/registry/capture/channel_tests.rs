@@ -334,7 +334,11 @@ fn user_binding(
 }
 
 fn mention_as_user(id: &ChannelId, text: &str, binding: ChannelMentionBinding) -> ChannelRequest {
-    let ChannelRequest::Post { channel_id, mut post } = post(id, text, PostIntent::Note) else {
+    let ChannelRequest::Post {
+        channel_id,
+        mut post,
+    } = post(id, text, PostIntent::Note)
+    else {
         unreachable!()
     };
     post.mentions.push(binding.participant_id.clone());
@@ -1804,7 +1808,11 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     let accepted_request =
         mention_as_user(&team_id, "prior selected user post", stale_binding.clone());
     let accepted = channel(&registry, None, accepted_request.clone()).unwrap();
-    let racing = mention_as_user(&team_id, "stale @Same label is not a broadcast", stale_binding);
+    let racing = mention_as_user(
+        &team_id,
+        "stale @Same label is not a broadcast",
+        stale_binding,
+    );
     let previous = b.managed.conversation.as_ref().unwrap();
     let peer = Peer {
         pid: b.root.pid,
@@ -1852,7 +1860,10 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     let current = registry.inner.captures.lock().unwrap().launches[&b.grant.launch_id].clone();
     assert_eq!(current.channel_participant, b.channel_participant);
     assert_ne!(current.binding_generation, b.binding_generation);
-    assert_eq!(channel(&registry, None, accepted_request).unwrap(), accepted);
+    assert_eq!(
+        channel(&registry, None, accepted_request).unwrap(),
+        accepted
+    );
     let conflict = mention_as_user(
         &team_id,
         "prior selected user post",
@@ -2628,7 +2639,7 @@ fn concurrent_direct_sends_share_one_private_thread_and_keep_exact_receipts() {
     assert!(!changes.is_empty());
     for change in changes {
         assert!(matches!(change,
-            bkpr_protocol::channels::ChannelCatalogChange::Upsert { channel }
+            bkpr_protocol::channels::ChannelCatalogChange::Upsert { channel, attention: None }
                 if channel.direct && channel.last_sequence == 2 && !channel.unread_attention
                     && channel.workspace_id == a_workspace
         ));

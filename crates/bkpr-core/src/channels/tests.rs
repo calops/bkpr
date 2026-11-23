@@ -643,7 +643,7 @@ fn typed_mentions_and_policy_select_only_current_agents_and_preserve_unread_atte
         .mentions
         .extend([f.a.id.clone(), f.user.id.clone()]);
     let attention = posted(f.as_actor(&f.a, send(&id, question)).unwrap());
-    assert_eq!(f.work(&attention.id), [(String::new(), None, false, true)]);
+    assert!(f.work(&attention.id).is_empty());
     let unread = |actor| {
         f.list(actor)
             .into_iter()
@@ -1082,7 +1082,10 @@ fn user_roster_is_observational_but_scoped_to_workspace_and_channel_members() {
             .map(|entry| entry.participant.id)
             .collect::<Vec<_>>()
     };
-    assert_eq!(ids(all), [f.a.id.clone(), f.b.id.clone(), f.user.id.clone()]);
+    assert_eq!(
+        ids(all),
+        [f.a.id.clone(), f.b.id.clone(), f.user.id.clone()]
+    );
     assert_eq!(
         ids(roster(WORKSPACE, Some(id.clone()))),
         [f.a.id.clone(), f.user.id.clone()]
@@ -1616,6 +1619,34 @@ fn full_notification_queue_rejects_only_new_work_and_keeps_accepted_history() {
         posted(f.request(send(&id, post("overload"))).unwrap()).sequence,
         2
     );
+    f.request(ChannelRequest::SetSettings {
+        channel_id: id.clone(),
+        settings: ChannelSettings {
+            attention_questions: true,
+            ..quiet()
+        },
+    })
+    .unwrap();
+    let ChannelResponse::Posted {
+        attention: true,
+        wake_count: 0,
+        message,
+    } = f
+        .as_actor(
+            &f.a,
+            send(
+                &id,
+                ChannelPost {
+                    intent: PostIntent::Question,
+                    ..post("attention while wakes are full")
+                },
+            ),
+        )
+        .unwrap()
+    else {
+        panic!("expected attention without agent wake");
+    };
+    assert_eq!(message.sequence, 3);
 }
 
 #[test]
@@ -2736,6 +2767,233 @@ fn upload_reclaims_a_bounded_oldest_first_batch_of_staged_rows() {
     );
 }
 
+fn attention_for(message: &MessageSummary) -> ChannelAttention {
+    ChannelAttention {
+        message_id: message.id.clone(),
+        sequence: message.sequence,
+        intent: message.intent,
+        posted_at_ms: message.posted_at_ms,
+    }
+}
+
+#[test]
+fn catalog_attention_migration_keeps_old_cursors_without_replaying_placeholder_work() {
+    let mut f = Fixture::new();
+    let id = f.wide(ChannelSettings {
+        attention_reports: true,
+        ..ChannelSettings::default()
+    });
+    f.sql(
+        "DROP TRIGGER catalog_channel_created;
+         DROP TRIGGER catalog_channel_updated;
+         DROP TABLE catalog_workspaces;
+         DROP TABLE catalog_events;
+         DROP TABLE catalog_identity;",
+    );
+    f.sql(include_str!("catalog.sql"));
+    f.sql("PRAGMA user_version=5;");
+    let fetch = |f: &Fixture, read: CatalogRead<'_>| {
+        f.engine
+            .catalog_request(
+                read,
+                f.user.id.as_ref(),
+                4,
+                0,
+                || Ok([WORKSPACE.into()].into_iter().collect()),
+                || false,
+            )
+            .unwrap()
+    };
+    let ChannelResponse::CatalogSnapshot { cursor, .. } = fetch(&f, CatalogRead::Snapshot(None))
+    else {
+        panic!("expected v5 baseline");
+    };
+    let emit = |f: &Fixture, key| {
+        posted(
+            f.as_actor(
+                &f.a,
+                send(
+                    &id,
+                    ChannelPost {
+                        intent: PostIntent::Report,
+                        ..post(key)
+                    },
+                ),
+            )
+            .unwrap(),
+        )
+    };
+    let old = emit(&f, "legacy report");
+    f.sql(
+        "INSERT INTO notification_work(channel_id,message_id,participant_id,addressed)
+         SELECT channel_id,id,'',0 FROM posts WHERE attention=1;",
+    );
+
+    f.engine = ChannelEngine::new(f.root.path().to_owned());
+    let ChannelResponse::CatalogChanges {
+        changes,
+        cursor: migrated,
+        more: false,
+    } = fetch(&f, CatalogRead::Changes(&cursor))
+    else {
+        panic!("expected continuity across migration");
+    };
+    assert_eq!(migrated.store_id, cursor.store_id);
+    assert!(matches!(
+        changes.as_slice(),
+        [ChannelCatalogChange::Upsert { channel, attention: None }]
+            if channel.id == id && channel.unread_attention && channel.last_sequence == old.sequence
+    ));
+    assert_eq!(
+        f.work(&old.id),
+        [(f.b.id.0.clone(), Some("launch-b".into()), false, false)]
+    );
+
+    let new = emit(&f, "new report");
+    f.engine = ChannelEngine::new(f.root.path().to_owned());
+    let ChannelResponse::CatalogChanges { changes, .. } =
+        fetch(&f, CatalogRead::Changes(&migrated))
+    else {
+        panic!("expected the durable attention event after reopening");
+    };
+    assert!(matches!(
+        changes.as_slice(),
+        [ChannelCatalogChange::Upsert { channel, attention: Some(attention) }]
+            if channel.id == id && *attention == attention_for(&new)
+    ));
+}
+
+#[test]
+fn catalog_catchup_projects_only_exact_unread_attention_events() {
+    let f = Fixture::new();
+    let id = f.wide(ChannelSettings {
+        attention_questions: true,
+        ..quiet()
+    });
+    let open = std::cell::Cell::new(true);
+    let fetch = |read: CatalogRead<'_>| {
+        let workspaces = || {
+            Ok([OTHER_WORKSPACE]
+                .into_iter()
+                .chain(open.get().then_some(WORKSPACE))
+                .map(String::from)
+                .collect())
+        };
+        f.engine
+            .catalog_request(read, f.user.id.as_ref(), 1, 0, workspaces, || false)
+            .unwrap()
+    };
+    let ChannelResponse::CatalogSnapshot {
+        mut cursor,
+        next_after: Some(snapshot_page),
+        ..
+    } = fetch(CatalogRead::Snapshot(None))
+    else {
+        panic!("expected a paged baseline");
+    };
+    let request = |key, intent| {
+        send(
+            &id,
+            ChannelPost {
+                intent,
+                ..post(key)
+            },
+        )
+    };
+    let emit = |key, intent| posted(f.as_actor(&f.a, request(key, intent)).unwrap());
+    f.sql(
+        "CREATE TABLE injected_parent(id INTEGER PRIMARY KEY);
+         CREATE TABLE injected_child(id INTEGER REFERENCES injected_parent(id) DEFERRABLE INITIALLY DEFERRED);
+         CREATE TRIGGER inject_alert_commit_failure AFTER INSERT ON catalog_events
+            WHEN NEW.attention_message_id IS NOT NULL
+            BEGIN INSERT INTO injected_child VALUES(1); END;",
+    );
+    assert!(
+        f.as_actor(&f.a, request("already read question", PostIntent::Question),)
+            .is_err()
+    );
+    assert_eq!(
+        fetch(CatalogRead::Changes(&cursor)),
+        ChannelResponse::CatalogChanges {
+            changes: vec![],
+            cursor: cursor.clone(),
+            more: false,
+        }
+    );
+    f.sql("DROP TRIGGER inject_alert_commit_failure;");
+    let read_before_catchup = emit("already read question", PostIntent::Question);
+    let question = request("question", PostIntent::Question);
+    let question_receipt = f.as_actor(&f.a, question.clone()).unwrap();
+    f.request(mark(&id, read_before_catchup.sequence)).unwrap();
+    emit("report before enabling", PostIntent::Report);
+    f.request(ChannelRequest::SetSettings {
+        channel_id: id.clone(),
+        settings: ChannelSettings {
+            attention_reports: true,
+            ..quiet()
+        },
+    })
+    .unwrap();
+    let report = emit("report after enabling", PostIntent::Report);
+    f.request(request("user report", PostIntent::Report))
+        .unwrap();
+    let note = emit("latest ordinary post", PostIntent::Note);
+    assert_eq!(f.as_actor(&f.a, question).unwrap(), question_receipt);
+
+    let expected = [
+        None,
+        Some(attention_for(&posted(question_receipt))),
+        None,
+        None,
+        None,
+        Some(attention_for(&report)),
+        None,
+        None,
+    ];
+    let pages = expected.len();
+    for (index, expected_attention) in expected.into_iter().enumerate() {
+        let ChannelResponse::CatalogChanges {
+            changes,
+            cursor: next,
+            more,
+        } = fetch(CatalogRead::Changes(&cursor))
+        else {
+            panic!("expected ordered catch-up page");
+        };
+        assert_eq!(next.sequence, cursor.sequence + 1);
+        assert_eq!(more, index + 1 < pages);
+        let [ChannelCatalogChange::Upsert { channel, attention }] = changes.as_slice() else {
+            panic!("expected one upsert");
+        };
+        assert_eq!(channel.id, id);
+        assert_eq!(channel.last_sequence, note.sequence);
+        assert_eq!(channel.read_through, read_before_catchup.sequence);
+        assert_eq!(attention, &expected_attention);
+        cursor = next;
+    }
+
+    emit("report before closure", PostIntent::Report);
+    open.set(false);
+    f.engine.retire_workspace();
+    assert_eq!(
+        fetch(CatalogRead::Changes(&cursor)),
+        ChannelResponse::CatalogChanges {
+            changes: vec![ChannelCatalogChange::WorkspaceClosed {
+                workspace_id: WORKSPACE.into(),
+            }],
+            cursor: ChannelCatalogCursor {
+                store_id: cursor.store_id.clone(),
+                sequence: cursor.sequence + 2,
+            },
+            more: false,
+        }
+    );
+    assert_eq!(
+        fetch(CatalogRead::Snapshot(Some(&snapshot_page))),
+        ChannelResponse::CatalogReset {}
+    );
+}
+
 #[test]
 fn catalog_pages_stay_at_their_baseline_and_resume_authoritative_unread() {
     const FIRST_WORKSPACE: &str = "workspace-baseline";
@@ -2828,7 +3086,7 @@ fn catalog_pages_stay_at_their_baseline_and_resume_authoritative_unread() {
 
     let mut cursor = cursor;
     let mut created = false;
-    let mut updated = false;
+    let mut attention_posts = Vec::new();
     loop {
         let ChannelResponse::CatalogChanges {
             changes,
@@ -2841,7 +3099,7 @@ fn catalog_pages_stay_at_their_baseline_and_resume_authoritative_unread() {
         assert_eq!(changes.len(), 1);
         assert!(next.sequence > cursor.sequence);
         cursor = next;
-        let ChannelCatalogChange::Upsert { channel } = &changes[0] else {
+        let ChannelCatalogChange::Upsert { channel, attention } = &changes[0] else {
             panic!("expected channel upsert");
         };
         if channel.id == id {
@@ -2853,7 +3111,7 @@ fn catalog_pages_stay_at_their_baseline_and_resume_authoritative_unread() {
                 ),
                 (2, 1, true)
             );
-            updated = true;
+            attention_posts.extend(attention.iter().cloned());
         } else {
             assert_eq!(channel.id, channel_created_later);
             created = true;
@@ -2862,7 +3120,8 @@ fn catalog_pages_stay_at_their_baseline_and_resume_authoritative_unread() {
             break;
         }
     }
-    assert!(created && updated);
+    assert!(created);
+    assert_eq!(attention_posts, [attention_for(&second)]);
     f.as_actor(
         &f.a,
         ChannelRequest::MarkRead {
@@ -2889,7 +3148,7 @@ fn catalog_pages_stay_at_their_baseline_and_resume_authoritative_unread() {
         panic!("expected user read update");
     };
     assert!(
-        matches!(changes.as_slice(), [ChannelCatalogChange::Upsert { channel }]
+        matches!(changes.as_slice(), [ChannelCatalogChange::Upsert { channel, attention: None }]
         if channel.read_through == second.sequence && !channel.unread_attention)
     );
 }
@@ -3056,13 +3315,24 @@ fn catalog_overrun_resets_without_losing_history_or_unread() {
             || false,
         )
         .unwrap();
-    let ChannelResponse::CatalogSnapshot { channels, .. } = user_catalog else {
+    let ChannelResponse::CatalogSnapshot {
+        channels, cursor, ..
+    } = user_catalog
+    else {
         panic!("expected fresh catalog");
     };
     assert!(
         channels
             .iter()
             .any(|c| c.id == id && c.unread_attention && c.last_sequence == 1)
+    );
+    assert_eq!(
+        fetch(CatalogRead::Changes(&cursor)),
+        ChannelResponse::CatalogChanges {
+            changes: vec![],
+            cursor: cursor.clone(),
+            more: false,
+        }
     );
     let ChannelResponse::History { messages, .. } = f.request(messages(&id, None, 4)).unwrap()
     else {

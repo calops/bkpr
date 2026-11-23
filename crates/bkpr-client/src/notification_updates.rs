@@ -1,85 +1,23 @@
 //! Cancellable ordered notification observations for one attached endpoint.
-use crate::transport::Endpoint;
+use crate::{
+    observation::{Observer, Publisher},
+    transport::Endpoint,
+};
 use anyhow::{Context, Result};
 use bkpr_protocol::{
     MAX_NOTIFICATION_WAIT_MS, NotificationPage, NotificationQuery, NotificationRequest, Operation,
 };
-use std::{
-    io::{Read, Write},
-    os::unix::net::UnixStream,
-    thread,
-};
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
-
-/// Dedicated bounded observer; cancellation never joins a worker on the UI path.
-pub(crate) struct Observer {
-    receiver: Option<mpsc::Receiver<Result<NotificationPage>>>,
-    /// Pollable readiness for queued pages or the terminal observation error.
-    pub(crate) wake: UnixStream,
-    cancellation: CancellationToken,
+pub(crate) fn start(endpoint: Endpoint) -> Result<Observer<NotificationPage>> {
+    Observer::spawn(
+        "bkpr-notifications",
+        endpoint,
+        |endpoint, mut publisher| async move {
+            observe(&endpoint, &mut publisher).await;
+        },
+    )
 }
 
-impl Observer {
-    /// Spawn an observation worker without connecting on the calling thread.
-    pub(crate) fn start(endpoint: Endpoint) -> Result<Self> {
-        let (wake, mut notify) = UnixStream::pair()?;
-        wake.set_nonblocking(true)?;
-        notify.set_nonblocking(true)?;
-        let (sender, receiver) = mpsc::channel(1);
-        let cancellation = CancellationToken::new();
-        let stopped = cancellation.clone();
-        thread::Builder::new()
-            .name("bkpr-notifications".into())
-            .spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(runtime) => runtime,
-                    Err(error) => {
-                        if !stopped.is_cancelled() && sender.try_send(Err(error.into())).is_ok() {
-                            let _ = notify.write_all(&[1]);
-                        }
-                        return;
-                    }
-                };
-                runtime.block_on(observe(&endpoint, sender, &mut notify, &stopped));
-            })
-            .context("starting notification observer")?;
-        Ok(Self {
-            receiver: Some(receiver),
-            wake,
-            cancellation,
-        })
-    }
-
-    /// Drain wake bytes and take exactly one queued page/error without waiting.
-    pub(crate) fn next(&mut self) -> Option<Result<NotificationPage>> {
-        let mut bytes = [0; 128];
-        while matches!(self.wake.read(&mut bytes), Ok(count) if count > 0) {}
-        self.receiver.as_mut()?.try_recv().ok()
-    }
-
-    /// Cancel connect/read/backpressure and discard queued records immediately.
-    pub(crate) fn cancel(&mut self) {
-        self.cancellation.cancel();
-        self.receiver.take();
-    }
-}
-
-impl Drop for Observer {
-    fn drop(&mut self) {
-        self.cancel();
-    }
-}
-
-async fn observe(
-    endpoint: &Endpoint,
-    sender: mpsc::Sender<Result<NotificationPage>>,
-    notify: &mut UnixStream,
-    cancellation: &CancellationToken,
-) {
+async fn observe(endpoint: &Endpoint, publisher: &mut Publisher<NotificationPage>) {
     let mut after = None;
     let mut store_id = None;
     let mut previous_status = None;
@@ -99,7 +37,7 @@ async fn observe(
             },
         };
         let value = endpoint
-            .checked_observation_async(operation, cancellation)
+            .checked_observation_async(operation, &publisher.cancellation)
             .await
             .and_then(|value| {
                 serde_json::from_value::<NotificationPage>(value)
@@ -128,22 +66,7 @@ async fn observe(
             }
             previous_status = Some((page.health.clone(), page.gap));
         }
-        tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => break,
-            _ = endpoint.wait_revoked() => break,
-            result = sender.send(value) => {
-                if result.is_err() {
-                    break;
-                }
-            }
-        }
-        if let Err(error) = notify.write_all(&[1])
-            && error.kind() != std::io::ErrorKind::WouldBlock
-        {
-            break;
-        }
-        if failed {
+        if !publisher.send(endpoint, value).await || failed {
             break;
         }
     }
@@ -159,7 +82,14 @@ mod tests {
         NotificationCursor, NotificationHealth, NotificationKind, NotificationSource,
         PROTOCOL_VERSION, PaneNotificationSource, ProcessIdentity, Response, SessionInfo,
     };
-    use std::{os::unix::net::UnixListener, time::Duration};
+    use std::{
+        io::Read,
+        os::unix::net::{UnixListener, UnixStream},
+        thread,
+        time::Duration,
+    };
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
 
     fn runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
@@ -322,42 +252,41 @@ mod tests {
         });
         let endpoint = Endpoint::unmanaged(&socket);
         let (sender, mut receiver) = mpsc::channel(1);
-        let (_wake, mut notify) = UnixStream::pair().unwrap();
+        let (_wake, notify) = UnixStream::pair().unwrap();
         notify.set_nonblocking(true).unwrap();
         let cancellation = CancellationToken::new();
+        let mut publisher = Publisher::new(sender, notify, cancellation.clone());
         runtime().block_on(async {
             tokio::time::timeout(Duration::from_secs(3), async {
-                tokio::join!(
-                    observe(&endpoint, sender, &mut notify, &cancellation),
-                    async {
-                        let baseline = receiver.recv().await.unwrap().unwrap();
-                        assert_eq!(baseline.cursor.sequence, 40);
-                        assert!(baseline.notifications.is_empty());
-                        let pane = receiver.recv().await.unwrap().unwrap();
-                        assert_eq!(pane.notifications.len(), 1);
-                        assert_eq!(pane.notifications[0].sequence, 42);
-                        assert_eq!(pane.notifications[0].source.pane_id(), Some("pane"));
-                        let channel = receiver.recv().await.unwrap().unwrap();
-                        assert_eq!(channel.notifications.len(), 1);
-                        assert_eq!(channel.notifications[0].sequence, 43);
-                        let NotificationSource::Channel(source) = &channel.notifications[0].source
-                        else {
-                            panic!("expected channel notification");
-                        };
-                        assert_eq!(source.intent, ChannelAttentionKind::Question);
-                        assert_eq!(source.sequence, 8);
-                        let baseline = receiver.recv().await.unwrap().unwrap();
-                        assert_eq!(baseline.cursor.store_id, "replacement");
-                        assert_eq!(baseline.cursor.sequence, 110);
-                        assert!(baseline.notifications.is_empty());
-                        waiting_rx.await.unwrap();
-                        cancellation.cancel();
+                tokio::join!(observe(&endpoint, &mut publisher), async {
+                    let baseline = receiver.recv().await.unwrap().unwrap();
+                    assert_eq!(baseline.cursor.sequence, 40);
+                    assert!(baseline.notifications.is_empty());
+                    let pane = receiver.recv().await.unwrap().unwrap();
+                    assert_eq!(pane.notifications.len(), 1);
+                    assert_eq!(pane.notifications[0].sequence, 42);
+                    assert_eq!(pane.notifications[0].source.pane_id(), Some("pane"));
+                    let channel = receiver.recv().await.unwrap().unwrap();
+                    assert_eq!(channel.notifications.len(), 1);
+                    assert_eq!(channel.notifications[0].sequence, 43);
+                    let NotificationSource::Channel(source) = &channel.notifications[0].source else {
+                        panic!("expected channel notification");
+                    };
+                    assert_eq!(source.intent, ChannelAttentionKind::Question);
+                    assert_eq!(source.sequence, 8);
                     }
-                );
+                    let baseline = receiver.recv().await.unwrap().unwrap();
+                    assert_eq!(baseline.cursor.store_id, "replacement");
+                    assert_eq!(baseline.cursor.sequence, 110);
+                    assert!(baseline.notifications.is_empty());
+                    waiting_rx.await.unwrap();
+                    cancellation.cancel();
+                });
             })
             .await
             .unwrap();
         });
+        drop(publisher);
         assert!(receiver.try_recv().is_err());
         server.join().unwrap();
     }
@@ -383,22 +312,21 @@ mod tests {
         });
         let endpoint = Endpoint::unmanaged(&socket);
         let (sender, mut receiver) = mpsc::channel(1);
-        let (_wake, mut notify) = UnixStream::pair().unwrap();
+        let (_wake, notify) = UnixStream::pair().unwrap();
         notify.set_nonblocking(true).unwrap();
         let cancellation = CancellationToken::new();
+        let mut publisher = Publisher::new(sender, notify, cancellation.clone());
         runtime().block_on(async {
             tokio::time::timeout(Duration::from_secs(3), async {
-                tokio::join!(
-                    observe(&endpoint, sender, &mut notify, &cancellation),
-                    async {
-                        queued_rx.await.unwrap();
-                        cancellation.cancel();
-                    }
-                );
+                tokio::join!(observe(&endpoint, &mut publisher), async {
+                    queued_rx.await.unwrap();
+                    cancellation.cancel();
+                });
             })
             .await
             .unwrap();
         });
+        drop(publisher);
         let baseline = receiver.try_recv().unwrap().unwrap();
         assert_eq!(baseline.cursor.sequence, 40);
         assert!(receiver.try_recv().is_err());

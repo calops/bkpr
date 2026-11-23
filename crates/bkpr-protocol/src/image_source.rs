@@ -57,7 +57,9 @@ pub fn decode_png_rgba(
         png::Transformations::EXPAND | png::Transformations::STRIP_16 | png::Transformations::ALPHA,
     );
     decoder.set_limits(png::Limits {
-        bytes: decoded_len.checked_add(1024 * 1024).context("PNG size limit")?,
+        bytes: decoded_len
+            .checked_add(1024 * 1024)
+            .context("PNG size limit")?,
     });
     let mut reader = decoder.read_info()?;
     let info = reader.info();

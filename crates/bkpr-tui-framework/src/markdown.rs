@@ -65,7 +65,11 @@ impl Document {
                         let mut offset = offset;
                         for part in text.split_inclusive('\n') {
                             if let Some(line) = part.strip_suffix('\n') {
-                                builder.safe(line.strip_suffix('\r').unwrap_or(line), offset, false);
+                                builder.safe(
+                                    line.strip_suffix('\r').unwrap_or(line),
+                                    offset,
+                                    false,
+                                );
                                 builder.finish_line(true);
                             } else {
                                 builder.safe(part, offset, false);
@@ -181,12 +185,7 @@ impl Document {
         quote.len() + indent + marker.len()
     }
 
-    fn row_runs<'a>(
-        &'a self,
-        range: Range<usize>,
-        spans: &mut &[Span],
-        runs: &mut Vec<Run<'a>>,
-    ) {
+    fn row_runs<'a>(&'a self, range: Range<usize>, spans: &mut &[Span], runs: &mut Vec<Run<'a>>) {
         let mut offset = range.start;
         let mut boundary = offset;
         let mut graphemes = self.text[range.clone()].graphemes(true);
@@ -309,9 +308,9 @@ fn row_cut(rest: &str, columns: usize, verbatim: bool, start: usize, mut spans: 
         if !fits {
             let (end, mut next) = word_break.unwrap_or((offset, offset));
             if space && word_break.is_some() {
-                for (offset, glyph) in glyphs.take_while(|&(offset, glyph)| {
-                    breakable(offset, glyph, &mut spans)
-                }) {
+                for (offset, glyph) in
+                    glyphs.take_while(|&(offset, glyph)| breakable(offset, glyph, &mut spans))
+                {
                     next = offset + glyph.len();
                 }
             }
@@ -392,7 +391,11 @@ impl<'a> Builder<'a> {
                     pending: true,
                 });
             }
-            Tag::Link { link_type, dest_url, .. } => {
+            Tag::Link {
+                link_type,
+                dest_url,
+                ..
+            } => {
                 let show_target = self.images == 0
                     && !dest_url.is_empty()
                     && !matches!(link_type, LinkType::Autolink | LinkType::Email);
@@ -533,7 +536,12 @@ impl<'a> Builder<'a> {
 
     fn record_span(&mut self, start: usize, style: Style, source: Option<usize>) {
         let end = self.doc.text.len();
-        let first = self.open.as_ref().expect("span in an open line").spans.start;
+        let first = self
+            .open
+            .as_ref()
+            .expect("span in an open line")
+            .spans
+            .start;
         if let Some(previous) = self.doc.spans[first..].last_mut()
             && previous.style == style
             && previous.source.map(|s| s + previous.text.len()) == source
@@ -649,7 +657,9 @@ mod tests {
 
     #[test]
     fn markdown_keeps_host_controls_and_remote_images_inert() {
-        let doc = Document::parse("<img src=\"bad\">\n\nA &#27;\u{10eeee}\u{202e} ![alt](https://hidden.test) [link](<javascript:&#7;hi>)");
+        let doc = Document::parse(
+            "<img src=\"bad\">\n\nA &#27;\u{10eeee}\u{202e} ![alt](https://hidden.test) [link](<javascript:&#7;hi>)",
+        );
         let rows = doc.wrap(100);
         assert_eq!(rows.len(), 1);
         let row = text(&rows[0]);
@@ -667,8 +677,14 @@ mod tests {
         assert!(wide[0].runs[1].style.bold);
         assert_eq!(wide[0].runs[1].source, None);
         let narrow = doc.wrap(1);
-        assert_eq!(narrow.iter().map(text).collect::<Vec<_>>(), ["e\u{301}", "�", "x"]);
-        assert_eq!(doc.wrap(2).iter().map(text).collect::<Vec<_>>(), ["e\u{301}", "界", "x"]);
+        assert_eq!(
+            narrow.iter().map(text).collect::<Vec<_>>(),
+            ["e\u{301}", "�", "x"]
+        );
+        assert_eq!(
+            doc.wrap(2).iter().map(text).collect::<Vec<_>>(),
+            ["e\u{301}", "界", "x"]
+        );
     }
 
     #[test]

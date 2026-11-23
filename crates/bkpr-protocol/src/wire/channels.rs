@@ -1140,9 +1140,13 @@ fn write_catalog_change(
     budget.node(depth)?;
     budget.node(depth + 1)?;
     let body = match change {
-        ChannelCatalogChange::Upsert { channel } => {
+        ChannelCatalogChange::Upsert { channel, attention } => {
             let channel = write_summary(b, channel, budget, depth + 2)?;
-            let offset = g::ChannelCatalogUpsert::create(b, channel);
+            let attention = attention
+                .as_ref()
+                .map(|attention| write_catalog_attention(b, attention, budget, depth + 2))
+                .transpose()?;
+            let offset = g::ChannelCatalogUpsert::create(b, channel, attention);
             Body::create_channel_catalog_upsert(b, offset)
         }
         ChannelCatalogChange::WorkspaceClosed { workspace_id } => {
@@ -1165,11 +1169,60 @@ fn read_catalog_change(
     Ok(match change.body()? {
         Body::ChannelCatalogUpsert(v) => ChannelCatalogChange::Upsert {
             channel: read_summary(v.channel()?, budget, 3)?,
+            attention: v
+                .attention()?
+                .map(|attention| read_catalog_attention(attention, budget, 3))
+                .transpose()?,
         },
         Body::ChannelCatalogWorkspaceClosed(v) => ChannelCatalogChange::WorkspaceClosed {
             workspace_id: read_id(v.workspace_id()?, budget)?,
         },
     })
+}
+
+fn write_catalog_attention(
+    b: &mut Builder,
+    value: &ChannelAttention,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Offset<g::ChannelAttention>> {
+    budget.node(depth)?;
+    valid_id(value.message_id.as_ref())?;
+    validate_catalog_attention(value.sequence, value.intent)?;
+    let message_id = write_text(b, value.message_id.as_ref(), budget)?;
+    Ok(g::ChannelAttention::create(
+        b,
+        message_id,
+        value.sequence,
+        g::PostIntent::from(value.intent),
+        value.posted_at_ms,
+    ))
+}
+
+fn read_catalog_attention(
+    value: g::ChannelAttentionRef<'_>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<ChannelAttention> {
+    budget.node(depth)?;
+    let sequence = value.sequence()?;
+    let intent = value.intent()?.into();
+    validate_catalog_attention(sequence, intent)?;
+    Ok(ChannelAttention {
+        message_id: MessageId(read_id(value.message_id()?, budget)?),
+        sequence,
+        intent,
+        posted_at_ms: value.posted_at_ms()?,
+    })
+}
+
+fn validate_catalog_attention(sequence: u64, intent: PostIntent) -> Result<()> {
+    ensure!(sequence > 0, "zero catalog attention post sequence");
+    ensure!(
+        intent != PostIntent::Note,
+        "ordinary post cannot carry catalog attention"
+    );
+    Ok(())
 }
 
 fn write_change(

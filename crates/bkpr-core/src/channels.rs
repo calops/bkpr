@@ -26,8 +26,7 @@ const MAX_REQUESTS: usize = 16;
 const MAX_SUBSCRIBERS: usize = 16;
 const CANCEL_CHECK: Duration = Duration::from_millis(100);
 const STORE_WAIT: Duration = Duration::from_secs(1);
-pub(crate) const STALE_USER_MENTION: &str =
-    "selected channel mention changed or left the channel; refresh the roster and select it again; nothing was posted";
+pub(crate) const STALE_USER_MENTION: &str = "selected channel mention changed or left the channel; refresh the roster and select it again; nothing was posted";
 
 /// Current workspace participant supplied by the authenticated owner, not the request.
 pub struct WorkspaceParticipant {

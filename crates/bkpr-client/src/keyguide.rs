@@ -35,6 +35,10 @@ pub enum Context {
     History,
     Search,
     Resize,
+    Chat,
+    ChatChannels,
+    ChatMention,
+    ChatControls,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,6 +146,19 @@ pub enum HistoryAction {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChatAction {
+    Create,
+    Manage,
+    MarkRead,
+    Retry,
+    Send,
+    Newline,
+    ToggleList,
+    Choose,
+    Back,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     CommandPrefix,
     SendPrefix,
@@ -202,6 +219,7 @@ pub enum Action {
         cells: u16,
     },
     FinishResize,
+    Chat(ChatAction),
 }
 
 impl Action {
@@ -334,6 +352,23 @@ impl Action {
                 (Direction::Down, true) => "resize down 5 cells",
             },
             Self::FinishResize => "finish resize",
+            Self::Chat(action) => match action {
+                ChatAction::Create => "new channel",
+                ChatAction::Manage => "channel settings",
+                ChatAction::MarkRead => "mark channel read",
+                ChatAction::Retry => "retry identical post",
+                ChatAction::Send => "send message",
+                ChatAction::Newline => "add a line",
+                ChatAction::ToggleList => "channels / composer",
+                ChatAction::Choose if context == Context::ChatMention => "select agent mention",
+                ChatAction::Choose => "open channel",
+                ChatAction::Back => match context {
+                    Context::ChatChannels => "return to composer",
+                    Context::ChatMention => "cancel mention",
+                    Context::ChatControls => "close settings",
+                    _ => "return to native pane",
+                },
+            },
         }
     }
 }
@@ -356,6 +391,12 @@ const SESSIONS: u32 = 1 << 14;
 const RECOVERY: u32 = 1 << 15;
 const IMAGE_VIEWER: u32 = 1 << 16;
 const MENU: u32 = 1 << 17;
+const CHAT: u32 = 1 << 18;
+const CHAT_CHANNELS: u32 = 1 << 19;
+const CHAT_MENTION: u32 = 1 << 20;
+const CHAT_CONTROLS: u32 = 1 << 21;
+const CHAT_VIEW: u32 = CHAT | CHAT_CHANNELS | CHAT_MENTION;
+const ALT: u16 = 4;
 const SHIFT: u16 = 1;
 const CTRL: u16 = 2;
 const LOCKS: u16 = 16 | 32;
@@ -404,6 +445,10 @@ impl Context {
             Self::Menu => MENU,
             Self::Details => DETAILS,
             Self::ClipboardConsent => CLIPBOARD_CONSENT,
+            Self::Chat => CHAT,
+            Self::ChatChannels => CHAT_CHANNELS,
+            Self::ChatMention => CHAT_MENTION,
+            Self::ChatControls => CHAT_CONTROLS,
         }
     }
 
@@ -428,6 +473,10 @@ impl Context {
             Self::Menu => "Context menu",
             Self::Details => "Details",
             Self::ClipboardConsent => "Clipboard permission",
+            Self::Chat => "Channel",
+            Self::ChatChannels => "Channels",
+            Self::ChatMention => "Mention an agent",
+            Self::ChatControls => "Channel settings",
         }
     }
 }
@@ -545,7 +594,7 @@ static BINDINGS: &[Binding] = &[
     text(SESSIONS, "s", A::StopSession, 6),
     selected(text(SIDEBAR, "R", A::RefreshCi, 6)),
     physical(
-        APPLICATION | SIDEBAR | SESSIONS | HISTORY | SEARCH | RESIZE,
+        APPLICATION | SIDEBAR | SESSIONS | HISTORY | SEARCH | RESIZE | CHAT_VIEW | CHAT_CONTROLS,
         "KeyB",
         CTRL,
         "b",
@@ -554,12 +603,175 @@ static BINDINGS: &[Binding] = &[
         false,
     ),
     physical(
-        APPLICATION | SIDEBAR | SESSIONS | HISTORY,
+        APPLICATION | SIDEBAR | SESSIONS | HISTORY | CHAT_VIEW | CHAT_CONTROLS,
         "Space",
         CTRL,
         "Space",
         A::ToggleSidebar,
         0,
+        false,
+    ),
+    physical(
+        CHAT,
+        "Enter",
+        0,
+        "Enter",
+        A::Chat(ChatAction::Send),
+        2,
+        false,
+    ),
+    physical(
+        CHAT | CHAT_MENTION,
+        "Enter",
+        ALT,
+        "Enter",
+        A::Chat(ChatAction::Newline),
+        3,
+        false,
+    ),
+    physical(
+        CHAT | CHAT_MENTION,
+        "Enter",
+        SHIFT,
+        "Enter",
+        A::Chat(ChatAction::Newline),
+        3,
+        false,
+    ),
+    physical(
+        CHAT | CHAT_MENTION,
+        "KeyJ",
+        ALT,
+        "j",
+        A::Chat(ChatAction::Newline),
+        3,
+        false,
+    ),
+    physical(
+        CHAT | CHAT_CHANNELS,
+        "Tab",
+        0,
+        "Tab",
+        A::Chat(ChatAction::ToggleList),
+        4,
+        false,
+    ),
+    physical(
+        CHAT_CHANNELS | CHAT_MENTION,
+        "Enter",
+        0,
+        "Enter",
+        A::Chat(ChatAction::Choose),
+        2,
+        false,
+    ),
+    physical(
+        CHAT_MENTION,
+        "Tab",
+        0,
+        "Tab",
+        A::Chat(ChatAction::Choose),
+        2,
+        false,
+    ),
+    physical(
+        CHAT_VIEW | CHAT_CONTROLS,
+        "Escape",
+        0,
+        "Esc",
+        A::Chat(ChatAction::Back),
+        5,
+        false,
+    ),
+    physical(
+        CHAT_VIEW,
+        "KeyN",
+        CTRL,
+        "n",
+        A::Chat(ChatAction::Create),
+        10,
+        false,
+    ),
+    physical(
+        CHAT_VIEW,
+        "KeyE",
+        CTRL,
+        "e",
+        A::Chat(ChatAction::Manage),
+        11,
+        false,
+    ),
+    physical(
+        CHAT_VIEW,
+        "KeyM",
+        ALT,
+        "m",
+        A::Chat(ChatAction::MarkRead),
+        12,
+        false,
+    ),
+    physical(
+        CHAT_VIEW,
+        "KeyR",
+        CTRL,
+        "r",
+        A::Chat(ChatAction::Retry),
+        2,
+        false,
+    ),
+    physical(
+        CHAT_VIEW,
+        "PageUp",
+        0,
+        "PgUp",
+        A::History(H::PageUp),
+        6,
+        true,
+    ),
+    physical(
+        CHAT_VIEW,
+        "PageDown",
+        0,
+        "PgDn",
+        A::History(H::PageDown),
+        7,
+        true,
+    ),
+    physical(CHAT_VIEW, "End", CTRL, "End", A::History(H::Live), 8, false),
+    physical(
+        CHAT_CHANNELS | CHAT_MENTION,
+        "ArrowUp",
+        0,
+        "↑",
+        A::Navigate(N::Previous),
+        6,
+        true,
+    ),
+    physical(
+        CHAT_CHANNELS | CHAT_MENTION,
+        "ArrowDown",
+        0,
+        "↓",
+        A::Navigate(N::Next),
+        6,
+        true,
+    ),
+    physical(
+        CHAT_CHANNELS,
+        "Home",
+        0,
+        "Home",
+        A::Navigate(N::First),
+        8,
+        false,
+    ),
+    physical(
+        CHAT_CHANNELS,
+        "End",
+        0,
+        "End",
+        A::Navigate(N::Last),
+        9,
         false,
     ),
     physical(

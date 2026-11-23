@@ -1091,9 +1091,9 @@ Finder's `pr:`, `ci:` and `ticket:` search filters remain unsupported.
 `Ctrl-Space` enters the all-workspace sidebar. Selection is local:
 browsing does not change the active application or attach hidden terminal views.
 Arrows or `j`/`k` move, Home/End and PageUp/PageDown reveal other rows, Left/Right
-fold or unfold a workspace or window, and Enter activates the selected workspace,
-window or terminal. Esc returns to the original application. The mouse supports
-activation, wheel scrolling and double-click folding.
+fold or unfold a workspace or window. Enter opens a workspace's channels or
+activates the selected window or pane. The mouse selects the same targets;
+the workspace disclosure arrow only folds the tree.
 
 Right-click a sidebar row for its available actions. Open, Rename and Close use
 the same actions as keyboard navigation; Close still asks for confirmation.
@@ -1370,6 +1370,44 @@ and differential output without backend refreshes or graphics preparation.
 A command palette remains outside the current main-parity pass.
 Forge/PR/CI card data and refresh use the daemon-owned metadata contract;
 the frontend does not query providers or invent those facts.
+
+### Workspace channels
+
+Click a workspace name or select it in the sidebar and press Enter. `#desk`
+comes first, then `#team`, named channels and private agent threads. Selecting a
+pane or pressing Esc from the composer returns to the native application without
+closing its process. Local and SSH chats use the selected session's own channels.
+
+Tab moves between the composer and channel list. Use arrows and Enter to choose
+a channel. Narrow terminals show one section at a time. Typing and paste stay
+in chat even after clicking or scrolling history, unless the sidebar or a dialog
+owns focus. Each channel keeps its unsent draft. Enter sends, Alt-j adds a line
+(Shift-Enter also works on terminals that report it), and multiline paste never
+sends by itself. Right-click a message to reply to it. Pending and rejected sends
+are not shown as committed messages. Ctrl-r after an uncertain send retries
+only the exact original post and key.
+
+Type `@` in ordinary text and choose an agent from the channel's current roster.
+The roster shows separate entries for duplicate names. Code, quotes and pasted
+`@` text don't select a recipient. The user post includes the selected launch
+and native binding so replacing or rebinding an agent cannot redirect the send.
+The composer previews the channel's wake rule: `#desk` starts with addressed
+agents or all if none are selected; `#team` starts with all eligible agents.
+Ctrl-n creates a channel; Ctrl-e changes wake policy, attention or membership.
+Private direct threads cannot be posted to or edited. Read-only clients can
+browse but cannot send, edit channels or advance the user's read position.
+
+PageUp/PageDown or the mouse wheel scroll conversation history. Loading older
+pages keeps the visible message anchored. Ctrl-End returns to the latest posts.
+Timestamps are UTC. Messages render lightweight CommonMark with no terminal
+escapes or network previews. Typed images use Kitty graphics when confirmed;
+other terminals show their labels.
+
+`!` marks unread attention on the channel and owning workspace. Only the
+backend sets that flag. Viewing a different channel doesn't clear it. The
+focused TUI marks through the newest message it has rendered; Alt-m explicitly
+marks the whole selected channel read. A desktop alert, when supported, opens
+the original channel message rather than a pane or the current tail.
 
 ### Workspace, window and pane controls
 

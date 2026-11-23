@@ -324,6 +324,14 @@ Each admitted session has one cancellable observer outside the management-worker
 
 Only a positively observed, locally focused application pane with matching current source identity suppresses an alert. Logical session focus is not physical evidence. Click navigation requires confirmed activation reporting and closure support; otherwise the terminal may provide focus-only or non-actionable presentation according to its capabilities. Activation checks attachment generation, host/session runtime, pane ownership, process birth, launch and binding generation against current published metadata, then uses ordinary client navigation. Retired sources and blocking dialogs produce an honest local toast, not input injection, process creation or deferred automatic navigation.
 
+Workspace channel questions and reports use the same OSC 99 presentation. A
+live catalog update carries the original message reference, not its body or
+attachments. Nearby reports in the same channel coalesce into one alert for
+the newest report. Clicking a channel alert opens its original message, and
+suppression requires that message to be rendered in the physically focused
+channel view. Channel unread attention is durable even when the alert can't
+be shown. New attachments and catalog resets don't replay old alerts.
+
 Unconfirmed/unsupported OSC 99 means no OS presentation attempt; a UI toast is not an OS delivery receipt. OSC 99 has no provider-acceptance/display acknowledgement, so successful writes remain unknown outcomes. Multiple TUI instances may independently notify, and the OS may group or discard attempts. No direct native fallback or new dependency is installed: [notify-rust 4.19](https://docs.rs/notify-rust/4.19.0/notify_rust/) was evaluated, but a TUI-local native provider can target the wrong machine when the TUI itself is SSH-hosted. The selected terminal path preserves viewing-machine ownership.
 
 Actual incremental-debug acceptance with Kitty 0.49.2, Dunst 1.13.2, private D-Bus/Xvfb and real loopback SSH is retained under `target/smoke/desktop-notifications/integrated-actual-4/`. It covers non-replaying fresh attachments, independent TUI attempts, physical popup activation to both local and remote sources, local focus suppression, retired-source rejection and device/input separation. `unconfirmed-actual-2/` proves real xterm leaves OSC 99 unconfirmed without emitting unsupported notifications or breaking ordinary pane input. Screenshots were inspected; owned cleanup had no survivors. Coordinated workspace tests (1,339 passed, 19 ignored), strict all-target Clippy, formatting and warnings-denied rustdoc passed for the joined source.

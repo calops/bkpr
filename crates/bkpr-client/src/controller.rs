@@ -1116,7 +1116,7 @@ fn native_row_label(
             } else {
                 0
             };
-            label.push_str("● ");
+            label.push_str(if collapsed { "●▸" } else { "●▾" });
             SidebarCaptionPart::fit(&workspace.name, available.saturating_sub(suffix))
                 .push_to(&mut label);
             if badge {
@@ -1366,6 +1366,7 @@ fn render_chrome(
         let plate = highlighted
             && tree_popup.is_some_and(|(_, background)| matches!(background, ColorSource::Rgb(_)));
         let selected = tree.active && entry.target.is_some() && entry.target == tree.cursor;
+        let attention = row_width >= 3 && tree.channel_attention(entry);
         let (mut label, marker_x) = match entry.kind {
             crate::tree::Kind::Session => (
                 session_caption(
@@ -1389,7 +1390,7 @@ fn render_chrome(
                         projects: tree.project_slots(entry.owner),
                         entry,
                         known,
-                        width: row_width,
+                        width: row_width.saturating_sub(u16::from(attention) * 2),
                         row,
                         highlighted,
                     },
@@ -1413,7 +1414,13 @@ fn render_chrome(
             cursor.x = marker_x;
             cursor.y = row;
         }
-        let row_selected = (selected || focused_tree_pane(entry, session, active)) && !plate;
+        let selected_chat = entry.owner == active
+            && session.window.is_none()
+            && matches!(&entry.target, Some(target)
+                if matches!(&target.node, crate::tree::Node::Native(SidebarTarget::Workspace(id))
+                    if session.workspace.as_ref() == Some(id)));
+        let row_selected =
+            (selected || selected_chat || focused_tree_pane(entry, session, active)) && !plate;
         if row_selected {
             let columns = unicode_width::UnicodeWidthStr::width(label.as_str());
             label.extend(std::iter::repeat_n(
@@ -1428,6 +1435,9 @@ fn render_chrome(
             label,
             row_selected,
         ));
+        if attention {
+            lines.push(line(row_width - 1, row, 1, "!", row_selected));
+        }
         if let Some(thumb) = &rows.scrollbar {
             let glyph = if thumb.contains(&(index as u16)) {
                 "┃"
@@ -1632,6 +1642,17 @@ pub(crate) fn theme_tree_chrome(
             rect: row_rect,
             role,
         });
+        if row_width >= 3 && tree.channel_attention(entry) {
+            spans.push(RoleSpan {
+                rect: Rect {
+                    x: row_width - 1,
+                    y: row,
+                    width: 1,
+                    height: 1,
+                },
+                role: Role::Warning,
+            });
+        }
         if let Some(background) = background {
             backgrounds.push(BackgroundSpan {
                 rect: row_rect,

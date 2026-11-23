@@ -11,6 +11,28 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+const REPORT_WINDOW: Duration = Duration::from_millis(350);
+const CHANNEL_ALERT_TTL: Duration = Duration::from_secs(300);
+
+pub(crate) struct ChannelTarget {
+    pub workspace: String,
+    pub channel: ChannelId,
+    pub attention: ChannelAttention,
+}
+
+pub(crate) enum Source {
+    Pane(NotificationSource),
+    Channel(ChannelTarget),
+}
+
+pub(crate) struct QueuedChannel {
+    pub owner: Owner,
+    pub target: ChannelTarget,
+    expires: Instant,
+    ready: Instant,
+    count: u32,
+}
+
 /// Display labels resolved through the notification's original session and launch.
 #[derive(Default)]
 pub(crate) struct Context<'a> {
@@ -73,6 +95,7 @@ pub(crate) struct Target {
 #[derive(Default)]
 pub(crate) struct Desktop {
     targets: VecDeque<Target>,
+    channels: VecDeque<QueuedChannel>,
 }
 
 impl Desktop {
@@ -100,12 +123,11 @@ impl Desktop {
         if remaining == 0 {
             return Ok(());
         }
-        let Some(capabilities) = terminal
-            .notification_capabilities()
-            .filter(|caps| caps.title)
-        else {
-            return Ok(());
-        };
+        let expires = now
+            .checked_add(Duration::from_millis(
+                remaining.min(u128::from(u64::MAX)) as u64
+            ))
+            .unwrap_or(now);
         let state = match (record.kind, record.attention_kind.as_deref()) {
             (NotificationKind::Attention, Some("permission")) => "Permission needed",
             (NotificationKind::Attention, Some("question")) => "Question waiting",
@@ -119,7 +141,7 @@ impl Desktop {
         let context = context.description(&source);
         let compact;
         let (title, body) = if capabilities.body {
-            (title.as_str(), context.as_str())
+            (title.as_str(), context)
         } else {
             compact = format!("{title} · {context}");
             (compact.as_str(), "")
@@ -131,7 +153,7 @@ impl Desktop {
             (false, true) => notification::Activation::Focus,
             (false, false) => notification::Activation::None,
         };
-        let id = notification::Id::new();
+        let id = target.id;
         let evicted = terminal.show_notification(
             out,
             &notification::Notification {
@@ -197,8 +219,19 @@ impl Desktop {
 
     /// Earliest retained resource expiry for the existing event-loop deadline.
     pub fn deadline(&self) -> Option<Instant> {
-        self.targets.iter().map(|target| target.expires).min()
+        self.targets
+            .iter()
+            .map(|target| target.expires)
+            .chain(self.channels.iter().map(|alert| alert.ready))
+            .min()
     }
+}
+
+fn epoch_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
 }
 
 /// Match owner, host incarnation and runtime, independently of display names.

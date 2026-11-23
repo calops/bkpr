@@ -14,6 +14,7 @@
 * **channels:** route private messages through the channel engine and preserve private history after acknowledgement and session restart ([#76](https://github.com/calops/bkpr/issues/76))
 * **channels:** expose a resumable session catalog and unread attention for local and SSH attachments ([#79](https://github.com/calops/bkpr/issues/79))
 * **channels:** route questions and reports through host notifications without sending chat bodies
+* **tui:** open workspace channels with drafts, exact mentions and unread attention without replacing native panes ([#77](https://github.com/calops/bkpr/issues/77))
 
 ### Bug Fixes
 

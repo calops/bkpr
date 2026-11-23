@@ -2162,7 +2162,9 @@ fn user_mention<'a>(
     mention: &ParticipantId,
     bindings: &[ChannelMentionBinding],
 ) -> Option<&'a Participant> {
-    let binding = bindings.iter().find(|binding| binding.participant_id == *mention);
+    let binding = bindings
+        .iter()
+        .find(|binding| binding.participant_id == *mention);
     if *mention == authority.actor.id {
         return binding.is_none().then_some(&authority.actor);
     }

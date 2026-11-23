@@ -105,6 +105,7 @@ pub(crate) struct Tree {
     navigation: Navigation<Target, TreeRow>,
     sessions: Vec<Arc<Session>>,
     collapsed: HashSet<Target>,
+    channel_attention: HashMap<Owner, HashSet<String>>,
     projects: ProjectColors,
     pane_rows: HashMap<Owner, HashMap<String, usize>>,
     session_roots: bool,
@@ -126,6 +127,26 @@ impl Tree {
     }
     pub fn session(&self, owner: Owner) -> Option<&Arc<Session>> {
         self.sessions.iter().find(|session| session.owner == owner)
+    }
+    pub fn set_channel_attention(&mut self, owner: Owner, workspaces: HashSet<String>) {
+        if workspaces.is_empty() {
+            self.channel_attention.remove(&owner);
+        } else {
+            self.channel_attention.insert(owner, workspaces);
+        }
+    }
+
+    pub fn channel_attention(&self, row: &TreeRow) -> bool {
+        let Some(Target {
+            node: Node::Native(SidebarTarget::Workspace(id)),
+            ..
+        }) = &row.target
+        else {
+            return false;
+        };
+        self.channel_attention
+            .get(&row.owner)
+            .is_some_and(|workspaces| workspaces.contains(id))
     }
     pub fn sessions_len(&self) -> usize {
         self.sessions.len()
@@ -208,6 +229,10 @@ impl Tree {
                 a.project_host != b.project_host || !Arc::ptr_eq(&a.registry, &b.registry)
             });
         self.sessions = sessions;
+        if topology_changed {
+            self.channel_attention
+                .retain(|owner, _| self.sessions.iter().any(|session| session.owner == *owner));
+        }
         if registry_changed {
             self.projects.reconcile(
                 self.sessions

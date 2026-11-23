@@ -6,7 +6,8 @@ use bkpr_protocol::channels::{
 };
 use bkpr_protocol::{Cursor, CursorShape, KeyAction, KeyEvent, Size};
 use bkpr_tui_framework::{
-    Navigation, NavigationRow, Rect, Role, RoleSpan, TextInput, Theme, UiSurface, text_width, window,
+    Navigation, NavigationRow, Rect, Role, RoleSpan, TextInput, Theme, UiSurface, text_width,
+    window,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use termwiz::input::{MouseButtons, MouseEvent};
@@ -210,7 +211,10 @@ impl Editor {
             return None;
         }
         if let Some(after) = self.saved_fetch.take() {
-            let channel_id = self.channel_id.clone().expect("saved members need a channel");
+            let channel_id = self
+                .channel_id
+                .clone()
+                .expect("saved members need a channel");
             self.in_flight = Some((Read::Saved, after.clone()));
             return Some(ChannelRequest::ListExplicitMembers {
                 channel_id,
@@ -237,9 +241,14 @@ impl Editor {
             return;
         };
         match (read, result) {
-            (Read::Saved, Ok(ChannelResponse::ExplicitMembers { members, next_after }))
-                if page_advances(members.iter(), after.as_ref(), next_after.as_ref())
-                    && self.saved.len() + members.len() <= MAX_MEMBERS =>
+            (
+                Read::Saved,
+                Ok(ChannelResponse::ExplicitMembers {
+                    members,
+                    next_after,
+                }),
+            ) if page_advances(members.iter(), after.as_ref(), next_after.as_ref())
+                && self.saved.len() + members.len() <= MAX_MEMBERS =>
             {
                 self.saved.extend(members);
                 if let Some(next) = next_after {
@@ -248,17 +257,27 @@ impl Editor {
                     self.selected.clone_from(&self.saved);
                 }
             }
-            (Read::Roster, Ok(ChannelResponse::UserRoster { participants, next_after }))
-                if participants.len() <= usize::from(MAX_PAGE_LIMIT)
-                    && page_advances(
-                        participants.iter().map(|entry| &entry.participant.id),
-                        after.as_ref(),
-                        next_after.as_ref(),
-                    ) =>
+            (
+                Read::Roster,
+                Ok(ChannelResponse::UserRoster {
+                    participants,
+                    next_after,
+                }),
+            ) if participants.len() <= usize::from(MAX_PAGE_LIMIT)
+                && page_advances(
+                    participants.iter().map(|entry| &entry.participant.id),
+                    after.as_ref(),
+                    next_after.as_ref(),
+                ) =>
             {
-                self.roster = participants.into_iter().map(|entry| entry.participant).collect();
+                self.roster = participants
+                    .into_iter()
+                    .map(|entry| entry.participant)
+                    .collect();
                 for participant in &self.roster {
-                    if self.saved.contains(&participant.id) || self.selected.contains(&participant.id) {
+                    if self.saved.contains(&participant.id)
+                        || self.selected.contains(&participant.id)
+                    {
                         self.selected_labels
                             .insert(participant.id.clone(), participant.display_name.clone());
                     }
@@ -274,7 +293,9 @@ impl Editor {
                 }
             }
             (read, result) => {
-                let error = result.err().unwrap_or_else(|| "Unexpected channel roster page".into());
+                let error = result
+                    .err()
+                    .unwrap_or_else(|| "Unexpected channel roster page".into());
                 let fetch = match read {
                     Read::Saved => &mut self.saved_fetch,
                     Read::Roster => &mut self.roster_fetch,
@@ -295,7 +316,8 @@ impl Editor {
         match result {
             EditorResult::Rejected(reason) => self.error = Some(reason.into()),
             EditorResult::Unknown(reason) => {
-                self.submit = SubmitState::Unknown(format!("Channel write outcome unknown: {reason}"));
+                self.submit =
+                    SubmitState::Unknown(format!("Channel write outcome unknown: {reason}"));
             }
             EditorResult::Applied(summary)
                 if summary.workspace_id == self.workspace_id
@@ -315,7 +337,8 @@ impl Editor {
                             self.selected.clear();
                         }
                         self.saved.clone_from(&self.selected);
-                        self.selected_labels.retain(|id, _| self.selected.contains(id));
+                        self.selected_labels
+                            .retain(|id, _| self.selected.contains(id));
                     }
                 }
             }
@@ -397,7 +420,11 @@ impl Editor {
             self.nav.scroll_by(if up { -3 } else { 3 });
             return EditorAction::None;
         }
-        let target = if inside { self.painted_hits[index].as_ref() } else { None };
+        let target = if inside {
+            self.painted_hits[index].as_ref()
+        } else {
+            None
+        };
         self.nav.hover(target);
         if left_pressed
             && let Some(field) = target
@@ -422,8 +449,7 @@ impl Editor {
     }
 
     fn saved_ready(&self) -> bool {
-        matches!(self.saved_fetch, Fetch::Idle)
-            && !matches!(self.in_flight, Some((Read::Saved, _)))
+        matches!(self.saved_fetch, Fetch::Idle) && !matches!(self.in_flight, Some((Read::Saved, _)))
     }
 
     fn membership_dirty(&self) -> bool {
@@ -443,7 +469,11 @@ impl Editor {
             fields.clone().next_back()
         };
         if self.nav.cursor.as_ref() == edge {
-            let other = if previous { fields.next_back() } else { fields.next() };
+            let other = if previous {
+                fields.next_back()
+            } else {
+                fields.next()
+            };
             if let Some(field) = other {
                 self.nav.select(field.clone());
             }
@@ -477,7 +507,9 @@ impl Editor {
             Field::AgentWake => {
                 self.settings.agent_wake = cycle_wake(self.settings.agent_wake, direction);
             }
-            Field::Questions => self.settings.attention_questions = !self.settings.attention_questions,
+            Field::Questions => {
+                self.settings.attention_questions = !self.settings.attention_questions
+            }
             Field::Reports => self.settings.attention_reports = !self.settings.attention_reports,
             Field::Mode => {
                 self.membership = match self.membership {
@@ -486,7 +518,9 @@ impl Editor {
                 };
                 self.rebuild_rows();
             }
-            Field::Member(id) if self.membership == MembershipMode::Explicit && self.saved_ready() => {
+            Field::Member(id)
+                if self.membership == MembershipMode::Explicit && self.saved_ready() =>
+            {
                 if self.selected.remove(&id) {
                     if !self.saved.contains(&id) {
                         self.selected_labels.remove(&id);
@@ -495,10 +529,13 @@ impl Editor {
                         }
                     }
                 } else if self.selected.len() == MAX_MEMBERS {
-                    self.error = Some(format!("At most {MAX_MEMBERS} explicit members are allowed"));
+                    self.error = Some(format!(
+                        "At most {MAX_MEMBERS} explicit members are allowed"
+                    ));
                     return EditorAction::None;
-                } else if let Some(label) =
-                    self.roster_member(&id).map(|participant| participant.display_name.clone())
+                } else if let Some(label) = self
+                    .roster_member(&id)
+                    .map(|participant| participant.display_name.clone())
                 {
                     self.selected_labels.insert(id.clone(), label);
                     self.selected.insert(id);
@@ -588,22 +625,37 @@ impl Editor {
         }
         rows.push(Row::Heading("Wake & attention"));
         rows.extend(
-            [Field::UserWake, Field::AgentWake, Field::Questions, Field::Reports].map(Row::Control),
+            [
+                Field::UserWake,
+                Field::AgentWake,
+                Field::Questions,
+                Field::Reports,
+            ]
+            .map(Row::Control),
         );
         if !create {
             rows.push(Row::Control(Field::SaveSettings));
         }
         rows.push(Row::Heading("Membership"));
         rows.extend(
-            [Field::Mode, if create { Field::Create } else { Field::SaveMembership }]
-                .map(Row::Control),
+            [
+                Field::Mode,
+                if create {
+                    Field::Create
+                } else {
+                    Field::SaveMembership
+                },
+            ]
+            .map(Row::Control),
         );
         if matches!(self.saved_fetch, Fetch::Failed(..)) {
             rows.push(Row::Control(Field::RetrySaved));
         }
         if self.membership == MembershipMode::Explicit && saved_ready {
             let outside = self.saved.union(&self.selected).filter(|id| {
-                self.roster.binary_search_by(|participant| participant.id.cmp(id)).is_err()
+                self.roster
+                    .binary_search_by(|participant| participant.id.cmp(id))
+                    .is_err()
             });
             for (index, id) in outside.enumerate() {
                 if index == 0 {
@@ -612,9 +664,11 @@ impl Editor {
                 rows.push(Row::Control(Field::Member(id.clone())));
             }
             rows.push(Row::Heading("Current workspace participants"));
-            rows.extend(self.roster.iter().map(|participant| {
-                Row::Control(Field::Member(participant.id.clone()))
-            }));
+            rows.extend(
+                self.roster
+                    .iter()
+                    .map(|participant| Row::Control(Field::Member(participant.id.clone()))),
+            );
             if matches!(self.roster_fetch, Fetch::Failed(..)) {
                 rows.push(Row::Control(Field::RetryRoster));
             }
@@ -626,7 +680,10 @@ impl Editor {
             }
         }
         rows.push(Row::Control(Field::Close));
-        if !rows.iter().any(|row| row.target().is_some() && row.target() == self.nav.cursor.as_ref()) {
+        if !rows
+            .iter()
+            .any(|row| row.target().is_some() && row.target() == self.nav.cursor.as_ref())
+        {
             let field = if self.nav.cursor.is_some() {
                 Field::Mode
             } else if create {
@@ -641,7 +698,9 @@ impl Editor {
 
     fn status(&self, writable: bool) -> Option<(&str, Role)> {
         match &self.submit {
-            SubmitState::Pending(_) => return Some(("Waiting for channel write receipt", Role::Info)),
+            SubmitState::Pending(_) => {
+                return Some(("Waiting for channel write receipt", Role::Info));
+            }
             SubmitState::Unknown(reason) => return Some((reason, Role::Warning)),
             SubmitState::Created => return Some(("Channel created", Role::Success)),
             SubmitState::Editable => {}
@@ -690,7 +749,12 @@ impl Editor {
         let mut spans = Vec::with_capacity(usize::from(size.rows));
         let mut cursor = None;
         let mut line = |y, label, selected, role| {
-            let rect = Rect { x: 0, y, width: size.cols, height: 1 };
+            let rect = Rect {
+                x: 0,
+                y,
+                width: size.cols,
+                height: 1,
+            };
             lines.push((rect, label, selected));
             if role != Role::Panel {
                 spans.push(RoleSpan { rect, role });
@@ -743,7 +807,9 @@ impl Editor {
                 *hit = Some(field.clone());
             }
         }
-        if status_rows > 0 && let Some((message, role)) = self.status(writable) {
+        if status_rows > 0
+            && let Some((message, role)) = self.status(writable)
+        {
             line(size.rows - 1, message.into(), false, role);
         }
         surface.paint(size, lines, cursor);
@@ -762,11 +828,17 @@ impl Editor {
                 editable,
             ),
             Field::Questions => (
-                format!("{} Question attention", check(self.settings.attention_questions)),
+                format!(
+                    "{} Question attention",
+                    check(self.settings.attention_questions)
+                ),
                 editable,
             ),
             Field::Reports => (
-                format!("{} Report attention", check(self.settings.attention_reports)),
+                format!(
+                    "{} Report attention",
+                    check(self.settings.attention_reports)
+                ),
                 editable,
             ),
             Field::Mode => (
@@ -843,7 +915,13 @@ fn check(selected: bool) -> &'static str {
     if selected { "[x]" } else { "[ ]" }
 }
 
-fn member_label(selected: bool, ordinal: usize, label: &str, id: &ParticipantId, width: u16) -> String {
+fn member_label(
+    selected: bool,
+    ordinal: usize,
+    label: &str,
+    id: &ParticipantId,
+    width: u16,
+) -> String {
     let prefix = format!("{} {ordinal} ", check(selected));
     let room = width.saturating_sub(prefix.len() as u16);
     if room < 12 {
@@ -902,7 +980,13 @@ mod tests {
     }
 
     fn focus(editor: &mut Editor, field: Field) {
-        assert!(editor.nav.rows.iter().any(|row| row.target() == Some(&field)));
+        assert!(
+            editor
+                .nav
+                .rows
+                .iter()
+                .any(|row| row.target() == Some(&field))
+        );
         editor.nav.select(field);
     }
 
@@ -982,7 +1066,12 @@ mod tests {
         );
         assert!(editor.take_observation().is_none());
         editor.observe(Ok(roster(&["agent-a", "agent-b"], None)));
-        let size = Size { cols: 24, rows: 20 };
+        let size = Size {
+            cols: 24,
+            rows: 20,
+            cell_width: 8,
+            cell_height: 16,
+        };
         editor.paint(&mut UiSurface::new(size), size, &Theme::default(), true);
         click(&mut editor, Field::Member(id("agent-b")));
         let EditorAction::Submit(request) = enter(&mut editor, Field::Create) else {
@@ -1003,9 +1092,15 @@ mod tests {
                 },
             }
         );
-        assert!(matches!(enter(&mut editor, Field::Create), EditorAction::None));
+        assert!(matches!(
+            enter(&mut editor, Field::Create),
+            EditorAction::None
+        ));
         editor.finish(EditorResult::Applied(&summary(MembershipMode::Explicit)));
-        assert!(matches!(enter(&mut editor, Field::Create), EditorAction::None));
+        assert!(matches!(
+            enter(&mut editor, Field::Create),
+            EditorAction::None
+        ));
     }
 
     #[test]
@@ -1045,7 +1140,10 @@ mod tests {
             members: vec![id("inactive-remove")],
             next_after: None,
         }));
-        assert!(matches!(editor.take_observation(), Some(ChannelRequest::UserRoster { .. })));
+        assert!(matches!(
+            editor.take_observation(),
+            Some(ChannelRequest::UserRoster { .. })
+        ));
         editor.observe(Ok(roster(&["current"], None)));
         enter(&mut editor, Field::Member(id("inactive-remove")));
         enter(&mut editor, Field::Member(id("current")));
@@ -1076,7 +1174,12 @@ mod tests {
         enter(&mut editor, Field::Mode);
         assert!(editor.take_observation().is_some());
         editor.observe(Ok(roster(&["agent-a"], Some("agent-a"))));
-        let size = Size { cols: 22, rows: 20 };
+        let size = Size {
+            cols: 22,
+            rows: 20,
+            cell_width: 8,
+            cell_height: 16,
+        };
         editor.paint(&mut UiSurface::new(size), size, &Theme::default(), true);
         enter(&mut editor, Field::NextRoster(id("agent-a")));
         assert!(matches!(
@@ -1096,12 +1199,27 @@ mod tests {
 
         let mut editor = Editor::create("exact-workspace".into());
         editor.paste("Review");
-        assert!(matches!(editor.key(&event("Enter"), false), EditorAction::None));
-        assert!(matches!(editor.key(&event("Enter"), true), EditorAction::Submit(_)));
+        assert!(matches!(
+            editor.key(&event("Enter"), false),
+            EditorAction::None
+        ));
+        assert!(matches!(
+            editor.key(&event("Enter"), true),
+            EditorAction::Submit(_)
+        ));
         editor.finish(EditorResult::Rejected("No longer allowed"));
-        assert!(matches!(editor.key(&event("Enter"), true), EditorAction::Submit(_)));
+        assert!(matches!(
+            editor.key(&event("Enter"), true),
+            EditorAction::Submit(_)
+        ));
         editor.finish(EditorResult::Unknown("connection lost"));
-        assert!(matches!(editor.key(&event("Enter"), true), EditorAction::None));
-        assert!(matches!(editor.key(&event("Escape"), true), EditorAction::Close));
+        assert!(matches!(
+            editor.key(&event("Enter"), true),
+            EditorAction::None
+        ));
+        assert!(matches!(
+            editor.key(&event("Escape"), true),
+            EditorAction::Close
+        ));
     }
 }

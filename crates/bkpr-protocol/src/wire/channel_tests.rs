@@ -475,7 +475,19 @@ fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
         ChannelResponse::CatalogChanges {
             cursor: catalog_cursor(),
             changes: vec![
-                ChannelCatalogChange::Upsert { channel: summary() },
+                ChannelCatalogChange::Upsert {
+                    channel: summary(),
+                    attention: None,
+                },
+                ChannelCatalogChange::Upsert {
+                    channel: summary(),
+                    attention: Some(ChannelAttention {
+                        message_id: message_id(),
+                        sequence: 6,
+                        intent: PostIntent::Report,
+                        posted_at_ms: 77,
+                    }),
+                },
                 ChannelCatalogChange::WorkspaceClosed {
                     workspace_id: "closed-workspace".into(),
                 },
@@ -837,7 +849,7 @@ fn native_fenced_user_post_rejects_missing_generation_without_becoming_legacy_po
     let bindings = b.create_vector([binding]);
     let post = g::ChannelRequestPostUser::create(&mut b, channel, post, bindings);
     let request = g::ChannelRequest::create_channel_request_post_user(&mut b, post);
-    assert_eq!(request.tag(), 16);
+    assert_eq!(request.tag(), 18);
     let channels = g::OperationChannels::create(&mut b, request);
     let operation = g::Operation::create_operation_channels(&mut b, channels);
     let root = g::Request::create(&mut b, PROTOCOL_VERSION, operation);

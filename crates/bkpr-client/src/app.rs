@@ -535,7 +535,7 @@ struct App {
     backgrounded: bool,
     notification_source: Option<String>,
     tree: Arc<Mutex<Tree>>,
-    tree_press: Option<TreeTarget>,
+    tree_press: Option<(TreeTarget, bool)>,
     sidebar_menu: Option<SidebarMenu>,
     sidebar_target: Option<TreeTarget>,
     sidebar_backend_available: bool,
@@ -1084,14 +1084,24 @@ impl App {
         if action == Action::ShowDiagnostics {
             return self.latest_diagnostic().is_some();
         }
+        if let Action::Chat(action) = action {
+            return self.chat.supports(action, self.options.read_only);
+        }
         if self.chat.visible()
             && !self.state.sidebar.active
             && matches!(
                 action,
-                Action::StartHistory | Action::StartSearch | Action::StartResize
-                    | Action::CopySelection | Action::ProjectDetails | Action::ReopenPane
-                    | Action::SplitHorizontal | Action::SplitVertical
-                    | Action::RemovePaneFromLayout | Action::MovePane(_) | Action::FocusPane(_)
+                Action::StartHistory
+                    | Action::StartSearch
+                    | Action::StartResize
+                    | Action::CopySelection
+                    | Action::ProjectDetails
+                    | Action::ReopenPane
+                    | Action::SplitHorizontal
+                    | Action::SplitVertical
+                    | Action::RemovePaneFromLayout
+                    | Action::MovePane(_)
+                    | Action::FocusPane(_)
             )
         {
             return false;
@@ -1295,7 +1305,7 @@ impl App {
         {
             return Context::Sessions;
         }
-        ContextState {
+        let context = ContextState {
             modal,
             resizing: self.resize_capturing() && !self.state.prefix,
             prefix: self.state.prefix,
@@ -1307,7 +1317,12 @@ impl App {
                 .then_some(self.sidebar_target.is_some()),
             history: self.focused_history(),
         }
-        .context()
+        .context();
+        if context == Context::Application && self.chat.visible() {
+            self.chat.context()
+        } else {
+            context
+        }
     }
     fn refresh_guide(&mut self, size: Size) {
         let context = self.guide_context();
@@ -1389,8 +1404,11 @@ impl App {
     }
 
     fn local_repeat(&self, event: &KeyEvent) -> bool {
-        if self.chat.visible() && !self.state.prefix && !self.state.sidebar.active
-            && self.state.form.is_none() && !self.picker_open()
+        if self.chat.visible()
+            && !self.state.prefix
+            && !self.state.sidebar.active
+            && self.state.form.is_none()
+            && !self.picker_open()
         {
             return true;
         }
@@ -1605,19 +1623,21 @@ impl App {
         if let Err(error) = self.jobs.submit(key.clone(), move || {
             Ok(Background::Chat(Box::new(job.run(&endpoint))))
         }) {
-            self.complete_chat(&key, Err(error));
+            self.complete_chat(&key, Err(error), false);
         }
     }
 
-    fn complete_chat(&mut self, key: &str, result: Result<chat::Completion>) {
+    fn complete_chat(&mut self, key: &str, result: Result<chat::Completion>, admitted: bool) {
         self.chat.redraw();
-        if let Some((summary, error)) = self.chat.complete(key, result) {
+        if let Some((summary, error)) = self.chat.complete(key, result, admitted) {
             self.report_failure(&summary, &error);
         }
     }
 
     fn schedule_chat(&mut self) {
-        if !self.jobs.is_full() && let Some((kind, job)) = self.chat.next_job(self.options.read_only) {
+        if !self.jobs.is_full()
+            && let Some((kind, job)) = self.chat.next_job(self.options.read_only)
+        {
             self.submit_chat(kind, job);
         }
     }
@@ -1794,7 +1814,7 @@ impl App {
                     Background::Chat(result) => *result,
                     _ => bail!("chat job returned an unrelated completion"),
                 });
-                self.complete_chat(&completion.key, result);
+                self.complete_chat(&completion.key, result, true);
                 continue;
             }
             if completion.key.starts_with("recovery:") {
@@ -5008,7 +5028,7 @@ impl App {
         }
         if matches!(&captured, Some(PointerCapture::Ui)) && !wheel {
             if action == MouseAction::Release
-                && let Some(target) = self.tree_press.take()
+                && let Some((target, disclosure)) = self.tree_press.take()
                 && mouse.x < self.screen_geometry(size).0.width
                 && workspace_hits
                     .iter()
@@ -5016,17 +5036,27 @@ impl App {
             {
                 let accepted = {
                     let mut tree = self.tree.lock().unwrap();
-                    if tree
+                    let target_row = tree
                         .rows
-                        .iter()
-                        .any(|row| row.target.as_ref() == Some(&target))
+                        .get(tree.scroll + usize::from(mouse.y.saturating_sub(2)));
+                    if let Some(row) = target_row.filter(|row| row.target.as_ref() == Some(&target))
                     {
-                        tree.enter();
-                        let double = tree.click(target.clone(), Instant::now());
-                        if double {
-                            tree.fold(None);
+                        let workspace =
+                            matches!(&target.node, TreeNode::Native(SidebarTarget::Workspace(_)));
+                        let released_disclosure = workspace && mouse.x == row.icon_column() + 1;
+                        if disclosure != released_disclosure {
+                            false
+                        } else if disclosure {
+                            tree.toggle_menu_fold(target.clone());
+                            false
+                        } else {
+                            tree.enter();
+                            let double = tree.click(target.clone(), Instant::now());
+                            if double && !workspace {
+                                tree.fold(None);
+                            }
+                            true
                         }
-                        true
                     } else {
                         false
                     }
@@ -5088,7 +5118,19 @@ impl App {
                 && action == MouseAction::Press
                 && captured.is_none()
             {
-                self.tree_press = target.cloned();
+                self.tree_press = target.map(|target| {
+                    let tree = self.tree.lock().unwrap();
+                    let disclosure =
+                        matches!(&target.node, TreeNode::Native(SidebarTarget::Workspace(_)))
+                            && tree
+                                .rows
+                                .get(tree.scroll + usize::from(mouse.y.saturating_sub(2)))
+                                .is_some_and(|row| {
+                                    row.target.as_ref() == Some(target)
+                                        && mouse.x == row.icon_column() + 1
+                                });
+                    (target.clone(), disclosure)
+                });
             }
             self.synchronize_tree_focus();
             return Ok(());
@@ -5096,7 +5138,8 @@ impl App {
         if origin.is_none() {
             self.clear_tree_pointer();
         }
-        if origin.is_none() && self.chat.visible()
+        if origin.is_none()
+            && self.chat.visible()
             && hits.hit_test(mouse.x, mouse.y) == Some("ui:chat")
         {
             let rect = self.screen_geometry(size).1;
@@ -5109,7 +5152,9 @@ impl App {
                 event.y -= rect.y;
                 if wheel || action == MouseAction::Press {
                     self.chat.redraw();
-                    let effect = self.chat.mouse(event, event_button, action, self.options.read_only);
+                    let effect =
+                        self.chat
+                            .mouse(event, event_button, action, self.options.read_only);
                     self.chat_effect(effect);
                 }
             }
@@ -6680,11 +6725,20 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             app.paint_pane_feedback(size, &rects, &theme);
             let chat_rect = app.screen_geometry(size).1;
             let chat_active = app.chat.visible();
-            let chat_focused = app.host_focused && !sidebar_active && !popup
-                && !app.state.prefix && app.sidebar_menu.is_none();
+            let chat_focused = app.host_focused
+                && !sidebar_active
+                && !popup
+                && !app.state.prefix
+                && app.sidebar_menu.is_none();
             if chat_active {
-                app.chat.paint(chat_rect, size, &theme, app.options.read_only,
-                    ui_colors.graphics.supported(), chat_focused);
+                app.chat.paint(
+                    chat_rect,
+                    size,
+                    &theme,
+                    app.options.read_only,
+                    ui_colors.graphics.supported(),
+                    chat_focused,
+                );
                 terminal.register_prepared_transports(&app.chat.transports());
                 app.schedule_chat();
             }
@@ -7376,8 +7430,12 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 )?;
                 let hits = scene.hit_map();
                 if chat_active {
-                    app.chat.attend(chat_focused && terminal.observed_focus() == Some(true),
-                        app.options.read_only);
+                    app.chat.attend(
+                        chat_focused
+                            && tooltip.is_none()
+                            && terminal.observed_focus() == Some(true),
+                        app.options.read_only,
+                    );
                     app.schedule_chat();
                 }
                 let ready = unsafe {
@@ -7836,6 +7894,7 @@ pub(super) mod tests {
                 }),
                 registry,
                 state,
+                chat: chat::Chat::default(),
                 views: HashMap::new(),
                 pane_feedback: HashMap::new(),
                 retiring: Vec::new(),
@@ -8235,7 +8294,16 @@ pub(super) mod tests {
             owner: foreign,
             node: TreeNode::Session,
         };
-        let tree_hits = vec![(target.clone(), 3)];
+        let row = {
+            let tree = app.tree.lock().unwrap();
+            let index = tree
+                .rows
+                .iter()
+                .position(|row| row.target.as_ref() == Some(&target))
+                .unwrap();
+            (index - tree.scroll) as u16 + 2
+        };
+        let tree_hits = vec![(target.clone(), row)];
         let size = size();
         let frame = blank(size);
         let hits = Scene {
@@ -8260,11 +8328,9 @@ pub(super) mod tests {
         .hit_map();
         let mut parser = InputParser::new();
         let mut demux = ReplyDemux::default();
-        for (packet, pressed) in [
-            (b"\x1b[<0;3;4M".as_slice(), true),
-            (b"\x1b[<0;3;4m".as_slice(), false),
-        ] {
-            for event in decode_input(&mut parser, demux.feed(packet), false) {
+        for (suffix, pressed) in [('M', true), ('m', false)] {
+            let packet = format!("\x1b[<0;3;{}{suffix}", row + 1);
+            for event in decode_input(&mut parser, demux.feed(packet.as_bytes()), false) {
                 let ClientEvent::Mouse {
                     event,
                     button,

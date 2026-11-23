@@ -3,8 +3,8 @@
 use crate::transport::Endpoint;
 use anyhow::{Context, Result, ensure};
 use bkpr_protocol::{
-    Frame, IMAGE_MAX_BYTES, Image, ImageLayer, ImageSource, ImageSourceEncoding, Operation, Payload,
-    PixelFormat, Placement, Size,
+    Frame, IMAGE_MAX_BYTES, Image, ImageLayer, ImageSource, ImageSourceEncoding, Operation,
+    Payload, PixelFormat, Placement, Size,
     channels::{
         AttachmentId, AttachmentMediaType, ChannelId, ChannelRequest, ChannelResponse,
         MAX_ATTACHMENT_BYTES,
@@ -197,6 +197,13 @@ impl Cache {
         }
     }
 
+    pub(super) fn unavailable(&self, channel: &ChannelId, attachment: &AttachmentId) -> bool {
+        self.channels
+            .get(channel)
+            .and_then(|entries| entries.get(attachment))
+            .is_some_and(|slot| matches!(slot.state, State::Fallback))
+    }
+
     /// Add a ready preview to the history-local graphics frame. A negative row
     /// leaves partially scrolled images to ordinary scene clipping.
     pub(super) fn append(
@@ -284,8 +291,8 @@ impl Cache {
 }
 
 fn placement(image: &Image, size: Size, col: u16, row: i32, columns: u16) -> Option<Placement> {
-    let max_width = u32::from(columns.min(size.cols.saturating_sub(col)))
-        .checked_mul(size.cell_width)?;
+    let max_width =
+        u32::from(columns.min(size.cols.saturating_sub(col))).checked_mul(size.cell_width)?;
     let max_height = u32::from(PREVIEW_ROWS).checked_mul(size.cell_height)?;
     if max_width == 0 || max_height == 0 {
         return None;
@@ -371,7 +378,11 @@ mod tests {
         assert!(!cache.begin(&channel, &attachment));
         assert!(
             cache
-                .finish(&channel, &attachment, Err(anyhow::anyhow!("decode failure")))
+                .finish(
+                    &channel,
+                    &attachment,
+                    Err(anyhow::anyhow!("decode failure"))
+                )
                 .is_none()
         );
         cache.start_frame();

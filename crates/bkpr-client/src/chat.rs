@@ -1,4 +1,9 @@
-use super::{chat_controls, chat_draft::{self, Draft}, chat_images, transport};
+use super::{
+    chat_controls,
+    chat_draft::{self, Draft},
+    chat_images, transport,
+};
+use crate::keyguide::{self, Action, ChatAction, Context, HistoryAction, Navigation};
 use anyhow::{Result, bail};
 use bkpr_protocol::{KeyAction, KeyEvent, Operation, Payload, channels::*};
 use bkpr_tui_framework::{Role, UiSurface, safe_text};
@@ -13,10 +18,16 @@ const HISTORY_ROWS: usize = 160;
 const HISTORY_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Focus { Composer, Channels }
+pub(super) enum Focus {
+    Composer,
+    Channels,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct Anchor { sequence: u64, line: usize }
+struct Anchor {
+    sequence: u64,
+    line: usize,
+}
 
 #[derive(Default)]
 struct History {
@@ -25,6 +36,7 @@ struct History {
     old: bool,
     loaded: bool,
     anchor: Option<Anchor>,
+    paused_at: Option<u64>,
     load: Option<Load>,
     error: Option<String>,
     visible_through: u64,
@@ -32,11 +44,15 @@ struct History {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-enum Load {
+pub(super) enum Load {
     Latest,
     Older(u64),
     Newer(u64),
-    Jump { message: MessageId, sequence: u64 },
+    Jump {
+        message: MessageId,
+        sequence: u64,
+        known_tail: u64,
+    },
 }
 
 struct Active {
@@ -45,13 +61,21 @@ struct Active {
     roster: Vec<ChannelRosterEntry>,
     roster_next: Option<Option<ParticipantId>>,
     roster_error: Option<String>,
+    roster_ready: bool,
 }
 
 impl Active {
     fn new(id: ChannelId) -> Self {
         Self {
-            id, history: History { load: Some(Load::Latest), ..History::default() },
-            roster: Vec::new(), roster_next: None, roster_error: None,
+            id,
+            history: History {
+                load: Some(Load::Latest),
+                ..History::default()
+            },
+            roster: Vec::new(),
+            roster_next: None,
+            roster_error: None,
+            roster_ready: false,
         }
     }
 }
@@ -68,13 +92,22 @@ enum Send {
 
 #[derive(PartialEq, Eq)]
 pub(super) enum JobKind {
-    History { epoch: u64, load: Load },
+    History {
+        epoch: u64,
+        load: Load,
+    },
     Roster(u64),
-    Mark { channel: ChannelId, through: u64 },
+    Mark {
+        channel: ChannelId,
+        through: u64,
+    },
     Send(ChannelId),
     EditorRead(u64),
     EditorWrite(u64),
-    Image { channel: ChannelId, attachment: AttachmentId },
+    Image {
+        channel: ChannelId,
+        attachment: AttachmentId,
+    },
 }
 
 pub(super) enum Job {
@@ -85,22 +118,41 @@ pub(super) enum Job {
 pub(super) enum Completion {
     Response(ChannelResponse),
     Image(chat_images::Loaded),
+    History {
+        entries: Vec<view::Entry>,
+        older: bool,
+    },
 }
 
 impl Job {
     pub(super) fn run(self, endpoint: &transport::Endpoint) -> Result<Completion> {
         match self {
             Self::Request(request) => {
-                let Payload::Channels(response) = endpoint.checked_payload(Operation::Channels { request })? else {
+                let Payload::Channels(response) =
+                    endpoint.checked_payload(Operation::Channels { request })?
+                else {
                     bail!("endpoint returned a non-channel response");
                 };
-                Ok(Completion::Response(response))
+                Ok(match response {
+                    ChannelResponse::History {
+                        messages,
+                        next_before,
+                        ..
+                    } => Completion::History {
+                        entries: messages.into_iter().map(view::Entry::new).collect(),
+                        older: next_before.is_some(),
+                    },
+                    response => Completion::Response(response),
+                })
             }
-            Self::Image(channel, attachment) => chat_images::load(endpoint, channel, attachment).map(Completion::Image),
+            Self::Image(channel, attachment) => {
+                chat_images::load(endpoint, channel, attachment).map(Completion::Image)
+            }
         }
     }
 }
-
+// Input dispatch is stack-only; a submitted request is moved directly into its worker.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum Effect {
     None,
     Native,
@@ -111,6 +163,7 @@ pub(super) enum Effect {
 pub(super) struct Chat {
     catalog: HashMap<ChannelId, ChannelSummary>,
     catalog_ready: bool,
+    attention: HashMap<String, usize>,
     catalog_error: Option<String>,
     workspace: Option<String>,
     active: Option<Active>,
@@ -133,18 +186,37 @@ pub(super) struct Chat {
 }
 
 impl Chat {
-    pub(super) fn workspace(&self) -> Option<&str> { self.workspace.as_deref() }
+    pub(super) fn workspace(&self) -> Option<&str> {
+        self.workspace.as_deref()
+    }
 
-    pub(super) fn visible(&self) -> bool { self.workspace.is_some() }
+    pub(super) fn visible(&self) -> bool {
+        self.workspace.is_some()
+    }
 
-    pub(super) fn is_editing(&self) -> bool { self.editor.is_some() }
+    pub(super) fn is_editing(&self) -> bool {
+        self.editor.is_some()
+    }
+
+    pub(super) fn is_attending(&self) -> bool {
+        self.focus == Some(Focus::Composer) && !self.is_editing()
+    }
+
+    pub(super) fn channel(&self, workspace: &str, channel: &ChannelId) -> Option<&ChannelSummary> {
+        self.catalog
+            .get(channel)
+            .filter(|entry| entry.workspace_id == workspace)
+    }
 
     pub(super) fn contains_channel(&self, workspace: &str, channel: &ChannelId) -> bool {
-        self.catalog.get(channel).is_some_and(|entry| entry.workspace_id == workspace)
+        self.channel(workspace, channel).is_some()
     }
 
     pub(super) fn rendered(&self, channel: &ChannelId, sequence: u64) -> bool {
-        self.active.as_ref().is_some_and(|active| active.id == *channel) && self.paint.rendered.contains(&sequence)
+        self.active
+            .as_ref()
+            .is_some_and(|active| active.id == *channel)
+            && self.paint.rendered.contains(&sequence)
     }
 
     pub(super) fn summary(&self) -> Option<&ChannelSummary> {
@@ -154,6 +226,7 @@ impl Chat {
     pub(super) fn open(&mut self, workspace: String) {
         if self.workspace.as_ref() == Some(&workspace) {
             self.focus = Some(Focus::Composer);
+            self.redraw();
             return;
         }
         self.close();
@@ -163,8 +236,12 @@ impl Chat {
     }
 
     pub(super) fn close(&mut self) {
+        if self.workspace.is_none() {
+            return;
+        }
         if let Some(active) = self.active.take()
-            && let Some(draft) = self.drafts.get_mut(&active.id) {
+            && let Some(draft) = self.drafts.get_mut(&active.id)
+        {
             draft.completion = None;
         }
         self.workspace = None;
@@ -177,72 +254,167 @@ impl Chat {
         self.epoch = self.epoch.wrapping_add(1);
     }
 
-    pub(super) fn jump(&mut self, workspace: String, channel: ChannelId, message: MessageId, sequence: u64) {
+    pub(super) fn jump(
+        &mut self,
+        workspace: String,
+        channel: ChannelId,
+        message: MessageId,
+        sequence: u64,
+    ) {
         self.open(workspace);
-        self.select(channel);
-        if let Some(active) = &mut self.active {
-            active.history.load = Some(Load::Jump { message, sequence });
-            active.history.error = None;
+        self.select(channel.clone());
+        let known_tail = self
+            .summary()
+            .map_or(sequence, |summary| summary.last_sequence);
+        if let Some(active) = &mut self.active
+            && active.id == channel
+        {
+            active.history = History {
+                load: Some(Load::Jump {
+                    message,
+                    sequence,
+                    known_tail,
+                }),
+                ..History::default()
+            };
+            self.epoch = self.epoch.wrapping_add(1);
+            self.paint.invalidate_hits();
         }
     }
 
     pub(super) fn replace_catalog(&mut self, catalog: HashMap<ChannelId, ChannelSummary>) {
+        self.attention.clear();
+        for entry in catalog.values().filter(|entry| entry.unread_attention) {
+            *self
+                .attention
+                .entry(entry.workspace_id.clone())
+                .or_default() += 1;
+        }
         self.catalog = catalog;
         self.catalog_ready = true;
         self.catalog_error = None;
         self.refresh_channels();
+        self.redraw();
+    }
+
+    pub(super) fn reset_catalog(&mut self) {
+        self.replace_catalog(HashMap::new());
+        self.catalog_ready = false;
     }
 
     pub(super) fn catalog_error(&mut self, error: &anyhow::Error) {
         self.catalog_error = Some(error_text(error));
+        self.attention.clear();
+        self.redraw();
     }
 
-    pub(super) fn upsert(&mut self, mut summary: ChannelSummary) {
-        if let Some(previous) = self.catalog.get(&summary.id) {
+    pub(super) fn upsert(&mut self, mut summary: ChannelSummary) -> bool {
+        let old = self.catalog.get(&summary.id);
+        if let Some(previous) = old {
             summary.last_sequence = summary.last_sequence.max(previous.last_sequence);
             summary.read_through = summary.read_through.max(previous.read_through);
         }
-        let rebuild = self.catalog.get(&summary.id).is_none_or(|old| old.name != summary.name || old.workspace_id != summary.workspace_id);
+        let rebuild = old
+            .is_none_or(|old| old.name != summary.name || old.workspace_id != summary.workspace_id);
+        let before = old.is_some_and(|entry| entry.unread_attention);
+        let mut badge_changed = false;
+        if before != summary.unread_attention {
+            if summary.unread_attention {
+                let count = self
+                    .attention
+                    .entry(summary.workspace_id.clone())
+                    .or_default();
+                badge_changed = *count == 0;
+                *count += 1;
+            } else if let Some(count) = self.attention.get_mut(&summary.workspace_id) {
+                *count -= 1;
+                if *count == 0 {
+                    self.attention.remove(&summary.workspace_id);
+                    badge_changed = true;
+                }
+            }
+        }
+        let projected = self.workspace() == Some(summary.workspace_id.as_str());
         self.catalog.insert(summary.id.clone(), summary);
-        if rebuild { self.refresh_channels(); }
+        if rebuild && projected {
+            self.refresh_channels();
+        }
+        if projected {
+            self.redraw();
+        }
+        badge_changed
     }
 
-    pub(super) fn workspace_closed(&mut self, workspace: &str) {
-        if self.workspace() == Some(workspace) { self.close(); }
+    pub(super) fn workspace_closed(&mut self, workspace: &str) -> bool {
+        if self.workspace() == Some(workspace) {
+            self.close();
+        }
         self.selected.remove(workspace);
-        self.drafts.retain(|id, _| self.catalog.get(id).is_none_or(|entry| entry.workspace_id != workspace));
-        self.catalog.retain(|_, entry| entry.workspace_id != workspace);
+        self.drafts.retain(|id, _| {
+            self.catalog
+                .get(id)
+                .is_none_or(|entry| entry.workspace_id != workspace)
+        });
+        self.catalog
+            .retain(|_, entry| entry.workspace_id != workspace);
+        self.attention.remove(workspace).is_some()
     }
 
     pub(super) fn attention(&self) -> impl Iterator<Item = &str> {
-        self.catalog.values().filter(|summary| summary.unread_attention).map(|summary| summary.workspace_id.as_str())
+        self.attention.keys().map(String::as_str)
     }
 
     fn refresh_channels(&mut self) {
-        let Some(workspace) = &self.workspace else { return };
+        let Some(workspace) = &self.workspace else {
+            return;
+        };
         self.ids.clear();
-        self.ids.extend(self.catalog.values().filter(|entry| entry.workspace_id == *workspace).map(|entry| entry.id.clone()));
+        self.ids.extend(
+            self.catalog
+                .values()
+                .filter(|entry| entry.workspace_id == *workspace)
+                .map(|entry| entry.id.clone()),
+        );
         self.ids.sort_unstable_by(|left, right| {
             let left = &self.catalog[left];
             let right = &self.catalog[right];
             channel_order(left).cmp(&channel_order(right))
         });
-        let selection = self.selected.get(workspace).filter(|id| self.catalog.contains_key(*id)).or_else(|| self.ids.first()).cloned();
+        let selection = self
+            .selected
+            .get(workspace)
+            .filter(|id| self.catalog.contains_key(*id))
+            .or_else(|| self.ids.first())
+            .cloned();
         if let Some(id) = selection {
             self.select(id);
         } else {
             self.active = None;
+            self.epoch = self.epoch.wrapping_add(1);
+            self.paint.invalidate_hits();
         }
     }
 
     fn select(&mut self, id: ChannelId) {
-        let Some(workspace) = &self.workspace else { return };
-        if !self.contains_channel(workspace, &id) { return; }
-        if self.active.as_ref().is_some_and(|active| active.id == id) { return; }
-        if let Some(active) = self.active.take() && let Some(draft) = self.drafts.get_mut(&active.id) {
+        let Some(workspace) = &self.workspace else {
+            return;
+        };
+        if !self.contains_channel(workspace, &id) {
+            return;
+        }
+        if self.active.as_ref().is_some_and(|active| active.id == id) {
+            return;
+        }
+        if let Some(active) = self.active.take()
+            && let Some(draft) = self.drafts.get_mut(&active.id)
+        {
             draft.completion = None;
         }
-        self.list_cursor = self.ids.iter().position(|candidate| *candidate == id).unwrap_or(0);
+        self.list_cursor = self
+            .ids
+            .iter()
+            .position(|candidate| *candidate == id)
+            .unwrap_or(0);
         self.selected.insert(workspace.clone(), id.clone());
         self.active = Some(Active::new(id));
         self.editor = None;
@@ -258,22 +430,25 @@ impl Chat {
     }
 
     fn draft(&mut self) -> Option<&mut Draft> {
-        Some(self.drafts.entry(self.active.as_ref()?.id.clone()).or_default())
+        Some(
+            self.drafts
+                .entry(self.active.as_ref()?.id.clone())
+                .or_default(),
+        )
     }
 
     pub(super) fn paste(&mut self, text: &str, read_only: bool) {
         if let Some(editor) = &mut self.editor {
-            if !read_only { editor.form.paste(text); }
-        } else if self.focus == Some(Focus::Composer) && self.writable(read_only)
-            && let Some(active) = &self.active && !self.sends.contains_key(&active.id)
+            if !read_only {
+                editor.form.paste(text);
+            }
+        } else if self.focus == Some(Focus::Composer)
+            && self.writable(read_only)
+            && let Some(active) = &self.active
+            && !self.sends.contains_key(&active.id)
             && let Some(draft) = self.draft()
         {
-            // The outer terminal's bracketed-paste framing is already removed.
-            if text.len() <= MAX_POST_BYTES && text.contains("\r\n") {
-                draft.insert(&text.replace("\r\n", "\n"), false);
-            } else {
-                draft.insert(text, false);
-            }
+            draft.paste(text);
         }
     }
 
@@ -285,18 +460,59 @@ impl Chat {
         };
         self.editor = form.map(|form| {
             self.next = self.next.wrapping_add(1);
-            Editor { token: self.next, form }
+            Editor {
+                token: self.next,
+                form,
+            }
         });
     }
 
     fn editor_action(&mut self, action: chat_controls::EditorAction) -> Effect {
         match action {
             chat_controls::EditorAction::None => Effect::None,
-            chat_controls::EditorAction::Close => { self.editor = None; Effect::None }
+            chat_controls::EditorAction::Close => {
+                self.editor = None;
+                Effect::None
+            }
             chat_controls::EditorAction::Submit(request) => {
                 let editor = self.editor.as_ref().expect("active controls");
                 Effect::Submit(JobKind::EditorWrite(editor.token), Job::Request(request))
             }
+        }
+    }
+
+    pub(super) fn context(&self) -> Context {
+        if self.is_editing() {
+            Context::ChatControls
+        } else if self.focus == Some(Focus::Channels) {
+            Context::ChatChannels
+        } else if self.completing() {
+            Context::ChatMention
+        } else {
+            Context::Chat
+        }
+    }
+
+    pub(super) fn supports(&self, action: ChatAction, read_only: bool) -> bool {
+        let send = self
+            .active
+            .as_ref()
+            .and_then(|active| self.sends.get(&active.id));
+        match action {
+            ChatAction::Create => !read_only && self.catalog_ready && self.catalog_error.is_none(),
+            ChatAction::Manage => self.writable(read_only),
+            ChatAction::MarkRead => !read_only && self.active.is_some(),
+            ChatAction::Retry => self.writable(read_only) && matches!(send, Some(Send::Unknown(_))),
+            ChatAction::Send | ChatAction::Newline => self.writable(read_only) && send.is_none(),
+            ChatAction::Choose if self.completing() => self.active.as_ref().is_some_and(|active| {
+                active.roster_ready
+                    && self
+                        .drafts
+                        .get(&active.id)
+                        .is_some_and(|draft| draft.choices(&active.roster).next().is_some())
+            }),
+            ChatAction::Choose => !self.ids.is_empty(),
+            ChatAction::ToggleList | ChatAction::Back => true,
         }
     }
 
@@ -305,80 +521,126 @@ impl Chat {
             let action = editor.form.key(event, !read_only);
             return self.editor_action(action);
         }
-        let mods = event.modifiers & 15;
-        let press = event.action == KeyAction::Press;
-        let key = event.key.as_str();
-        let writable = self.writable(read_only);
+        let action = keyguide::lookup_with(
+            self.context(),
+            event,
+            |action| !matches!(action, Action::Chat(action) if !self.supports(action, read_only)),
+        );
         let composing = self.focus == Some(Focus::Composer);
-        if key == "Tab" && mods == 0 && press && !self.completing() {
-            self.focus = Some(if composing { Focus::Channels } else { Focus::Composer });
-            return Effect::None;
-        }
-        if key == "Escape" && mods == 0 && press {
-            if self.completing() {
-                self.draft().unwrap().completion = None;
-            } else if !composing {
-                self.focus = Some(Focus::Composer);
-            } else {
-                return Effect::Native;
+        match action {
+            Some(Action::Chat(ChatAction::ToggleList)) => {
+                self.focus = Some(if composing {
+                    Focus::Channels
+                } else {
+                    Focus::Composer
+                });
             }
-            return Effect::None;
-        }
-        match (key, mods) {
-            ("KeyN", 2) if press && !read_only => self.start_editor(true),
-            ("KeyE", 2) if press && writable => self.start_editor(false),
-            ("KeyM", 2) if press => self.explicit_read(),
-            ("KeyR", 2) if press && writable => return self.send(true),
-            ("PageUp", 0) => self.scroll(-(self.paint.page_rows().max(1) as isize)),
-            ("PageDown", 0) => self.scroll(self.paint.page_rows().max(1) as isize),
-            ("End", 2) if press => self.live_tail(),
-            ("ArrowUp", 0) if !composing => self.list_cursor = self.list_cursor.saturating_sub(1),
-            ("ArrowDown", 0) if !composing => self.list_cursor = (self.list_cursor + 1).min(self.ids.len().saturating_sub(1)),
-            ("Home", 0) if !composing => self.list_cursor = 0,
-            ("End", 0) if !composing => self.list_cursor = self.ids.len().saturating_sub(1),
-            ("Enter", 0) if !composing && press => {
-                if let Some(id) = self.ids.get(self.list_cursor).cloned() { self.select(id); }
+            Some(Action::Chat(ChatAction::Back)) => {
+                if self.completing() {
+                    self.draft().unwrap().completion = None;
+                } else if !composing {
+                    self.focus = Some(Focus::Composer);
+                } else {
+                    return Effect::Native;
+                }
+            }
+            Some(Action::Chat(ChatAction::Create)) => self.start_editor(true),
+            Some(Action::Chat(ChatAction::Manage)) => self.start_editor(false),
+            Some(Action::Chat(ChatAction::MarkRead)) => self.explicit_read(),
+            Some(Action::Chat(ChatAction::Retry)) => return self.send(true),
+            Some(Action::Chat(ChatAction::Send)) => return self.send(false),
+            Some(Action::Chat(ChatAction::Newline)) => {
+                if let Some(draft) = self.draft() {
+                    draft.insert("\n", false);
+                }
+            }
+            Some(Action::Chat(ChatAction::Choose)) if composing => {
+                if let Some(active) = &self.active
+                    && let Some(draft) = self.drafts.get_mut(&active.id)
+                {
+                    draft.select_mention(&active.roster, None);
+                }
+            }
+            Some(Action::Chat(ChatAction::Choose)) => {
+                if let Some(id) = self.ids.get(self.list_cursor).cloned() {
+                    self.select(id);
+                }
                 self.focus = Some(Focus::Composer);
             }
-            _ if !composing || !writable => {}
-            _ => return self.composer_key(event),
+            Some(Action::History(HistoryAction::PageUp)) => {
+                self.scroll(-(self.paint.page_rows().max(1) as isize))
+            }
+            Some(Action::History(HistoryAction::PageDown)) => {
+                self.scroll(self.paint.page_rows().max(1) as isize)
+            }
+            Some(Action::History(HistoryAction::Live)) => self.live_tail(),
+            Some(Action::Navigate(navigation)) => self.navigate(navigation, composing),
+            _ if composing && self.writable(read_only) => self.composer_key(event),
+            _ => {}
         }
         Effect::None
+    }
+
+    fn navigate(&mut self, navigation: Navigation, composing: bool) {
+        if composing {
+            if let Some(active) = &self.active
+                && let Some(draft) = self.drafts.get_mut(&active.id)
+            {
+                let delta = if navigation == Navigation::Previous {
+                    -1
+                } else {
+                    1
+                };
+                draft.move_completion(delta, &active.roster);
+            }
+        } else {
+            let last = self.ids.len().saturating_sub(1);
+            self.list_cursor = match navigation {
+                Navigation::Previous => self.list_cursor.saturating_sub(1),
+                Navigation::Next => (self.list_cursor + 1).min(last),
+                Navigation::First => 0,
+                Navigation::Last => last,
+                _ => self.list_cursor,
+            };
+        }
     }
 
     fn completing(&self) -> bool {
-        self.active.as_ref().and_then(|active| self.drafts.get(&active.id)).is_some_and(|draft| draft.completion.is_some())
+        self.active
+            .as_ref()
+            .and_then(|active| self.drafts.get(&active.id))
+            .is_some_and(|draft| draft.completion.is_some())
     }
 
-    fn composer_key(&mut self, event: &KeyEvent) -> Effect {
-        let Some(active) = &mut self.active else { return Effect::None };
-        if self.sends.contains_key(&active.id) { return Effect::None; }
+    fn composer_key(&mut self, event: &KeyEvent) {
+        let Some(active) = &mut self.active else {
+            return;
+        };
+        if self.sends.contains_key(&active.id) {
+            return;
+        }
         let draft = self.drafts.entry(active.id.clone()).or_default();
         let mods = event.modifiers & 15;
-        let press = event.action == KeyAction::Press;
-        match (event.key.as_str(), mods) {
-            ("Enter" | "Tab", 0) if draft.completion.is_some() && press => draft.select_mention(&active.roster, None),
-            ("ArrowUp", 0) if draft.completion.is_some() => draft.move_completion(-1, &active.roster),
-            ("ArrowDown", 0) if draft.completion.is_some() => draft.move_completion(1, &active.roster),
-            ("Enter", 0) if press => return self.send(false),
-            ("Enter", 1) if press => { draft.insert("\n", false); }
-            _ => {
-                if let Some(action) = chat_draft::edit_action(event) {
-                    draft.edit(action);
-                } else if mods & !1 == 0 && event.text.chars().any(|ch| !ch.is_control())
-                    && draft.insert(&event.text, press)
-                {
-                    active.roster.clear();
-                    active.roster_next = Some(None);
-                    active.roster_error = None;
-                }
-            }
+        if let Some(action) = chat_draft::edit_action(event) {
+            draft.edit(action);
+        } else if mods == 0 && matches!(event.key.as_str(), "ArrowUp" | "ArrowDown") {
+            let delta = if event.key == "ArrowUp" { -1 } else { 1 };
+            draft.move_vertical(usize::from(self.paint.composer_width()), delta);
+        } else if mods & !1 == 0
+            && event.text.chars().any(|ch| !ch.is_control())
+            && draft.insert(&event.text, event.action == KeyAction::Press)
+        {
+            active.roster.clear();
+            active.roster_next = Some(None);
+            active.roster_error = None;
+            active.roster_ready = false;
         }
-        Effect::None
     }
 
     fn send(&mut self, retry: bool) -> Effect {
-        let Some(id) = self.active.as_ref().map(|active| active.id.clone()) else { return Effect::None };
+        let Some(id) = self.active.as_ref().map(|active| active.id.clone()) else {
+            return Effect::None;
+        };
         let request = match self.sends.get(&id) {
             Some(Send::Unknown(request)) if retry => request.clone(),
             Some(_) => return Effect::None,
@@ -391,21 +653,34 @@ impl Chat {
                 }
             },
         };
-        self.sends.insert(id.clone(), Send::Pending(request.clone()));
+        self.sends
+            .insert(id.clone(), Send::Pending(request.clone()));
         Effect::Submit(JobKind::Send(id), Job::Request(request))
     }
 
     fn explicit_read(&mut self) {
-        let Some(summary) = self.summary() else { return };
+        let Some(summary) = self.summary() else {
+            return;
+        };
         self.mark = Some((summary.id.clone(), summary.last_sequence));
     }
 
     pub(super) fn attend(&mut self, physical_focus: bool, read_only: bool) {
-        if !physical_focus || read_only || self.editor.is_some() { return; }
+        if !physical_focus || read_only || !self.is_attending() {
+            return;
+        }
         let Some(active) = &self.active else { return };
-        let Some(summary) = self.catalog.get(&active.id) else { return };
+        let Some(summary) = self.catalog.get(&active.id) else {
+            return;
+        };
         let through = active.history.visible_through;
         if through > summary.read_through && active.history.read_failed != Some(through) {
+            let through = through.max(
+                self.mark
+                    .as_ref()
+                    .filter(|(id, _)| id == &summary.id)
+                    .map_or(0, |(_, through)| *through),
+            );
             self.mark = Some((summary.id.clone(), through));
         }
     }
@@ -414,6 +689,7 @@ impl Chat {
         let latest = self.summary().map_or(0, |summary| summary.last_sequence);
         if let Some(active) = &mut self.active {
             active.history.anchor = None;
+            active.history.paused_at = None;
             active.history.error = None;
             if !active.history.loaded || active.history.latest() < latest {
                 active.history.load = Some(Load::Latest);
@@ -422,51 +698,93 @@ impl Chat {
     }
 
     fn scroll(&mut self, delta: isize) {
-        let Some(active) = &mut self.active else { return };
+        let newest = self.summary().map_or(0, |summary| summary.last_sequence);
+        let Some(active) = &mut self.active else {
+            return;
+        };
         let history = &mut active.history;
-        let Some((anchor, boundary)) = self.paint.scroll(delta) else { return };
-        if delta > 0 && boundary {
+        let Some((anchor, boundary)) = self.paint.scroll(delta) else {
+            return;
+        };
+        let loaded = history.latest();
+        if delta > 0 && boundary && loaded >= newest {
             history.anchor = None;
+            history.paused_at = None;
         } else {
             history.anchor = Some(anchor);
+            history.paused_at.get_or_insert(loaded);
+            if delta > 0 && boundary && loaded < newest {
+                history.load = Some(Load::Newer(loaded));
+            }
         }
-        if boundary && delta < 0 && history.old && let Some(front) = history.entries.front() {
+        if boundary
+            && delta < 0
+            && history.old
+            && let Some(front) = history.entries.front()
+        {
             history.load = Some(Load::Older(front.sequence()));
         }
-        if boundary { history.error = None; }
+        if boundary {
+            history.error = None;
+        }
     }
 
-    pub(super) fn mouse(&mut self, mouse: termwiz::input::MouseEvent, button: bkpr_protocol::MouseButton, action: bkpr_protocol::MouseAction, read_only: bool) -> Effect {
+    pub(super) fn mouse(
+        &mut self,
+        mouse: termwiz::input::MouseEvent,
+        button: bkpr_protocol::MouseButton,
+        action: bkpr_protocol::MouseAction,
+        read_only: bool,
+    ) -> Effect {
         use bkpr_protocol::{MouseAction as A, MouseButton as B};
         if let Some(editor) = &mut self.editor {
-            let action = editor.form.mouse(mouse, button == B::Left && action == A::Press, !read_only);
+            let action =
+                editor
+                    .form
+                    .mouse(mouse, button == B::Left && action == A::Press, !read_only);
             return self.editor_action(action);
         }
         let hit = self.paint.hit(mouse.x, mouse.y);
         let writable = self.writable(read_only);
         match (button, action, hit) {
             (B::WheelUp | B::WheelDown, _, Some(Hit::Channel(_) | Hit::List)) => {
-                self.list_cursor = self.list_cursor.saturating_add_signed(if button == B::WheelUp { -3 } else { 3 }).min(self.ids.len().saturating_sub(1));
+                self.list_cursor = self
+                    .list_cursor
+                    .saturating_add_signed(if button == B::WheelUp { -3 } else { 3 })
+                    .min(self.ids.len().saturating_sub(1));
             }
-            (B::WheelUp | B::WheelDown, _, Some(Hit::History(_))) => self.scroll(if button == B::WheelUp { -3 } else { 3 }),
+            (B::WheelUp | B::WheelDown, _, Some(Hit::History(_))) => {
+                self.scroll(if button == B::WheelUp { -3 } else { 3 })
+            }
             (B::Left, A::Press, Some(Hit::Channel(index))) => {
-                if let Some(id) = self.ids.get(index).cloned() { self.select(id); }
+                if let Some(id) = self.ids.get(index).cloned() {
+                    self.select(id);
+                }
                 self.focus = Some(Focus::Composer);
             }
             (B::Left, A::Press, Some(Hit::List)) => self.focus = Some(Focus::Channels),
             (B::Left, A::Press, Some(Hit::Composer)) => self.focus = Some(Focus::Composer),
             (B::Left, A::Press, Some(Hit::Mention(index))) if writable => {
-                if let Some(active) = &self.active && let Some(draft) = self.drafts.get_mut(&active.id) {
+                if let Some(active) = &self.active
+                    && let Some(draft) = self.drafts.get_mut(&active.id)
+                {
                     draft.select_mention(&active.roster, Some(index));
                 }
             }
             (B::Left, A::Press, Some(Hit::Latest)) => self.live_tail(),
-            (B::Left, A::Press, Some(Hit::Create)) if !read_only => self.start_editor(true),
+            (B::Left, A::Press, Some(Hit::Create))
+                if self.supports(ChatAction::Create, read_only) =>
+            {
+                self.start_editor(true)
+            }
             (B::Left, A::Press, Some(Hit::Manage)) if writable => self.start_editor(false),
             (B::Right, A::Press, Some(Hit::History(Some(index)))) if writable => {
-                if let Some(active) = &self.active && !self.sends.contains_key(&active.id)
-                    && let Some(entry) = active.history.entries.get(index) {
-                    self.drafts.entry(active.id.clone()).or_default().reply_to = Some(entry.message.message.id.clone());
+                if let Some(active) = &self.active
+                    && !self.sends.contains_key(&active.id)
+                    && let Some(entry) = active.history.entries.get(index)
+                {
+                    self.drafts.entry(active.id.clone()).or_default().reply_to =
+                        Some(entry.message.message.id.clone());
                     self.focus = Some(Focus::Composer);
                 }
             }
@@ -476,17 +794,29 @@ impl Chat {
     }
 
     pub(super) fn next_job(&mut self, read_only: bool) -> Option<(JobKind, Job)> {
-        if let Some(editor) = &mut self.editor && let Some(request) = editor.form.take_observation() {
+        if let Some(editor) = &mut self.editor
+            && let Some(request) = editor.form.take_observation()
+        {
             return Some((JobKind::EditorRead(editor.token), Job::Request(request)));
         }
         let active = self.active.as_mut()?;
         let channel = &active.id;
         let summary = self.catalog.get(channel)?;
         let epoch = self.epoch;
-        if !self.pending.values().any(|kind| matches!(kind, JobKind::History { epoch: pending, .. } if *pending == epoch)) {
+        if !self.pending.values().any(
+            |kind| matches!(kind, JobKind::History { epoch: pending, .. } if *pending == epoch),
+        ) {
             let history = &mut active.history;
-            if history.load.is_none() && history.error.is_none() && history.anchor.is_none() && history.latest() < summary.last_sequence {
-                history.load = Some(if history.entries.is_empty() { Load::Latest } else { Load::Newer(history.latest()) });
+            if history.load.is_none()
+                && history.error.is_none()
+                && history.anchor.is_none()
+                && history.latest() < summary.last_sequence
+            {
+                history.load = Some(if history.entries.is_empty() {
+                    Load::Latest
+                } else {
+                    Load::Newer(history.latest())
+                });
             }
             if let Some(load) = history.load.take() {
                 let (before, after) = match &load {
@@ -495,25 +825,65 @@ impl Chat {
                     Load::Newer(sequence) => (None, Some(*sequence)),
                     Load::Jump { sequence, .. } => (None, Some(sequence.saturating_sub(1))),
                 };
-                return Some((JobKind::History { epoch, load }, Job::Request(ChannelRequest::History {
-                    channel_id: channel.clone(), before, after, limit: PAGE,
-                })));
+                return Some((
+                    JobKind::History { epoch, load },
+                    Job::Request(ChannelRequest::History {
+                        channel_id: channel.clone(),
+                        before,
+                        after,
+                        limit: PAGE,
+                    }),
+                ));
             }
         }
-        if self.drafts.get(channel).is_some_and(|draft| draft.completion.is_some())
-            && !self.pending.values().any(|kind| *kind == JobKind::Roster(epoch))
-            && let Some(after) = active.roster_next.take() {
-            return Some((JobKind::Roster(epoch), Job::Request(ChannelRequest::UserRoster {
-                workspace_id: summary.workspace_id.clone(), channel_id: Some(channel.clone()), after, limit: MAX_PAGE_LIMIT,
-            })));
+        if self
+            .drafts
+            .get(channel)
+            .is_some_and(|draft| draft.completion.is_some())
+            && !self
+                .pending
+                .values()
+                .any(|kind| *kind == JobKind::Roster(epoch))
+            && let Some(after) = active.roster_next.take()
+        {
+            return Some((
+                JobKind::Roster(epoch),
+                Job::Request(ChannelRequest::UserRoster {
+                    workspace_id: summary.workspace_id.clone(),
+                    channel_id: Some(channel.clone()),
+                    after,
+                    limit: MAX_PAGE_LIMIT,
+                }),
+            ));
         }
-        if !read_only && !self.pending.values().any(|kind| matches!(kind, JobKind::Mark { channel: pending, .. } if pending == channel))
-            && let Some((selected, through)) = self.mark.take() && selected == *channel && through > summary.read_through {
-            return Some((JobKind::Mark { channel: selected.clone(), through }, Job::Request(ChannelRequest::MarkRead { channel_id: selected, through })));
+        if !read_only
+            && !self.pending.values().any(
+                |kind| matches!(kind, JobKind::Mark { channel: pending, .. } if pending == channel),
+            )
+            && let Some((selected, through)) = self.mark.take()
+            && selected == *channel
+            && through > summary.read_through
+        {
+            return Some((
+                JobKind::Mark {
+                    channel: selected.clone(),
+                    through,
+                },
+                Job::Request(ChannelRequest::MarkRead {
+                    channel_id: selected,
+                    through,
+                }),
+            ));
         }
         for id in &self.images_wanted {
             if self.images.begin(channel, id) {
-                return Some((JobKind::Image { channel: channel.clone(), attachment: id.clone() }, Job::Image(channel.clone(), id.clone())));
+                return Some((
+                    JobKind::Image {
+                        channel: channel.clone(),
+                        attachment: id.clone(),
+                    },
+                    Job::Image(channel.clone(), id.clone()),
+                ));
             }
         }
         None
@@ -526,10 +896,36 @@ impl Chat {
         key
     }
 
-    pub(super) fn complete(&mut self, key: &str, result: Result<Completion>) -> Option<(String, anyhow::Error)> {
+    pub(super) fn complete(
+        &mut self,
+        key: &str,
+        result: Result<Completion>,
+        admitted: bool,
+    ) -> Option<(String, anyhow::Error)> {
         let kind = self.pending.remove(key)?;
+        if let JobKind::History { epoch, load } = kind {
+            if epoch == self.epoch
+                && let Some(active) = &mut self.active
+            {
+                match result {
+                    Ok(Completion::History { entries, older }) => {
+                        active.history.apply(load, entries, older)
+                    }
+                    Err(error) => active.history.error = Some(error_text(&error)),
+                    _ => active.history.error = Some("Unexpected history response".into()),
+                }
+            }
+            return None;
+        }
         let result = match kind {
-            JobKind::Image { channel, attachment } => {
+            JobKind::Image {
+                channel,
+                attachment,
+            } => {
+                if !admitted {
+                    self.images.cancel(&channel, &attachment);
+                    return None;
+                }
                 let image = result.and_then(|result| match result {
                     Completion::Image(image) => Ok(image),
                     _ => bail!("invalid channel image response"),
@@ -545,26 +941,27 @@ impl Chat {
             }),
         };
         match kind {
-            JobKind::History { epoch, load } if epoch == self.epoch => {
-                match result {
-                    Ok(ChannelResponse::History { messages, next_before, .. }) => {
-                        let active = self.active.as_mut().expect("current history owner");
-                        active.history.apply(load, messages, next_before.is_some());
-                    }
-                    Err(error) => self.active.as_mut().unwrap().history.error = Some(error_text(&error)),
-                    _ => self.active.as_mut().unwrap().history.error = Some("Unexpected history response".into()),
-                }
-            }
             JobKind::Roster(epoch) if epoch == self.epoch => {
                 let active = self.active.as_mut().expect("current roster owner");
                 match result {
-                    Ok(ChannelResponse::UserRoster { mut participants, next_after }) => {
+                    Ok(ChannelResponse::UserRoster {
+                        mut participants,
+                        next_after,
+                    }) => {
                         if active.roster_next != Some(None) {
                             participants.truncate(MAX_MEMBERS.saturating_sub(active.roster.len()));
                             active.roster.extend(participants);
-                            active.roster_next = next_after.filter(|_| active.roster.len() < MAX_MEMBERS).map(Some);
+                            active.roster_next = next_after
+                                .filter(|_| active.roster.len() < MAX_MEMBERS)
+                                .map(Some);
                             if active.roster_next.is_none() {
-                                active.roster.sort_by(|a, b| a.participant.display_name.cmp(&b.participant.display_name).then_with(|| a.participant.id.cmp(&b.participant.id)));
+                                active.roster_ready = true;
+                                active.roster.sort_by(|a, b| {
+                                    a.participant
+                                        .display_name
+                                        .cmp(&b.participant.display_name)
+                                        .then_with(|| a.participant.id.cmp(&b.participant.id))
+                                });
                             }
                         }
                     }
@@ -574,35 +971,58 @@ impl Chat {
             }
             JobKind::Mark { channel, through } => match result {
                 Ok(ChannelResponse::ReadPosition { through }) => {
-                    if let Some(summary) = self.catalog.get_mut(&channel) { summary.read_through = summary.read_through.max(through); }
+                    if let Some(summary) = self.catalog.get_mut(&channel) {
+                        summary.read_through = summary.read_through.max(through);
+                    }
                 }
                 _ => {
-                    if let Some(active) = &mut self.active && active.id == channel {
+                    if let Some(active) = &mut self.active
+                        && active.id == channel
+                    {
                         active.history.read_failed = Some(through);
-                        self.notice = Some((Role::Warning, "Could not mark read; Ctrl-m retries".into()));
+                        self.notice =
+                            Some((Role::Warning, "Could not mark read; Alt-m retries".into()));
                     }
                 }
             },
             JobKind::Send(channel) => {
-                let Some(Send::Pending(request)) = self.sends.remove(&channel) else { return None };
+                let Some(Send::Pending(request)) = self.sends.remove(&channel) else {
+                    return None;
+                };
                 match result {
                     Ok(ChannelResponse::Posted { message, .. }) => {
                         self.drafts.remove(&channel);
-                        if let Some(summary) = self.catalog.get_mut(&channel) { summary.last_sequence = summary.last_sequence.max(message.sequence); }
+                        if let Some(summary) = self.catalog.get_mut(&channel) {
+                            summary.last_sequence = summary.last_sequence.max(message.sequence);
+                        }
                     }
                     result => {
-                        let error = result.err().unwrap_or_else(|| transport::mark_outcome_unknown(anyhow::anyhow!("unexpected post response")));
+                        let error = result.err().unwrap_or_else(|| {
+                            transport::mark_outcome_unknown(anyhow::anyhow!(
+                                "unexpected post response"
+                            ))
+                        });
                         let unknown = transport::outcome_unknown(&error);
                         let draft = self.drafts.entry(channel.clone()).or_default();
-                        draft.error = Some(if unknown { "Send outcome unknown · Ctrl-r retries the identical post".into() } else { format!("Send rejected: {}", error_text(&error)) });
-                        if unknown { self.sends.insert(channel, Send::Unknown(request)); }
+                        draft.error = Some(if unknown {
+                            "Send outcome unknown · Ctrl-r retries the identical post".into()
+                        } else {
+                            format!("Send rejected: {}", error_text(&error))
+                        });
+                        if unknown {
+                            self.sends.insert(channel, Send::Unknown(request));
+                        }
                         return Some(("Couldn't confirm a channel post.".into(), error));
                     }
                 }
             }
             JobKind::EditorRead(token) => {
-                if let Some(editor) = &mut self.editor && editor.token == token {
-                    editor.form.observe(result.map_err(|error| error_text(&error)));
+                if let Some(editor) = &mut self.editor
+                    && editor.token == token
+                {
+                    editor
+                        .form
+                        .observe(result.map_err(|error| error_text(&error)));
                 }
             }
             JobKind::EditorWrite(token) => {
@@ -610,18 +1030,36 @@ impl Chat {
                 match result {
                     Ok(ChannelResponse::Channel { channel }) => {
                         let id = channel.id.clone();
-                        let select = self.editor.as_mut().filter(|editor| editor.token == token).is_some_and(|editor| {
-                            editor.form.finish(EditorResult::Applied(&channel));
-                            editor.form.is_create()
-                        });
+                        let select = self
+                            .editor
+                            .as_mut()
+                            .filter(|editor| editor.token == token)
+                            .is_some_and(|editor| {
+                                editor.form.finish(EditorResult::Applied(&channel));
+                                editor.form.is_create()
+                            });
                         self.upsert(channel);
-                        if select { self.editor = None; self.select(id); self.focus = Some(Focus::Composer); }
+                        if select {
+                            self.editor = None;
+                            self.select(id);
+                            self.focus = Some(Focus::Composer);
+                        }
                     }
                     result => {
-                        let error = result.err().unwrap_or_else(|| transport::mark_outcome_unknown(anyhow::anyhow!("unexpected channel settings response")));
-                        if let Some(editor) = &mut self.editor && editor.token == token {
+                        let error = result.err().unwrap_or_else(|| {
+                            transport::mark_outcome_unknown(anyhow::anyhow!(
+                                "unexpected channel settings response"
+                            ))
+                        });
+                        if let Some(editor) = &mut self.editor
+                            && editor.token == token
+                        {
                             let description = error_text(&error);
-                            editor.form.finish(if transport::outcome_unknown(&error) { EditorResult::Unknown(&description) } else { EditorResult::Rejected(&description) });
+                            editor.form.finish(if transport::outcome_unknown(&error) {
+                                EditorResult::Unknown(&description)
+                            } else {
+                                EditorResult::Rejected(&description)
+                            });
                         }
                         return Some(("Couldn't confirm a channel change.".into(), error));
                     }
@@ -636,13 +1074,17 @@ impl Chat {
         std::mem::take(&mut self.transports)
     }
 
-    pub(super) fn surface(&self) -> &UiSurface { &self.paint.surface }
+    pub(super) fn surface(&self) -> &UiSurface {
+        &self.paint.surface
+    }
 }
 
 impl History {
-    fn latest(&self) -> u64 { self.entries.back().map_or(0, view::Entry::sequence) }
+    fn latest(&self) -> u64 {
+        self.entries.back().map_or(0, view::Entry::sequence)
+    }
 
-    fn apply(&mut self, load: Load, messages: Vec<ChannelMessage>, older: bool) {
+    fn apply(&mut self, load: Load, messages: Vec<view::Entry>, older: bool) {
         self.loaded = true;
         self.error = None;
         let prepend = matches!(load, Load::Older(_));
@@ -650,25 +1092,53 @@ impl History {
             self.entries.clear();
             self.bytes = 0;
             self.anchor = None;
+            self.paused_at = None;
         }
-        if !matches!(load, Load::Newer(_)) { self.old = older; }
-        if let Load::Jump { message, sequence } = load {
-            if messages.first().is_some_and(|entry| entry.message.id == message && entry.message.sequence == sequence) {
+        if !matches!(load, Load::Newer(_)) {
+            self.old = older;
+        }
+        if let Load::Jump {
+            message,
+            sequence,
+            known_tail,
+        } = load
+        {
+            if messages.first().is_some_and(|entry| {
+                entry.message.message.id == message && entry.sequence() == sequence
+            }) {
                 self.anchor = Some(Anchor { sequence, line: 0 });
+                self.paused_at = Some(known_tail);
                 self.old = sequence > 1;
             } else {
                 self.error = Some("Original channel message is no longer available".into());
             }
         }
-        let mut add = |message: ChannelMessage| {
-            self.bytes += message.content_bytes();
-            let entry = view::Entry::new(message);
-            if prepend { self.entries.push_front(entry); } else { self.entries.push_back(entry); }
+        let mut add = |entry: view::Entry| {
+            self.bytes += entry.message.content_bytes();
+            if prepend {
+                self.entries.push_front(entry);
+            } else {
+                self.entries.push_back(entry);
+            }
         };
-        if prepend { messages.into_iter().rev().for_each(&mut add); } else { messages.into_iter().for_each(&mut add); }
+        if prepend {
+            messages.into_iter().rev().for_each(&mut add);
+        } else {
+            messages.into_iter().for_each(&mut add);
+        }
         while self.entries.len() > HISTORY_ROWS || self.bytes > HISTORY_BYTES {
-            let front = !prepend;
-            let entry = if front { self.entries.pop_front() } else { self.entries.pop_back() }.expect("nonempty history above bound");
+            let front = !prepend
+                && self.anchor.is_none_or(|anchor| {
+                    self.entries
+                        .front()
+                        .is_some_and(|entry| entry.sequence() < anchor.sequence)
+                });
+            let entry = if front {
+                self.entries.pop_front()
+            } else {
+                self.entries.pop_back()
+            }
+            .expect("nonempty history above bound");
             self.bytes -= entry.message.content_bytes();
             self.old |= front;
         }
