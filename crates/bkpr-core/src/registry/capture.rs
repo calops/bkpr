@@ -487,6 +487,14 @@ impl Registry {
         let authority_changed =
             super::notification_capture::managed_authority(visible.managed.as_ref())
                 != super::notification_capture::managed_authority(managed.as_ref());
+        let first_binding = visible
+            .managed
+            .as_ref()
+            .is_some_and(|managed| managed.conversation.is_none())
+            && managed
+                .as_ref()
+                .and_then(|managed| managed.conversation.as_ref())
+                .is_some_and(|conversation| conversation.generation == 1);
         let ended = managed.is_none();
         let supervisor =
             visible.pid == original.root.pid as u32 && visible.birth == original.root.identity;
@@ -521,7 +529,13 @@ impl Registry {
                     published.recovery_title.end();
                 }
                 pane.shared.status_epoch.fetch_add(1, Ordering::AcqRel);
-                pane.shared.status_reset.store(true, Ordering::Release);
+                // The launch can emit OSC before its first conversation is bound.
+                // Keep those foreground records, but still fence old notification feeds.
+                if !first_binding {
+                    published.status.clear();
+                    published.status_changed_at_ms.clear();
+                    pane.shared.status_reset.store(true, Ordering::Release);
+                }
             }
             let (summary, changed_at_ms) =
                 visible_status(info.harness.as_ref(), &published, &captures);
