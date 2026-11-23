@@ -20,6 +20,15 @@ impl Rect {
             && x < self.x.saturating_add(self.width)
             && y < self.y.saturating_add(self.height)
     }
+    /// Inset both horizontal edges, keeping at least one column if nonempty.
+    pub fn inset_horizontal(self, columns: u16) -> Self {
+        let columns = columns.min(self.width.saturating_sub(1) / 2);
+        Self {
+            x: self.x.saturating_add(columns),
+            width: self.width - 2 * columns,
+            ..self
+        }
+    }
     /// Return this extent with at least one cell per axis and `screen`'s pixel metrics.
     pub fn size(self, screen: Size) -> Size {
         Size {
@@ -108,7 +117,34 @@ pub struct Surface<'a> {
     /// Client-selected presentation only; canonical styles and image resources stay unchanged.
     pub faint: bool,
 }
-impl Surface<'_> {
+impl<'a> Surface<'a> {
+    /// Paint the horizontal space around this surface using its effective
+    /// background. `body` must be the rectangle before a symmetric horizontal
+    /// inset was applied, and `blank` must be a rowless frame.
+    pub fn horizontal_gutters(&self, body: Rect, blank: &'a Frame) -> Option<[Surface<'a>; 2]> {
+        let width = self.rect.x.saturating_sub(body.x);
+        (width != 0).then(|| {
+            let background = self.palette.and_then(|palette| palette.background)
+                .unwrap_or(self.frame.background);
+            [body.x, self.rect.x + self.rect.width].map(|x| Surface {
+                id: "ui:horizontal-gutter",
+                rect: Rect { x, width, ..self.rect },
+                frame: blank,
+                palette: Some(PaletteOverride {
+                    foreground: None,
+                    background: Some(background),
+                    palette: &[],
+                    preserve_ansi: 0,
+                }),
+                content: SurfaceContent::Cells,
+                selection: &[],
+                search: &[],
+                focused: false,
+                faint: self.faint,
+            })
+        })
+    }
+
     fn cell_rect(&self) -> Option<Rect> {
         match self.content {
             SurfaceContent::Graphics => None,

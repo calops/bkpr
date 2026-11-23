@@ -10,6 +10,18 @@ use bkpr_tui_framework::{
 /// Native PTYs and pointer coordinates use the same gutter in rich and plain modes.
 pub(crate) const PANE_BORDER: u16 = 1;
 
+/// Extra columns inside each side of a graphics-backed pane.
+pub(crate) const FANCY_PANE_PADDING: u16 = 1;
+
+/// Whether the host has the color evidence and cell metrics needed for pane contours.
+pub(crate) fn supports_decoration(host: &ColorProbe, size: Size) -> bool {
+    host.truecolor
+        && host.foreground.is_some()
+        && host.background.is_some()
+        && (2..=512).contains(&size.cell_width)
+        && (2..=512).contains(&size.cell_height)
+}
+
 /// Ordinary local dialogs dim lower surfaces; palette previews and passive hints do not.
 pub(crate) const MODAL_BACKGROUND_FAINT: bool = true;
 
@@ -20,10 +32,7 @@ pub(crate) const MODAL_BACKGROUND_FAINT: bool = true;
 /// The sidebar itself is a plain matte surface, not a decorated window.
 pub(crate) fn decoration_styles(host: &ColorProbe, size: Size) -> Option<[DecorationStyle; 2]> {
     use bkpr_tui_framework::decoration::DecorationKind;
-    if !host.truecolor
-        || !(2..=512).contains(&size.cell_width)
-        || !(2..=512).contains(&size.cell_height)
-    {
+    if !supports_decoration(host, size) {
         return None;
     }
     let (fg, bg) = (host.foreground?, host.background?);

@@ -555,6 +555,7 @@ struct App {
     diagnostic_view: Option<diagnostics::Viewer>,
     guide: GuideCache,
     chrome_graphics_enabled: bool,
+    pane_padding: u16,
     notified_focus: Option<(String, String)>,
     focus_out_pending: HashSet<(String, String)>,
     lease_pending: HashSet<String>,
@@ -2574,10 +2575,14 @@ impl App {
         }
         Ok(())
     }
+    fn pane_content(&self, rect: Rect) -> Rect {
+        crate::controller::padded_content(rect, self.pane_padding)
+    }
+
     fn sync_views(&mut self, size: Size, rects: &[(String, Rect)]) -> Result<()> {
         let visible = rects
             .iter()
-            .filter(|(_, r)| content(*r).height > 0)
+            .filter(|(_, r)| self.pane_content(*r).height > 0)
             .map(|(id, _)| id.clone())
             .collect::<HashSet<_>>();
         self.pane_feedback.retain(|pane, _| visible.contains(pane));
@@ -2647,7 +2652,7 @@ impl App {
             .chain((0..rects.len()).filter(|index| Some(*index) != focused))
         {
             let (id, rect) = &rects[index];
-            let rect = content(*rect);
+            let rect = self.pane_content(*rect);
             if rect.width == 0 || rect.height == 0 {
                 continue;
             }
@@ -4579,7 +4584,12 @@ impl App {
                 } else {
                     SelectionAction::Drag
                 };
-                return self.select_pointer(origin.clone(), action, mouse, content(*rect));
+                return self.select_pointer(
+                    origin.clone(),
+                    action,
+                    mouse,
+                    self.pane_content(*rect),
+                );
             }
             self.cancel_selection(&origin.pane, &origin.view);
             return Ok(());
@@ -4902,7 +4912,7 @@ impl App {
             && action == MouseAction::Press
             && mouse.modifiers == Modifiers::ALT
         {
-            let area = content(*rect);
+            let area = self.pane_content(*rect);
             let hit = area
                 .contains(mouse.x, mouse.y)
                 .then(|| {
@@ -4937,7 +4947,7 @@ impl App {
         if !(self.input_enabled(pane) || origin.is_some() && action == MouseAction::Release) {
             return Ok(());
         }
-        let rect = content(*rect);
+        let rect = self.pane_content(*rect);
         if rect.width == 0
             || rect.height == 0
             || (origin.is_none() && !rect.contains(mouse.x, mouse.y))
@@ -5303,6 +5313,7 @@ impl App {
             diagnostic_view: None,
             guide: GuideCache::default(),
             chrome_graphics_enabled: true,
+            pane_padding: 0,
             notified_focus: None,
             focus_out_pending: HashSet::new(),
             lease_pending: HashSet::new(),
@@ -5421,6 +5432,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         let mut artwork_effects = graphics_frame(initial_size);
         let mut toast_effects = graphics_frame(initial_size);
         let mut notice_effects = graphics_frame(initial_size);
+        let gutter_frame = graphics_frame(initial_size);
         let mut notice_theme = Theme::default();
         let mut toast_frames: [Option<ToastPresentation>; 3] = std::array::from_fn(|_| None);
         let mut toast_order = [0usize; 3];
@@ -5494,6 +5506,16 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 resource_namespace = Some((attachment, generation));
                 placeholders.clear();
             }
+            ui_palette.update(&app.colors, app.theme);
+            let ui_colors = ui_palette.probe();
+            app.pane_padding = if app.chrome_graphics_enabled
+                && ui_colors.graphics.supported()
+                && crate::appearance::supports_decoration(ui_colors, size)
+            {
+                crate::appearance::FANCY_PANE_PADDING
+            } else {
+                0
+            };
             app.sync_views(size, &rects)?;
             app.poll_views();
             app.sync_pane_feedback(size, &rects);
@@ -5524,8 +5546,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             app.flush_resize()?;
             app.refresh_guide(size);
             let guide_rows = app.guide_rows(size);
-            ui_palette.update(&app.colors, app.theme);
-            let ui_colors = ui_palette.probe();
             let preset = app.theme.supported_preset(app.colors.truecolor);
             let previewing_inferred = app.colors.truecolor
                 && app.theme == ThemeId::Terminal
@@ -5716,7 +5736,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 false
             };
             for (index, (id, rect)) in rects.iter().enumerate() {
-                let rect = content(*rect);
+                let rect = app.pane_content(*rect);
                 let has_frame = app.views.get(id).is_some_and(|view| view.frame.is_some());
                 let Some(text) = app
                     .pane_notice(id, has_frame)
@@ -6488,8 +6508,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         && app.sidebar_menu.is_none(),
                     faint: faint_background,
                 }];
-                for (id, rect) in &rects {
-                    let rect = content(*rect);
+                for (id, outer) in &rects {
+                    let rect = app.pane_content(*outer);
                     if rect.height == 0 || rect.width == 0 {
                         continue;
                     }
@@ -6526,7 +6546,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         None
                     };
                     if let Some(frame) = app.views.get(id).and_then(|v| v.frame.as_ref()) {
-                        surfaces.push(Surface {
+                        let surface = Surface {
                             palette,
                             id,
                             content: SurfaceContent::All,
@@ -6547,7 +6567,13 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                                     .panes
                                     .iter()
                                     .any(|p| p.id == *id && p.status == PaneStatus::Running),
-                        });
+                        };
+                        if let Some(gutters) =
+                            surface.horizontal_gutters(content(*outer), &gutter_frame)
+                        {
+                            surfaces.extend(gutters);
+                        }
+                        surfaces.push(surface);
                     }
                     if let Some((card, _)) = placeholders.get(id) {
                         surfaces.push(card.layer("ui:pane:notice", faint_background));
@@ -7493,6 +7519,7 @@ pub(super) mod tests {
                 diagnostic_view: None,
                 guide: GuideCache::default(),
                 chrome_graphics_enabled: true,
+                pane_padding: 0,
                 notified_focus: None,
                 focus_out_pending: HashSet::new(),
                 lease_pending: HashSet::new(),

@@ -1125,7 +1125,9 @@ slots stay muted. Branches and tree guides remain neutral; selected tree context
 and semantic status/count colors retain their own styling.
 
 `Ctrl-b g` switches decorative chrome between fancy and rounded text rendering.
-This preference does not disable application-owned graphics or alter pane sizes.
+Fancy panes reserve one extra column on each side of terminal content where
+there's room. Switching to plain chrome gives those columns back to the pane.
+This preference does not disable application-owned graphics.
 With confirmed graphics/color support and ready pane contours, the framework
 temporarily makes the host's default background match the sidebar matte while
 rendering native pane defaults in their original normal background. Logical

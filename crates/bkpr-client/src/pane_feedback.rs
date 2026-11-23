@@ -271,7 +271,7 @@ impl App {
             if let Some(feedback) = self.pane_feedback.get_mut(pane) {
                 feedback.notice = Notice::NeedsGraphics;
             } else {
-                let viewport = content(*outer).size(size);
+                let viewport = self.pane_content(*outer).size(size);
                 self.pane_feedback.insert(
                     pane.clone(),
                     Feedback::new(viewport, now, Notice::NeedsGraphics),
@@ -288,11 +288,11 @@ impl App {
     ) {
         let now = Instant::now();
         for (pane, outer) in rects {
+            let area = self.pane_content(*outer);
             let Some(feedback) = self.pane_feedback.get_mut(pane) else {
                 continue;
             };
             feedback.rect = None;
-            let area = content(*outer);
             let pending = feedback.notice == Notice::Opening;
             let label = match feedback.notice {
                 Notice::Opening => "Loading pane…",

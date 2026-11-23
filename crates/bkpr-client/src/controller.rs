@@ -641,6 +641,16 @@ pub fn content(rect: Rect) -> Rect {
         }
     }
 }
+
+/// Pane body inset, preserving the header-only fallback on small panes.
+pub(crate) fn padded_content(rect: Rect, padding: u16) -> Rect {
+    let body = content(rect);
+    if body.x == rect.x {
+        body
+    } else {
+        body.inset_horizontal(padding)
+    }
+}
 pub(crate) fn recognized_harness<'a>(
     pane: &'a PaneInfo,
     snapshot: Option<&PaneSnapshot>,
