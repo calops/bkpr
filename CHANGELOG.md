@@ -1,3 +1,14 @@
+## [0.11.0](https://github.com/calops/bkpr/compare/v0.10.0...v0.11.0) (2026-11-23)
+
+### Features
+
+* **tui:** add horizontal padding inside fancy panes ([4fd97f9](https://github.com/calops/bkpr/commit/4fd97f9415502412e23824b34907d18d6170e9d9))
+
+### Bug Fixes
+
+* **tui:** make pane and session errors actionable ([#67](https://github.com/calops/bkpr/issues/67)) ([cb10c3f](https://github.com/calops/bkpr/commit/cb10c3f90016febe0ebada46fec0a0b1680b0119))
+* **tui:** skip redundant clipboard prompts ([5094ab1](https://github.com/calops/bkpr/commit/5094ab1ac48ff9b5f180d773d159bc6c8e74d27d))
+
 ## [0.10.0](https://github.com/calops/bkpr/compare/v0.9.0...v0.10.0) (2026-11-22)
 
 ### ⚠ BREAKING CHANGES
