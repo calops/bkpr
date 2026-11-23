@@ -154,6 +154,7 @@ impl Registry {
                         .unwrap()
                         .event(&launch_id, &token, event)?;
                     let published = self.publish_capture_change(&launch);
+                    self.inner.channels.invalidate();
                     retired?;
                     ended_intent?;
                     published?;
@@ -217,6 +218,7 @@ impl Registry {
                     }
                 }
                 if changes_binding {
+                    self.inner.channels.invalidate();
                     let captures = self.inner.captures.lock().unwrap();
                     Ok(json!({
                         "accepted":true,
@@ -964,6 +966,8 @@ impl Registry {
             }
             captures.version = captures.version.wrapping_add(1);
             version = captures.version;
+            drop(captures);
+            self.inner.channels.invalidate();
         }
         if !self.publish_process_sample(&panes, &valid_launches, table, version, scoped.is_some())
             && let Ok(full) = proc::fresh_snapshot()

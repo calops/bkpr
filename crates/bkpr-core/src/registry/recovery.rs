@@ -3,6 +3,12 @@ use super::*;
 use crate::control_lease::ProcessLifetime;
 use std::os::unix::ffi::OsStrExt;
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct SavedParticipant {
+    pub(super) workspace_id: String,
+    pub(super) id: channels::ParticipantId,
+}
+
 #[derive(Clone)]
 pub(super) struct ResumeAttempt {
     pub source: String,
@@ -84,6 +90,7 @@ impl Record {
         self.recoveries.remove(id);
         self.automatic.remove(id);
         self.recovery_titles.remove(id);
+        self.channel_participants.remove(id);
     }
 }
 
@@ -584,39 +591,76 @@ impl Registry {
     ) -> Result<()> {
         validate(&descriptor)?;
         let pane_id = &launch.grant.pane_id;
-        let (mut next, source, replaced, title_source) = {
+        let (mut next, source, replaced, title_source, participant, generation) = {
             let mut state = self.inner.state.lock().unwrap();
             healthy(&state)?;
             // This authenticated binding supersedes earlier sampled role/CWD,
             // including when its durable descriptor is otherwise unchanged.
             state.pending_directories.remove(pane_id);
             let captures = self.inner.captures.lock().unwrap();
-            let title_source = title_lifetime.and_then(|lifetime| {
-                let current = captures.launches.get(&launch.grant.launch_id)?;
-                Some(TitleSource {
-                    launch_id: launch.grant.launch_id.clone(),
-                    generation: current.binding_generation,
-                    group: launch.root.group,
-                    lifetime,
-                })
+            let current = captures
+                .launches
+                .get(&launch.grant.launch_id)
+                .context("native binding launch ended")?;
+            let generation = current.binding_generation;
+            let title_source = title_lifetime.map(|lifetime| TitleSource {
+                launch_id: launch.grant.launch_id.clone(),
+                generation,
+                group: launch.root.group,
+                lifetime,
             });
             let replaced = state
                 .record
                 .recoveries
                 .get(pane_id)
                 .is_none_or(|old| !same_conversation(old, &descriptor));
-            let source = state
-                .resuming
-                .get(pane_id)
-                .map(|attempt| attempt.source.clone());
+            let attempt = state.resuming.get(pane_id);
+            let source = attempt.map(|attempt| attempt.source.clone());
+            let workspace = state
+                .record
+                .registry
+                .panes
+                .iter()
+                .find(|pane| &pane.id == pane_id)
+                .and_then(|pane| pane.workspace_id.as_deref());
+            let participant = workspace.map(|workspace| {
+                // Only the backend's fixed resume execution can carry the saved identity.
+                let saved = attempt
+                    .filter(|attempt| {
+                        current.root.pid == current.pane_root.pid
+                            && current.root.identity == current.pane_root.identity
+                            && same_conversation(&attempt.expected, &descriptor)
+                            && state.record.recoveries.get(&attempt.source)
+                                == Some(&attempt.expected)
+                    })
+                    .and_then(|attempt| state.record.channel_participants.get(&attempt.source))
+                    .filter(|saved| saved.workspace_id == workspace);
+                SavedParticipant {
+                    workspace_id: workspace.to_owned(),
+                    id: current
+                        .channel_participant
+                        .as_ref()
+                        .or(saved.map(|saved| &saved.id))
+                        .cloned()
+                        .unwrap_or_else(|| channels::ParticipantId(Uuid::new_v4().to_string())),
+                }
+            });
             if state.record.recoveries.get(pane_id) == Some(&descriptor)
                 && source.is_none()
                 && state.record.automatic.get(pane_id) == active.then_some(&descriptor)
+                && state.record.channel_participants.get(pane_id) == participant.as_ref()
             {
                 publish_title_source(&state, pane_id, false, title_source);
                 return Ok(());
             }
-            (state.record.clone(), source, replaced, title_source)
+            (
+                state.record.clone(),
+                source,
+                replaced,
+                title_source,
+                participant,
+                generation,
+            )
         };
         let inherited = source
             .as_ref()
@@ -638,10 +682,23 @@ impl Registry {
             next.automatic.remove(pane_id);
         }
         next.recoveries.insert(pane_id.clone(), descriptor);
+        if let Some(saved) = &participant {
+            next.channel_participants
+                .insert(pane_id.clone(), saved.clone());
+        } else {
+            next.channel_participants.remove(pane_id);
+        }
         next.registry.revision = next_revision(next.registry.revision)?;
         validate_record(&next)?;
         commit(&self.inner, next, |state| {
             state.resuming.remove(pane_id);
+            let mut captures = self.inner.captures.lock().unwrap();
+            if let Some(current) = captures.launches.get_mut(&launch.grant.launch_id)
+                && current.binding_generation == generation
+            {
+                current.channel_participant = participant.map(|saved| saved.id);
+            }
+            drop(captures);
             publish_title_source(state, pane_id, replaced, title_source);
         })?;
         Ok(())

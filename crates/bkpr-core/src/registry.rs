@@ -72,6 +72,8 @@ struct Record {
     automatic_titles: BTreeSet<String>,
     #[serde(default)]
     recovery_titles: BTreeMap<String, String>,
+    #[serde(default)]
+    channel_participants: BTreeMap<String, recovery::SavedParticipant>,
 }
 // Persistence is an explicit intent whitelist, not serialization of live facts.
 // Borrow the record: a metadata write need not copy every foreground observation.
@@ -85,6 +87,8 @@ struct DurableRecord<'a> {
     automatic_titles: &'a BTreeSet<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     recovery_titles: &'a BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    channel_participants: &'a BTreeMap<String, recovery::SavedParticipant>,
 }
 #[derive(Serialize)]
 struct DurableRegistry<'a> {
@@ -571,6 +575,7 @@ impl Registry {
             automatic: BTreeMap::new(),
             automatic_titles: BTreeSet::new(),
             recovery_titles: BTreeMap::new(),
+            channel_participants: BTreeMap::new(),
             registry: RegistrySnapshot {
                 revision: 0,
                 workspaces: Vec::new(),
@@ -609,6 +614,10 @@ impl Registry {
         let (project_wake, project_events) = crossbeam_channel::bounded(1);
         let (ci_wake, ci_events) = crossbeam_channel::bounded(1);
         let agents = Arc::new(agents::Agents::open(root)?);
+        let channels = crate::channels::ChannelEngine::new(root.to_owned());
+        if !record.registry.workspaces.is_empty() {
+            channels.provision(record.registry.workspaces.iter().map(|w| w.id.as_str()));
+        }
         let registry = Self {
             inner: Arc::new(Inner {
                 root: root.to_owned(),
@@ -636,7 +645,7 @@ impl Registry {
                 transaction: Mutex::new(()),
                 captures: Mutex::new(crate::harness::Captures::default()),
                 notifications: std::sync::OnceLock::new(),
-                channels: crate::channels::ChannelEngine::new(root.to_owned()),
+                channels,
                 agents,
                 spawn_environment: Mutex::new(None),
                 ssh_agent: Mutex::new(None),
@@ -890,33 +899,35 @@ impl Registry {
         request: bkpr_protocol::channels::ChannelRequest,
         connected: &impl Fn() -> bool,
     ) -> Result<Payload> {
-        use crate::channels::{ChannelAccessLost, ChannelAuthority};
-        use bkpr_protocol::channels::{Participant, ParticipantId, ParticipantKind};
+        self.request_channels_for(request, None, connected)
+    }
+
+    // Agent callers must first pass OS capture and native binding admission.
+    fn request_channels_for(
+        &self,
+        request: bkpr_protocol::channels::ChannelRequest,
+        caller: Option<&crate::harness::Launch>,
+        connected: &impl Fn() -> bool,
+    ) -> Result<Payload> {
+        use bkpr_protocol::channels::ChannelRequest;
+
+        if matches!(request, ChannelRequest::ListArchivedWorkspaces { .. }) {
+            ensure!(caller.is_none(), "channel archives require user authority");
+        }
+        let with_roster = matches!(
+            request,
+            ChannelRequest::ListMembers { .. }
+                | ChannelRequest::Create { .. }
+                | ChannelRequest::SetMembership { .. }
+                | ChannelRequest::Post { .. }
+        );
 
         self.inner
             .channels
             .request(
                 request,
                 |workspace_id| {
-                    let state = self.inner.state.lock().unwrap();
-                    ensure!(connected(), ChannelAccessLost);
-                    healthy(&state)?;
-                    ensure!(
-                        !state.closing && !self.session_end_requested(),
-                        SessionClosing("session is shutting down")
-                    );
-                    let workspace_open = workspace_exists(&state, workspace_id);
-                    Ok(ChannelAuthority {
-                        actor: Participant {
-                            id: ParticipantId(self.inner.session.session_id.clone()),
-                            kind: ParticipantKind::User,
-                            display_name: "User".into(),
-                        },
-                        writable: workspace_open
-                            && !state.closing_workspaces.contains(workspace_id),
-                        workspace_open,
-                        participants: Vec::new(),
-                    })
+                    self.channel_authority(workspace_id, caller, with_roster, connected)
                 },
                 |workspace_id| workspace_exists(&self.inner.state.lock().unwrap(), workspace_id),
                 || !connected() || self.session_end_requested(),
@@ -1065,6 +1076,7 @@ impl Registry {
                     });
                     Ok(())
                 })?;
+                self.inner.channels.provision([id.as_str()]);
                 Ok(json!({"registry":registry,"workspace_id":id}))
             }
             Operation::WorkspaceRename {
@@ -1673,6 +1685,9 @@ impl Registry {
         let registry = result?;
         children.committed = true;
         reservation.committed = true;
+        if let SpawnTarget::CreateWorkspace { workspace_id, .. } = &target {
+            self.inner.channels.provision([workspace_id.as_str()]);
+        }
         // A process can exit before callbacks are attached. Process every such
         // completion while the batch reservation still protects final membership.
         for (info, pane) in infos.iter().zip(&children.panes) {
@@ -1908,6 +1923,7 @@ impl Registry {
         };
         self.withdraw_notifications(&pane);
         self.inner.captures.lock().unwrap().retire_pane(id);
+        self.inner.channels.invalidate();
         let unbound_restore = {
             let mut state = self.inner.state.lock().unwrap();
             let unbound = state
@@ -2115,6 +2131,8 @@ impl Registry {
             next.recoveries.retain(|id, _| !removed.contains(id));
             next.recovery_titles.retain(|id, _| !removed.contains(id));
             next.automatic.retain(|id, _| !removed.contains(id));
+            next.channel_participants
+                .retain(|id, _| !removed.contains(id));
             for (id, attempt) in &state.resuming {
                 if removed.contains(id) {
                     next.remove_recovery(&attempt.source);
@@ -2922,6 +2940,16 @@ fn validate_record(record: &Record) -> Result<()> {
         );
         recovery::validate(descriptor)?;
     }
+    let mut participants = BTreeSet::new();
+    for (id, participant) in &record.channel_participants {
+        ensure!(
+            record.recoveries.contains_key(id)
+                && Uuid::parse_str(&participant.workspace_id).is_ok()
+                && Uuid::parse_str(participant.id.as_ref()).is_ok()
+                && participants.insert(&participant.id),
+            "invalid saved channel participant"
+        );
+    }
     for (id, title) in &record.recovery_titles {
         ensure!(
             record.recoveries.contains_key(id) && record.automatic_titles.contains(id),
@@ -3132,6 +3160,7 @@ fn durable_record(record: &Record) -> DurableRecord<'_> {
         automatic: &record.automatic,
         automatic_titles: &record.automatic_titles,
         recovery_titles: &record.recovery_titles,
+        channel_participants: &record.channel_participants,
         registry: DurableRegistry {
             revision: record.registry.revision,
             workspaces: &record.registry.workspaces,

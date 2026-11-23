@@ -22,6 +22,8 @@ pub(crate) struct Launch {
     pub managed: ManagedHarness,
     pub(crate) control: crate::ControlLease,
     pub(crate) binding_generation: u64,
+    /// Live channel identity granted after a durable, authenticated native bind.
+    pub(crate) channel_participant: Option<channels::ParticipantId>,
     /// Request-local only; never retained in the capture registry or durable store.
     pub(crate) binding_guard: Option<AgentBindingGuard>,
     /// Private, in-process admission witness. Never decoded from the wire.
@@ -246,6 +248,7 @@ impl Captures {
                 grant: grant.clone(),
                 control: crate::ControlLease::default(),
                 binding_generation: 0,
+                channel_participant: None,
                 binding_guard: None,
                 binding_context_admitted: false,
             },
@@ -398,6 +401,14 @@ impl Captures {
                 if let Some(channel) = self.native_status.remove(launch_id) {
                     channel.origin.revoke();
                 }
+                if launch
+                    .managed
+                    .conversation
+                    .as_ref()
+                    .is_none_or(|current| current.id != conversation_id || current.source != source)
+                {
+                    launch.channel_participant = None;
+                }
                 launch.managed.conversation = Some(NativeConversation {
                     id: conversation_id,
                     source,
@@ -413,6 +424,7 @@ impl Captures {
                 let launch = self.launches.get_mut(launch_id).unwrap();
                 launch.binding_generation = generation;
                 launch.managed.conversation = None;
+                launch.channel_participant = None;
                 launch.managed.error = None;
                 launch.control.revoke();
                 launch.control = crate::ControlLease::default();

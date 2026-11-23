@@ -727,6 +727,7 @@ fn restored_foreground_facts_are_stripped_and_metadata_writes_do_not_persist_the
         automatic: BTreeMap::new(),
         automatic_titles: BTreeSet::new(),
         recovery_titles: BTreeMap::new(),
+        channel_participants: BTreeMap::new(),
         registry: RegistrySnapshot {
             revision: 1,
             workspaces: Vec::new(),
@@ -1094,3 +1095,7 @@ fn stale_observation_cannot_replace_newer_authenticated_native_binding() {
         "an older queued foreground sample must not demote the newer authenticated binding"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[path = "channel_tests.rs"]
+mod channel_tests;

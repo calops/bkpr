@@ -6,6 +6,7 @@ fn launch(id: &str) -> Launch {
     Launch {
         control: Default::default(),
         binding_generation: 1,
+        channel_participant: None,
         binding_guard: None,
         binding_context_admitted: false,
         root: process.clone(),

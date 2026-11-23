@@ -109,6 +109,18 @@ impl ChannelEngine {
         }
     }
 
+    /// Provision committed workspaces without making their lifecycle depend on channel
+    /// storage. List and Create retry missed provisioning and surface storage errors.
+    pub(crate) fn provision<'a>(&self, workspaces: impl IntoIterator<Item = &'a str>) {
+        let result = self
+            .acquire_store(Instant::now() + STORE_WAIT, &|| false)
+            .map_err(StoreAdmission::into_error)
+            .and_then(|mut writer| writer.store.as_mut().unwrap().provision(workspaces));
+        if result.is_err() {
+            crate::diagnostics::record("channels.provision", None, "deferred");
+        }
+    }
+
     /// Execute one typed operation, checking authority against the resolved workspace.
     ///
     /// `admit` must sample live authority without blocking on I/O or returning a registry

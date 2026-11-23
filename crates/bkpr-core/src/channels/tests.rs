@@ -295,8 +295,8 @@ fn access_revocation_and_retry_freeze_target_without_replay() {
         Vec::new(),
         ChannelSettings::default(),
     );
-    assert_eq!(f.list(&f.a).len(), 1);
-    assert!(f.list(&f.b).is_empty());
+    assert!(f.list(&f.a).iter().any(|channel| channel.id == id));
+    assert!(!f.list(&f.b).iter().any(|channel| channel.id == id));
     assert!(f.as_actor(&f.b, messages(&id, None, 1)).is_err());
     assert!(f.as_actor(&f.b, send(&id, post("intruder"))).is_err());
     assert!(
@@ -466,14 +466,21 @@ fn typed_mentions_and_policy_select_only_current_agents_and_preserve_unread_atte
         .extend([f.a.id.clone(), f.user.id.clone()]);
     let attention = posted(f.as_actor(&f.a, send(&id, question)).unwrap());
     assert_eq!(f.work(&attention.id), [(String::new(), None, false, true)]);
-    assert!(f.list(&f.user)[0].unread_attention);
-    assert!(!f.list(&f.a)[0].unread_attention);
+    let unread = |actor| {
+        f.list(actor)
+            .into_iter()
+            .find(|channel| channel.id == id)
+            .unwrap()
+            .unread_attention
+    };
+    assert!(unread(&f.user));
+    assert!(!unread(&f.a));
     f.as_actor(&f.a, mark(&id, attention.sequence)).unwrap();
-    assert!(f.list(&f.user)[0].unread_attention);
+    assert!(unread(&f.user));
     f.request(mark(&id, addressed.sequence)).unwrap();
-    assert!(f.list(&f.user)[0].unread_attention);
+    assert!(unread(&f.user));
     f.request(mark(&id, attention.sequence)).unwrap();
-    assert!(!f.list(&f.user)[0].unread_attention);
+    assert!(!unread(&f.user));
 
     let mut own = post("own-question");
     own.intent = PostIntent::Question;
@@ -526,7 +533,14 @@ fn durable_history_recovery_and_atomic_commit_failure() {
     initial.attachments.push(attachment.id);
     assert!(f.request(send(&id, initial.clone())).is_err());
     assert_eq!(f.staged_bytes(), u64::from(attachment.byte_len));
-    assert_eq!(f.list(&f.user)[0].last_sequence, 0);
+    assert_eq!(
+        f.list(&f.user)
+            .into_iter()
+            .find(|c| c.id == id)
+            .unwrap()
+            .last_sequence,
+        0
+    );
     assert_eq!(
         f.request(messages(&id, None, 1)).unwrap(),
         ChannelResponse::History {
@@ -989,7 +1003,14 @@ fn full_notification_queue_rejects_only_new_work_and_keeps_accepted_history() {
             .to_string()
             .contains("capacity")
     );
-    assert_eq!(f.list(&f.user)[0].last_sequence, 1);
+    assert_eq!(
+        f.list(&f.user)
+            .into_iter()
+            .find(|c| c.id == id)
+            .unwrap()
+            .last_sequence,
+        1
+    );
     f.request(ChannelRequest::SetSettings {
         channel_id: id.clone(),
         settings: quiet(),
@@ -1096,13 +1117,13 @@ fn retained_archive_discovery_and_membership_do_not_depend_on_live_roster() {
     let list = |workspace_id: &str| ChannelRequest::List {
         workspace_id: workspace_id.into(),
         after: None,
-        limit: 1,
+        limit: 8,
     };
     assert!(run(&f.user, list("not-retained"), true).is_err());
     assert!(run(&f.a, list(WORKSPACE), true).is_err());
     assert!(matches!(
         run(&f.user, list(WORKSPACE), true).unwrap(),
-        ChannelResponse::Listed { channels, next_after: None } if channels.len() == 1 && channels[0].id == id
+        ChannelResponse::Listed { channels, next_after: None } if channels.iter().any(|channel| channel.id == id)
     ));
     assert_eq!(
         run(
@@ -1626,8 +1647,8 @@ fn visibility_index_migration_preserves_member_access_and_durable_history() {
          PRAGMA user_version=1;",
     );
     let f = f.reopen();
-    assert_eq!(f.list(&f.a)[0].id, id);
-    assert!(f.list(&f.b).is_empty());
+    assert!(f.list(&f.a).iter().any(|channel| channel.id == id));
+    assert!(!f.list(&f.b).iter().any(|channel| channel.id == id));
     assert_eq!(f.as_actor(&f.a, send(&id, original)).unwrap(), accepted);
     let (sync, version) = f
         .engine
