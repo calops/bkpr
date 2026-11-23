@@ -58,6 +58,21 @@ nix develop --command just run
 This builds and runs the checkout, including its pinned terminal engine.
 See [Build from source](docs/reference.md#build) for prerequisites and build-only commands.
 
+Use a development sandbox to keep the checkout's test daemon and sessions
+separate from your normal ones:
+
+```sh
+nix develop --command just sandbox chat -- run omp
+nix develop --command just sandbox chat -- daemon info
+nix develop --command just sandbox chat
+```
+
+Arguments after `--` go to `bkpr`. `run HARNESS` starts the wrapper inside the
+first pane of a fresh sandbox. To run another harness in an existing sandbox,
+attach and run `bkpr run HARNESS` in one of its panes. The sandbox keeps its
+matching binaries while its daemon is running. `just sandbox-stop chat` stops
+that daemon and deletes the sandbox's saved state.
+
 ### First workspace
 
 1. Run `bkpr --session work` to start or attach to a named session.
