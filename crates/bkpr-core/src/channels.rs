@@ -6,6 +6,7 @@ use bkpr_protocol::channels::{
     ChannelResponse, ChannelSubscriptionStatus, Participant, ParticipantId,
 };
 use std::{
+    collections::BTreeSet,
     io::Cursor,
     path::PathBuf,
     sync::{
@@ -15,6 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) use store::catalog::CatalogRead;
 mod store;
 #[cfg(test)]
 mod tests;
@@ -109,6 +111,7 @@ pub struct ChannelEngine {
     store_ready: Condvar,
     retirement_epoch: AtomicU64,
     launch_active: std::sync::OnceLock<Box<LaunchActive>>,
+    catalog_epoch: AtomicU64,
     requests: AtomicUsize,
     subscriptions: AtomicUsize,
     generation: Mutex<u64>,
@@ -150,6 +153,7 @@ impl ChannelEngine {
             store_ready: Condvar::new(),
             retirement_epoch: AtomicU64::new(0),
             launch_active: std::sync::OnceLock::new(),
+            catalog_epoch: AtomicU64::new(0),
             requests: AtomicUsize::new(0),
             subscriptions: AtomicUsize::new(0),
             generation: Mutex::new(0),
@@ -312,6 +316,11 @@ impl ChannelEngine {
         self.changed.notify_all();
     }
 
+    pub(crate) fn workspace_added(&self) {
+        self.catalog_epoch.fetch_add(1, Ordering::Release);
+        self.invalidate();
+    }
+
     /// Queue retirement after durable workspace closure and wake subscriptions.
     /// The next store operation reconciles pending work against committed workspace presence.
     /// Opening the store retires all work from a previous runtime. This never takes the writer.
@@ -322,6 +331,7 @@ impl ChannelEngine {
     /// Mark pending work for reconciliation on the next writer turn, without taking the writer.
     pub(crate) fn reconcile_retired_work(&self) {
         self.retirement_epoch.fetch_add(1, Ordering::Release);
+        self.catalog_epoch.fetch_add(1, Ordering::Release);
         self.invalidate();
     }
 
@@ -394,6 +404,72 @@ impl ChannelEngine {
         operation(writer.store.as_mut().unwrap())
     }
 
+    pub(crate) fn catalog_request(
+        &self,
+        read: CatalogRead<'_>,
+        actor_id: &str,
+        limit: u16,
+        wait_ms: u32,
+        workspaces: impl Fn() -> Result<BTreeSet<String>>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<ChannelResponse> {
+        let (admission, capacity) = match read {
+            CatalogRead::Snapshot(_) => (&self.requests, MAX_REQUESTS),
+            CatalogRead::Changes(_) => (&self.subscriptions, MAX_SUBSCRIBERS),
+        };
+        let _permit = Permit::acquire(admission, capacity)?;
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(u64::from(wait_ms));
+        let read_deadline = if wait_ms == 0 {
+            started + STORE_WAIT
+        } else {
+            deadline
+        };
+        loop {
+            let observed = *self.generation.lock().unwrap();
+            let mut writer = self
+                .acquire_store(read_deadline.min(Instant::now() + STORE_WAIT), &cancelled)
+                .map_err(StoreAdmission::into_error)?;
+            let epoch = self.catalog_epoch.load(Ordering::Acquire);
+            let store = writer.store.as_mut().unwrap();
+            if store.catalog_epoch != Some(epoch) {
+                store.sync_catalog(workspaces()?, actor_id)?;
+                store.catalog_epoch = Some(epoch);
+            }
+            let page = store.read_catalog(read, actor_id, limit)?;
+            drop(writer);
+            ensure!(!cancelled(), "channel catalog request disconnected");
+            if self.catalog_epoch.load(Ordering::Acquire) != epoch {
+                // A committed closure crossed the read. Never return its old live entries.
+                if Instant::now() >= read_deadline {
+                    return Err(StoreAdmission::Busy.into_error());
+                }
+                continue;
+            }
+            if !matches!(&page, ChannelResponse::CatalogChanges { changes, .. } if changes.is_empty())
+                || Instant::now() >= deadline
+            {
+                return Ok(page);
+            }
+            self.wait_for_change(observed, deadline, &cancelled);
+        }
+    }
+
+    fn wait_for_change(&self, observed: u64, deadline: Instant, cancelled: &impl Fn() -> bool) {
+        while !cancelled() {
+            let generation = self.generation.lock().unwrap();
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if *generation != observed || remaining.is_zero() {
+                return;
+            }
+            drop(
+                self.changed
+                    .wait_timeout(generation, remaining.min(CANCEL_CHECK))
+                    .unwrap(),
+            );
+        }
+    }
+
     fn subscribe(
         &self,
         subscription: Subscription,
@@ -411,7 +487,7 @@ impl ChannelEngine {
         let deadline = Instant::now() + Duration::from_millis(u64::from(wait_ms));
         let supplied = after.map(|cursor| cursor.sequence);
         let mut after = supplied;
-        'observe: loop {
+        loop {
             // Capture before reading; a commit during observation must prevent sleeping.
             let observed = *self.generation.lock().unwrap();
             let result =
@@ -443,21 +519,7 @@ impl ChannelEngine {
                 });
             }
             after = Some(sequence);
-            loop {
-                if cancelled() {
-                    break 'observe;
-                }
-                let generation = self.generation.lock().unwrap();
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if *generation != observed || remaining.is_zero() {
-                    break;
-                }
-                drop(
-                    self.changed
-                        .wait_timeout(generation, remaining.min(CANCEL_CHECK))
-                        .unwrap(),
-                );
-            }
+            self.wait_for_change(observed, deadline, &cancelled);
         }
         Ok(ChannelResponse::Changes {
             cursor: ChannelCursor {

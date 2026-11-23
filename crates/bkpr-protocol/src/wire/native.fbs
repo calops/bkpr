@@ -454,6 +454,18 @@ table ChannelRequestListExplicitMembers {
   after:string;
   limit:ushort;
 }
+table ChannelCatalogCursor { store_id:string (required); sequence:ulong; }
+table ChannelCatalogPage {
+  cursor:ChannelCatalogCursor (required);
+  workspace_id:string (required);
+  channel_id:string (required);
+}
+table ChannelRequestCatalogSnapshot { after:ChannelCatalogPage; limit:ushort; }
+table ChannelRequestCatalogSubscribe {
+  after:ChannelCatalogCursor (required);
+  limit:ushort;
+  wait_ms:uint;
+}
 union ChannelRequest {
   ChannelRequestList,
   ChannelRequestListMembers,
@@ -468,7 +480,9 @@ union ChannelRequest {
   ChannelRequestUploadAttachment,
   ChannelRequestGetAttachment,
   ChannelRequestListArchivedWorkspaces,
-  ChannelRequestListExplicitMembers
+  ChannelRequestListExplicitMembers,
+  ChannelRequestCatalogSnapshot,
+  ChannelRequestCatalogSubscribe
 }
 table OperationChannels { request:ChannelRequest (required); }
 union Operation {
@@ -925,6 +939,21 @@ table ChannelResponseExplicitMembers {
   members:[string] (required);
   next_after:string;
 }
+table ChannelCatalogUpsert { channel:ChannelSummary (required); }
+table ChannelCatalogWorkspaceClosed { workspace_id:string (required); }
+union ChannelCatalogChangeBody { ChannelCatalogUpsert, ChannelCatalogWorkspaceClosed }
+table ChannelCatalogChange { body:ChannelCatalogChangeBody (required); }
+table ChannelResponseCatalogSnapshot {
+  channels:[ChannelSummary] (required);
+  cursor:ChannelCatalogCursor (required);
+  next_after:ChannelCatalogPage;
+}
+table ChannelResponseCatalogChanges {
+  cursor:ChannelCatalogCursor (required);
+  changes:[ChannelCatalogChange] (required);
+  more:bool;
+}
+table ChannelResponseCatalogReset {}
 union ChannelResponse {
   ChannelResponseListed,
   ChannelResponseMembers,
@@ -937,7 +966,10 @@ union ChannelResponse {
   ChannelResponseAttachmentUploaded,
   ChannelResponseAttachment,
   ChannelResponseArchivedWorkspaces,
-  ChannelResponseExplicitMembers
+  ChannelResponseExplicitMembers,
+  ChannelResponseCatalogSnapshot,
+  ChannelResponseCatalogChanges,
+  ChannelResponseCatalogReset
 }
 table ChannelPayload { response:ChannelResponse (required); }
 union Payload { ControlPayload, PanePayload, ImageResourcePayload, ChannelPayload }

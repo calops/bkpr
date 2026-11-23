@@ -2376,6 +2376,17 @@ fn concurrent_direct_sends_share_one_private_thread_and_keep_exact_receipts() {
         (live(&registry, &spec.home), workspace)
     };
     let (a, a_workspace) = add("first");
+    let snapshot = ChannelRequest::CatalogSnapshot {
+        after: None,
+        limit: 16,
+    };
+    let ChannelResponse::CatalogSnapshot {
+        cursor: catalog_before,
+        ..
+    } = channel(&registry, None, snapshot).unwrap()
+    else {
+        panic!("expected catalog baseline");
+    };
     let add_peer = |name| {
         let spec = launch_spec(root, name, name);
         let revision = registry
@@ -2421,6 +2432,31 @@ fn concurrent_direct_sends_share_one_private_thread_and_keep_exact_receipts() {
     assert_ne!(a_post["message"]["id"], b_post["message"]["id"]);
     assert_eq!(a_post["channel_id"], b_post["channel_id"]);
     assert_eq!(agent(&registry, &a, original()), a_post);
+    let ChannelResponse::CatalogChanges {
+        changes,
+        more: false,
+        ..
+    } = channel(
+        &registry,
+        None,
+        ChannelRequest::CatalogSubscribe {
+            after: catalog_before,
+            limit: 8,
+            wait_ms: 0,
+        },
+    )
+    .unwrap()
+    else {
+        panic!("expected direct send catalog changes");
+    };
+    assert!(!changes.is_empty());
+    for change in changes {
+        assert!(matches!(change,
+            bkpr_protocol::channels::ChannelCatalogChange::Upsert { channel }
+                if channel.direct && channel.last_sequence == 2 && !channel.unread_attention
+                    && channel.workspace_id == a_workspace
+        ));
+    }
     assert!(
         agent_result(
             &registry,

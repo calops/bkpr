@@ -2370,3 +2370,192 @@ fn pane_process_cannot_obtain_user_channel_authority_by_registering() {
     ));
     daemon.shutdown_host();
 }
+
+#[test]
+fn channel_catalog_resumes_after_detach_and_restart_in_its_own_session() {
+    use bkpr_protocol::{
+        Payload,
+        channels::{ChannelCatalogChange, ChannelRequest, ChannelResponse},
+    };
+
+    let fixture = Fixture::new();
+    let name = bkpr_protocol::DEFAULT_SESSION_NAME;
+    let mut daemon = fixture.start_host();
+    let endpoint = daemon.open(name, Some(sleeping_spec(&fixture)));
+    let initial = daemon.snapshot().workspaces.pop().unwrap();
+    daemon.send(Operation::WorkspaceCreate {
+        name: Some("Unselected workspace".into()),
+        initial: Some(sleeping_spec(&fixture)),
+    });
+    let hidden = daemon
+        .snapshot()
+        .workspaces
+        .into_iter()
+        .find(|workspace| workspace.id != initial.id)
+        .unwrap();
+    let (first_lifetime, first) = register_channel_client(&endpoint);
+    let snapshot = || ChannelRequest::CatalogSnapshot {
+        after: None,
+        limit: 1,
+    };
+    let send = |endpoint: &bkpr_protocol::SessionEndpoint,
+                authority: &bkpr_protocol::ClientAuthority,
+                request_body| {
+        let reply = request(
+            &endpoint.socket,
+            as_channel_client(
+                authority,
+                Operation::Channels {
+                    request: request_body,
+                },
+            ),
+        )
+        .unwrap();
+        assert!(reply.ok, "{:?}", reply.error);
+        let Some(Payload::Channels(reply)) = reply.result else {
+            panic!("expected catalog payload");
+        };
+        reply
+    };
+    assert!(
+        !request(
+            &endpoint.socket,
+            Operation::Channels {
+                request: snapshot()
+            }
+        )
+        .unwrap()
+        .ok
+    );
+    assert!(
+        !request(
+            &endpoint.socket,
+            as_channel_client(
+                &first,
+                Operation::Channels {
+                    request: snapshot()
+                }
+            )
+        )
+        .unwrap()
+        .ok
+    );
+    activate_channel_client(&endpoint, &first);
+    let ChannelResponse::CatalogSnapshot {
+        cursor,
+        next_after: Some(partial),
+        ..
+    } = send(&endpoint, &first, snapshot())
+    else {
+        panic!("expected paged catalog");
+    };
+    let ChannelResponse::CatalogSnapshot {
+        channels,
+        next_after: None,
+        ..
+    } = send(
+        &endpoint,
+        &first,
+        ChannelRequest::CatalogSnapshot {
+            after: None,
+            limit: 8,
+        },
+    )
+    else {
+        panic!("expected all four presets");
+    };
+    assert_eq!(
+        channels
+            .iter()
+            .filter(|channel| channel.workspace_id == hidden.id)
+            .count(),
+        2
+    );
+    control(
+        &endpoint.socket,
+        as_channel_client(&first, Operation::ClientDetach),
+    );
+    drop(first_lifetime);
+
+    let (second_lifetime, second) = register_channel_client(&endpoint);
+    activate_channel_client(&endpoint, &second);
+    daemon.send(Operation::WorkspaceClose {
+        workspace_id: hidden.id.clone(),
+        expected_revision: hidden.revision,
+    });
+    assert_eq!(
+        send(
+            &endpoint,
+            &second,
+            ChannelRequest::CatalogSnapshot {
+                after: Some(partial),
+                limit: 1
+            }
+        ),
+        ChannelResponse::CatalogReset {}
+    );
+    let resume =
+        |after: &bkpr_protocol::channels::ChannelCatalogCursor| ChannelRequest::CatalogSubscribe {
+            after: after.clone(),
+            limit: 4,
+            wait_ms: 0,
+        };
+    let ChannelResponse::CatalogChanges {
+        changes,
+        cursor: after_close,
+        more: false,
+    } = send(&endpoint, &second, resume(&cursor))
+    else {
+        panic!("expected closure delta");
+    };
+    assert_eq!(
+        changes,
+        [ChannelCatalogChange::WorkspaceClosed {
+            workspace_id: hidden.id.clone()
+        }]
+    );
+    let another = daemon.open("other-catalog", None);
+    let (other_lifetime, other) = register_channel_client(&another);
+    activate_channel_client(&another, &other);
+    assert_eq!(
+        send(&another, &other, resume(&cursor)),
+        ChannelResponse::CatalogReset {}
+    );
+    drop((second_lifetime, other_lifetime));
+    daemon.shutdown_host();
+
+    let mut daemon = fixture.start_host();
+    let resumed = daemon.open(name, None);
+    let (_lifetime, authority) = register_channel_client(&resumed);
+    activate_channel_client(&resumed, &authority);
+    assert_eq!(
+        send(&resumed, &authority, resume(&after_close)),
+        ChannelResponse::CatalogChanges {
+            cursor: after_close,
+            changes: vec![],
+            more: false,
+        }
+    );
+    let ChannelResponse::CatalogSnapshot {
+        channels,
+        next_after: None,
+        ..
+    } = send(
+        &resumed,
+        &authority,
+        ChannelRequest::CatalogSnapshot {
+            after: None,
+            limit: 8,
+        },
+    )
+    else {
+        panic!("expected catalog without archived rows");
+    };
+    assert_eq!(channels.len(), 2);
+    assert!(
+        channels
+            .iter()
+            .all(|channel| channel.workspace_id == initial.id)
+    );
+    daemon.shutdown_host();
+}

@@ -933,7 +933,43 @@ impl Registry {
         connected: &dyn Fn() -> bool,
         projection: ChannelProjection,
     ) -> Result<Payload> {
+        use crate::channels::CatalogRead;
         use bkpr_protocol::channels::ChannelRequest;
+        let catalog = match &request {
+            ChannelRequest::CatalogSnapshot { after, limit } => {
+                Some((CatalogRead::Snapshot(after.as_ref()), *limit, 0))
+            }
+            ChannelRequest::CatalogSubscribe {
+                after,
+                limit,
+                wait_ms,
+            } => Some((CatalogRead::Changes(after), *limit, *wait_ms)),
+            _ => None,
+        };
+        if let Some((read, limit, wait_ms)) = catalog {
+            ensure!(caller.is_none(), "channel catalog requires user authority");
+            request.validate()?;
+            let page = self.inner.channels.catalog_request(
+                read,
+                &self.inner.session.session_id,
+                limit,
+                wait_ms,
+                || {
+                    let state = self.inner.state.lock().unwrap();
+                    healthy(&state)?;
+                    Ok(state
+                        .record
+                        .registry
+                        .workspaces
+                        .iter()
+                        .map(|w| w.id.clone())
+                        .collect())
+                },
+                || !connected() || self.session_end_requested(),
+            )?;
+            self.request_health()?;
+            return Ok(Payload::Channels(page));
+        }
 
         if matches!(request, ChannelRequest::ListArchivedWorkspaces { .. }) {
             ensure!(caller.is_none(), "channel archives require user authority");
@@ -3417,6 +3453,7 @@ fn commit_projected<T>(
         return Err(error);
     }
     let mut state = inner.state.lock().unwrap();
+    let workspace_added = next.registry.workspaces.len() > state.record.registry.workspaces.len();
     if !state.record.registry.workspaces.is_empty()
         && next.registry.workspaces.is_empty()
         && !state.closing
@@ -3427,6 +3464,9 @@ fn commit_projected<T>(
     }
     state.record = next;
     publish(&mut state);
+    if workspace_added {
+        inner.channels.workspace_added();
+    }
     inner.changed.notify_all();
     let _ = inner.project_wake.try_send(());
     inner

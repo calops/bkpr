@@ -321,6 +321,44 @@ pub struct ChannelSummary {
     pub direct: bool,
 }
 
+/// A durable position in one session's user channel catalog.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelCatalogCursor {
+    /// Opaque identity of the owning catalog store.
+    pub store_id: String,
+    /// Last observed revision, including any filtered changes.
+    pub sequence: u64,
+}
+
+/// Exclusive keyset continuation for a single consistent catalog snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelCatalogPage {
+    /// Baseline shared by every page of this snapshot.
+    pub cursor: ChannelCatalogCursor,
+    /// Last workspace emitted.
+    pub workspace_id: String,
+    /// Last channel emitted in that workspace.
+    pub channel_id: ChannelId,
+}
+
+/// A body-free update to the session user's live catalog.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ChannelCatalogChange {
+    /// Replace or insert the current summary by channel identity.
+    Upsert {
+        /// Authoritative catalog state, including the user's unread attention.
+        channel: ChannelSummary,
+    },
+    /// Remove the workspace and its channels from the live catalog.
+    WorkspaceClosed {
+        /// Original workspace identity. Retained history is available separately.
+        workspace_id: String,
+    },
+}
+
 /// Ordered message metadata, without the body or attachment bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -547,6 +585,22 @@ pub enum ChannelRequest {
         /// Exact immutable resource to fetch.
         attachment_id: AttachmentId,
     },
+    /// Read one page of the live user catalog, including unselected workspaces.
+    CatalogSnapshot {
+        /// Omit to start a snapshot, or reuse the previous page's continuation.
+        after: Option<ChannelCatalogPage>,
+        /// Maximum number of channels in this page.
+        limit: u16,
+    },
+    /// Resume the session user's catalog, optionally waiting for new changes.
+    CatalogSubscribe {
+        /// Cursor from a complete snapshot or the last applied change page.
+        after: ChannelCatalogCursor,
+        /// Maximum number of changes in this page.
+        limit: u16,
+        /// At most [`MAX_WAIT_MS`], or zero for a nonblocking read.
+        wait_ms: u32,
+    },
 }
 
 /// Typed channel replies. Only an attachment fetch includes encoded raster bytes.
@@ -644,6 +698,26 @@ pub enum ChannelResponse {
         #[serde(with = "attachment_bytes")]
         bytes: bytes::Bytes,
     },
+    /// Page of the live catalog at a fixed baseline, ordered by workspace and channel ID.
+    CatalogSnapshot {
+        /// Catalog entries. A workspace badge is the OR of its entries' unread attention.
+        channels: Vec<ChannelSummary>,
+        /// Baseline to subscribe from once every page has been applied.
+        cursor: ChannelCatalogCursor,
+        /// Exclusive continuation when more snapshot entries remain.
+        next_after: Option<ChannelCatalogPage>,
+    },
+    /// Metadata changes only. This page never requests notification delivery.
+    CatalogChanges {
+        /// Advance to this cursor even if no visible changes were returned.
+        cursor: ChannelCatalogCursor,
+        /// Changes in stream order; an upsert may already reflect a later commit.
+        changes: Vec<ChannelCatalogChange>,
+        /// More visible changes are ready without waiting.
+        more: bool,
+    },
+    /// The cursor cannot be continued. Discard partial or cached state and start a snapshot.
+    CatalogReset {},
 }
 
 impl fmt::Debug for ChannelResponse {
@@ -661,6 +735,9 @@ impl fmt::Debug for ChannelResponse {
             Self::Changes { .. } => "Changes",
             Self::AttachmentUploaded { .. } => "AttachmentUploaded",
             Self::Attachment { .. } => "Attachment",
+            Self::CatalogSnapshot { .. } => "CatalogSnapshot",
+            Self::CatalogChanges { .. } => "CatalogChanges",
+            Self::CatalogReset {} => "CatalogReset",
         };
         f.debug_struct(variant).finish_non_exhaustive()
     }
@@ -722,6 +799,8 @@ impl ChannelRequest {
                 | Self::Read { .. }
                 | Self::Subscribe { .. }
                 | Self::GetAttachment { .. }
+                | Self::CatalogSnapshot { .. }
+                | Self::CatalogSubscribe { .. }
         )
     }
 
@@ -830,6 +909,23 @@ impl ChannelRequest {
             } => {
                 valid_id(channel_id.as_ref())?;
                 valid_id(attachment_id.as_ref())
+            }
+            Self::CatalogSnapshot { after, limit } => {
+                if let Some(page) = after {
+                    valid_id(&page.cursor.store_id)?;
+                    valid_id(&page.workspace_id)?;
+                    valid_id(page.channel_id.as_ref())?;
+                }
+                valid_limit(*limit)
+            }
+            Self::CatalogSubscribe {
+                after,
+                limit,
+                wait_ms,
+            } => {
+                valid_id(&after.store_id)?;
+                ensure!(*wait_ms <= MAX_WAIT_MS, "channel wait exceeds limit");
+                valid_limit(*limit)
             }
         }
     }

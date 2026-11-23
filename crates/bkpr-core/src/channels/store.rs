@@ -22,12 +22,14 @@ use uuid::Uuid;
 
 #[path = "legacy.rs"]
 mod legacy;
+#[path = "catalog.rs"]
+pub(super) mod catalog;
 #[path = "wakes.rs"]
 mod wakes;
 
 const APPLICATION_ID: i64 = 0x424b4348;
 // Versions 1–6 predate staging. Version 7 predates wakes.
-const STORE_VERSION: i64 = 12;
+const STORE_VERSION: i64 = 13;
 const FIRST_STAGING_VERSION: i64 = 7;
 const ORDERED_WAKE_VERSION: i64 = 9;
 const STORE_NAME: &str = "channels.sqlite3";
@@ -131,6 +133,7 @@ const WAKE_QUEUE_SCHEMA: &str = "
 pub(crate) struct Store {
     pub(super) connection: Connection,
     pub(super) retirement_epoch: u64,
+    pub(super) catalog_epoch: Option<u64>,
 }
 
 struct StoredChannel {
@@ -220,6 +223,9 @@ impl Store {
             if matches!(version, 1 | 2 | FIRST_STAGING_VERSION) {
                 tx.execute_batch(include_str!("wakes.sql"))?;
             }
+            if matches!(version, 0..=4 | 7..=9 | 12) {
+                tx.execute_batch(include_str!("catalog.sql"))?;
+            }
             if (1..FIRST_STAGING_VERSION).contains(&version) {
                 migrate_attachment_staging(&tx)?;
             }
@@ -245,13 +251,15 @@ impl Store {
             {
                 tx.execute_batch(include_str!("direct.sql"))?;
             }
-            if !legacy::source_present(root) {
-                tx.execute_batch("DROP TABLE IF EXISTS agent_state;")?;
+            if version < 12 {
+                if !legacy::source_present(root) {
+                    tx.execute_batch("DROP TABLE IF EXISTS agent_state;")?;
+                }
+                tx.execute_batch(
+                    "ALTER TABLE notification_work ADD COLUMN read_at INTEGER;
+                     ALTER TABLE notification_work ADD COLUMN acknowledged_at INTEGER;",
+                )?;
             }
-            tx.execute_batch(
-                "ALTER TABLE notification_work ADD COLUMN read_at INTEGER;
-                 ALTER TABLE notification_work ADD COLUMN acknowledged_at INTEGER;",
-            )?;
             tx.pragma_update(None, "user_version", STORE_VERSION)?;
         }
         if version != 0 {
@@ -265,6 +273,7 @@ impl Store {
         Ok(Self {
             connection,
             retirement_epoch: 0,
+            catalog_epoch: None,
         })
     }
 
@@ -367,18 +376,7 @@ impl Store {
         workspaces: impl IntoIterator<Item = &'a str>,
     ) -> Result<()> {
         let tx = self.connection.transaction()?;
-        {
-            let mut exists = tx.prepare(
-                "SELECT EXISTS(SELECT 1 FROM channels WHERE workspace_id=?1 AND name=?2)",
-            )?;
-            for workspace in workspaces {
-                for (name, settings) in PRESETS {
-                    if !exists.query_row([workspace, name], |row| row.get::<_, bool>(0))? {
-                        insert_channel(&tx, &ChannelId(new_id()), workspace, name, true, settings)?;
-                    }
-                }
-            }
-        }
+        provision_channels(&tx, workspaces)?;
         tx.commit()?;
         Ok(())
     }
@@ -1557,6 +1555,7 @@ impl Store {
             return Ok((ChannelResponse::ReadPosition { through: previous }, false));
         }
         let tx = self.connection.transaction()?;
+        catalog::record_read_position(&tx, id, actor, previous)?;
         tx.execute(
             "INSERT INTO positions VALUES(?1,?2,?3) ON CONFLICT(channel_id,participant_id)
              DO UPDATE SET through=excluded.through",
@@ -1811,10 +1810,26 @@ fn store_version(connection: &Connection, empty: bool) -> Result<i64> {
     ensure!(
         (empty && application == 0 && version == 0)
             || (application == APPLICATION_ID
-                && matches!(version, 1..=4 | FIRST_STAGING_VERSION..=9 | STORE_VERSION)),
+                && matches!(version, 1..=5 | FIRST_STAGING_VERSION..=10 | 12..=STORE_VERSION)),
         "foreign or unsupported channel store"
     );
     Ok(version)
+}
+
+fn provision_channels<'a>(
+    tx: &Transaction<'_>,
+    workspaces: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let mut exists =
+        tx.prepare("SELECT EXISTS(SELECT 1 FROM channels WHERE workspace_id=?1 AND name=?2)")?;
+    for workspace in workspaces {
+        for (name, settings) in PRESETS {
+            if !exists.query_row([workspace, name], |row| row.get::<_, bool>(0))? {
+                insert_channel(tx, &ChannelId(new_id()), workspace, name, true, settings)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn insert_channel(
