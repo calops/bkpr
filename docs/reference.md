@@ -858,6 +858,10 @@ Pi hooks; AGY is unknown. The first observation belongs to the live launch,
 not each conversation selection; absence means unknown. Submission is neither
 durable queue acceptance nor model acceptance. Semantic status and its change
 timestamp remain independent.
+The sidebar can show an OSC 7501 status from the start of a managed launch,
+including while Omp runs an initial positional prompt. The first authenticated
+conversation binding does not discard that launch's foreground OSC status.
+A replacement binding does not inherit it.
 
 Omp offers native step-boundary asides, Claude uses tool-boundary context and idle
 `asyncRewake`, Codex queues for a future turn on its exact selected thread,

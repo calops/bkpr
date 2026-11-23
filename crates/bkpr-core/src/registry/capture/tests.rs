@@ -160,10 +160,10 @@ fn managed_peer_fixture() {
         "fixture must exercise the installer executable, not a named hard link"
     );
     let nested = home.join("nested/claude");
-    // Keep the recognized native process stable while sampling its descendants.
-    // Repeatedly forking `sleep` makes procfs executable identity transient.
+    // Keep the native process stable by the time the parent samples the OSC
+    // report. A replacement binding must not inherit an earlier report.
     let mut child = ChildGuard(Command::new(&native)
-        .args(["-c", r#"printf '\033]7501;state=working:app=claude\007'; "$1" -c '"$1" --ignored --exact registry::capture::tests::nested_peer_fixture --nocapture --test-threads=1; result=$?; exit "$result"' nested "$2" || exit "$?"; "$HOME/runtime/node" -c 'printf ready > "$HOME/runtime-ready"; IFS= read -r hold' <&0 & printf ready > "$HOME/native-ready"; IFS= read -r hold"#, "native"])
+        .args(["-c", r#""$1" -c '"$1" --ignored --exact registry::capture::tests::nested_peer_fixture --nocapture --test-threads=1; result=$?; exit "$result"' nested "$2" || exit "$?"; "$HOME/runtime/node" -c 'printf ready > "$HOME/runtime-ready"; IFS= read -r hold' <&0 & printf ready > "$HOME/native-ready"; while [ ! -f "$HOME/start-status" ]; do sleep 0.01; done; printf '\033]7501;state=working:app=claude\007'; IFS= read -r hold"#, "native"])
         .arg(&nested).arg(std::env::current_exe().unwrap())
         .env("FIXTURE_CAPTURE_TOKEN", &grant.token).env("FIXTURE_CAPTURE_LAUNCH", &grant.launch_id)
         .current_dir(home.join("native-cwd"))
@@ -218,6 +218,7 @@ fn managed_peer_fixture() {
             id == "native-two"
         );
     }
+    fs::write(home.join("start-status"), b"ready").unwrap();
     let ready = home.join("ready.tmp");
     fs::write(&ready, serde_json::to_vec(&json!({"launch_id":grant.launch_id,"native_pid":child.0.id(),"context":context()["result"]})).unwrap()).unwrap();
     fs::rename(ready, home.join("ready.json")).unwrap();

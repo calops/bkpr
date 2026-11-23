@@ -316,7 +316,7 @@ fn observer_releases_stale_launch_contexts_without_ending_its_live_pane() {
     );
 }
 
-fn bind_title_fixture(
+fn bind_omp_fixture(
     fixture: &Fixture,
     grant: &CaptureGrant,
     peer: &Peer,
@@ -338,6 +338,52 @@ fn bind_title_fixture(
             peer,
         )
         .unwrap();
+}
+
+#[test]
+fn startup_osc_survives_first_binding_but_not_conversation_replacement() {
+    let fixture = Fixture::new();
+    let (id, grant, peer) = seed_launch_command(
+        &fixture,
+        HarnessKind::Omp,
+        r"
+        while [ ! -f start ]; do sleep 0.02; done
+        printf '\033]7501;state=working:app=omp\033\\'
+        while [ ! -f bound ]; do sleep 0.02; done
+        printf 'bound\n'
+        IFS= read -r hold
+        ",
+    );
+    let registry = &fixture.registry;
+    let wait_for_frame = |after| {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            let snapshot = fixture.snapshot(&id);
+            if snapshot.revision > after {
+                return snapshot;
+            }
+            assert!(Instant::now() < deadline, "PTY output was not published");
+            thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let status = || {
+        registry.refresh_status_summaries();
+        registry.snapshot().unwrap().panes.remove(0).harness_status
+    };
+
+    let revision = fixture.snapshot(&id).revision;
+    fs::write(fixture.home.join("start"), b"start").unwrap();
+    let startup = wait_for_frame(revision);
+    assert_eq!(status().unwrap().state, "working");
+
+    bind_omp_fixture(&fixture, &grant, &peer, "first", None);
+    fs::write(fixture.home.join("bound"), b"bound").unwrap();
+    let bound = wait_for_frame(startup.revision);
+    assert_eq!(bound.program_status, startup.program_status);
+    assert_eq!(status().unwrap().state, "working");
+
+    bind_omp_fixture(&fixture, &grant, &peer, "replacement", Some(1));
+    assert!(status().is_none());
 }
 
 fn wait_recovery_title_fixture(fixture: &Fixture, id: &str, expected: &str) {
@@ -375,7 +421,7 @@ fn recovery_titles_follow_the_bound_conversation_and_survive_exit_and_restart() 
     );
     let registry = &fixture.registry;
     let candidate = || registry.recovery_candidates().unwrap().remove(0);
-    bind_title_fixture(&fixture, &grant, &peer, "first", None);
+    bind_omp_fixture(&fixture, &grant, &peer, "first", None);
     assert_eq!(candidate().title, HarnessKind::Omp.display_name());
 
     fs::write(fixture.home.join("title-one"), b"ready").unwrap();
@@ -397,12 +443,12 @@ fn recovery_titles_follow_the_bound_conversation_and_survive_exit_and_restart() 
     let pane = registry.capture_pane(&id).unwrap();
     let old_epoch = pane.shared.status_epoch.load(Ordering::Acquire);
     let foreground = pane.shared.root.lock().unwrap().as_ref().unwrap().group;
-    bind_title_fixture(&fixture, &grant, &peer, "first", Some(1));
+    bind_omp_fixture(&fixture, &grant, &peer, "first", Some(1));
     let observe = pane.shared.recovery_title_observer.get().unwrap();
     observe(&pane.shared, "late prior generation", old_epoch, foreground);
     assert_eq!(candidate().title, "π ◑ Agent heading");
 
-    bind_title_fixture(&fixture, &grant, &peer, "second", Some(2));
+    bind_omp_fixture(&fixture, &grant, &peer, "second", Some(2));
     observe(
         &pane.shared,
         "late prior conversation",
@@ -448,7 +494,7 @@ fn a_renamed_pane_overrides_an_already_saved_recovery_title() {
     let fixture = Fixture::new();
     let (id, grant, peer) = seed_launch_command(&fixture, HarnessKind::Omp, "IFS= read -r hold");
     let registry = &fixture.registry;
-    bind_title_fixture(&fixture, &grant, &peer, "named", None);
+    bind_omp_fixture(&fixture, &grant, &peer, "named", None);
     let pane = registry.capture_pane(&id).unwrap();
     let epoch = pane.shared.status_epoch.load(Ordering::Acquire);
     let foreground = pane.shared.root.lock().unwrap().as_ref().unwrap().group;
