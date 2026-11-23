@@ -1125,6 +1125,9 @@ slots stay muted. Branches and tree guides remain neutral; selected tree context
 and semantic status/count colors retain their own styling.
 
 `Ctrl-b g` switches decorative chrome between fancy and rounded text rendering.
+Plain pane borders have rounded corners and join at split intersections. The
+focused pane keeps its own outline without junctions. Plain hints stay inside
+the sidebar, and pane titles are shown in the sidebar rather than on the frame.
 Fancy panes reserve one extra column on each side of terminal content where
 there's room. Switching to plain chrome gives those columns back to the pane.
 This preference does not disable application-owned graphics.

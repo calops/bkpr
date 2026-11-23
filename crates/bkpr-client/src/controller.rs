@@ -954,7 +954,6 @@ pub(crate) fn tree_popup_target(
 pub struct ChromeContext<'a> {
     pub size: Size,
     pub state: &'a Controller,
-    pub registry: &'a RegistrySnapshot,
     pub rects: &'a [(String, Rect)],
     /// Frame text is omitted only for material-ready rectangles.
     pub pane_graphics: &'a [Rect],
@@ -1167,12 +1166,9 @@ fn native_row_label(
     }
     (label, marker_x)
 }
-pub(crate) fn tree_chrome<'a>(
+pub(crate) fn tree_chrome(
     surface: &mut UiSurface,
     context: TreeChromeContext<'_>,
-    pane_status: impl Fn(&str) -> Option<&'static str>,
-    snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
-    history: impl Fn(&str) -> Option<(u64, u64)>,
     project_spans: &mut Vec<ProjectSpan>,
     working_titles: &mut Vec<ProjectSpan>,
 ) -> Vec<(crate::tree::Target, u16)> {
@@ -1180,9 +1176,6 @@ pub(crate) fn tree_chrome<'a>(
     render_chrome(
         surface,
         context,
-        pane_status,
-        snapshot,
-        history,
         (project_spans, working_titles),
         |node, owner, row| hits.push((crate::tree::Target { owner, node }, row)),
     );
@@ -1234,12 +1227,9 @@ pub(crate) fn tree_artwork_rows(
             ))
         })
 }
-fn render_chrome<'a>(
+fn render_chrome(
     surface: &mut UiSurface,
     context: TreeChromeContext<'_>,
-    pane_status: impl Fn(&str) -> Option<&'static str>,
-    snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
-    history: impl Fn(&str) -> Option<(u64, u64)>,
     (project_spans, working_titles): (&mut Vec<ProjectSpan>, &mut Vec<ProjectSpan>),
     mut hit: impl FnMut(crate::tree::Node, crate::tree::Owner, u16),
 ) {
@@ -1252,10 +1242,10 @@ fn render_chrome<'a>(
     let ChromeContext {
         size,
         state,
-        registry,
         rects,
         pane_graphics,
         guide_rows,
+        ..
     } = context;
     project_spans.clear();
     working_titles.clear();
@@ -1394,105 +1384,28 @@ fn render_chrome<'a>(
             hit(target.node.clone(), target.owner, row);
         }
     }
+    let mut inactive = Vec::new();
+    let mut active = None;
     for (id, rect) in rects {
         if pane_graphics.contains(rect) {
             continue;
         }
-        let title = registry
-            .panes
-            .iter()
-            .find(|p| p.id == *id)
-            .map(|pane| {
-                let known = snapshot(id);
-                let icon = recognized_harness(pane, known)
-                    .map(|harness| format!("{} ", harness_icon(harness.kind)))
-                    .unwrap_or_default();
-                let status = pane_activity(pane, known);
-                format!(
-                    "{icon}{}{}",
-                    crate::metadata::pane_title(pane, known),
-                    if status.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" {status}")
-                    }
-                )
-            })
-            .unwrap_or_else(|| "Lost pane".into());
-        let title = if let Some(status) = pane_status(id) {
-            format!("[{status}] {title}")
+        if state.focused.as_ref() == Some(id) {
+            active = Some(*rect);
         } else {
-            title
-        };
-        let title = if let Some((offset, total)) = history(id) {
-            format!("[HISTORY -{offset}/{total}] {title}")
-        } else {
-            title
-        };
-        let title = format!(
-            " {} {}",
-            if state.focused.as_ref() == Some(id) {
-                "●"
-            } else {
-                "○"
-            },
-            title
-        );
-        if rect.width >= 3 && rect.height >= 3 {
-            let local = rect.size(size);
-            lines.extend(
-                bkpr_tui_framework::window::border_rows(
-                    local,
-                    &title,
-                    bkpr_tui_framework::window::Border::Rounded,
-                )
-                .into_iter()
-                .map(|(local, text, selected)| {
-                    (
-                        Rect {
-                            x: rect.x + local.x,
-                            y: rect.y + local.y,
-                            ..local
-                        },
-                        text,
-                        selected,
-                    )
-                }),
-            );
-        } else if rect.height > 1 {
-            lines.push(line(rect.x, rect.y, rect.width, title, false));
+            inactive.push(*rect);
         }
     }
+    bkpr_tui_framework::window::tiled_border_rows(size, &inactive, active, &mut lines);
     surface.paint(size, lines, Some(cursor));
 }
 
 /// Product hierarchy only: the framework resolves every role against the host.
 /// These spans cover our chrome frame, never a native pane's application scene.
-pub(crate) fn theme_tree_chrome<'a>(
+pub(crate) fn theme_tree_chrome(
     surface: &mut UiSurface,
     theme: &Theme,
     context: TreeChromeContext<'_>,
-    snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
-    palette: &ProjectPalette,
-    projects: &[ProjectSpan],
-    foregrounds: &mut Vec<ForegroundSpan>,
-) {
-    render_theme_chrome(
-        surface,
-        theme,
-        context,
-        snapshot,
-        palette,
-        projects,
-        foregrounds,
-    );
-}
-
-fn render_theme_chrome<'a>(
-    surface: &mut UiSurface,
-    theme: &Theme,
-    context: TreeChromeContext<'_>,
-    snapshot: impl Fn(&str) -> Option<&'a PaneSnapshot>,
     palette: &ProjectPalette,
     projects: &[ProjectSpan],
     foregrounds: &mut Vec<ForegroundSpan>,
@@ -1505,7 +1418,6 @@ fn render_theme_chrome<'a>(
     } = context;
     let ChromeContext {
         state,
-        registry,
         rects,
         pane_graphics,
         guide_rows,
@@ -1877,7 +1789,15 @@ fn render_theme_chrome<'a>(
         }
     }
     let sidebar = outer_sidebar;
-    for (id, rect) in rects {
+    for (id, rect) in rects
+        .iter()
+        .filter(|(id, _)| state.focused.as_ref() != Some(id))
+        .chain(
+            rects
+                .iter()
+                .filter(|(id, _)| state.focused.as_ref() == Some(id)),
+        )
+    {
         if pane_graphics.contains(rect) {
             // Main's decorate_characters fills rich frame cells with the
             // original pane background. The atlas paints the opaque matte
@@ -1899,39 +1819,13 @@ fn render_theme_chrome<'a>(
                             y: rect.y + span.rect.y,
                             ..span.rect
                         },
-                        role: span.role,
+                        role: if span.role == Role::Border && state.focused.as_ref() == Some(id) {
+                            Role::Accent
+                        } else {
+                            span.role
+                        },
                     }),
             );
-        }
-        spans.push(RoleSpan {
-            rect: Rect { height: 1, ..*rect },
-            role: if state.focused.as_ref() == Some(id) {
-                Role::Title
-            } else {
-                Role::Muted
-            },
-        });
-        if state.focused.as_ref() == Some(id) {
-            spans.push(RoleSpan {
-                rect: Rect {
-                    width: 3.min(rect.width),
-                    height: 1,
-                    ..*rect
-                },
-                role: Role::Accent,
-            });
-        }
-        if let Some(pane) = registry.panes.iter().find(|pane| pane.id == *id)
-            && let Some(status) = harness_status(pane, snapshot(id))
-        {
-            spans.push(RoleSpan {
-                rect: Rect {
-                    width: 3.min(rect.width),
-                    height: 1,
-                    ..*rect
-                },
-                role: activity_role(status),
-            });
         }
     }
     for project in projects {
@@ -2258,7 +2152,6 @@ mod tests {
             ChromeContext {
                 size: self.size,
                 state: self.state,
-                registry: self.registry,
                 rects: self.rects,
                 pane_graphics: self.pane_graphics,
                 guide_rows: self.guide_rows,
@@ -2371,9 +2264,6 @@ mod tests {
                 active: FIXTURE_OWNER,
                 popup: popup.as_ref().map(|(target, color)| (target, *color)),
             },
-            pane_status,
-            snapshot,
-            history,
             projects,
             &mut Vec::new(),
         )
@@ -2412,7 +2302,6 @@ mod tests {
                 active: FIXTURE_OWNER,
                 popup: popup.as_ref().map(|(target, color)| (target, *color)),
             },
-            snapshot,
             palette,
             projects,
             foregrounds,
@@ -2479,7 +2368,6 @@ mod tests {
                 native: ChromeContext {
                     size,
                     state: &state,
-                    registry: &first.registry,
                     rects: &[],
                     pane_graphics: &[],
                     guide_rows: 0,
@@ -2488,9 +2376,6 @@ mod tests {
                 active,
                 popup: None,
             },
-            |_| None,
-            |_| None,
-            |_| None,
             &mut projects,
             &mut Vec::new(),
         );
@@ -2542,7 +2427,6 @@ mod tests {
                 native: ChromeContext {
                     size,
                     state: &state,
-                    registry: &local.registry,
                     rects: &[],
                     pane_graphics: &[],
                     guide_rows: 0,
@@ -2551,9 +2435,6 @@ mod tests {
                 active: first,
                 popup: Some((&target, ColorSource::Rgb([40, 50, 60]))),
             },
-            |_| panic!("No native pane frame"),
-            |_| panic!("Tree snapshots must come from their owner"),
-            |_| panic!("No native pane frame"),
             &mut Vec::new(),
             &mut Vec::new(),
         );
@@ -2592,7 +2473,6 @@ mod tests {
                 native: ChromeContext {
                     size,
                     state: &state,
-                    registry: &local.registry,
                     rects: &[],
                     pane_graphics: &[],
                     guide_rows: 0,
@@ -2601,7 +2481,6 @@ mod tests {
                 active: first,
                 popup: Some((&target, ColorSource::Rgb([40, 50, 60]))),
             },
-            |_| panic!("Foreign theme metadata must use cached source snapshots"),
             &ProjectPalette::default(),
             &[],
             &mut Vec::new(),
@@ -3072,9 +2951,6 @@ mod tests {
                     active: FIXTURE_OWNER,
                     popup: None,
                 },
-                |_| None,
-                |_| Some(snapshot),
-                |_| None,
                 &mut Vec::new(),
                 &mut titles,
             );
@@ -4375,7 +4251,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_frames_hide_text_when_ready_and_restore_plain_captions() {
+    fn shared_frames_hide_text_when_ready_and_restore_uncaptioned_borders() {
         let (first, _) = capture_fixture();
         let mut second = first.clone();
         second.id = "second".into();
@@ -4416,13 +4292,13 @@ mod tests {
             };
             paint(&mut surface, &[]);
             let plain = surface.frame.clone();
-            for (pane, rect) in registry.panes.iter().zip(&ready) {
-                let title: String = surface.frame.rows[usize::from(rect.y)].cells
-                    [usize::from(rect.x)..usize::from(rect.x + rect.width)]
-                    .iter()
-                    .map(|cell| cell.text.as_str())
-                    .collect();
-                assert!(title.contains(&pane.title));
+            for rect in &ready {
+                let top = &surface.frame.rows[usize::from(rect.y)].cells;
+                assert!(
+                    top[usize::from(rect.x + 1)..usize::from(rect.x + rect.width - 1)]
+                        .iter()
+                        .all(|cell| cell.text == "─")
+                );
             }
             paint(&mut surface, &ready);
             for rect in &ready {
@@ -4438,13 +4314,10 @@ mod tests {
                     }
                 }
             }
-            let rich = surface.frame.clone();
-            paint(&mut surface, &ready);
-            assert_eq!(surface.frame, rich);
             paint(&mut surface, &[]);
             assert_eq!(
                 surface.frame, plain,
-                "capability loss must restore the complete source captions"
+                "capability loss must restore the complete plain borders"
             );
         }
     }

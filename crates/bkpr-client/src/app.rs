@@ -356,7 +356,7 @@ struct DeviceResponse {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct GuideKey {
     context: crate::keyguide::Context,
-    cols: u16,
+    max_columns: u16,
     rows: u16,
     sidebar_columns: u16,
     availability: crate::keyguide::Availability,
@@ -555,6 +555,7 @@ struct App {
     diagnostic_view: Option<diagnostics::Viewer>,
     guide: GuideCache,
     chrome_graphics_enabled: bool,
+    fancy_chrome_available: bool,
     pane_padding: u16,
     notified_focus: Option<(String, String)>,
     focus_out_pending: HashSet<(String, String)>,
@@ -1255,9 +1256,14 @@ impl App {
         let availability =
             crate::keyguide::Availability::new(context, |action| self.supports_action(action));
         let sidebar_columns = self.screen_geometry(size).0.width;
+        let max_columns = if self.chrome_graphics_enabled && self.fancy_chrome_available {
+            size.cols
+        } else {
+            sidebar_columns
+        };
         let key = GuideKey {
             context,
-            cols: size.cols,
+            max_columns,
             rows: size.rows,
             sidebar_columns,
             availability,
@@ -1275,7 +1281,7 @@ impl App {
             let content = crate::keyguide::render_with(
                 context,
                 sidebar_columns,
-                size.cols,
+                max_columns,
                 max_rows,
                 |action| availability.contains(action),
                 notice,
@@ -5313,6 +5319,7 @@ impl App {
             diagnostic_view: None,
             guide: GuideCache::default(),
             chrome_graphics_enabled: true,
+            fancy_chrome_available: false,
             pane_padding: 0,
             notified_focus: None,
             focus_out_pending: HashSet::new(),
@@ -5508,10 +5515,9 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             }
             ui_palette.update(&app.colors, app.theme);
             let ui_colors = ui_palette.probe();
-            app.pane_padding = if app.chrome_graphics_enabled
-                && ui_colors.graphics.supported()
-                && crate::appearance::supports_decoration(ui_colors, size)
-            {
+            app.fancy_chrome_available = ui_colors.graphics.supported()
+                && crate::appearance::supports_decoration(ui_colors, size);
+            app.pane_padding = if app.chrome_graphics_enabled && app.fancy_chrome_available {
                 crate::appearance::FANCY_PANE_PADDING
             } else {
                 0
@@ -5587,7 +5593,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     native: crate::controller::ChromeContext {
                         size,
                         state: &app.state,
-                        registry: &app.registry,
                         rects: &rects,
                         pane_graphics: &pane_graphics,
                         guide_rows,
@@ -5597,9 +5602,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     popup: tooltip_target
                         .map(|target| (target, popover_theme.background(Role::Panel, false))),
                 },
-                |pane| app.badge(pane),
-                |pane| app.views.get(pane).map(|view| &view.metadata),
-                |pane| app.history(pane),
                 &mut chrome_projects,
                 &mut working_titles,
             );
@@ -5612,7 +5614,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     native: crate::controller::ChromeContext {
                         size,
                         state: &app.state,
-                        registry: &app.registry,
                         rects: &rects,
                         pane_graphics: &pane_graphics,
                         guide_rows,
@@ -5622,7 +5623,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     popup: tooltip_target
                         .map(|target| (target, popover_theme.background(Role::Panel, false))),
                 },
-                |pane| app.views.get(pane).map(|view| &view.metadata),
                 &project_palette,
                 &chrome_projects,
                 &mut chrome_foregrounds,
@@ -5673,7 +5673,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         native: crate::controller::ChromeContext {
                             size,
                             state: &app.state,
-                            registry: &app.registry,
                             rects: &rects,
                             pane_graphics: &pane_graphics,
                             guide_rows,
@@ -5683,9 +5682,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         popup: tooltip_target
                             .map(|target| (target, popover_theme.background(Role::Panel, false))),
                     },
-                    |pane| app.badge(pane),
-                    |pane| app.views.get(pane).map(|view| &view.metadata),
-                    |pane| app.history(pane),
                     &mut chrome_projects,
                     &mut working_titles,
                 );
@@ -5696,7 +5692,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         native: crate::controller::ChromeContext {
                             size,
                             state: &app.state,
-                            registry: &app.registry,
                             rects: &rects,
                             pane_graphics: &pane_graphics,
                             guide_rows,
@@ -5706,7 +5701,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         popup: tooltip_target
                             .map(|target| (target, popover_theme.background(Role::Panel, false))),
                     },
-                    |pane| app.views.get(pane).map(|view| &view.metadata),
                     &project_palette,
                     &chrome_projects,
                     &mut chrome_foregrounds,
@@ -7519,6 +7513,7 @@ pub(super) mod tests {
                 diagnostic_view: None,
                 guide: GuideCache::default(),
                 chrome_graphics_enabled: true,
+                fancy_chrome_available: false,
                 pane_padding: 0,
                 notified_focus: None,
                 focus_out_pending: HashSet::new(),
@@ -8199,11 +8194,15 @@ pub(super) mod tests {
             rows: 18,
             ..size
         };
+        let sidebar = app.screen_geometry(narrow).0;
+        app.fancy_chrome_available = true;
         app.refresh_guide(narrow);
-        let overflow = app.guide_geometry(narrow).unwrap();
-        assert_eq!(overflow.x, app.screen_geometry(narrow).0.x);
-        assert!(overflow.width > app.screen_geometry(narrow).0.width);
-        assert!(overflow.width <= narrow.cols);
+        assert!(app.guide_geometry(narrow).unwrap().width > sidebar.width);
+        app.chrome_graphics_enabled = false;
+        app.refresh_guide(narrow);
+        let guide = app.guide_geometry(narrow).unwrap();
+        assert_eq!(guide.x, sidebar.x);
+        assert!(guide.x + guide.width <= sidebar.x + sidebar.width);
         assert!(received.try_recv().is_err());
     }
 
@@ -9059,7 +9058,6 @@ pub(super) mod tests {
                 native: crate::controller::ChromeContext {
                     size,
                     state: &app.state,
-                    registry: &app.registry,
                     rects: &rects,
                     pane_graphics: &[],
                     guide_rows: 0,
@@ -9068,9 +9066,6 @@ pub(super) mod tests {
                 active: app.tree_owner(),
                 popup: None,
             },
-            |_| None,
-            |_| None,
-            |_| None,
             &mut Vec::new(),
             &mut Vec::new(),
         );
