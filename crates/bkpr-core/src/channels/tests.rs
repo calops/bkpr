@@ -81,6 +81,7 @@ impl Fixture {
         self.engine.request(
             request,
             |workspace| self.authority(actor, workspace),
+            |_| true,
             || false,
         )
     }
@@ -199,6 +200,7 @@ fn messages(channel: &ChannelId, before: Option<u64>, limit: u16) -> ChannelRequ
     ChannelRequest::History {
         channel_id: channel.clone(),
         before,
+        after: None,
         limit,
     }
 }
@@ -318,11 +320,23 @@ fn access_revocation_and_retry_freeze_target_without_replay() {
         )
         .is_err()
     );
-    assert!(f.as_actor(&f.b, subscribe(&id, Some(0), 1, 0)).is_err());
+    assert_eq!(
+        f.as_actor(&f.b, subscribe(&id, Some(0), 1, 0)).unwrap(),
+        ChannelResponse::Changes {
+            cursor: ChannelCursor {
+                channel_id: id.clone(),
+                sequence: 0
+            },
+            changes: Vec::new(),
+            more: false,
+            status: ChannelSubscriptionStatus::Closed,
+        }
+    );
     assert_eq!(
         f.as_actor(&f.a, send(&id, request.clone())).unwrap(),
         accepted
     );
+    let original = request.clone();
     request.idempotency_key = "stale-mention".into();
     assert!(f.as_actor(&f.a, send(&id, request)).is_err());
     assert_eq!(
@@ -331,7 +345,7 @@ fn access_revocation_and_retry_freeze_target_without_replay() {
     );
 
     f.request(set(vec![f.b.id.clone()])).unwrap();
-    assert!(f.as_actor(&f.a, send(&id, post("address-b"))).is_err());
+    assert!(f.as_actor(&f.a, send(&id, original)).is_err());
     assert!(
         f.as_actor(
             &f.b,
@@ -458,6 +472,7 @@ fn typed_mentions_and_policy_select_only_current_agents_and_preserve_unread_atte
             .request(
                 messages(&id, None, 1),
                 |workspace| f.authority(&late, workspace),
+                |_| true,
                 || false
             )
             .is_ok()
@@ -480,7 +495,12 @@ fn durable_history_recovery_and_atomic_commit_failure() {
         f.request(messages(&id, None, 1)).unwrap(),
         ChannelResponse::History {
             messages: Vec::new(),
-            next_before: None
+            next_before: None,
+            next_after: None,
+            cursor: ChannelCursor {
+                channel_id: id.clone(),
+                sequence: 0
+            },
         }
     );
     assert!(matches!(
@@ -513,22 +533,19 @@ fn durable_history_recovery_and_atomic_commit_failure() {
                     participants: Vec::new(),
                 })
             },
+            |_| true,
             || false,
         )
     };
     assert_eq!(run(send(&id, initial.clone())).unwrap(), accepted);
-    let ChannelResponse::Message {
-        message: actual,
-        text,
-    } = run(ChannelRequest::Read {
+    let ChannelResponse::Message { message: actual } = run(ChannelRequest::Read {
         channel_id: id.clone(),
         message_id: message.id.clone(),
     })
-    .unwrap()
-    else {
+    .unwrap() else {
         panic!("read reply")
     };
-    assert_eq!((actual, text), (message, initial.text));
+    assert_eq!((actual.message, actual.text), (message, initial.text));
     assert_eq!(
         run(mark(&id, 0)).unwrap(),
         ChannelResponse::ReadPosition { through: 1 }
@@ -555,7 +572,9 @@ fn recovery_preserves_explicit_membership_and_author_snapshot_not_display_name_a
         vec![f.a.id.clone()],
         quiet(),
     );
-    let previous = posted(f.as_actor(&f.a, send(&id, post("recovered"))).unwrap());
+    let original = post("recovered");
+    let accepted = f.as_actor(&f.a, send(&id, original.clone())).unwrap();
+    let previous = posted(accepted.clone());
     let Fixture {
         root,
         engine,
@@ -576,14 +595,16 @@ fn recovery_preserves_explicit_membership_and_author_snapshot_not_display_name_a
                     participants: Vec::new(),
                 })
             },
+            |_| true,
             || false,
         )
     };
     assert!(run(&b, true, messages(&id, None, 1)).is_err());
     a.display_name = "New label".into();
     assert!(
-        matches!(run(&a, false, messages(&id, None, 1)).unwrap(), ChannelResponse::History { messages, .. } if messages == [previous])
+        matches!(run(&a, false, messages(&id, None, 1)).unwrap(), ChannelResponse::History { messages, .. } if messages.len() == 1 && messages[0].message == previous)
     );
+    assert_eq!(run(&a, false, send(&id, original)).unwrap(), accepted);
     assert!(run(&a, false, send(&id, post("read-only"))).is_err());
     assert!(run(&a, false, mark(&id, 1)).is_err());
     let latest = posted(run(&a, true, send(&id, post("renamed"))).unwrap());
@@ -682,6 +703,7 @@ fn attachments_are_validated_immutable_channel_resources_in_archives() {
                     participants: Vec::new(),
                 })
             },
+            |_| false,
             || false,
         )
     };
@@ -689,13 +711,23 @@ fn attachments_are_validated_immutable_channel_resources_in_archives() {
     assert_eq!(
         fetched,
         ChannelResponse::Attachment {
-            attachment,
+            attachment: attachment.clone(),
             bytes: sample.into()
         }
     );
     assert!(run(send(&id, post("closed"))).is_err());
     assert!(
-        matches!(run(messages(&id, None, 1)).unwrap(), ChannelResponse::History { messages, .. } if messages == [message])
+        matches!(run(messages(&id, None, 1)).unwrap(), ChannelResponse::History { messages, .. }
+            if messages.len() == 1 && messages[0].message == message && messages[0].attachments == [attachment.clone()])
+    );
+    let response = run(ChannelRequest::Read {
+        channel_id: id,
+        message_id: message.id.clone(),
+    })
+    .unwrap();
+    assert!(
+        matches!(response, ChannelResponse::Message { message: actual }
+        if actual.message == message && actual.attachments == [attachment])
     );
 }
 
@@ -709,13 +741,15 @@ fn history_and_subscription_pages_are_bounded_resumable_and_actor_filtered() {
     let ChannelResponse::History {
         messages: page,
         next_before,
+        next_after: None,
+        ..
     } = f.request(messages(&id, None, 2)).unwrap()
     else {
         panic!("history reply")
     };
     assert_eq!(
         page.iter()
-            .map(|message| message.sequence)
+            .map(|message| message.message.sequence)
             .collect::<Vec<_>>(),
         [4, 5]
     );
@@ -723,13 +757,15 @@ fn history_and_subscription_pages_are_bounded_resumable_and_actor_filtered() {
     let ChannelResponse::History {
         messages: page,
         next_before,
+        next_after: Some(3),
+        ..
     } = f.request(messages(&id, next_before, 2)).unwrap()
     else {
         panic!("history reply")
     };
     assert_eq!(
         page.iter()
-            .map(|message| message.sequence)
+            .map(|message| message.message.sequence)
             .collect::<Vec<_>>(),
         [2, 3]
     );
@@ -748,6 +784,7 @@ fn history_and_subscription_pages_are_bounded_resumable_and_actor_filtered() {
             cursor,
             changes,
             more,
+            status: ChannelSubscriptionStatus::Active,
         } = f.request(subscribe(&id, Some(page_start), 2, 0)).unwrap()
         else {
             panic!("changes reply")
@@ -801,6 +838,7 @@ fn subscription_commit_revocation_and_capacity_do_not_depend_on_slow_consumers()
                     }
                     fixture.authority(&fixture.a, workspace)
                 },
+                |_| true,
                 || false,
             )
         });
@@ -826,6 +864,7 @@ fn subscription_commit_revocation_and_capacity_do_not_depend_on_slow_consumers()
                         }
                         f.authority(&f.a, workspace)
                     },
+                    |_| true,
                     || false,
                 )
             }));
@@ -842,7 +881,14 @@ fn subscription_commit_revocation_and_capacity_do_not_depend_on_slow_consumers()
         })
         .unwrap();
         for waiter in waiters {
-            assert!(waiter.join().unwrap().is_err());
+            assert!(
+                matches!(waiter.join().unwrap().unwrap(), ChannelResponse::Changes {
+                cursor: ChannelCursor { sequence: 1, .. },
+                changes,
+                more: false,
+                status: ChannelSubscriptionStatus::Closed,
+            } if changes.is_empty())
+            );
         }
     });
     assert!(
@@ -859,18 +905,19 @@ fn subscription_commit_revocation_and_capacity_do_not_depend_on_slow_consumers()
                     observed.send(()).unwrap();
                     fixture.authority(&fixture.user, workspace)
                 },
+                |_| true,
                 || disconnected.load(Ordering::Acquire),
             )
         });
         ready.recv_timeout(Duration::from_secs(5)).unwrap();
         cancelled.store(true, Ordering::Release);
         assert!(
-            waiter
-                .join()
-                .unwrap()
-                .unwrap_err()
-                .to_string()
-                .contains("cancelled")
+            matches!(waiter.join().unwrap().unwrap(), ChannelResponse::Changes {
+            cursor: ChannelCursor { sequence: 2, .. },
+            changes,
+            more: false,
+            status: ChannelSubscriptionStatus::Closed,
+        } if changes.is_empty())
         );
     });
 }
@@ -929,4 +976,502 @@ fn lazy_store_rejects_unsafe_main_file_and_sidecars() {
     fs::remove_file(&sidecar).unwrap();
     assert!(f.request(list()).is_ok());
     assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+}
+
+#[test]
+fn retained_archive_discovery_and_membership_do_not_depend_on_live_roster() {
+    let f = Fixture::new();
+    let id = f.create(
+        &f.user,
+        WORKSPACE,
+        MembershipMode::Explicit,
+        vec![f.a.id.clone(), f.b.id.clone()],
+        quiet(),
+    );
+    f.create(
+        &f.user,
+        OTHER_WORKSPACE,
+        MembershipMode::WorkspaceWide,
+        Vec::new(),
+        quiet(),
+    );
+    let run = |actor: &Participant, request, close_both: bool| {
+        f.engine.request(
+            request,
+            |workspace| {
+                let mut authority = f.authority(actor, workspace)?;
+                authority.workspace_open = workspace == OTHER_WORKSPACE && !close_both;
+                authority.participants.clear();
+                Ok(authority)
+            },
+            |workspace| workspace == OTHER_WORKSPACE && !close_both,
+            || false,
+        )
+    };
+    let archives = |after| ChannelRequest::ListArchivedWorkspaces { after, limit: 1 };
+    assert_eq!(
+        run(&f.user, archives(None), false).unwrap(),
+        ChannelResponse::ArchivedWorkspaces {
+            workspace_ids: vec![WORKSPACE.into()],
+            next_after: None,
+        }
+    );
+    assert_eq!(
+        run(&f.user, archives(None), true).unwrap(),
+        ChannelResponse::ArchivedWorkspaces {
+            workspace_ids: vec![WORKSPACE.into()],
+            next_after: Some(WORKSPACE.into()),
+        }
+    );
+    assert_eq!(
+        run(&f.user, archives(Some(WORKSPACE.into())), true).unwrap(),
+        ChannelResponse::ArchivedWorkspaces {
+            workspace_ids: vec![OTHER_WORKSPACE.into()],
+            next_after: None,
+        }
+    );
+    assert_eq!(
+        run(&f.a, archives(None), true).unwrap(),
+        ChannelResponse::ArchivedWorkspaces {
+            workspace_ids: Vec::new(),
+            next_after: None
+        }
+    );
+    let list = |workspace_id: &str| ChannelRequest::List {
+        workspace_id: workspace_id.into(),
+        after: None,
+        limit: 1,
+    };
+    assert!(run(&f.user, list("not-retained"), true).is_err());
+    assert!(run(&f.a, list(WORKSPACE), true).is_err());
+    assert!(matches!(
+        run(&f.user, list(WORKSPACE), true).unwrap(),
+        ChannelResponse::Listed { channels, next_after: None } if channels.len() == 1 && channels[0].id == id
+    ));
+    assert_eq!(
+        run(
+            &f.user,
+            ChannelRequest::ListMembers {
+                channel_id: id.clone(),
+                after: None,
+                limit: 1,
+            },
+            true
+        )
+        .unwrap(),
+        ChannelResponse::Members {
+            participants: Vec::new(),
+            next_after: None
+        }
+    );
+    let explicit = |after| ChannelRequest::ListExplicitMembers {
+        channel_id: id.clone(),
+        after,
+        limit: 1,
+    };
+    assert_eq!(
+        run(&f.user, explicit(None), true).unwrap(),
+        ChannelResponse::ExplicitMembers {
+            members: vec![f.a.id.clone()],
+            next_after: Some(f.a.id.clone()),
+        }
+    );
+    assert_eq!(
+        run(&f.user, explicit(Some(f.a.id.clone())), true).unwrap(),
+        ChannelResponse::ExplicitMembers {
+            members: vec![f.b.id.clone()],
+            next_after: None
+        }
+    );
+    assert!(run(&f.a, explicit(None), true).is_err());
+}
+
+#[test]
+fn body_budget_and_cursor_allow_contiguous_forward_catch_up() {
+    let f = Fixture::new();
+    let id = f.wide(quiet());
+    let text = "x".repeat(MAX_POST_BYTES);
+    let count = u64::try_from(MAX_HISTORY_BYTES / MAX_POST_BYTES + 4).unwrap();
+    for index in 1..=count {
+        f.request(send(
+            &id,
+            ChannelPost {
+                text: text.clone(),
+                ..post(&format!("large-{index}"))
+            },
+        ))
+        .unwrap();
+    }
+    f.as_actor(&f.a, mark(&id, count)).unwrap();
+    let after = |after| ChannelRequest::History {
+        channel_id: id.clone(),
+        before: None,
+        after: Some(after),
+        limit: MAX_PAGE_LIMIT,
+    };
+    let mut bound = 0;
+    let cursor = loop {
+        let ChannelResponse::History {
+            messages,
+            next_before,
+            next_after,
+            cursor,
+        } = f.request(after(bound)).unwrap()
+        else {
+            panic!("history reply")
+        };
+        assert!(!messages.is_empty());
+        assert!(
+            messages
+                .iter()
+                .map(ChannelMessage::content_bytes)
+                .sum::<usize>()
+                <= MAX_HISTORY_BYTES
+        );
+        assert_eq!(next_before, (bound > 0).then_some(bound + 1));
+        for entry in messages {
+            bound += 1;
+            assert_eq!(entry.text, text);
+            assert_eq!(entry.message.sequence, bound);
+        }
+        assert_eq!(next_after, (bound < count).then_some(bound));
+        assert_eq!(cursor.sequence, count + 1);
+        if next_after.is_none() {
+            break cursor;
+        }
+    };
+    assert_eq!(bound, count);
+    f.request(send(&id, post("after-snapshot"))).unwrap();
+    assert_eq!(
+        f.request(subscribe(&id, Some(cursor.sequence), MAX_PAGE_LIMIT, 0))
+            .unwrap(),
+        ChannelResponse::Changes {
+            cursor: ChannelCursor {
+                channel_id: id,
+                sequence: count + 2
+            },
+            changes: vec![ChannelChange {
+                sequence: count + 2,
+                kind: ChannelChangeKind::Post
+            }],
+            more: false,
+            status: ChannelSubscriptionStatus::Active,
+        }
+    );
+}
+
+#[test]
+fn unauthorized_upload_does_not_decode_and_valid_upload_rechecks_before_insert() {
+    let f = Fixture::new();
+    let id = f.create(
+        &f.user,
+        WORKSPACE,
+        MembershipMode::Explicit,
+        vec![f.a.id.clone()],
+        quiet(),
+    );
+    assert!(
+        f.as_actor(&f.b, upload(&id, vec![1]))
+            .unwrap_err()
+            .is::<super::store::ChannelAccessLost>()
+    );
+    assert!(
+        f.as_actor(&f.a, upload(&id, vec![1]))
+            .unwrap_err()
+            .to_string()
+            .contains("PNG")
+    );
+    let sampled = std::cell::Cell::new(0);
+    let error = f
+        .engine
+        .request(
+            upload(&id, png()),
+            |workspace| {
+                sampled.set(sampled.get() + 1);
+                let mut authority = f.authority(&f.a, workspace)?;
+                authority.writable = sampled.get() == 1;
+                Ok(authority)
+            },
+            |_| true,
+            || false,
+        )
+        .unwrap_err();
+    assert_eq!(sampled.get(), 2);
+    assert!(error.to_string().contains("read-only"));
+    assert_eq!(
+        f.engine
+            .with_store(|store| {
+                Ok(store
+                    .connection
+                    .query_row("SELECT count(*) FROM attachments", [], |row| {
+                        row.get::<_, u64>(0)
+                    })?)
+            })
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn queued_store_admission_observes_poll_deadline_and_cancellation() {
+    let f = Fixture::new();
+    let id = f.wide(quiet());
+    let _writer = f
+        .engine
+        .acquire_store(std::time::Instant::now(), &|| false)
+        .map_err(super::StoreAdmission::into_error)
+        .unwrap();
+    assert!(
+        f.request(subscribe(&id, None, 1, 0))
+            .unwrap_err()
+            .to_string()
+            .contains("store busy")
+    );
+    let cancelled = AtomicBool::new(false);
+    thread::scope(|scope| {
+        let (observed, ready) = crossbeam_channel::bounded(1);
+        let (completed, result) = crossbeam_channel::bounded(1);
+        let (fixture, channel) = (&f, &id);
+        let disconnected = &cancelled;
+        scope.spawn(move || {
+            completed
+                .send(fixture.engine.request(
+                    messages(channel, None, 1),
+                    |_| panic!("cancelled admission reached channel authority"),
+                    |_| true,
+                    || {
+                        let disconnected = disconnected.load(Ordering::Acquire);
+                        let _ = observed.try_send(());
+                        disconnected
+                    },
+                ))
+                .unwrap();
+        });
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        cancelled.store(true, Ordering::Release);
+        assert!(
+            result
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+    });
+}
+
+#[test]
+fn close_retires_old_and_racing_work_before_new_capacity_is_used() {
+    let f = Fixture::new();
+    let old = f.wide(ChannelSettings::default());
+    let active = f.create(
+        &f.user,
+        OTHER_WORKSPACE,
+        MembershipMode::WorkspaceWide,
+        Vec::new(),
+        ChannelSettings::default(),
+    );
+    let original = post("archived");
+    let accepted = f.request(send(&old, original.clone())).unwrap();
+    let archived = posted(accepted.clone());
+    f.sql(
+        "WITH RECURSIVE fill(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM fill WHERE x<4094)
+         INSERT INTO notification_work(channel_id,message_id,participant_id,launch_id,addressed)
+         SELECT p.channel_id,p.id,'extra-'||x,'extra-launch-'||x,0 FROM fill CROSS JOIN posts p;",
+    );
+    let active_open = std::cell::Cell::new(true);
+    let workspace_open = |workspace: &str| workspace == OTHER_WORKSPACE && active_open.get();
+    f.engine.retire_workspace();
+    let active_authority = |_: &str| f.authority(&f.user, WORKSPACE);
+    let next = posted(
+        f.engine
+            .request(
+                send(&active, post("new-work")),
+                active_authority,
+                workspace_open,
+                || false,
+            )
+            .unwrap(),
+    );
+    assert_eq!(next.sequence, 1);
+    assert_eq!(f.work(&next.id).iter().filter(|entry| entry.3).count(), 2);
+    assert_eq!(
+        f.work(&archived.id).iter().filter(|entry| !entry.3).count(),
+        4096
+    );
+    let retry = f
+        .engine
+        .request(
+            send(&old, original),
+            |workspace| {
+                let mut authority = f.authority(&f.user, workspace)?;
+                authority.workspace_open = false;
+                Ok(authority)
+            },
+            workspace_open,
+            || false,
+        )
+        .unwrap();
+    assert_eq!(retry, accepted);
+    let racing = posted(
+        f.engine
+            .acquire_store(std::time::Instant::now(), &|| false)
+            .map_err(super::StoreAdmission::into_error)
+            .unwrap()
+            .run(&workspace_open, |store| {
+                let (response, changed) = store.request(
+                    send(&active, post("racing-close")),
+                    active_authority,
+                    |store, workspace| {
+                        f.engine.flush_retirements(store, &workspace_open)?;
+                        let closed = !workspace_open(workspace);
+                        // Publish closure after the writer's last capacity fence, before its commit.
+                        active_open.set(false);
+                        f.engine.retire_workspace();
+                        Ok(closed)
+                    },
+                )?;
+                assert!(changed);
+                Ok(response)
+            })
+            .unwrap(),
+    );
+    assert_eq!(racing.sequence, 2);
+    for id in [&racing.id, &next.id] {
+        let work = f.work(id);
+        assert_eq!(work.len(), 2);
+        assert!(work.iter().all(|entry| !entry.3));
+    }
+}
+
+#[test]
+fn workspace_close_wakes_subscription_and_archived_catchup_ends() {
+    let f = Fixture::new();
+    let id = f.wide(quiet());
+    f.request(send(&id, post("before-close-1"))).unwrap();
+    f.request(send(&id, post("before-close-2"))).unwrap();
+    let open = AtomicBool::new(true);
+    let is_open = |_: &str| open.load(Ordering::Acquire);
+    let authority = |workspace: &str| {
+        let mut authority = f.authority(&f.user, workspace)?;
+        authority.workspace_open = is_open(workspace);
+        Ok(authority)
+    };
+    thread::scope(|scope| {
+        let (observed, ready) = crossbeam_channel::bounded(1);
+        let (completed, result) = crossbeam_channel::bounded(1);
+        let (fixture, channel) = (&f, &id);
+        scope.spawn(move || {
+            completed
+                .send(fixture.engine.request(
+                    subscribe(channel, Some(2), 1, MAX_WAIT_MS),
+                    |workspace| {
+                        let sampled = authority(workspace);
+                        let _ = observed.try_send(());
+                        sampled
+                    },
+                    is_open,
+                    || false,
+                ))
+                .unwrap();
+        });
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        open.store(false, Ordering::Release);
+        f.engine.retire_workspace();
+        assert_eq!(
+            result
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap(),
+            ChannelResponse::Changes {
+                cursor: ChannelCursor {
+                    channel_id: id.clone(),
+                    sequence: 2
+                },
+                changes: Vec::new(),
+                more: false,
+                status: ChannelSubscriptionStatus::Closed,
+            }
+        );
+    });
+    for (from, status, more) in [
+        (0, ChannelSubscriptionStatus::Active, true),
+        (1, ChannelSubscriptionStatus::Closed, false),
+    ] {
+        assert_eq!(
+            f.engine
+                .request(
+                    subscribe(&id, Some(from), 1, MAX_WAIT_MS),
+                    authority,
+                    is_open,
+                    || false
+                )
+                .unwrap(),
+            ChannelResponse::Changes {
+                cursor: ChannelCursor {
+                    channel_id: id.clone(),
+                    sequence: from + 1
+                },
+                changes: vec![ChannelChange {
+                    sequence: from + 1,
+                    kind: ChannelChangeKind::Post
+                }],
+                more,
+                status,
+            }
+        );
+    }
+}
+
+#[test]
+fn visibility_index_migration_preserves_member_access_and_durable_history() {
+    let f = Fixture::new();
+    let id = f.create(
+        &f.user,
+        WORKSPACE,
+        MembershipMode::Explicit,
+        vec![f.a.id.clone()],
+        quiet(),
+    );
+    let original = post("migrated");
+    let accepted = f.as_actor(&f.a, send(&id, original.clone())).unwrap();
+    f.sql(
+        "DROP INDEX visible_explicit_channels;
+         DROP INDEX workspace_wide_channels;
+         ALTER TABLE members DROP COLUMN workspace_id;
+         PRAGMA user_version=1;",
+    );
+    let Fixture {
+        root,
+        engine,
+        user,
+        a,
+        b,
+    } = f;
+    drop(engine);
+    let engine = ChannelEngine::new(root.path().to_owned());
+    let f = Fixture {
+        root,
+        engine,
+        user,
+        a,
+        b,
+    };
+    assert_eq!(f.list(&f.a)[0].id, id);
+    assert!(f.list(&f.b).is_empty());
+    assert_eq!(f.as_actor(&f.a, send(&id, original)).unwrap(), accepted);
+    let (sync, version) = f
+        .engine
+        .with_store(|store| {
+            Ok((
+                store
+                    .connection
+                    .pragma_query_value(None, "synchronous", |row| row.get::<_, i64>(0))?,
+                store
+                    .connection
+                    .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?,
+            ))
+        })
+        .unwrap();
+    assert_eq!((sync, version), (3, 2));
 }

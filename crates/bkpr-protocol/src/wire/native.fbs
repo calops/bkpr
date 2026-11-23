@@ -366,6 +366,7 @@ enum ParticipantKind : ubyte { User, Agent }
 enum PostIntent : ubyte { Note, Question, Report }
 enum AttachmentMediaType : ubyte { Png }
 enum ChannelChangeKind : ubyte { Post, Settings, Membership, ReadPosition }
+enum ChannelSubscriptionStatus : ubyte { Unspecified, Active, Closed }
 table ChannelSettings {
   user_wake:WakePolicy;
   agent_wake:WakePolicy;
@@ -415,6 +416,7 @@ table ChannelRequestHistory {
   channel_id:string (required);
   before:OptionalU64;
   limit:ushort;
+  after:OptionalU64;
 }
 table ChannelRequestRead {
   channel_id:string (required);
@@ -437,6 +439,15 @@ table ChannelRequestGetAttachment {
   channel_id:string (required);
   attachment_id:string (required);
 }
+table ChannelRequestListArchivedWorkspaces {
+  after:string;
+  limit:ushort;
+}
+table ChannelRequestListExplicitMembers {
+  channel_id:string (required);
+  after:string;
+  limit:ushort;
+}
 union ChannelRequest {
   ChannelRequestList,
   ChannelRequestListMembers,
@@ -449,7 +460,9 @@ union ChannelRequest {
   ChannelRequestMarkRead,
   ChannelRequestSubscribe,
   ChannelRequestUploadAttachment,
-  ChannelRequestGetAttachment
+  ChannelRequestGetAttachment,
+  ChannelRequestListArchivedWorkspaces,
+  ChannelRequestListExplicitMembers
 }
 table OperationChannels { request:ChannelRequest (required); }
 union Operation {
@@ -827,6 +840,11 @@ table AttachmentDescriptor {
   alt_text:string;
   byte_len:uint;
 }
+table ChannelMessage {
+  message:ChannelMessageSummary (required);
+  text:string (required);
+  attachments:[AttachmentDescriptor] (required);
+}
 table ChannelResponseListed {
   channels:[ChannelSummary] (required);
   next_after:string;
@@ -842,23 +860,33 @@ table ChannelResponsePosted {
   attention:bool;
 }
 table ChannelResponseHistory {
-  messages:[ChannelMessageSummary] (required);
+  messages:[ChannelMessage] (required);
   next_before:OptionalU64;
+  next_after:OptionalU64;
+  cursor:ChannelCursor (required);
 }
 table ChannelResponseMessage {
-  message:ChannelMessageSummary (required);
-  text:string (required);
+  message:ChannelMessage (required);
 }
 table ChannelResponseReadPosition { through:ulong; }
 table ChannelResponseChanges {
   cursor:ChannelCursor (required);
   changes:[ChannelChange] (required);
   more:bool;
+  status:ChannelSubscriptionStatus;
 }
 table ChannelResponseAttachmentUploaded { attachment:AttachmentDescriptor (required); }
 table ChannelResponseAttachment {
   attachment:AttachmentDescriptor (required);
   bytes:[ubyte] (required);
+}
+table ChannelResponseArchivedWorkspaces {
+  workspace_ids:[string] (required);
+  next_after:string;
+}
+table ChannelResponseExplicitMembers {
+  members:[string] (required);
+  next_after:string;
 }
 union ChannelResponse {
   ChannelResponseListed,
@@ -870,7 +898,9 @@ union ChannelResponse {
   ChannelResponseReadPosition,
   ChannelResponseChanges,
   ChannelResponseAttachmentUploaded,
-  ChannelResponseAttachment
+  ChannelResponseAttachment,
+  ChannelResponseArchivedWorkspaces,
+  ChannelResponseExplicitMembers
 }
 table ChannelPayload { response:ChannelResponse (required); }
 union Payload { ControlPayload, PanePayload, ImageResourcePayload, ChannelPayload }

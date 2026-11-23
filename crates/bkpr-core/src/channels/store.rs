@@ -2,14 +2,15 @@ use super::ChannelAuthority;
 use anyhow::{Context, Result, ensure};
 use bkpr_protocol::channels::{
     AttachmentDescriptor, AttachmentId, AttachmentUpload, ChannelChange, ChannelChangeKind,
-    ChannelId, ChannelPost, ChannelRequest, ChannelResponse, ChannelSettings, ChannelSummary,
-    MembershipMode, MessageId, MessageSummary, Participant, ParticipantId, ParticipantKind,
-    PostIntent, WakePolicy,
+    ChannelCursor, ChannelId, ChannelMessage, ChannelPost, ChannelRequest, ChannelResponse,
+    ChannelSettings, ChannelSummary, MAX_HISTORY_BYTES, MembershipMode, MessageId, MessageSummary,
+    Participant, ParticipantId, ParticipantKind, PostIntent, WakePolicy,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Transaction, params};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use std::{
+    fmt,
     fs::{File, OpenOptions},
     io::ErrorKind,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
@@ -22,8 +23,20 @@ const APPLICATION_ID: i64 = 0x424b4348;
 const STORE_NAME: &str = "channels.sqlite3";
 const MAX_PENDING: usize = 4096;
 
+#[derive(Debug)]
+pub(super) struct ChannelAccessLost;
+
+impl fmt::Display for ChannelAccessLost {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("channel unavailable")
+    }
+}
+
+impl std::error::Error for ChannelAccessLost {}
+
 pub(super) struct Store {
     pub(super) connection: Connection,
+    pub(super) retirement_epoch: u64,
 }
 
 struct StoredChannel {
@@ -68,13 +81,13 @@ impl Store {
         let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
         ensure!(
             (empty && application == 0 && version == 0)
-                || (application == APPLICATION_ID && version == 1),
+                || (application == APPLICATION_ID && matches!(version, 1 | 2)),
             "foreign or unsupported channel store"
         );
         connection.execute_batch(
             "PRAGMA trusted_schema=OFF;
              PRAGMA journal_mode=DELETE;
-             PRAGMA synchronous=FULL;
+             PRAGMA synchronous=EXTRA;
              PRAGMA foreign_keys=ON;
              PRAGMA temp_store=MEMORY;
              PRAGMA mmap_size=0;
@@ -84,20 +97,79 @@ impl Store {
             let tx = connection.transaction()?;
             tx.execute_batch(include_str!("schema.sql"))?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
-            tx.pragma_update(None, "user_version", 1)?;
+            tx.pragma_update(None, "user_version", 2)?;
             tx.commit()?;
             directory.sync_all()?;
         } else {
+            if version == 1 {
+                let tx = connection.transaction()?;
+                tx.execute_batch(
+                    "ALTER TABLE members ADD COLUMN workspace_id TEXT NOT NULL DEFAULT '';
+                     UPDATE members SET workspace_id=(SELECT workspace_id FROM channels WHERE id=members.channel_id);
+                     CREATE INDEX workspace_wide_channels ON channels(workspace_id,id) WHERE workspace_wide=1;
+                     CREATE INDEX visible_explicit_channels ON members(workspace_id,participant_id,channel_id);",
+                )?;
+                tx.pragma_update(None, "user_version", 2)?;
+                tx.commit()?;
+            }
             // Retain frozen work as history; a new runtime must not adopt old wakes or alerts.
             connection.execute("UPDATE notification_work SET pending=0 WHERE pending=1", [])?;
         }
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            retirement_epoch: 0,
+        })
+    }
+
+    pub(super) fn retire_closed_workspaces(
+        &mut self,
+        workspace_open: &impl Fn(&str) -> bool,
+    ) -> Result<()> {
+        let mut closed = Vec::new();
+        {
+            let mut statement = self.connection.prepare(
+                "SELECT DISTINCT c.workspace_id FROM notification_work w
+                 JOIN channels c ON c.id=w.channel_id WHERE w.pending=1",
+            )?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                let workspace = row.get_ref(0)?.as_str()?;
+                if !workspace_open(workspace) {
+                    closed.push(workspace.to_owned());
+                }
+            }
+        }
+        if closed.is_empty() {
+            return Ok(());
+        }
+        let tx = self.connection.transaction()?;
+        {
+            let mut statement = tx.prepare(
+                "UPDATE notification_work SET pending=0 WHERE pending=1 AND channel_id IN
+                    (SELECT id FROM channels WHERE workspace_id=?1)",
+            )?;
+            for id in &closed {
+                statement.execute([id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(super) fn authorize_upload(
+        &self,
+        id: &ChannelId,
+        admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+    ) -> Result<()> {
+        let (_, authority) = self.access(id, admit)?;
+        require_write(&authority)
     }
 
     pub(super) fn request(
         &mut self,
         request: ChannelRequest,
         admit: impl Fn(&str) -> Result<ChannelAuthority>,
+        retire: impl FnOnce(&mut Self, &str) -> Result<bool>,
     ) -> Result<(ChannelResponse, bool)> {
         let request = match request {
             ChannelRequest::List {
@@ -106,10 +178,21 @@ impl Store {
                 limit,
             } => {
                 let authority = workspace_authority(&workspace_id, &admit)?;
+                if !authority.workspace_open {
+                    let retained: bool = self.connection.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM channels WHERE workspace_id=?1)",
+                        [&workspace_id],
+                        |row| row.get(0),
+                    )?;
+                    ensure!(retained, ChannelAccessLost);
+                }
                 return Ok((
                     self.list(&workspace_id, after.as_ref(), limit, &authority)?,
                     false,
                 ));
+            }
+            ChannelRequest::ListArchivedWorkspaces { after, limit } => {
+                return Ok((self.archives(after.as_deref(), limit, &admit)?, false));
             }
             ChannelRequest::Create {
                 workspace_id,
@@ -133,6 +216,7 @@ impl Store {
         };
         let channel_id = match &request {
             ChannelRequest::ListMembers { channel_id, .. }
+            | ChannelRequest::ListExplicitMembers { channel_id, .. }
             | ChannelRequest::SetSettings { channel_id, .. }
             | ChannelRequest::SetMembership { channel_id, .. }
             | ChannelRequest::Post { channel_id, .. }
@@ -156,6 +240,14 @@ impl Store {
                     false,
                 ))
             }
+            ChannelRequest::ListExplicitMembers {
+                channel_id,
+                after,
+                limit,
+            } => Ok((
+                self.explicit_members(&channel_id, after.as_ref(), limit)?,
+                false,
+            )),
             ChannelRequest::SetSettings {
                 channel_id,
                 settings,
@@ -172,19 +264,15 @@ impl Store {
                 self.set_membership(channel_id, channel, membership, members, &authority)
             }
             ChannelRequest::Post { channel_id, post } => {
-                require_write(&authority)?;
-                self.post(&channel_id, channel, post, authority)
+                self.post(&channel_id, channel, post, authority, retire)
             }
             ChannelRequest::History {
                 channel_id,
                 before,
+                after,
                 limit,
             } => Ok((
-                self.history(
-                    &channel_id,
-                    before.unwrap_or(channel.last_sequence + 1),
-                    limit,
-                )?,
+                self.history(&channel_id, &channel, before, after, limit)?,
                 false,
             )),
             ChannelRequest::Read {
@@ -224,7 +312,7 @@ impl Store {
              FROM channels WHERE id=?1",
             [id.as_ref()],
             |row| StoredChannel::read(row, 0),
-        ).optional()?.context("channel unavailable")?;
+        ).optional()?.context(ChannelAccessLost)?;
         let authority = workspace_authority(&channel.workspace_id, admit)?;
         if authority.actor.kind == ParticipantKind::Agent && !channel.workspace_wide {
             let member: bool = self.connection.query_row(
@@ -232,7 +320,7 @@ impl Store {
                 params![id.as_ref(), authority.actor.id.as_ref()],
                 |r| r.get(0),
             )?;
-            ensure!(member, "channel unavailable");
+            ensure!(member, ChannelAccessLost);
         }
         Ok((channel, authority))
     }
@@ -245,13 +333,20 @@ impl Store {
         authority: &ChannelAuthority,
     ) -> Result<ChannelResponse> {
         let mut statement = self.connection.prepare(
-            "SELECT c.id,c.workspace_id,c.name,c.workspace_wide,c.settings,c.last_sequence,c.change_sequence,
+            "WITH visible(id) AS (
+                 SELECT id FROM channels WHERE ?4 AND workspace_id=?1 AND id>?3
+                 UNION ALL
+                 SELECT id FROM channels WHERE NOT ?4 AND workspace_id=?1 AND workspace_wide=1 AND id>?3
+                 UNION ALL
+                 SELECT channel_id FROM members
+                   WHERE NOT ?4 AND workspace_id=?1 AND participant_id=?2 AND channel_id>?3
+                 ORDER BY 1 LIMIT ?5
+             )
+             SELECT c.id,c.workspace_id,c.name,c.workspace_wide,c.settings,c.last_sequence,c.change_sequence,
                     c.last_attention,COALESCE(p.through,0)
-             FROM channels c LEFT JOIN positions p ON p.channel_id=c.id AND p.participant_id=?2
-             WHERE c.workspace_id=?1 AND c.id>?3 AND
-                   (?4 OR c.workspace_wide OR EXISTS (
-                    SELECT 1 FROM members m WHERE m.channel_id=c.id AND m.participant_id=?2))
-             ORDER BY c.id LIMIT ?5",
+             FROM visible v JOIN channels c ON c.id=v.id
+               LEFT JOIN positions p ON p.channel_id=c.id AND p.participant_id=?2
+             ORDER BY v.id",
         )?;
         let user = authority.actor.kind == ParticipantKind::User;
         let mut channels = statement
@@ -270,6 +365,57 @@ impl Store {
             take_extra(&mut channels, limit).then(|| channels.last().unwrap().id.clone());
         Ok(ChannelResponse::Listed {
             channels,
+            next_after,
+        })
+    }
+
+    fn archives(
+        &self,
+        after: Option<&str>,
+        limit: u16,
+        admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+    ) -> Result<ChannelResponse> {
+        let mut statement = self.connection.prepare(
+            "SELECT DISTINCT workspace_id FROM channels WHERE workspace_id>?1 ORDER BY workspace_id",
+        )?;
+        let mut rows = statement.query([after.unwrap_or("")])?;
+        let mut workspace_ids = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id = row.get_ref(0)?.as_str()?;
+            if workspace_authority(id, admit).is_ok_and(|authority| !authority.workspace_open) {
+                workspace_ids.push(id.to_owned());
+                if workspace_ids.len() > usize::from(limit) {
+                    break;
+                }
+            }
+        }
+        let next_after =
+            take_extra(&mut workspace_ids, limit).then(|| workspace_ids.last().unwrap().clone());
+        Ok(ChannelResponse::ArchivedWorkspaces {
+            workspace_ids,
+            next_after,
+        })
+    }
+
+    fn explicit_members(
+        &self,
+        id: &ChannelId,
+        after: Option<&ParticipantId>,
+        limit: u16,
+    ) -> Result<ChannelResponse> {
+        let mut statement = self.connection.prepare(
+            "SELECT participant_id FROM members WHERE channel_id=?1 AND participant_id>?2
+             ORDER BY participant_id LIMIT ?3",
+        )?;
+        let mut members = statement
+            .query_map(
+                params![id.as_ref(), after.map_or("", AsRef::as_ref), limit + 1],
+                |row| Ok(ParticipantId(row.get(0)?)),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let next_after = take_extra(&mut members, limit).then(|| members.last().unwrap().clone());
+        Ok(ChannelResponse::ExplicitMembers {
+            members,
             next_after,
         })
     }
@@ -301,7 +447,7 @@ impl Store {
             "INSERT INTO channels(id,workspace_id,name,workspace_wide,settings) VALUES(?1,?2,?3,?4,?5)",
             params![id.as_ref(), workspace_id, name, workspace_wide, serde_json::to_string(&settings)?],
         )?;
-        insert_members(&tx, &id, &members)?;
+        insert_members(&tx, &id, &workspace_id, &members)?;
         tx.commit()?;
         Ok((
             ChannelResponse::Channel {
@@ -368,7 +514,7 @@ impl Store {
                 params![id.as_ref(), workspace_wide],
             )?;
             tx.execute("DELETE FROM members WHERE channel_id=?1", [id.as_ref()])?;
-            insert_members(&tx, &id, &members)?;
+            insert_members(&tx, &id, &channel.workspace_id, &members)?;
             if !workspace_wide {
                 tx.execute(
                     "UPDATE notification_work SET pending=0 WHERE channel_id=?1 AND pending=1 AND launch_id IS NOT NULL
@@ -411,6 +557,7 @@ impl Store {
         channel: StoredChannel,
         post: ChannelPost,
         authority: ChannelAuthority,
+        retire: impl FnOnce(&mut Self, &str) -> Result<bool>,
     ) -> Result<(ChannelResponse, bool)> {
         let fingerprint = fingerprint(&post);
         let retry = self
@@ -439,6 +586,7 @@ impl Store {
                 false,
             ));
         }
+        require_write(&authority)?;
         let (policy, attention) = match authority.actor.kind {
             ParticipantKind::User => (channel.settings.user_wake, false),
             ParticipantKind::Agent => (
@@ -510,6 +658,8 @@ impl Store {
             reply_to: post.reply_to,
             attachments: post.attachments,
         };
+        let needed = wakes.len() + usize::from(attention);
+        let pending_work = needed != 0 && !retire(self, &channel.workspace_id)?;
         let tx = self.connection.transaction()?;
         if let Some(reply) = &message.reply_to {
             ensure!(
@@ -533,8 +683,7 @@ impl Store {
                 "channel attachment unavailable"
             );
         }
-        let needed = wakes.len() + usize::from(attention);
-        if needed != 0 {
+        if pending_work {
             let pending: usize = tx.query_row(
                 "SELECT count(*) FROM notification_work WHERE pending=1",
                 [],
@@ -558,7 +707,8 @@ impl Store {
         )?;
         if needed != 0 {
             let mut insert = tx.prepare(
-                "INSERT INTO notification_work(channel_id,message_id,participant_id,launch_id,addressed) VALUES(?1,?2,?3,?4,?5)",
+                "INSERT INTO notification_work(channel_id,message_id,participant_id,launch_id,addressed,pending)
+                 VALUES(?1,?2,?3,?4,?5,?6)",
             )?;
             for (recipient, launch, addressed) in wakes {
                 insert.execute(params![
@@ -566,7 +716,8 @@ impl Store {
                     message.id.as_ref(),
                     recipient,
                     launch,
-                    addressed
+                    addressed,
+                    pending_work,
                 ])?;
             }
             if attention {
@@ -575,7 +726,8 @@ impl Store {
                     message.id.as_ref(),
                     "",
                     None::<&str>,
-                    false
+                    false,
+                    pending_work,
                 ])?;
             }
         }
@@ -591,37 +743,93 @@ impl Store {
         ))
     }
 
-    fn history(&self, id: &ChannelId, before: u64, limit: u16) -> Result<ChannelResponse> {
-        let sequence = i64::try_from(before - 1).unwrap_or(i64::MAX);
-        let mut statement = self.connection.prepare(
-            "SELECT summary FROM posts WHERE channel_id=?1 AND sequence<=?2 ORDER BY sequence DESC LIMIT ?3",
-        )?;
-        let mut messages = statement
-            .query_map(params![id.as_ref(), sequence, limit + 1], |r| json(r, 0))?
-            .collect::<rusqlite::Result<Vec<MessageSummary>>>()?;
-        let next_before =
-            take_extra(&mut messages, limit).then(|| messages.last().unwrap().sequence);
-        messages.reverse();
+    fn history(
+        &self,
+        id: &ChannelId,
+        channel: &StoredChannel,
+        before: Option<u64>,
+        after: Option<u64>,
+        limit: u16,
+    ) -> Result<ChannelResponse> {
+        let (sql, bound) = if let Some(after) = after {
+            (
+                "SELECT summary,body FROM posts WHERE channel_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3",
+                after,
+            )
+        } else {
+            (
+                "SELECT summary,body FROM posts WHERE channel_id=?1 AND sequence<=?2 ORDER BY sequence DESC LIMIT ?3",
+                before.map_or(channel.last_sequence, |value| value - 1),
+            )
+        };
+        let bound = i64::try_from(bound).unwrap_or(i64::MAX);
+        let mut statement = self.connection.prepare(sql)?;
+        let mut rows = statement.query(params![id.as_ref(), bound, limit])?;
+        let mut messages = Vec::new();
+        let mut content_bytes = 0;
+        while let Some(row) = rows.next()? {
+            let message = self.message(id, row)?;
+            content_bytes += message.content_bytes();
+            ensure!(
+                !messages.is_empty() || content_bytes <= MAX_HISTORY_BYTES,
+                "channel message exceeds the history page budget"
+            );
+            if content_bytes > MAX_HISTORY_BYTES {
+                break;
+            }
+            messages.push(message);
+        }
+        if after.is_none() {
+            messages.reverse();
+        }
+        let next_before = messages
+            .first()
+            .map(|entry| entry.message.sequence)
+            .filter(|seq| *seq > 1);
+        let next_after = messages
+            .last()
+            .map(|entry| entry.message.sequence)
+            .filter(|seq| *seq < channel.last_sequence);
         Ok(ChannelResponse::History {
             messages,
             next_before,
+            next_after,
+            cursor: ChannelCursor {
+                channel_id: id.clone(),
+                sequence: channel.change_sequence,
+            },
         })
     }
 
     fn read(&self, id: &ChannelId, message_id: &MessageId) -> Result<ChannelResponse> {
-        self.connection
-            .query_row(
-                "SELECT summary,body FROM posts WHERE channel_id=?1 AND id=?2",
-                params![id.as_ref(), message_id.as_ref()],
-                |r| {
-                    Ok(ChannelResponse::Message {
-                        message: json(r, 0)?,
-                        text: r.get(1)?,
-                    })
-                },
-            )
-            .optional()?
-            .context("channel message unavailable")
+        let mut statement = self
+            .connection
+            .prepare("SELECT summary,body FROM posts WHERE channel_id=?1 AND id=?2")?;
+        let mut rows = statement.query(params![id.as_ref(), message_id.as_ref()])?;
+        let message = self.message(id, rows.next()?.context("channel message unavailable")?)?;
+        Ok(ChannelResponse::Message { message })
+    }
+
+    fn message(&self, id: &ChannelId, row: &Row<'_>) -> Result<ChannelMessage> {
+        let message: MessageSummary = json(row, 0)?;
+        let mut attachments = Vec::with_capacity(message.attachments.len());
+        if !message.attachments.is_empty() {
+            let mut statement = self
+                .connection
+                .prepare("SELECT descriptor FROM attachments WHERE channel_id=?1 AND id=?2")?;
+            for attachment in &message.attachments {
+                attachments.push(
+                    statement.query_row(params![id.as_ref(), attachment.as_ref()], |row| {
+                        json(row, 0)
+                    })?,
+                );
+            }
+        }
+        Ok(ChannelMessage {
+            message,
+            text: row.get(1)?,
+            attachments,
+        })
     }
 
     fn mark_read(
@@ -769,11 +977,11 @@ fn workspace_authority(
     workspace: &str,
     admit: &impl Fn(&str) -> Result<ChannelAuthority>,
 ) -> Result<ChannelAuthority> {
-    let authority = admit(workspace)?;
+    let authority = admit(workspace).context(ChannelAccessLost)?;
     authority.actor.validate()?;
     ensure!(
         authority.workspace_open || authority.actor.kind == ParticipantKind::User,
-        "channel workspace unavailable"
+        ChannelAccessLost
     );
     Ok(authority)
 }
@@ -884,11 +1092,18 @@ fn open_private(path: &Path, create: bool) -> Result<Option<File>> {
     }
 }
 
-fn insert_members(tx: &Transaction<'_>, id: &ChannelId, members: &[ParticipantId]) -> Result<()> {
+fn insert_members(
+    tx: &Transaction<'_>,
+    id: &ChannelId,
+    workspace_id: &str,
+    members: &[ParticipantId],
+) -> Result<()> {
     if !members.is_empty() {
-        let mut statement = tx.prepare("INSERT INTO members VALUES(?1,?2)")?;
+        let mut statement = tx.prepare(
+            "INSERT INTO members(channel_id,participant_id,workspace_id) VALUES(?1,?2,?3)",
+        )?;
         for member in members {
-            statement.execute(params![id.as_ref(), member.as_ref()])?;
+            statement.execute(params![id.as_ref(), member.as_ref(), workspace_id])?;
         }
     }
     Ok(())
@@ -964,19 +1179,9 @@ fn take_extra<T>(items: &mut Vec<T>, limit: u16) -> bool {
 }
 
 fn fingerprint(post: &ChannelPost) -> [u8; 32] {
-    struct HashWriter(Sha256);
-    impl std::io::Write for HashWriter {
-        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-            self.0.update(data);
-            Ok(data.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut writer = HashWriter(Sha256::new());
+    let mut writer = Sha256::new();
     serde_json::to_writer(&mut writer, post).expect("typed post serialization is infallible");
-    writer.0.finalize().into()
+    writer.finalize().into()
 }
 
 fn new_id() -> String {

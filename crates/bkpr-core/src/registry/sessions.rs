@@ -314,11 +314,15 @@ impl Registry {
                     && crate::transport::lifetime_connected(stream)
                     && crate::transport::lifetime_connected(&client.lifetime)
             }),
-            Operation::Channels { request } => self.request_channels(request, &|| {
-                client.is_active()
-                    && crate::transport::lifetime_connected(stream)
-                    && crate::transport::lifetime_connected(&client.lifetime)
-            }),
+            Operation::Channels { request } => {
+                client.ensure_active()?;
+                client.owner.ensure_external_to_daemon()?;
+                self.request_channels(request, &|| {
+                    client.is_active()
+                        && crate::transport::lifetime_connected(stream)
+                        && crate::transport::lifetime_connected(&client.lifetime)
+                })
+            }
             Operation::Client { .. }
             | Operation::ClientRegister { .. }
             | Operation::Shutdown

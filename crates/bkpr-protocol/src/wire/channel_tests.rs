@@ -54,6 +54,23 @@ fn message() -> MessageSummary {
     }
 }
 
+fn descriptor() -> AttachmentDescriptor {
+    AttachmentDescriptor {
+        id: attachment_id(),
+        media_type: AttachmentMediaType::Png,
+        alt_text: Some("private picture".into()),
+        byte_len: 3,
+    }
+}
+
+fn renderable_message() -> ChannelMessage {
+    ChannelMessage {
+        message: message(),
+        text: "private body\nwith Unicode \u{1f9ea}".into(),
+        attachments: vec![descriptor()],
+    }
+}
+
 fn cursor(sequence: u64) -> ChannelCursor {
     ChannelCursor {
         channel_id: channel(),
@@ -85,10 +102,19 @@ fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
             after: Some(channel()),
             limit: 1,
         },
+        ChannelRequest::ListArchivedWorkspaces {
+            after: Some("workspace-previous".into()),
+            limit: 2,
+        },
         ChannelRequest::ListMembers {
             channel_id: channel(),
             after: Some(participant().id),
             limit: 64,
+        },
+        ChannelRequest::ListExplicitMembers {
+            channel_id: channel(),
+            after: Some(ParticipantId("inactive".into())),
+            limit: 2,
         },
         ChannelRequest::Create {
             workspace_id: "workspace".into(),
@@ -113,6 +139,13 @@ fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
         ChannelRequest::History {
             channel_id: channel(),
             before: Some(8),
+            after: None,
+            limit: 16,
+        },
+        ChannelRequest::History {
+            channel_id: channel(),
+            before: None,
+            after: Some(0),
             limit: 16,
         },
         ChannelRequest::Read {
@@ -175,21 +208,24 @@ fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
 
 #[test]
 fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
-    let attachment = AttachmentDescriptor {
-        id: attachment_id(),
-        media_type: AttachmentMediaType::Png,
-        alt_text: Some("private picture".into()),
-        byte_len: 3,
-    };
+    let attachment = descriptor();
     let mut codec = Codec::new();
     for response in [
         ChannelResponse::Listed {
             channels: vec![summary()],
             next_after: Some(channel()),
         },
+        ChannelResponse::ArchivedWorkspaces {
+            workspace_ids: vec!["workspace-archive".into()],
+            next_after: Some("workspace-archive".into()),
+        },
         ChannelResponse::Members {
             participants: vec![participant()],
             next_after: None,
+        },
+        ChannelResponse::ExplicitMembers {
+            members: vec![ParticipantId("inactive".into())],
+            next_after: Some(ParticipantId("inactive".into())),
         },
         ChannelResponse::Channel { channel: summary() },
         ChannelResponse::Posted {
@@ -198,12 +234,13 @@ fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
             attention: true,
         },
         ChannelResponse::History {
-            messages: vec![message()],
+            messages: vec![renderable_message()],
             next_before: Some(9),
+            next_after: Some(9),
+            cursor: cursor(11),
         },
         ChannelResponse::Message {
-            message: message(),
-            text: "private body".into(),
+            message: renderable_message(),
         },
         ChannelResponse::ReadPosition { through: 4 },
         ChannelResponse::Changes {
@@ -213,6 +250,13 @@ fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
                 kind: ChannelChangeKind::Post,
             }],
             more: true,
+            status: ChannelSubscriptionStatus::Active,
+        },
+        ChannelResponse::Changes {
+            cursor: cursor(11),
+            changes: Vec::new(),
+            more: false,
+            status: ChannelSubscriptionStatus::Closed,
         },
         ChannelResponse::AttachmentUploaded {
             attachment: attachment.clone(),
@@ -310,7 +354,29 @@ fn channel_validation_rejects_client_authorship_and_invalid_reference_shapes() {
         ChannelRequest::History {
             channel_id: channel(),
             before: None,
+            after: None,
             limit: MAX_PAGE_LIMIT + 1,
+        },
+        ChannelRequest::History {
+            channel_id: channel(),
+            before: Some(9),
+            after: Some(0),
+            limit: 1,
+        },
+        ChannelRequest::History {
+            channel_id: channel(),
+            before: Some(0),
+            after: None,
+            limit: 1,
+        },
+        ChannelRequest::ListArchivedWorkspaces {
+            after: Some(String::new()),
+            limit: 1,
+        },
+        ChannelRequest::ListExplicitMembers {
+            channel_id: channel(),
+            after: None,
+            limit: 0,
         },
         ChannelRequest::UploadAttachment {
             channel_id: channel(),
@@ -374,18 +440,177 @@ fn native_fetch_rejects_descriptor_size_mismatch() {
     let bytes = b.create_vector([0u8, 255, 6]);
     let response = g::ChannelResponseAttachment::create(&mut b, attachment, bytes);
     let response = g::ChannelResponse::create_channel_response_attachment(&mut b, response);
-    let payload = g::ChannelPayload::create(&mut b, response);
-    let payload = g::Payload::create_channel_payload(&mut b, payload);
+    let error = decode_native_channel_response(&mut b, response).unwrap_err();
+    assert!(error.contains("attachment size mismatch"));
+}
+
+fn decode_native_channel_response(
+    b: &mut Builder,
+    response: planus::UnionOffset<g::ChannelResponse>,
+) -> Result<Response, String> {
+    let payload = g::ChannelPayload::create(b, response);
+    let payload = g::Payload::create_channel_payload(b, payload);
     assert_eq!(payload.tag(), 4);
-    let payload = g::OptionalPayload::create(&mut b, payload);
+    let payload = g::OptionalPayload::create(b, payload);
     let root = g::Response::create(
-        &mut b,
+        b,
         PROTOCOL_VERSION,
         true,
         Some(payload),
         None::<Offset<str>>,
         None::<Offset<g::OptionalFailure>>,
     );
-    let error = decode_response(b.finish(root, None)).unwrap_err();
-    assert!(error.to_string().contains("attachment size mismatch"));
+    decode_response(b.finish(root, None)).map_err(|error| error.to_string())
+}
+
+#[test]
+fn native_history_bounds_expanded_bytes_not_only_frame_and_row_count() {
+    let count = MAX_HISTORY_BYTES / MAX_POST_BYTES + 1;
+    assert!(count <= usize::from(MAX_PAGE_LIMIT));
+    let mut message = renderable_message();
+    message.text = "x".repeat(MAX_POST_BYTES);
+    let mut codec = Codec::new();
+    let response = reply(ChannelResponse::History {
+        messages: (1..=count)
+            .map(|sequence| {
+                let mut message = message.clone();
+                message.message.sequence = sequence as u64;
+                message
+            })
+            .collect(),
+        next_before: None,
+        next_after: None,
+        cursor: cursor(count as u64),
+    });
+    let error = codec.encode_response(&response).unwrap_err().to_string();
+    assert!(error.contains("channel history page exceeds byte limit"));
+
+    let mut b = Builder::new();
+    let id = b.create_string("test");
+    let author = g::ChannelParticipant::create(&mut b, id, g::ParticipantKind::User, id);
+    let empty_ids = b.create_vector([] as [Offset<str>; 0]);
+    let metadata = g::ChannelMessageSummary::create(
+        &mut b,
+        id,
+        1u64,
+        author,
+        0u64,
+        g::PostIntent::Note,
+        empty_ids,
+        None::<Offset<str>>,
+        empty_ids,
+    );
+    let text = b.create_string(&message.text);
+    let attachments = b.create_vector([] as [Offset<g::AttachmentDescriptor>; 0]);
+    let alias = g::ChannelMessage::create(&mut b, metadata, text, attachments);
+    let messages = b.create_vector(vec![alias; count].as_slice());
+    let cursor = g::ChannelCursor::create(&mut b, id, count as u64);
+    let response = g::ChannelResponseHistory::create(
+        &mut b,
+        messages,
+        None::<Offset<g::OptionalU64>>,
+        None::<Offset<g::OptionalU64>>,
+        cursor,
+    );
+    let response = g::ChannelResponse::create_channel_response_history(&mut b, response);
+    let error = decode_native_channel_response(&mut b, response).unwrap_err();
+    assert!(error.contains("channel history page exceeds byte limit"));
+}
+
+#[test]
+fn native_subscription_requires_explicit_consistent_status() {
+    use g::ChannelSubscriptionStatus::{Closed, Unspecified};
+
+    for (status, more, expected_error) in [
+        (Unspecified, false, "missing channel subscription status"),
+        (
+            Closed,
+            true,
+            "a closed subscription cannot have more changes",
+        ),
+    ] {
+        let mut b = Builder::new();
+        let channel = b.create_string("channel");
+        let cursor = g::ChannelCursor::create(&mut b, channel, 0u64);
+        let changes = b.create_vector([] as [Offset<g::ChannelChange>; 0]);
+        let response = g::ChannelResponseChanges::create(&mut b, cursor, changes, more, status);
+        let response = g::ChannelResponse::create_channel_response_changes(&mut b, response);
+        let error = decode_native_channel_response(&mut b, response).unwrap_err();
+        assert!(error.contains(expected_error));
+    }
+}
+
+#[test]
+fn attachment_json_uses_canonical_base64_in_both_directions() {
+    let bytes = vec![0, 255, 128, 1];
+    let request = ChannelRequest::UploadAttachment {
+        channel_id: channel(),
+        upload: AttachmentUpload {
+            media_type: AttachmentMediaType::Png,
+            alt_text: None,
+            bytes: bytes.clone(),
+        },
+    };
+    let json = serde_json::to_value(&request).unwrap();
+    assert_eq!(json["upload"]["bytes"], "AP+AAQ==");
+    assert_eq!(
+        serde_json::from_value::<ChannelRequest>(json).unwrap(),
+        request
+    );
+
+    let response = ChannelResponse::Attachment {
+        attachment: AttachmentDescriptor {
+            byte_len: 4,
+            ..descriptor()
+        },
+        bytes: bytes::Bytes::from(bytes),
+    };
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json["bytes"], "AP+AAQ==");
+    assert_eq!(
+        serde_json::from_value::<ChannelResponse>(json).unwrap(),
+        response
+    );
+}
+
+#[test]
+fn attachment_json_accepts_size_limit_and_rejects_malformed_or_oversized_input() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    let bytes = vec![0xff; MAX_ATTACHMENT_BYTES];
+    let upload = AttachmentUpload {
+        media_type: AttachmentMediaType::Png,
+        alt_text: None,
+        bytes,
+    };
+    let json = serde_json::to_string(&upload).unwrap();
+    assert_eq!(
+        serde_json::from_str::<AttachmentUpload>(&json).unwrap(),
+        upload
+    );
+
+    // The first oversized resource occupies the same number of encoded characters
+    // as the largest legal one, so checking the Base64 string length alone is insufficient.
+    let oversized = STANDARD.encode(vec![0xff; MAX_ATTACHMENT_BYTES + 1]);
+    assert_eq!(oversized.len(), MAX_ATTACHMENT_BYTES.div_ceil(3) * 4);
+    for invalid in [
+        json!(oversized),
+        json!([0, 255]),
+        json!(""),
+        json!("AP8"),
+        json!("!!!!"),
+    ] {
+        assert!(
+            serde_json::from_value::<AttachmentUpload>(json!({
+                "media_type": "image/png", "bytes": &invalid
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ChannelResponse>(json!({
+                "kind": "attachment", "attachment": descriptor(), "bytes": invalid
+            }))
+            .is_err()
+        );
+    }
 }

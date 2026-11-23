@@ -64,6 +64,11 @@ pub(super) fn write_request(
             let offset = g::ChannelRequestList::create(b, workspace, after, *limit);
             G::create_channel_request_list(b, offset)
         }
+        ChannelRequest::ListArchivedWorkspaces { after, limit } => {
+            let after = write_optional_id(b, after.as_ref(), budget)?;
+            let offset = g::ChannelRequestListArchivedWorkspaces::create(b, after, *limit);
+            G::create_channel_request_list_archived_workspaces(b, offset)
+        }
         ChannelRequest::ListMembers {
             channel_id,
             after,
@@ -73,6 +78,16 @@ pub(super) fn write_request(
             let after = write_optional_id(b, after.as_ref(), budget)?;
             let offset = g::ChannelRequestListMembers::create(b, channel, after, *limit);
             G::create_channel_request_list_members(b, offset)
+        }
+        ChannelRequest::ListExplicitMembers {
+            channel_id,
+            after,
+            limit,
+        } => {
+            let channel = write_text(b, channel_id.as_ref(), budget)?;
+            let after = write_optional_id(b, after.as_ref(), budget)?;
+            let offset = g::ChannelRequestListExplicitMembers::create(b, channel, after, *limit);
+            G::create_channel_request_list_explicit_members(b, offset)
         }
         ChannelRequest::Create {
             workspace_id,
@@ -128,11 +143,13 @@ pub(super) fn write_request(
         ChannelRequest::History {
             channel_id,
             before,
+            after,
             limit,
         } => {
             let channel = write_text(b, channel_id.as_ref(), budget)?;
             let before = write_optional_sequence(b, *before, budget, depth)?;
-            let offset = g::ChannelRequestHistory::create(b, channel, before, *limit);
+            let after = write_optional_sequence(b, *after, budget, depth)?;
+            let offset = g::ChannelRequestHistory::create(b, channel, before, *limit, after);
             G::create_channel_request_history(b, offset)
         }
         ChannelRequest::Read {
@@ -206,7 +223,16 @@ pub(super) fn read_request(
             after: read_optional_id(v.after()?, ChannelId, budget)?,
             limit: v.limit()?,
         },
+        R::ChannelRequestListArchivedWorkspaces(v) => ChannelRequest::ListArchivedWorkspaces {
+            after: read_optional_id(v.after()?, std::convert::identity, budget)?,
+            limit: v.limit()?,
+        },
         R::ChannelRequestListMembers(v) => ChannelRequest::ListMembers {
+            channel_id: ChannelId(read_id(v.channel_id()?, budget)?),
+            after: read_optional_id(v.after()?, ParticipantId, budget)?,
+            limit: v.limit()?,
+        },
+        R::ChannelRequestListExplicitMembers(v) => ChannelRequest::ListExplicitMembers {
             channel_id: ChannelId(read_id(v.channel_id()?, budget)?),
             after: read_optional_id(v.after()?, ParticipantId, budget)?,
             limit: v.limit()?,
@@ -234,6 +260,7 @@ pub(super) fn read_request(
         R::ChannelRequestHistory(v) => ChannelRequest::History {
             channel_id: ChannelId(read_id(v.channel_id()?, budget)?),
             before: read_optional_sequence(v.before()?, budget, depth)?,
+            after: read_optional_sequence(v.after()?, budget, depth)?,
             limit: v.limit()?,
         },
         R::ChannelRequestRead(v) => ChannelRequest::Read {
@@ -295,6 +322,15 @@ pub(super) fn write_response(
             let offset = g::ChannelResponseListed::create(b, channels, next_after);
             G::create_channel_response_listed(b, offset)
         }
+        ChannelResponse::ArchivedWorkspaces {
+            workspace_ids,
+            next_after,
+        } => {
+            let workspace_ids = write_id_page(b, workspace_ids, budget)?;
+            let next_after = write_reply_id(b, next_after.as_ref(), budget)?;
+            let offset = g::ChannelResponseArchivedWorkspaces::create(b, workspace_ids, next_after);
+            G::create_channel_response_archived_workspaces(b, offset)
+        }
         ChannelResponse::Members {
             participants,
             next_after,
@@ -303,6 +339,15 @@ pub(super) fn write_response(
             let next_after = write_reply_id(b, next_after.as_ref(), budget)?;
             let offset = g::ChannelResponseMembers::create(b, participants, next_after);
             G::create_channel_response_members(b, offset)
+        }
+        ChannelResponse::ExplicitMembers {
+            members,
+            next_after,
+        } => {
+            let members = write_id_page(b, members, budget)?;
+            let next_after = write_reply_id(b, next_after.as_ref(), budget)?;
+            let offset = g::ChannelResponseExplicitMembers::create(b, members, next_after);
+            G::create_channel_response_explicit_members(b, offset)
         }
         ChannelResponse::Channel { channel } => {
             let channel = write_summary(b, channel, budget, 1)?;
@@ -321,17 +366,25 @@ pub(super) fn write_response(
         ChannelResponse::History {
             messages,
             next_before,
+            next_after,
+            cursor,
         } => {
-            let messages = write_page(b, messages, budget, write_message)?;
+            let mut remaining = MAX_HISTORY_BYTES;
+            let messages = write_page(b, messages, budget, |b, message, budget, depth| {
+                charge_history(&mut remaining, message)?;
+                write_renderable_message(b, message, budget, depth)
+            })?;
+            validate_history_continuations(*next_before, *next_after)?;
             let next_before = write_optional_sequence(b, *next_before, budget, 1)?;
-            let offset = g::ChannelResponseHistory::create(b, messages, next_before);
+            let next_after = write_optional_sequence(b, *next_after, budget, 1)?;
+            let cursor = write_cursor(b, cursor, budget, 1)?;
+            let offset =
+                g::ChannelResponseHistory::create(b, messages, next_before, next_after, cursor);
             G::create_channel_response_history(b, offset)
         }
-        ChannelResponse::Message { message, text } => {
-            let message = write_message(b, message, budget, 1)?;
-            valid_post_text(text)?;
-            let text = write_text(b, text, budget)?;
-            let offset = g::ChannelResponseMessage::create(b, message, text);
+        ChannelResponse::Message { message } => {
+            let message = write_renderable_message(b, message, budget, 1)?;
+            let offset = g::ChannelResponseMessage::create(b, message);
             G::create_channel_response_message(b, offset)
         }
         ChannelResponse::ReadPosition { through } => {
@@ -342,10 +395,18 @@ pub(super) fn write_response(
             cursor,
             changes,
             more,
+            status,
         } => {
             let cursor = write_cursor(b, cursor, budget, 1)?;
             let changes = write_page(b, changes, budget, write_change)?;
-            let offset = g::ChannelResponseChanges::create(b, cursor, changes, *more);
+            let status = match status {
+                ChannelSubscriptionStatus::Active => g::ChannelSubscriptionStatus::Active,
+                ChannelSubscriptionStatus::Closed => {
+                    ensure!(!more, "a closed subscription cannot have more changes");
+                    g::ChannelSubscriptionStatus::Closed
+                }
+            };
+            let offset = g::ChannelResponseChanges::create(b, cursor, changes, *more, status);
             G::create_channel_response_changes(b, offset)
         }
         ChannelResponse::AttachmentUploaded { attachment } => {
@@ -381,10 +442,23 @@ pub(super) fn read_response(
             })?,
             next_after: read_optional_id(v.next_after()?, ChannelId, budget)?,
         },
+        R::ChannelResponseArchivedWorkspaces(v) => ChannelResponse::ArchivedWorkspaces {
+            workspace_ids: read_ids(
+                v.workspace_ids()?,
+                MAX_PAGE_LIMIT.into(),
+                std::convert::identity,
+                budget,
+            )?,
+            next_after: read_optional_id(v.next_after()?, std::convert::identity, budget)?,
+        },
         R::ChannelResponseMembers(v) => ChannelResponse::Members {
             participants: read_vector(v.participants()?, MAX_PAGE_LIMIT.into(), budget, |v, b| {
                 read_participant(v, b, 1)
             })?,
+            next_after: read_optional_id(v.next_after()?, ParticipantId, budget)?,
+        },
+        R::ChannelResponseExplicitMembers(v) => ChannelResponse::ExplicitMembers {
+            members: read_ids(v.members()?, MAX_PAGE_LIMIT.into(), ParticipantId, budget)?,
             next_after: read_optional_id(v.next_after()?, ParticipantId, budget)?,
         },
         R::ChannelResponseChannel(v) => ChannelResponse::Channel {
@@ -395,26 +469,50 @@ pub(super) fn read_response(
             wake_count: v.wake_count()?,
             attention: v.attention()?,
         },
-        R::ChannelResponseHistory(v) => ChannelResponse::History {
-            messages: read_vector(v.messages()?, MAX_PAGE_LIMIT.into(), budget, |v, b| {
-                read_message(v, b, 1)
-            })?,
-            next_before: read_optional_sequence(v.next_before()?, budget, 1)?,
-        },
+        R::ChannelResponseHistory(v) => {
+            let mut remaining = MAX_HISTORY_BYTES;
+            let messages = read_vector(v.messages()?, MAX_PAGE_LIMIT.into(), budget, |v, b| {
+                let message = read_renderable_message(v, b, 1)?;
+                charge_history(&mut remaining, &message)?;
+                Ok(message)
+            })?;
+            let next_before = read_optional_sequence(v.next_before()?, budget, 1)?;
+            let next_after = read_optional_sequence(v.next_after()?, budget, 1)?;
+            validate_history_continuations(next_before, next_after)?;
+            ChannelResponse::History {
+                messages,
+                next_before,
+                next_after,
+                cursor: read_cursor(v.cursor()?, budget, 1)?,
+            }
+        }
         R::ChannelResponseMessage(v) => ChannelResponse::Message {
-            message: read_message(v.message()?, budget, 1)?,
-            text: read_body(v.text()?, budget)?,
+            message: read_renderable_message(v.message()?, budget, 1)?,
         },
         R::ChannelResponseReadPosition(v) => ChannelResponse::ReadPosition {
             through: v.through()?,
         },
-        R::ChannelResponseChanges(v) => ChannelResponse::Changes {
-            cursor: read_cursor(v.cursor()?, budget, 1)?,
-            changes: read_vector(v.changes()?, MAX_PAGE_LIMIT.into(), budget, |v, b| {
-                read_change(v, b, 1)
-            })?,
-            more: v.more()?,
-        },
+        R::ChannelResponseChanges(v) => {
+            let more = v.more()?;
+            let status = match v.status()? {
+                g::ChannelSubscriptionStatus::Active => ChannelSubscriptionStatus::Active,
+                g::ChannelSubscriptionStatus::Closed => {
+                    ensure!(!more, "a closed subscription cannot have more changes");
+                    ChannelSubscriptionStatus::Closed
+                }
+                g::ChannelSubscriptionStatus::Unspecified => {
+                    anyhow::bail!("missing channel subscription status");
+                }
+            };
+            ChannelResponse::Changes {
+                cursor: read_cursor(v.cursor()?, budget, 1)?,
+                changes: read_vector(v.changes()?, MAX_PAGE_LIMIT.into(), budget, |v, b| {
+                    read_change(v, b, 1)
+                })?,
+                more,
+                status,
+            }
+        }
         R::ChannelResponseAttachmentUploaded(v) => ChannelResponse::AttachmentUploaded {
             attachment: read_descriptor(v.attachment()?, budget, 1)?,
         },
@@ -573,6 +671,55 @@ fn read_message(
         reply_to,
         attachments,
     })
+}
+
+fn write_renderable_message(
+    b: &mut Builder,
+    value: &ChannelMessage,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Offset<g::ChannelMessage>> {
+    budget.node(depth)?;
+    value.validate_attachments()?;
+    valid_post_text(&value.text)?;
+    let message = write_message(b, &value.message, budget, depth + 1)?;
+    let text = write_text(b, &value.text, budget)?;
+    let attachments = write_vector(b, &value.attachments, budget, |b, value, budget| {
+        write_descriptor(b, value, budget, depth + 1)
+    })?;
+    Ok(g::ChannelMessage::create(b, message, text, attachments))
+}
+
+fn read_renderable_message(
+    v: g::ChannelMessageRef<'_>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<ChannelMessage> {
+    budget.node(depth)?;
+    let message = ChannelMessage {
+        message: read_message(v.message()?, budget, depth + 1)?,
+        text: read_body(v.text()?, budget)?,
+        attachments: read_vector(v.attachments()?, MAX_ATTACHMENTS, budget, |v, b| {
+            read_descriptor(v, b, depth + 1)
+        })?,
+    };
+    message.validate_attachments()?;
+    Ok(message)
+}
+
+fn charge_history(remaining: &mut usize, message: &ChannelMessage) -> Result<()> {
+    *remaining = remaining
+        .checked_sub(message.content_bytes())
+        .ok_or_else(|| anyhow::anyhow!("channel history page exceeds byte limit"))?;
+    Ok(())
+}
+
+fn validate_history_continuations(before: Option<u64>, after: Option<u64>) -> Result<()> {
+    ensure!(
+        before != Some(0) && after != Some(0),
+        "channel history continuation cannot be zero"
+    );
+    Ok(())
 }
 
 fn write_participant(
@@ -734,7 +881,6 @@ fn write_optional_sequence(
 ) -> Result<Option<Offset<g::OptionalU64>>> {
     value
         .map(|value| {
-            ensure!(value != 0, "channel history bound cannot be zero");
             budget.node(depth)?;
             Ok(g::OptionalU64::create(b, value))
         })
@@ -749,9 +895,7 @@ fn read_optional_sequence(
     value
         .map(|value| {
             budget.node(depth)?;
-            let value = value.value()?;
-            ensure!(value != 0, "channel history bound cannot be zero");
-            Ok(value)
+            Ok(value.value()?)
         })
         .transpose()
 }
@@ -810,12 +954,20 @@ fn write_ids(
     values: &[impl AsRef<str>],
     budget: &mut Budget,
 ) -> Result<Offset<[Offset<str>]>> {
-    budget.vector(values.len(), size_of::<Offset<str>>())?;
-    let offsets = values
-        .iter()
-        .map(|value| write_text(b, value.as_ref(), budget))
-        .collect::<Result<Vec<_>>>()?;
-    Ok(b.create_vector(offsets.as_slice()))
+    write_vector(b, values, budget, |b, value, budget| {
+        write_text(b, value.as_ref(), budget)
+    })
+}
+
+fn write_id_page(
+    b: &mut Builder,
+    values: &[impl AsRef<str>],
+    budget: &mut Budget,
+) -> Result<Offset<[Offset<str>]>> {
+    write_page(b, values, budget, |b, value, budget, _| {
+        valid_id(value.as_ref())?;
+        write_text(b, value.as_ref(), budget)
+    })
 }
 
 fn read_ids<'a, T>(
@@ -829,20 +981,31 @@ fn read_ids<'a, T>(
     })
 }
 
-fn write_page<T, G>(
+fn write_page<T, G: ?Sized>(
     b: &mut Builder,
     values: &[T],
     budget: &mut Budget,
-    write: impl Fn(&mut Builder, &T, &mut Budget, usize) -> Result<Offset<G>>,
+    mut write: impl FnMut(&mut Builder, &T, &mut Budget, usize) -> Result<Offset<G>>,
 ) -> Result<Offset<[Offset<G>]>> {
     ensure!(
         values.len() <= usize::from(MAX_PAGE_LIMIT),
         "channel page exceeds limit"
     );
+    write_vector(b, values, budget, |b, value, budget| {
+        write(b, value, budget, 1)
+    })
+}
+
+fn write_vector<T, G: ?Sized>(
+    b: &mut Builder,
+    values: &[T],
+    budget: &mut Budget,
+    mut write: impl FnMut(&mut Builder, &T, &mut Budget) -> Result<Offset<G>>,
+) -> Result<Offset<[Offset<G>]>> {
     budget.vector(values.len(), size_of::<Offset<G>>())?;
     let offsets = values
         .iter()
-        .map(|value| write(b, value, budget, 1))
+        .map(|value| write(b, value, budget))
         .collect::<Result<Vec<_>>>()?;
     Ok(b.create_vector(offsets.as_slice()))
 }
@@ -851,7 +1014,7 @@ fn read_vector<'a, T: 'a, U>(
     values: Vector<'a, planus::Result<T>>,
     max: usize,
     budget: &mut Budget,
-    read: impl Fn(T, &mut Budget) -> Result<U>,
+    mut read: impl FnMut(T, &mut Budget) -> Result<U>,
 ) -> Result<Vec<U>>
 where
     planus::Result<T>: planus::VectorRead<'a>,

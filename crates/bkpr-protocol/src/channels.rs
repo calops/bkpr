@@ -9,6 +9,8 @@ use std::fmt;
 
 /// Maximum records in a list, roster, history or subscription page.
 pub const MAX_PAGE_LIMIT: u16 = 64;
+/// Maximum summed [`ChannelMessage::content_bytes`] in one history page.
+pub const MAX_HISTORY_BYTES: usize = 256 * 1024;
 /// Maximum subscription wait in milliseconds; zero performs a nonblocking read.
 pub const MAX_WAIT_MS: u32 = 5_000;
 /// Maximum participants in an explicit membership set.
@@ -74,7 +76,8 @@ pub enum WakePolicy {
     /// Request wakes for all eligible agent members.
     #[default]
     All,
-    /// Request wakes for addressed agents, or all eligible agents if nobody was addressed.
+    /// Request wakes for addressed eligible agents. Fall back to all eligible agents
+    /// only if no agent was mentioned; a user mention alone does not suppress that fallback.
     AddressedOrAll,
     /// Request wakes only for explicitly addressed eligible agents.
     AddressedOnly,
@@ -183,7 +186,8 @@ pub struct AttachmentUpload {
     pub media_type: AttachmentMediaType,
     /// Optional display or fallback description.
     pub alt_text: Option<String>,
-    /// Encoded raster bytes; their length is the upload size.
+    /// Encoded raster bytes; diagnostic JSON uses padded standard Base64.
+    #[serde(with = "attachment_bytes")]
     pub bytes: Vec<u8>,
 }
 
@@ -288,6 +292,73 @@ pub struct MessageSummary {
     pub attachments: Vec<AttachmentId>,
 }
 
+/// One retained post ready to render without fetching its body or attachment metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelMessage {
+    /// Committed message metadata.
+    pub message: MessageSummary,
+    /// Original UTF-8 body.
+    pub text: String,
+    /// Metadata for the attachment references in `message`, in the same order.
+    pub attachments: Vec<AttachmentDescriptor>,
+}
+
+impl ChannelMessage {
+    /// Count UTF-8 bytes of the body and variable-size metadata, including reference
+    /// identities. Raster bytes are fetched separately and do not count toward this budget.
+    pub fn content_bytes(&self) -> usize {
+        let message = &self.message;
+        self.text.len()
+            + message.id.as_ref().len()
+            + message.author.id.as_ref().len()
+            + message.author.display_name.len()
+            + message
+                .mentions
+                .iter()
+                .map(|id| id.as_ref().len())
+                .sum::<usize>()
+            + message.reply_to.as_ref().map_or(0, |id| id.as_ref().len())
+            + message
+                .attachments
+                .iter()
+                .map(|id| id.as_ref().len())
+                .sum::<usize>()
+            + self
+                .attachments
+                .iter()
+                .map(|attachment| {
+                    attachment.id.as_ref().len()
+                        + attachment.alt_text.as_ref().map_or(0, String::len)
+                })
+                .sum::<usize>()
+    }
+
+    pub(crate) fn validate_attachments(&self) -> Result<()> {
+        ensure!(
+            self.attachments.len() == self.message.attachments.len()
+                && self
+                    .attachments
+                    .iter()
+                    .zip(&self.message.attachments)
+                    .all(|(descriptor, id)| descriptor.id == *id),
+            "channel attachment descriptors do not match post references"
+        );
+        Ok(())
+    }
+}
+
+/// Whether a bounded subscription can be resumed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelSubscriptionStatus {
+    /// Continue from the returned cursor, including after an idle timeout.
+    Active,
+    /// No later changes can be obtained through this subscription. Render any
+    /// changes included in this final page, but do not poll again.
+    Closed,
+}
+
 /// Session-local channel operations. The transport supplies the authenticated caller.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
@@ -301,6 +372,14 @@ pub enum ChannelRequest {
         /// Maximum number of channels to return.
         limit: u16,
     },
+    /// List closed workspaces in this session with retained channels, ordered by opaque
+    /// identity. Archived workspaces need not have a recoverable display name.
+    ListArchivedWorkspaces {
+        /// Exclude this identity and earlier identities, or start at the first archive.
+        after: Option<String>,
+        /// Maximum number of workspace identities to return.
+        limit: u16,
+    },
     /// List currently authorized members for mention selection, ordered by opaque identity.
     ListMembers {
         /// Channel to inspect.
@@ -308,6 +387,16 @@ pub enum ChannelRequest {
         /// Exclude this identity and earlier identities, or begin at the first member.
         after: Option<ParticipantId>,
         /// Maximum number of members to return.
+        limit: u16,
+    },
+    /// List saved explicit member IDs, including inactive members. This is not the
+    /// current mention roster; workspace-wide channels return an empty set.
+    ListExplicitMembers {
+        /// Channel to inspect.
+        channel_id: ChannelId,
+        /// Exclude this identity and earlier identities, or begin at the first saved member.
+        after: Option<ParticipantId>,
+        /// Maximum number of saved member IDs to return.
         limit: u16,
     },
     /// Create an ordinary channel in one accessible workspace.
@@ -346,13 +435,17 @@ pub enum ChannelRequest {
         /// Body, retry key and structured references.
         post: ChannelPost,
     },
-    /// Read a page of retained, body-free message metadata.
+    /// Read a byte-bounded page of renderable posts without advancing read position.
+    /// Supply either `before` or `after`, not both.
     History {
         /// Channel to read.
         channel_id: ChannelId,
-        /// Exclude this sequence and newer posts; absence selects the newest page.
+        /// Exclude this sequence and newer posts when reading backward.
         before: Option<u64>,
-        /// Maximum number of posts to return, ordered oldest to newest within the page.
+        /// Exclude this sequence and older posts when reading forward; zero starts
+        /// at the oldest post. If neither bound is supplied, read from the newest post.
+        after: Option<u64>,
+        /// Maximum number of posts, which may be reduced by [`MAX_HISTORY_BYTES`].
         limit: u16,
     },
     /// Read one message, without moving the caller's read position.
@@ -396,7 +489,7 @@ pub enum ChannelRequest {
     },
 }
 
-/// Typed channel replies; bodies and encoded images are fetched one at a time.
+/// Typed channel replies. Only an attachment fetch includes encoded raster bytes.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ChannelResponse {
@@ -407,11 +500,25 @@ pub enum ChannelResponse {
         /// Exclusive continuation when more records are available.
         next_after: Option<ChannelId>,
     },
+    /// Page of closed workspaces with retained channels.
+    ArchivedWorkspaces {
+        /// Exact workspace IDs, ordered by identity. No display names are retained here.
+        workspace_ids: Vec<String>,
+        /// Exclusive continuation when more archives are available.
+        next_after: Option<String>,
+    },
     /// Page of current channel participants.
     Members {
         /// Participants ordered by identity.
         participants: Vec<Participant>,
         /// Exclusive continuation when more records are available.
+        next_after: Option<ParticipantId>,
+    },
+    /// Page of saved explicit member IDs, independent of the current roster.
+    ExplicitMembers {
+        /// Saved member IDs ordered by identity, including members not currently present.
+        members: Vec<ParticipantId>,
+        /// Exclusive continuation when more saved members are available.
         next_after: Option<ParticipantId>,
     },
     /// Created or updated channel state.
@@ -428,19 +535,21 @@ pub enum ChannelResponse {
         /// Whether the commit created user-attention work.
         attention: bool,
     },
-    /// Bounded retained message metadata, most recent page first.
+    /// Bounded retained history and a change-stream baseline from the same snapshot.
     History {
-        /// Messages in ascending order within this page.
-        messages: Vec<MessageSummary>,
-        /// Exclusive bound for the next older page when available.
+        /// Renderable posts in ascending sequence order, regardless of paging direction.
+        messages: Vec<ChannelMessage>,
+        /// Exclusive bound for the next older page, when available.
         next_before: Option<u64>,
+        /// Exclusive bound for the next newer page, when available.
+        next_after: Option<u64>,
+        /// Subscribe after this position to reconcile changes since this snapshot.
+        cursor: ChannelCursor,
     },
-    /// One retained message with body.
+    /// One retained post ready to render.
     Message {
-        /// Committed message metadata.
-        message: MessageSummary,
-        /// Original UTF-8 body.
-        text: String,
+        /// Original body, committed metadata and lightweight attachment descriptors.
+        message: ChannelMessage,
     },
     /// Confirm the effective read position for the authenticated participant.
     ReadPosition {
@@ -455,6 +564,8 @@ pub enum ChannelResponse {
         changes: Vec<ChannelChange>,
         /// More changes are immediately available after the cursor.
         more: bool,
+        /// Whether to continue polling after consuming this page; a closed page never has `more`.
+        status: ChannelSubscriptionStatus,
     },
     /// Durable acceptance of an upload.
     AttachmentUploaded {
@@ -465,7 +576,8 @@ pub enum ChannelResponse {
     Attachment {
         /// Metadata of the resource.
         attachment: AttachmentDescriptor,
-        /// Encoded raster; owned native decoding shares the receive allocation.
+        /// Encoded raster; native decoding shares the receive allocation, and
+        /// diagnostic JSON uses padded standard Base64.
         #[serde(with = "attachment_bytes")]
         bytes: bytes::Bytes,
     },
@@ -475,7 +587,9 @@ impl fmt::Debug for ChannelResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let variant = match self {
             Self::Listed { .. } => "Listed",
+            Self::ArchivedWorkspaces { .. } => "ArchivedWorkspaces",
             Self::Members { .. } => "Members",
+            Self::ExplicitMembers { .. } => "ExplicitMembers",
             Self::Channel { .. } => "Channel",
             Self::Posted { .. } => "Posted",
             Self::History { .. } => "History",
@@ -490,19 +604,45 @@ impl fmt::Debug for ChannelResponse {
 }
 
 mod attachment_bytes {
-    use serde::{Deserialize, Deserializer, Serializer};
+    use super::{MAX_ATTACHMENT_BYTES, valid_attachment_size};
+    use base64::{Engine, display::Base64Display, engine::general_purpose::STANDARD};
+    use serde::{Deserializer, Serializer, de, ser};
+    use std::fmt;
 
-    pub(super) fn serialize<S: Serializer>(
-        bytes: &bytes::Bytes,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        serializer.serialize_bytes(bytes)
+    pub(super) fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        valid_attachment_size(bytes.len()).map_err(<S::Error as ser::Error>::custom)?;
+        serializer.collect_str(&Base64Display::new(bytes, &STANDARD))
     }
 
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+    pub(super) fn deserialize<'de, D: Deserializer<'de>, T: From<Vec<u8>>>(
         deserializer: D,
-    ) -> Result<bytes::Bytes, D::Error> {
-        Vec::<u8>::deserialize(deserializer).map(bytes::Bytes::from)
+    ) -> Result<T, D::Error> {
+        struct AttachmentBytes;
+
+        impl de::Visitor<'_> for AttachmentBytes {
+            type Value = Vec<u8>;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("bounded padded standard Base64 attachment bytes")
+            }
+
+            fn visit_str<E: de::Error>(self, text: &str) -> Result<Vec<u8>, E> {
+                if text.len() > MAX_ATTACHMENT_BYTES.div_ceil(3) * 4
+                    || !text.len().is_multiple_of(4)
+                {
+                    return Err(E::custom("invalid Base64 attachment length"));
+                }
+                let padding = if text.ends_with("==") {
+                    2
+                } else {
+                    usize::from(text.ends_with('='))
+                };
+                valid_attachment_size(text.len() / 4 * 3 - padding).map_err(E::custom)?;
+                STANDARD.decode(text).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(AttachmentBytes).map(T::from)
     }
 }
 
@@ -512,7 +652,9 @@ impl ChannelRequest {
         matches!(
             self,
             Self::List { .. }
+                | Self::ListArchivedWorkspaces { .. }
                 | Self::ListMembers { .. }
+                | Self::ListExplicitMembers { .. }
                 | Self::History { .. }
                 | Self::Read { .. }
                 | Self::Subscribe { .. }
@@ -533,7 +675,16 @@ impl ChannelRequest {
                 valid_optional_id(after.as_ref())?;
                 valid_limit(*limit)
             }
+            Self::ListArchivedWorkspaces { after, limit } => {
+                valid_optional_id(after.as_ref())?;
+                valid_limit(*limit)
+            }
             Self::ListMembers {
+                channel_id,
+                after,
+                limit,
+            }
+            | Self::ListExplicitMembers {
                 channel_id,
                 after,
                 limit,
@@ -577,10 +728,15 @@ impl ChannelRequest {
             Self::History {
                 channel_id,
                 before,
+                after,
                 limit,
             } => {
                 valid_id(channel_id.as_ref())?;
                 ensure!(*before != Some(0), "channel history bound cannot be zero");
+                ensure!(
+                    before.is_none() || after.is_none(),
+                    "channel history cannot use both before and after bounds"
+                );
                 valid_limit(*limit)
             }
             Self::Read {

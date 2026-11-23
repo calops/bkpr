@@ -3,14 +3,14 @@
 use anyhow::{Result, ensure};
 use bkpr_protocol::channels::{
     AttachmentMediaType, AttachmentUpload, ChannelCursor, ChannelId, ChannelRequest,
-    ChannelResponse, Participant,
+    ChannelResponse, ChannelSubscriptionStatus, Participant,
 };
 use std::{
     io::Cursor,
     path::PathBuf,
     sync::{
         Condvar, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -22,6 +22,7 @@ mod tests;
 const MAX_REQUESTS: usize = 16;
 const MAX_SUBSCRIBERS: usize = 16;
 const CANCEL_CHECK: Duration = Duration::from_millis(100);
+const STORE_WAIT: Duration = Duration::from_secs(1);
 
 /// Current workspace participant supplied by the authenticated owner, not the request.
 pub struct WorkspaceParticipant {
@@ -46,11 +47,37 @@ pub struct ChannelAuthority {
 /// Channel storage and bounded subscription admission for one exclusively leased session.
 pub struct ChannelEngine {
     root: PathBuf,
-    store: Mutex<Option<store::Store>>,
+    store: Mutex<StoreSlot>,
+    store_ready: Condvar,
+    retirement_epoch: AtomicU64,
     requests: AtomicUsize,
     subscriptions: AtomicUsize,
     generation: Mutex<u64>,
     changed: Condvar,
+}
+
+enum StoreSlot {
+    Idle(Option<store::Store>),
+    Busy,
+}
+
+struct StoreGuard<'a> {
+    engine: &'a ChannelEngine,
+    store: Option<store::Store>,
+}
+
+impl Drop for StoreGuard<'_> {
+    fn drop(&mut self) {
+        *self.engine.store.lock().unwrap() = StoreSlot::Idle(self.store.take());
+        self.engine.store_ready.notify_one();
+    }
+}
+
+struct Subscription {
+    channel_id: ChannelId,
+    after: Option<ChannelCursor>,
+    limit: u16,
+    wait_ms: u32,
 }
 
 impl ChannelEngine {
@@ -58,7 +85,9 @@ impl ChannelEngine {
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
-            store: Mutex::new(None),
+            store: Mutex::new(StoreSlot::Idle(None)),
+            store_ready: Condvar::new(),
+            retirement_epoch: AtomicU64::new(0),
             requests: AtomicUsize::new(0),
             subscriptions: AtomicUsize::new(0),
             generation: Mutex::new(0),
@@ -69,12 +98,14 @@ impl ChannelEngine {
     /// Execute one typed operation, checking authority against the resolved workspace.
     ///
     /// `admit` must sample live authority without blocking on I/O or returning a registry
-    /// guard. The caller must not hold a registry lock around this call. `cancelled` must
-    /// be cheap; it stops pending waits but does not roll back already admitted mutations.
+    /// guard. `workspace_open` reads exact committed workspace presence independently of the
+    /// caller or a provisional close reservation. The caller must not hold a registry lock
+    /// around this call. `cancelled` stops pending waits but does not roll back admitted mutations.
     pub fn request(
         &self,
         request: ChannelRequest,
         admit: impl Fn(&str) -> Result<ChannelAuthority>,
+        workspace_open: impl Fn(&str) -> bool,
         cancelled: impl Fn() -> bool,
     ) -> Result<ChannelResponse> {
         request.validate()?;
@@ -86,16 +117,37 @@ impl ChannelEngine {
         } = request
         {
             let _permit = Permit::acquire(&self.subscriptions, MAX_SUBSCRIBERS)?;
-            return self.subscribe(channel_id, after, limit, wait_ms, admit, cancelled);
+            return self.subscribe(
+                Subscription {
+                    channel_id,
+                    after,
+                    limit,
+                    wait_ms,
+                },
+                admit,
+                workspace_open,
+                cancelled,
+            );
         }
         let _permit = Permit::acquire(&self.requests, MAX_REQUESTS)?;
-        ensure!(!cancelled(), "channel request cancelled");
-        if let ChannelRequest::UploadAttachment { upload, .. } = &request {
+        let with_store = |deadline| {
+            self.acquire_store(deadline, &cancelled)
+                .map_err(StoreAdmission::into_error)
+        };
+        if let ChannelRequest::UploadAttachment { channel_id, upload } = &request {
+            let mut writer = with_store(Instant::now() + STORE_WAIT)?;
+            writer.run(&workspace_open, |store| {
+                store.authorize_upload(channel_id, &admit)
+            })?;
+            drop(writer);
             validate_image(upload)?;
         }
-        self.with_store(|store| {
-            ensure!(!cancelled(), "channel request cancelled");
-            let (response, changed) = store.request(request, admit)?;
+        let mut writer = with_store(Instant::now() + STORE_WAIT)?;
+        writer.run(&workspace_open, |store| {
+            let (response, changed) = store.request(request, admit, |store, workspace| {
+                self.flush_retirements(store, &workspace_open)?;
+                Ok(!workspace_open(workspace))
+            })?;
             if changed {
                 self.invalidate();
             }
@@ -111,34 +163,106 @@ impl ChannelEngine {
         self.changed.notify_all();
     }
 
-    fn with_store<T>(&self, operation: impl FnOnce(&mut store::Store) -> Result<T>) -> Result<T> {
-        let mut store = self.store.lock().unwrap();
-        if store.is_none() {
-            *store = Some(store::Store::open(&self.root)?);
+    /// Queue retirement after durable workspace closure and wake subscriptions.
+    /// The next store operation reconciles pending work against committed workspace presence.
+    /// Opening the store retires all work from a previous runtime. This never takes the writer.
+    pub fn retire_workspace(&self) {
+        self.retirement_epoch.fetch_add(1, Ordering::Release);
+        self.invalidate();
+    }
+
+    fn flush_retirements(
+        &self,
+        store: &mut store::Store,
+        workspace_open: &impl Fn(&str) -> bool,
+    ) -> Result<()> {
+        let epoch = self.retirement_epoch.load(Ordering::Acquire);
+        if store.retirement_epoch != epoch {
+            store.retire_closed_workspaces(workspace_open)?;
+            store.retirement_epoch = epoch;
         }
-        operation(store.as_mut().unwrap())
+        Ok(())
+    }
+
+    fn acquire_store(
+        &self,
+        deadline: Instant,
+        cancelled: &impl Fn() -> bool,
+    ) -> std::result::Result<StoreGuard<'_>, StoreAdmission> {
+        loop {
+            if cancelled() {
+                return Err(StoreAdmission::Cancelled);
+            }
+            let mut slot = self.store.lock().unwrap();
+            if let StoreSlot::Idle(store) = &mut *slot {
+                let mut writer = StoreGuard {
+                    engine: self,
+                    store: store.take(),
+                };
+                *slot = StoreSlot::Busy;
+                drop(slot);
+                if writer.store.is_none() {
+                    writer.store =
+                        Some(store::Store::open(&self.root).map_err(StoreAdmission::Storage)?);
+                }
+                if cancelled() {
+                    return Err(StoreAdmission::Cancelled);
+                }
+                return Ok(writer);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(StoreAdmission::Busy);
+            }
+            drop(
+                self.store_ready
+                    .wait_timeout(slot, remaining.min(CANCEL_CHECK))
+                    .unwrap(),
+            );
+        }
+    }
+
+    #[cfg(test)]
+    fn with_store<T>(&self, operation: impl FnOnce(&mut store::Store) -> Result<T>) -> Result<T> {
+        let mut writer = self
+            .acquire_store(Instant::now() + STORE_WAIT, &|| false)
+            .map_err(StoreAdmission::into_error)?;
+        operation(writer.store.as_mut().unwrap())
     }
 
     fn subscribe(
         &self,
-        channel_id: ChannelId,
-        after: Option<ChannelCursor>,
-        limit: u16,
-        wait_ms: u32,
+        subscription: Subscription,
         admit: impl Fn(&str) -> Result<ChannelAuthority>,
+        workspace_open: impl Fn(&str) -> bool,
         cancelled: impl Fn() -> bool,
     ) -> Result<ChannelResponse> {
+        let Subscription {
+            channel_id,
+            after,
+            limit,
+            wait_ms,
+        } = subscription;
         let deadline = Instant::now() + Duration::from_millis(u64::from(wait_ms));
-        let mut after = after.map(|cursor| cursor.sequence);
-        loop {
-            ensure!(!cancelled(), "channel request cancelled");
+        let supplied = after.map(|cursor| cursor.sequence);
+        let mut after = supplied;
+        'observe: loop {
             // Capture before reading; a commit during observation must prevent sleeping.
             let observed = *self.generation.lock().unwrap();
-            let (sequence, changes, more, workspace_open) = self.with_store(|store| {
-                ensure!(!cancelled(), "channel request cancelled");
-                store.changes(&channel_id, after, limit, &admit)
-            })?;
-            if !changes.is_empty() || !workspace_open || Instant::now() >= deadline {
+            let result =
+                match self.acquire_store(deadline.min(Instant::now() + STORE_WAIT), &cancelled) {
+                    Ok(mut writer) => writer.run(&workspace_open, |store| {
+                        store.changes(&channel_id, after, limit, &admit)
+                    }),
+                    Err(StoreAdmission::Cancelled) => break,
+                    Err(error) => return Err(error.into_error()),
+                };
+            let (sequence, changes, more, open) = match result {
+                Ok(page) => page,
+                Err(error) if error.is::<store::ChannelAccessLost>() => break,
+                Err(error) => return Err(error),
+            };
+            if !changes.is_empty() || !open || Instant::now() >= deadline {
                 return Ok(ChannelResponse::Changes {
                     cursor: ChannelCursor {
                         channel_id,
@@ -146,22 +270,77 @@ impl ChannelEngine {
                     },
                     changes,
                     more,
+                    status: if open || more {
+                        ChannelSubscriptionStatus::Active
+                    } else {
+                        ChannelSubscriptionStatus::Closed
+                    },
                 });
             }
             after = Some(sequence);
-            let mut generation = self.generation.lock().unwrap();
-            while *generation == observed {
-                ensure!(!cancelled(), "channel request cancelled");
+            loop {
+                if cancelled() {
+                    break 'observe;
+                }
+                let generation = self.generation.lock().unwrap();
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
+                if *generation != observed || remaining.is_zero() {
                     break;
                 }
-                (generation, _) = self
-                    .changed
-                    .wait_timeout(generation, remaining.min(CANCEL_CHECK))
-                    .unwrap();
+                drop(
+                    self.changed
+                        .wait_timeout(generation, remaining.min(CANCEL_CHECK))
+                        .unwrap(),
+                );
             }
         }
+        Ok(ChannelResponse::Changes {
+            cursor: ChannelCursor {
+                channel_id,
+                sequence: supplied.unwrap_or(0),
+            },
+            changes: Vec::new(),
+            more: false,
+            status: ChannelSubscriptionStatus::Closed,
+        })
+    }
+}
+
+enum StoreAdmission {
+    Busy,
+    Cancelled,
+    Storage(anyhow::Error),
+}
+
+impl StoreAdmission {
+    fn into_error(self) -> anyhow::Error {
+        match self {
+            Self::Busy => anyhow::anyhow!("channel store busy"),
+            Self::Cancelled => anyhow::anyhow!("channel request cancelled"),
+            Self::Storage(error) => error,
+        }
+    }
+}
+
+impl StoreGuard<'_> {
+    fn run<T>(
+        &mut self,
+        workspace_open: &impl Fn(&str) -> bool,
+        operation: impl FnOnce(&mut store::Store) -> Result<T>,
+    ) -> Result<T> {
+        let store = self.store.as_mut().unwrap();
+        self.engine.flush_retirements(store, workspace_open)?;
+        let result = operation(store);
+        // A close can arrive after authority admission but before its post commits.
+        // It must retire that post's work as well, without changing the committed reply.
+        if self
+            .engine
+            .flush_retirements(store, workspace_open)
+            .is_err()
+        {
+            crate::diagnostics::record("channels.retirement", None, "deferred");
+        }
+        result
     }
 }
 

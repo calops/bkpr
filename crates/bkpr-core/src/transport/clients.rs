@@ -108,6 +108,24 @@ impl ClientOwner {
         let _ = version;
         Ok(())
     }
+
+    pub(crate) fn ensure_external_to_daemon(&self) -> Result<()> {
+        let mut process = self.peer.current()?;
+        let daemon = std::process::id() as i32;
+        for _ in 0..128 {
+            anyhow::ensure!(
+                process.pid != daemon,
+                "daemon-owned processes cannot act as the channel user"
+            );
+            if process.parent <= 1 {
+                self.peer.current()?;
+                return Ok(());
+            }
+            process = crate::harness_process::process(process.parent)?
+                .context("cannot verify channel client process ancestry")?;
+        }
+        anyhow::bail!("channel client process ancestry exceeds bound")
+    }
 }
 
 #[cfg(target_os = "linux")]

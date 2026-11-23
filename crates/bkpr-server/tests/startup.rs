@@ -1985,11 +1985,61 @@ fn corrupt_notification_storage_does_not_disable_session_execution() {
     assert!(!Path::new("/proc").join(pid.to_string()).exists());
 }
 
+fn register_channel_client(
+    endpoint: &bkpr_protocol::SessionEndpoint,
+) -> (UnixStream, bkpr_protocol::ClientAuthority) {
+    let mut lifetime = UnixStream::connect(&endpoint.socket).unwrap();
+    lifetime
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    send_request(
+        &mut lifetime,
+        Operation::ClientRegister {
+            session_id: endpoint.session.session_id.clone(),
+            daemon_id: endpoint.session.daemon_id.clone(),
+            session_instance_id: endpoint.session.session_instance_id.clone(),
+        },
+    )
+    .unwrap();
+    let response = read_response(&mut lifetime).unwrap();
+    assert!(response.ok, "{:?}", response.error);
+    let registered = response.result.unwrap().into_json().unwrap();
+    (
+        lifetime,
+        serde_json::from_value(registered["client"].clone()).unwrap(),
+    )
+}
+
+fn as_channel_client(authority: &bkpr_protocol::ClientAuthority, request: Operation) -> Operation {
+    Operation::Client {
+        authority: authority.clone(),
+        request: Box::new(request),
+    }
+}
+
+fn activate_channel_client(
+    endpoint: &bkpr_protocol::SessionEndpoint,
+    authority: &bkpr_protocol::ClientAuthority,
+) {
+    control(
+        &endpoint.socket,
+        as_channel_client(
+            authority,
+            Operation::ClientActivate {
+                detach_others: false,
+                agent_socket: None,
+            },
+        ),
+    );
+}
+
 #[test]
 fn channel_history_reopens_on_the_same_session_only() {
     use bkpr_protocol::{
         Payload,
-        channels::{ChannelPost, ChannelRequest, ChannelResponse, MembershipMode},
+        channels::{
+            ChannelPost, ChannelRequest, ChannelResponse, ChannelSubscriptionStatus, MembershipMode,
+        },
     };
 
     let fixture = Fixture::new();
@@ -1998,26 +2048,40 @@ fn channel_history_reopens_on_the_same_session_only() {
         bkpr_protocol::DEFAULT_SESSION_NAME,
         Some(sleeping_spec(&fixture)),
     );
-    let workspace_id = daemon.snapshot().workspaces[0].id.clone();
+    let workspace = daemon.snapshot().workspaces.into_iter().next().unwrap();
     let operation = |request| Operation::Channels { request };
-    let send = |socket: &Path, channel_request| {
-        let response = request(socket, operation(channel_request)).unwrap();
+    let (lifetime, authority) = register_channel_client(&endpoint);
+    let send = |socket: &Path, authority: &bkpr_protocol::ClientAuthority, channel_request| {
+        let response = request(
+            socket,
+            as_channel_client(authority, operation(channel_request)),
+        )
+        .unwrap();
         assert!(response.ok, "{:?}", response.error);
         let Some(Payload::Channels(result)) = response.result else {
             panic!("expected a typed channel response");
         };
         result
     };
-    let ChannelResponse::Channel { channel } = send(
-        &endpoint.socket,
-        ChannelRequest::Create {
-            workspace_id,
-            name: "build review".into(),
-            membership: MembershipMode::WorkspaceWide,
-            members: vec![],
-            settings: Default::default(),
-        },
-    ) else {
+    let create = ChannelRequest::Create {
+        workspace_id: workspace.id.clone(),
+        name: "build review".into(),
+        membership: MembershipMode::WorkspaceWide,
+        members: vec![],
+        settings: Default::default(),
+    };
+    let bare = request(&endpoint.socket, operation(create.clone())).unwrap();
+    assert!(bare.error.unwrap().contains("registered user client"));
+    assert!(
+        !request(
+            &endpoint.socket,
+            as_channel_client(&authority, operation(create.clone()))
+        )
+        .unwrap()
+        .ok
+    );
+    activate_channel_client(&endpoint, &authority);
+    let ChannelResponse::Channel { channel } = send(&endpoint.socket, &authority, create) else {
         panic!("channel was not created");
     };
     let post = ChannelRequest::Post {
@@ -2031,16 +2095,78 @@ fn channel_history_reopens_on_the_same_session_only() {
             attachments: vec![],
         },
     };
-    let receipt = send(&endpoint.socket, post.clone());
+    let receipt = send(&endpoint.socket, &authority, post.clone());
     let ChannelResponse::Posted { message, .. } = &receipt else {
         panic!("post was not accepted");
     };
+    let ChannelResponse::History {
+        messages, cursor, ..
+    } = send(
+        &endpoint.socket,
+        &authority,
+        ChannelRequest::History {
+            channel_id: channel.id.clone(),
+            before: None,
+            after: None,
+            limit: 8,
+        },
+    )
+    else {
+        panic!("expected renderable history");
+    };
+    assert_eq!(messages[0].text, "Ready for review.");
+    daemon.send(Operation::WorkspaceCreate {
+        name: Some("Keep session open".into()),
+        initial: Some(sleeping_spec(&fixture)),
+    });
+    daemon.send(Operation::WorkspaceClose {
+        workspace_id: workspace.id.clone(),
+        expected_revision: workspace.revision,
+    });
+    assert!(matches!(
+        send(
+            &endpoint.socket,
+            &authority,
+            ChannelRequest::Subscribe {
+                channel_id: channel.id.clone(),
+                after: Some(cursor),
+                limit: 8,
+                wait_ms: 0,
+            }
+        ),
+        ChannelResponse::Changes {
+            status: ChannelSubscriptionStatus::Closed,
+            ..
+        }
+    ));
     let read = ChannelRequest::Read {
         channel_id: channel.id,
         message_id: message.id.clone(),
     };
     let other = daemon.open("unrelated", None);
-    assert!(!request(&other.socket, operation(read.clone())).unwrap().ok);
+    let (other_lifetime, other_authority) = register_channel_client(&other);
+    activate_channel_client(&other, &other_authority);
+    assert!(
+        !request(
+            &other.socket,
+            as_channel_client(&other_authority, operation(read.clone()))
+        )
+        .unwrap()
+        .ok
+    );
+    control(
+        &endpoint.socket,
+        as_channel_client(&authority, Operation::ClientDetach),
+    );
+    assert!(
+        !request(
+            &endpoint.socket,
+            as_channel_client(&authority, operation(read.clone()))
+        )
+        .unwrap()
+        .ok
+    );
+    drop((lifetime, other_lifetime));
 
     daemon.shutdown_host();
     let mut daemon = fixture.start_host();
@@ -2050,10 +2176,81 @@ fn channel_history_reopens_on_the_same_session_only() {
         reopened.session.session_instance_id,
         endpoint.session.session_instance_id
     );
-    assert_eq!(send(&reopened.socket, post), receipt);
-    let ChannelResponse::Message { text, .. } = send(&reopened.socket, read) else {
+    let (_lifetime, authority) = register_channel_client(&reopened);
+    activate_channel_client(&reopened, &authority);
+    let ChannelResponse::ArchivedWorkspaces { workspace_ids, .. } = send(
+        &reopened.socket,
+        &authority,
+        ChannelRequest::ListArchivedWorkspaces {
+            after: None,
+            limit: 8,
+        },
+    ) else {
+        panic!("expected archived workspaces");
+    };
+    assert_eq!(workspace_ids, [workspace.id]);
+    assert_eq!(send(&reopened.socket, &authority, post), receipt);
+    let ChannelResponse::Message { message } = send(&reopened.socket, &authority, read) else {
         panic!("message did not survive reopening");
     };
-    assert_eq!(text, "Ready for review.");
+    assert_eq!(message.text, "Ready for review.");
+    daemon.shutdown_host();
+}
+
+#[test]
+#[ignore = "owned subprocess fixture; requires its private working-directory marker"]
+fn owned_channel_client_fixture() {
+    use bkpr_protocol::channels::ChannelRequest;
+
+    let cwd = std::env::current_dir().unwrap();
+    assert_eq!(
+        fs::read(cwd.join("owned-channel-client")).unwrap(),
+        b"private"
+    );
+    let socket = PathBuf::from(std::env::var_os("BKPR_SOCKET").unwrap());
+    let identity = control(&socket, Operation::SessionInfo);
+    let endpoint = bkpr_protocol::SessionEndpoint {
+        session: serde_json::from_value(identity["session"].clone()).unwrap(),
+        socket,
+    };
+    let (_lifetime, authority) = register_channel_client(&endpoint);
+    activate_channel_client(&endpoint, &authority);
+    let response = request(
+        &endpoint.socket,
+        as_channel_client(
+            &authority,
+            Operation::Channels {
+                request: ChannelRequest::List {
+                    workspace_id: "ignored".into(),
+                    after: None,
+                    limit: 1,
+                },
+            },
+        ),
+    )
+    .unwrap();
+    assert!(
+        response
+            .error
+            .unwrap()
+            .contains("daemon-owned processes cannot act as the channel user")
+    );
+    fs::write(cwd.join("channel-client-denied"), b"denied").unwrap();
+}
+
+#[test]
+fn pane_process_cannot_obtain_user_channel_authority_by_registering() {
+    let fixture = Fixture::new();
+    fs::write(fixture.cwd.join("owned-channel-client"), b"private").unwrap();
+    let mut daemon = fixture.start_host();
+    let mut spec = sleeping_spec(&fixture);
+    spec.argv = vec![
+        fixture.utility.to_str().unwrap().into(),
+        "--exact".into(),
+        "owned_channel_client_fixture".into(),
+        "--ignored".into(),
+    ];
+    daemon.open(bkpr_protocol::DEFAULT_SESSION_NAME, Some(spec));
+    wait_for(&fixture.cwd.join("channel-client-denied"), b"denied");
     daemon.shutdown_host();
 }

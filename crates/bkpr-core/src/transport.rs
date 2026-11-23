@@ -748,10 +748,8 @@ impl BoundSocket {
                                     !shutdown.load(Ordering::Acquire) && peer_connected(&stream)
                                 })?
                             }
-                            Operation::Channels { request } => {
-                                registry.request_channels(request, &|| {
-                                    !shutdown.load(Ordering::Acquire) && peer_connected(&stream)
-                                })?
+                            Operation::Channels { .. } => {
+                                anyhow::bail!("channel operations require a registered user client")
                             }
                             operation @ (Operation::Context { .. } | Operation::HarnessBegin { .. } | Operation::HarnessEvent { .. }
                             | Operation::HarnessContext { .. } | Operation::Agent { .. }) => {

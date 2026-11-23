@@ -10,11 +10,14 @@ CREATE TABLE channels (
     UNIQUE(workspace_id,name)
 ) STRICT;
 CREATE INDEX channel_workspace ON channels(workspace_id,id);
+CREATE INDEX workspace_wide_channels ON channels(workspace_id,id) WHERE workspace_wide=1;
 CREATE TABLE members (
     channel_id TEXT NOT NULL REFERENCES channels(id),
     participant_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
     PRIMARY KEY(channel_id,participant_id)
 ) WITHOUT ROWID, STRICT;
+CREATE INDEX visible_explicit_channels ON members(workspace_id,participant_id,channel_id);
 CREATE TABLE posts (
     id TEXT PRIMARY KEY,
     channel_id TEXT NOT NULL REFERENCES channels(id),
