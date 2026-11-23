@@ -1,8 +1,4 @@
-use super::{
-    chat_controls,
-    chat_draft::{self, Draft},
-    chat_images, transport,
-};
+use super::{chat_controls, chat_draft::Draft, chat_images, transport};
 use crate::keyguide::{self, Action, ChatAction, Context, HistoryAction, Navigation};
 use anyhow::{Result, bail};
 use bkpr_protocol::{KeyAction, KeyEvent, Operation, Payload, channels::*};
@@ -167,6 +163,7 @@ pub(super) struct Chat {
     catalog_error: Option<String>,
     workspace: Option<String>,
     active: Option<Active>,
+    recent_history: VecDeque<(ChannelId, History)>,
     selected: HashMap<String, ChannelId>,
     ids: Vec<ChannelId>,
     focus: Option<Focus>,
@@ -239,11 +236,7 @@ impl Chat {
         if self.workspace.is_none() {
             return;
         }
-        if let Some(active) = self.active.take()
-            && let Some(draft) = self.drafts.get_mut(&active.id)
-        {
-            draft.completion = None;
-        }
+        self.retain_active_history();
         self.workspace = None;
         self.focus = None;
         self.editor = None;
@@ -290,6 +283,8 @@ impl Chat {
                 .entry(entry.workspace_id.clone())
                 .or_default() += 1;
         }
+        self.recent_history
+            .retain(|(id, _)| catalog.contains_key(id));
         self.catalog = catalog;
         self.catalog_ready = true;
         self.catalog_error = None;
@@ -355,6 +350,11 @@ impl Chat {
                 .get(id)
                 .is_none_or(|entry| entry.workspace_id != workspace)
         });
+        self.recent_history.retain(|(id, _)| {
+            self.catalog
+                .get(id)
+                .is_some_and(|entry| entry.workspace_id != workspace)
+        });
         self.catalog
             .retain(|_, entry| entry.workspace_id != workspace);
         self.attention.remove(workspace).is_some()
@@ -405,24 +405,46 @@ impl Chat {
         if self.active.as_ref().is_some_and(|active| active.id == id) {
             return;
         }
-        if let Some(active) = self.active.take()
-            && let Some(draft) = self.drafts.get_mut(&active.id)
-        {
-            draft.completion = None;
-        }
+        self.selected.insert(workspace.clone(), id.clone());
+        self.retain_active_history();
         self.list_cursor = self
             .ids
             .iter()
             .position(|candidate| *candidate == id)
             .unwrap_or(0);
-        self.selected.insert(workspace.clone(), id.clone());
-        self.active = Some(Active::new(id));
+        let mut active = Active::new(id);
+        if let Some(index) = self
+            .recent_history
+            .iter()
+            .position(|(id, _)| *id == active.id)
+        {
+            active.history = self.recent_history.remove(index).expect("cached history").1;
+        }
+        self.active = Some(active);
         self.editor = None;
         self.notice = None;
         self.images_wanted.clear();
         self.mark = None;
         self.paint.invalidate_hits();
         self.epoch = self.epoch.wrapping_add(1);
+    }
+
+    fn retain_active_history(&mut self) {
+        let Some(mut active) = self.active.take() else {
+            return;
+        };
+        if let Some(draft) = self.drafts.get_mut(&active.id) {
+            draft.completion = None;
+        }
+        if active.history.loaded {
+            // In-flight reads belong to the old selection epoch. Catalog catch-up
+            // resumes from the retained tail once this channel is selected again.
+            active.history.load = None;
+            active.history.error = None;
+            active.history.visible_through = 0;
+            self.recent_history.push_front((active.id, active.history));
+            self.recent_history.truncate(3);
+        }
     }
 
     fn writable(&self, read_only: bool) -> bool {
@@ -503,7 +525,9 @@ impl Chat {
             ChatAction::Manage => self.writable(read_only),
             ChatAction::MarkRead => !read_only && self.active.is_some(),
             ChatAction::Retry => self.writable(read_only) && matches!(send, Some(Send::Unknown(_))),
-            ChatAction::Send | ChatAction::Newline => self.writable(read_only) && send.is_none(),
+            ChatAction::Send | ChatAction::Newline | ChatAction::Edit(_) => {
+                self.writable(read_only) && send.is_none()
+            }
             ChatAction::Choose if self.completing() => self.active.as_ref().is_some_and(|active| {
                 active.roster_ready
                     && self
@@ -552,6 +576,11 @@ impl Chat {
             Some(Action::Chat(ChatAction::Newline)) => {
                 if let Some(draft) = self.draft() {
                     draft.insert("\n", false);
+                }
+            }
+            Some(Action::Chat(ChatAction::Edit(edit))) => {
+                if let Some(draft) = self.draft() {
+                    draft.edit(edit);
                 }
             }
             Some(Action::Chat(ChatAction::Choose)) if composing => {
@@ -621,9 +650,7 @@ impl Chat {
         }
         let draft = self.drafts.entry(active.id.clone()).or_default();
         let mods = event.modifiers & 15;
-        if let Some(action) = chat_draft::edit_action(event) {
-            draft.edit(action);
-        } else if mods == 0 && matches!(event.key.as_str(), "ArrowUp" | "ArrowDown") {
+        if mods == 0 && matches!(event.key.as_str(), "ArrowUp" | "ArrowDown") {
             let delta = if event.key == "ArrowUp" { -1 } else { 1 };
             draft.move_vertical(usize::from(self.paint.composer_width()), delta);
         } else if mods & !1 == 0
@@ -1157,4 +1184,54 @@ fn channel_order(channel: &ChannelSummary) -> (u8, &str, &ChannelId) {
 
 fn error_text(error: &anyhow::Error) -> String {
     safe_text(&error.root_cause().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn revisiting_a_channel_keeps_its_anchor_but_catalog_reset_retires_history() {
+        let mut chat = Chat::default();
+        let desk = ChannelId("desk".into());
+        let team = ChannelId("team".into());
+        let catalog = [(&desk, "#desk"), (&team, "#team")].map(|(id, name)| {
+            (
+                id.clone(),
+                ChannelSummary {
+                    id: id.clone(),
+                    workspace_id: "workspace".into(),
+                    name: name.into(),
+                    membership: MembershipMode::WorkspaceWide,
+                    settings: ChannelSettings::default(),
+                    last_sequence: 12,
+                    read_through: 0,
+                    unread_attention: false,
+                    direct: false,
+                },
+            )
+        });
+        chat.replace_catalog(catalog.clone().into_iter().collect());
+        chat.open("workspace".into());
+        let history = &mut chat.active.as_mut().unwrap().history;
+        history.loaded = true;
+        history.anchor = Some(Anchor {
+            sequence: 6,
+            line: 2,
+        });
+        chat.select(team.clone());
+        assert!(!chat.active.as_ref().unwrap().history.loaded);
+        chat.select(desk);
+        assert!(
+            chat.active
+                .as_ref()
+                .unwrap()
+                .history
+                .anchor
+                .is_some_and(|anchor| { anchor.sequence == 6 && anchor.line == 2 })
+        );
+        chat.reset_catalog();
+        chat.replace_catalog(catalog.into_iter().collect());
+        assert!(!chat.active.as_ref().unwrap().history.loaded);
+    }
 }

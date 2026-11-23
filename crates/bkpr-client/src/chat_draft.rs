@@ -1,4 +1,4 @@
-use bkpr_protocol::{KeyEvent, channels::*};
+use bkpr_protocol::channels::*;
 use bkpr_tui_framework::{EditAction, TextInput, markdown, safe_text, text_width};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -54,16 +54,15 @@ impl Draft {
     }
 
     pub(super) fn insert(&mut self, value: &str, typed: bool) -> bool {
-        let at = self.input.cursor;
-        let before = self.input.value.len();
         if !typed {
             self.completion = None;
         }
-        if !self.input.insert(value) {
+        let Some(inserted) = self.input.insert_with_range(value) else {
             return false;
-        }
+        };
         self.error = None;
-        self.splice(at..at, self.input.value.len() - before);
+        let at = inserted.start;
+        self.splice(at..at, inserted.len());
         if typed && value == "@" && self.mentions.len() < MAX_MENTIONS {
             let boundary = self.input.value[..at]
                 .chars()
@@ -82,37 +81,32 @@ impl Draft {
     }
 
     pub(super) fn edit(&mut self, action: EditAction) {
-        let at = self.input.cursor;
-        let removed = match action {
-            EditAction::Backspace => self.input.value[..at]
-                .grapheme_indices(true)
-                .next_back()
-                .map(|(offset, _)| offset..at),
-            EditAction::Delete => self.input.value[at..]
-                .graphemes(true)
-                .next()
-                .map(|value| at..at + value.len()),
-            EditAction::Clear => Some(0..self.input.value.len()),
-            _ => None,
-        };
-        if self.input.edit(action) {
+        if let Some(removed) = self.input.edit_with_range(action) {
             self.error = None;
-            if let Some(removed) = removed {
-                self.splice(removed, 0);
+            if self
+                .completion
+                .as_ref()
+                .is_some_and(|completion| removed.start <= completion.start)
+            {
+                self.completion = None;
             }
+            self.splice(removed, 0);
         }
-        if !matches!(action, EditAction::Backspace) {
+        if !matches!(
+            action,
+            EditAction::Backspace | EditAction::DeletePreviousWord
+        ) {
             self.completion = None;
         }
         self.update_query();
     }
 
     fn splice(&mut self, removed: Range<usize>, inserted: usize) {
+        let delta = inserted as isize - removed.len() as isize;
         self.mentions.retain_mut(|mention| {
             if mention.bytes.end <= removed.start {
                 true
             } else if mention.bytes.start >= removed.end {
-                let delta = inserted as isize - removed.len() as isize;
                 mention.bytes.start = mention.bytes.start.saturating_add_signed(delta);
                 mention.bytes.end = mention.bytes.end.saturating_add_signed(delta);
                 true
@@ -192,20 +186,17 @@ impl Draft {
         let Some(entry) = self.matches(roster).nth(selected) else {
             return;
         };
-        let value = format!("@{}", safe_text(&entry.participant.display_name));
+        let mut value = format!("@{} ", safe_text(&entry.participant.display_name));
         let range = completion.start..self.input.cursor;
-        if self.input.value.len() - range.len() + value.len() + 1 > MAX_POST_BYTES {
+        let Some(inserted) = self.input.replace_range(range.clone(), &value) else {
             self.error = Some("Mention would exceed the message size limit".into());
             return;
-        }
+        };
         let binding = entry.binding.as_ref().expect("eligible selection").clone();
-        self.input.value.replace_range(range.clone(), &value);
-        self.input.cursor = range.start + value.len();
-        self.input.value.insert(self.input.cursor, ' ');
-        self.input.cursor += 1;
-        self.splice(range.clone(), value.len() + 1);
+        self.splice(range, inserted.len());
+        value.pop();
         self.mentions.push(Mention {
-            bytes: range.start..self.input.cursor - 1,
+            bytes: inserted.start..inserted.end - 1,
             binding,
             label: if roster.iter().any(|candidate| {
                 candidate.participant.id != entry.participant.id
@@ -380,22 +371,27 @@ fn allows_in_rows(rows: &[markdown::Row<'_>], at: usize) -> bool {
     })
 }
 
-pub(super) fn edit_action(event: &KeyEvent) -> Option<EditAction> {
-    match (event.key.as_str(), event.modifiers & 15) {
-        ("ArrowLeft", 0) => Some(EditAction::Left),
-        ("ArrowRight", 0) => Some(EditAction::Right),
-        ("Home", 0) => Some(EditAction::Home),
-        ("End", 0) => Some(EditAction::End),
-        ("Backspace", 0) => Some(EditAction::Backspace),
-        ("Delete", 0) => Some(EditAction::Delete),
-        ("KeyU", 2) => Some(EditAction::Clear),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn twin_roster() -> Vec<ChannelRosterEntry> {
+        [("one", "launch-a", 1), ("two", "launch-b", 2)]
+            .into_iter()
+            .map(|(id, launch, binding_generation)| ChannelRosterEntry {
+                participant: Participant {
+                    id: ParticipantId(id.into()),
+                    kind: ParticipantKind::Agent,
+                    display_name: "Twin".into(),
+                },
+                binding: Some(ChannelMentionBinding {
+                    participant_id: ParticipantId(id.into()),
+                    launch_id: launch.into(),
+                    binding_generation,
+                }),
+            })
+            .collect()
+    }
 
     fn assert_literal(draft: &Draft) {
         let ChannelRequest::PostUser { post, bindings, .. } =
@@ -423,21 +419,7 @@ mod tests {
 
     #[test]
     fn matching_titles_choose_one_binding_and_edits_withdraw_the_selection() {
-        let roster: Vec<_> = [("one", "launch-a", 1), ("two", "launch-b", 2)]
-            .into_iter()
-            .map(|(id, launch, binding_generation)| ChannelRosterEntry {
-                participant: Participant {
-                    id: ParticipantId(id.into()),
-                    kind: ParticipantKind::Agent,
-                    display_name: "Twin".into(),
-                },
-                binding: Some(ChannelMentionBinding {
-                    participant_id: ParticipantId(id.into()),
-                    launch_id: launch.into(),
-                    binding_generation,
-                }),
-            })
-            .collect();
+        let roster = twin_roster();
         let mut draft = Draft::default();
         assert!(draft.insert("@", true));
         draft.select_mention(&roster, Some(1));
@@ -451,5 +433,55 @@ mod tests {
         draft.edit(EditAction::Backspace);
         draft.edit(EditAction::Backspace);
         assert_literal(&draft);
+    }
+
+    #[test]
+    fn word_deletion_can_edit_a_query_but_cannot_keep_a_deleted_mention_marker() {
+        let mut draft = Draft::default();
+        assert!(draft.insert("@", true));
+        draft.insert("Twin extra", true);
+        draft.edit(EditAction::DeletePreviousWord);
+        assert_eq!(draft.query(), Some("Twin "));
+        draft.edit(EditAction::DeletePreviousWord);
+        assert!(draft.input.value.is_empty());
+        assert!(draft.completion.is_none());
+    }
+
+    #[test]
+    fn line_edits_shift_and_withdraw_only_exactly_affected_mentions() {
+        let roster = twin_roster();
+        let mut draft = Draft::default();
+        draft.insert("intro\né ", false);
+        assert!(draft.insert("@", true));
+        draft.select_mention(&roster, Some(0));
+        draft.insert("tail\n", false);
+        assert!(draft.insert("@", true));
+        draft.select_mention(&roster, Some(1));
+        draft.insert("after", false);
+
+        draft.input.cursor = "intro\né ".len();
+        draft.edit(EditAction::DeleteToLineStart);
+        draft.edit(EditAction::End);
+        draft.edit(EditAction::DeletePreviousWord);
+        assert_eq!(draft.input.value, "intro\n@Twin \n@Twin after");
+        for mention in &draft.mentions {
+            assert_eq!(&draft.input.value[mention.bytes.clone()], "@Twin");
+        }
+        assert_eq!(draft.mentions.len(), 2);
+
+        draft.edit(EditAction::Home);
+        draft.edit(EditAction::DeleteToLineEnd);
+        assert_eq!(draft.input.value, "intro\n\n@Twin after");
+        let ChannelRequest::PostUser { post, bindings, .. } =
+            draft.post(ChannelId("desk".into())).unwrap()
+        else {
+            panic!("expected user post")
+        };
+        assert_eq!(post.mentions, [roster[1].participant.id.clone()]);
+        assert_eq!(bindings.first(), roster[1].binding.as_ref());
+        assert_eq!(
+            draft.mentions[0].bytes,
+            "intro\n\n".len().."intro\n\n@Twin".len()
+        );
     }
 }

@@ -956,10 +956,21 @@ pub struct ChromeContext<'a> {
     pub size: Size,
     pub state: &'a Controller,
     pub rects: &'a [(String, Rect)],
+    /// The selected chat workspace's frame, which does not own a native pane.
+    pub chat_frame: Option<Rect>,
     /// Frame text is omitted only for material-ready rectangles.
     pub pane_graphics: &'a [Rect],
     /// Rows from the passive guide's top through the sidebar's bottom.
     pub guide_rows: u16,
+}
+
+impl ChromeContext<'_> {
+    fn pane_frames(&self) -> impl Iterator<Item = (Rect, bool)> + Clone {
+        self.rects
+            .iter()
+            .map(|(id, rect)| (*rect, self.state.focused.as_ref() == Some(id)))
+            .chain(self.chat_frame.map(|rect| (rect, true)))
+    }
 }
 
 /// Global sidebar presentation plus the active owner's native pane chrome.
@@ -1269,7 +1280,22 @@ pub(crate) fn tree_artwork_rows(
         .skip(tree.scroll)
         .take(available)
         .enumerate()
-        .filter_map(move |(index, row)| {
+        .flat_map(move |(index, row)| {
+            use crate::chrome_graphics::Artwork;
+            let y = index as u16 + 2;
+            let chat = (row_width >= 4
+                && matches!(
+                    row.kind,
+                    crate::tree::Kind::Native(SidebarRowKind::Workspace { .. })
+                ))
+            .then(|| {
+                let icon = if tree.channel_attention(row) {
+                    Artwork::ChatAlert
+                } else {
+                    Artwork::Chat
+                };
+                (row.owner, icon, row_width - 2, y)
+            });
             let artwork = match row.kind {
                 crate::tree::Kind::Native(SidebarRowKind::Workspace { .. }) => {
                     crate::chrome_graphics::Artwork::Hive
@@ -1281,15 +1307,16 @@ pub(crate) fn tree_artwork_rows(
                         crate::chrome_graphics::Artwork::BeeHidden
                     }
                 }
-                _ => return None,
+                _ => return [None, chat].into_iter().flatten(),
             };
             let column = row.icon_column();
-            (column + 2 <= row_width.saturating_sub(1)).then_some((
-                row.owner,
-                artwork,
-                column,
-                index as u16 + 2,
-            ))
+            [
+                (column + 2 <= row_width.saturating_sub(1))
+                    .then_some((row.owner, artwork, column, y)),
+                chat,
+            ]
+            .into_iter()
+            .flatten()
         })
 }
 fn render_chrome(
@@ -1307,7 +1334,6 @@ fn render_chrome(
     let ChromeContext {
         size,
         state,
-        rects,
         pane_graphics,
         guide_rows,
         ..
@@ -1366,7 +1392,11 @@ fn render_chrome(
         let plate = highlighted
             && tree_popup.is_some_and(|(_, background)| matches!(background, ColorSource::Rgb(_)));
         let selected = tree.active && entry.target.is_some() && entry.target == tree.cursor;
-        let attention = row_width >= 3 && tree.channel_attention(entry);
+        let chat = row_width >= 4
+            && matches!(
+                entry.kind,
+                crate::tree::Kind::Native(SidebarRowKind::Workspace { .. })
+            );
         let (mut label, marker_x) = match entry.kind {
             crate::tree::Kind::Session => (
                 session_caption(
@@ -1390,7 +1420,7 @@ fn render_chrome(
                         projects: tree.project_slots(entry.owner),
                         entry,
                         known,
-                        width: row_width.saturating_sub(u16::from(attention) * 2),
+                        width: row_width.saturating_sub(u16::from(chat) * 3),
                         row,
                         highlighted,
                     },
@@ -1435,8 +1465,13 @@ fn render_chrome(
             label,
             row_selected,
         ));
-        if attention {
-            lines.push(line(row_width - 1, row, 1, "!", row_selected));
+        if chat {
+            let glyph = if tree.channel_attention(entry) {
+                "! "
+            } else {
+                "◇ "
+            };
+            lines.push(line(row_width - 2, row, 2, glyph, row_selected));
         }
         if let Some(thumb) = &rows.scrollbar {
             let glyph = if thumb.contains(&(index as u16)) {
@@ -1452,14 +1487,14 @@ fn render_chrome(
     }
     let mut inactive = Vec::new();
     let mut active = None;
-    for (id, rect) in rects {
-        if pane_graphics.contains(rect) {
+    for (rect, focused) in context.pane_frames() {
+        if pane_graphics.contains(&rect) {
             continue;
         }
-        if state.focused.as_ref() == Some(id) {
-            active = Some(*rect);
+        if focused {
+            active = Some(rect);
         } else {
-            inactive.push(*rect);
+            inactive.push(rect);
         }
     }
     bkpr_tui_framework::window::tiled_border_rows(size, &inactive, active, &mut lines);
@@ -1483,8 +1518,6 @@ pub(crate) fn theme_tree_chrome(
         active,
     } = context;
     let ChromeContext {
-        state,
-        rects,
         pane_graphics,
         guide_rows,
         ..
@@ -1642,12 +1675,12 @@ pub(crate) fn theme_tree_chrome(
             rect: row_rect,
             role,
         });
-        if row_width >= 3 && tree.channel_attention(entry) {
+        if row_width >= 4 && tree.channel_attention(entry) {
             spans.push(RoleSpan {
                 rect: Rect {
-                    x: row_width - 1,
+                    x: row_width - 2,
                     y: row,
-                    width: 1,
+                    width: 2,
                     height: 1,
                 },
                 role: Role::Warning,
@@ -1827,22 +1860,19 @@ pub(crate) fn theme_tree_chrome(
         }
     }
     let sidebar = rows.area;
-    for (id, rect) in rects
-        .iter()
-        .filter(|(id, _)| state.focused.as_ref() != Some(id))
-        .chain(
-            rects
-                .iter()
-                .filter(|(id, _)| state.focused.as_ref() == Some(id)),
-        )
+    let frames = context.pane_frames();
+    for (rect, focused) in frames
+        .clone()
+        .filter(|(_, focused)| !focused)
+        .chain(frames.filter(|(_, focused)| *focused))
     {
-        if pane_graphics.contains(rect) {
+        if pane_graphics.contains(&rect) {
             // Main's decorate_characters fills rich frame cells with the
             // original pane background. The atlas paints the opaque matte
             // outside its opening; its transparent interior must see normal
             // pane color, including the opened half of horizontal gutters.
             spans.push(RoleSpan {
-                rect: *rect,
+                rect,
                 role: Role::Panel,
             });
             continue;
@@ -1857,7 +1887,7 @@ pub(crate) fn theme_tree_chrome(
                             y: rect.y + span.rect.y,
                             ..span.rect
                         },
-                        role: if span.role == Role::Border && state.focused.as_ref() == Some(id) {
+                        role: if span.role == Role::Border && focused {
                             Role::Accent
                         } else {
                             span.role
@@ -2181,6 +2211,7 @@ mod tests {
                 size: self.size,
                 state: self.state,
                 rects: self.rects,
+                chat_frame: None,
                 pane_graphics: self.pane_graphics,
                 guide_rows: self.guide_rows,
             }
@@ -2367,6 +2398,56 @@ mod tests {
     }
 
     #[test]
+    fn chat_outer_frame_uses_native_outline_and_material_fallback() {
+        let session = session_fixture(FIXTURE_OWNER, "local");
+        let mut state = Controller::new(&session.registry);
+        let pane = session.registry.panes[0].id.clone();
+        state.focused = Some(pane.clone());
+        let mut tree = crate::tree::Tree::new();
+        tree.reconcile(vec![session], FIXTURE_OWNER);
+        let mut surface = capture_surface();
+        let size = surface.frame.size;
+        let (_, outer) = screen_geometry(size, tree.preferred_columns);
+        let mut theme = Theme::default();
+        crate::appearance::update_theme(&mut theme, &Default::default());
+        let paint = |surface: &mut UiSurface,
+                     rects: &[(String, Rect)],
+                     chat_frame,
+                     pane_graphics: &[Rect]| {
+            let context = || TreeChromeContext {
+                native: ChromeContext {
+                    size,
+                    state: &state,
+                    rects,
+                    chat_frame,
+                    pane_graphics,
+                    guide_rows: 0,
+                },
+                tree: &tree,
+                active: FIXTURE_OWNER,
+                popup: None,
+            };
+            tree_chrome(surface, context(), &mut Vec::new(), &mut Vec::new());
+            theme_tree_chrome(
+                surface,
+                &theme,
+                context(),
+                &ProjectPalette::default(),
+                &[],
+                &mut Vec::new(),
+            );
+        };
+        let corner = usize::from(outer.x);
+        paint(&mut surface, &[(pane, outer)], None, &[]);
+        let native = surface.frame.rows[0].cells[corner].clone();
+        assert_eq!(native.text, "╭");
+        paint(&mut surface, &[], Some(outer), &[]);
+        assert_eq!(surface.frame.rows[0].cells[corner], native);
+        paint(&mut surface, &[], Some(outer), &[outer]);
+        assert_eq!(surface.frame.rows[0].cells[corner].text, " ");
+    }
+
+    #[test]
     fn sidebar_project_names_and_pane_icons_share_global_host_qualified_slots() {
         use crate::project_colors::ProjectHost;
         use crate::tree::{Owner, Tree};
@@ -2397,6 +2478,7 @@ mod tests {
                     size,
                     state: &state,
                     rects: &[],
+                    chat_frame: None,
                     pane_graphics: &[],
                     guide_rows: 0,
                 },
@@ -2456,6 +2538,7 @@ mod tests {
                     size,
                     state: &state,
                     rects: &[],
+                    chat_frame: None,
                     pane_graphics: &[],
                     guide_rows: 0,
                 },
@@ -2502,6 +2585,7 @@ mod tests {
                     size,
                     state: &state,
                     rects: &[],
+                    chat_frame: None,
                     pane_graphics: &[],
                     guide_rows: 0,
                 },
@@ -2723,7 +2807,12 @@ mod tests {
                     .unwrap();
                 let start = entry.content_column();
                 let width = start + budget;
-                state.sidebar.preferred_columns = Some(width);
+                let workspace_marker = if matches!(target, SidebarTarget::Workspace(_)) {
+                    3
+                } else {
+                    0
+                };
+                state.sidebar.preferred_columns = Some(width + workspace_marker);
                 let size = surface.frame.size;
                 let hits = paint_fixture(
                     &mut surface,

@@ -1662,6 +1662,26 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     );
 
     let desk = desk_id;
+    let ChannelResponse::UserRoster { participants, .. } = channel(
+        &registry,
+        None,
+        ChannelRequest::UserRoster {
+            workspace_id: workspace.clone(),
+            channel_id: Some(desk.clone()),
+            after: None,
+            limit: 32,
+        },
+    )
+    .unwrap() else {
+        panic!("expected user roster");
+    };
+    for id in [&a_actor, &b_actor] {
+        let entry = participants
+            .iter()
+            .find(|entry| &entry.participant.id == id)
+            .unwrap();
+        assert_eq!(entry.participant.display_name, "Same label");
+    }
     let selected = user_binding(&registry, &workspace, &desk, &b);
     let user_post = mention_as_user(&desk, "東京 user direction", selected);
     assert!(agent_channel(&registry, &sender, user_post.clone()).is_err());

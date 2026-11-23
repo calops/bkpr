@@ -503,26 +503,44 @@ pub(super) fn unbound_channel_participant(
     channels::ParticipantId(Uuid::from_bytes(bytes).to_string())
 }
 
-fn channel_agent(launch: &Launch, agent: &Agent) -> channels::Participant {
+fn channel_agent(
+    launch: &Launch,
+    agent: &Agent,
+    state: &State,
+    pane: &PaneInfo,
+) -> channels::Participant {
     channel_actor(
         launch
             .channel_participant
             .clone()
             .expect("live channel identity"),
         agent,
+        state,
+        pane,
     )
 }
 
-fn channel_actor(id: channels::ParticipantId, agent: &Agent) -> channels::Participant {
+fn channel_actor(
+    id: channels::ParticipantId,
+    agent: &Agent,
+    state: &State,
+    pane: &PaneInfo,
+) -> channels::Participant {
+    let mut title = pane.title.clone();
+    super::project_title(state, &pane.id, &mut title);
+    let title = agent.harness.display_title(&title).trim();
     channels::Participant {
         id,
         kind: channels::ParticipantKind::Agent,
-        display_name: agent
-            .title
-            .as_ref()
-            .filter(|title| !title.trim().is_empty())
-            .cloned()
-            .unwrap_or_else(|| agent.harness.display_name().to_owned()),
+        display_name: if title.is_empty()
+            || title.len() > channels::MAX_NAME_BYTES
+            || title.chars().any(char::is_control)
+        {
+            agent.harness.display_name()
+        } else {
+            title
+        }
+        .to_owned(),
     }
 }
 
@@ -584,7 +602,7 @@ impl Registry {
             let (current, agent) =
                 channel_caller(&state, pane, workspace, caller, &agents, &captures)
                     .context(ChannelAccessLost)?;
-            channel_agent(current, agent)
+            channel_agent(current, agent, &state, pane)
         } else {
             self.channel_user()
         };
@@ -606,12 +624,13 @@ impl Registry {
                         .iter()
                         .filter_map(|pane| {
                             live_channel_agent(&state, pane, workspace, &agents, &captures, None)
+                                .map(|(launch, agent)| (launch, agent, pane))
                         })
-                        .filter(|(launch, _)| {
+                        .filter(|(launch, _, _)| {
                             launch.channel_participant.as_ref() != Some(&actor.id)
                         })
-                        .map(|(launch, agent)| WorkspaceParticipant {
-                            actor: channel_agent(launch, agent),
+                        .map(|(launch, agent, pane)| WorkspaceParticipant {
+                            actor: channel_agent(launch, agent, &state, pane),
                             launch_id: Some(launch.grant.launch_id.clone()),
                             binding_revision: launch.binding_generation,
                         }),

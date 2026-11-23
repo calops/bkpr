@@ -16,9 +16,9 @@ Sidebar: Ctrl-Space, then
 
 Workspace chat: activate a workspace by name
   Tab             Channels / composer Enter       Send or choose
-  Alt-j           Add a line           Esc         Return to pane
+  Shift-Enter     Add a line           Esc         Return to pane
   PgUp / PgDn     Page conversation    Ctrl-End    Latest messages
-  Ctrl-n          New channel          Ctrl-e      Channel settings
+  Ctrl-n          New channel          Alt-e       Channel settings
   Alt-m           Mark channel read    Ctrl-r      Retry identical uncertain post
 
 Panes: Ctrl-b, then

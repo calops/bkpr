@@ -5,4 +5,10 @@ Source: https://github.com/Templarian/MaterialDesign/blob/master/svg/beehive-out
 Retrieved: 2026-10-27
 License: Apache-2.0; see Apache-2.0.txt and MaterialDesign-LICENSE.
 
+chat-outline.svg and chat-alert.svg are unmodified Material Design Icons by Pictogrammers
+(the same shapes as the Nerd Font chat-outline and chat-alert glyphs).
+Source: https://github.com/Templarian/MaterialDesign/tree/master/svg
+Retrieved: 2026-11-24
+License: Apache-2.0; see Apache-2.0.txt and MaterialDesign-LICENSE.
+
 The license and this notice are also embedded in the Bkpr client binary.

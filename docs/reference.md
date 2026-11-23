@@ -1381,8 +1381,8 @@ closing its process. Local and SSH chats use the selected session's own channels
 Tab moves between the composer and channel list. Use arrows and Enter to choose
 a channel. Narrow terminals show one section at a time. Typing and paste stay
 in chat even after clicking or scrolling history, unless the sidebar or a dialog
-owns focus. Each channel keeps its unsent draft. Enter sends, Alt-j adds a line
-(Shift-Enter also works on terminals that report it), and multiline paste never
+owns focus. Each channel keeps its unsent draft. Enter sends. Shift-Enter adds a
+line only if the terminal reports it separately from Enter. Multiline paste never
 sends by itself. Right-click a message to reply to it. Pending and rejected sends
 are not shown as committed messages. Ctrl-r after an uncertain send retries
 only the exact original post and key.
@@ -1393,7 +1393,12 @@ The roster shows separate entries for duplicate names. Code, quotes and pasted
 and native binding so replacing or rebinding an agent cannot redirect the send.
 The composer previews the channel's wake rule: `#desk` starts with addressed
 agents or all if none are selected; `#team` starts with all eligible agents.
-Ctrl-n creates a channel; Ctrl-e changes wake policy, attention or membership.
+Ctrl-n creates a channel; Alt-e changes wake policy, attention or membership.
+In the composer, Ctrl-a/e move to the start/end of the line. Ctrl-w deletes the
+previous word; Ctrl-u/k delete to the start/end of the line.
+Drag across history text to copy it using the configured clipboard policy.
+Ctrl-b then y copies the current selection again. Copy preserves hard line
+breaks without including the nickname gutter or visual spacing.
 Private direct threads cannot be posted to or edited. Read-only clients can
 browse but cannot send, edit channels or advance the user's read position.
 

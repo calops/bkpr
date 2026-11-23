@@ -38,6 +38,11 @@ pub struct Run<'a> {
 pub struct Row<'a> {
     /// Printable text runs, already laid out in order without splitting graphemes.
     pub runs: Vec<Run<'a>>,
+    /// Cell width of a repeated layout prefix on a continuation row.
+    pub continuation_prefix: usize,
+    /// Spaces hidden by the soft wrap to the next row of this logical line.
+    /// `None` marks the end of the logical line.
+    pub join_spaces: Option<usize>,
 }
 
 /// Immutable parsed content, reusable at any positive text width.
@@ -110,8 +115,8 @@ impl Document {
             let mut start = line.text.start;
             loop {
                 let mut runs = Vec::new();
-                let prefix =
-                    self.prefix(&line.prefix, start == line.text.start, columns, &mut runs);
+                let first = start == line.text.start;
+                let prefix = self.prefix(&line.prefix, first, columns, &mut runs);
                 let rest = &self.text[start..line.text.end];
                 let cut = row_cut(rest, columns - prefix, line.verbatim, start, spans);
                 if cut.replace {
@@ -123,7 +128,11 @@ impl Document {
                 } else {
                     self.row_runs(start..start + cut.end, &mut spans, &mut runs);
                 }
-                rows.push(Row { runs });
+                rows.push(Row {
+                    runs,
+                    continuation_prefix: if first { 0 } else { prefix },
+                    join_spaces: (cut.next < rest.len()).then_some(cut.next - cut.end),
+                });
                 start += cut.next;
                 if start == line.text.end {
                     break;

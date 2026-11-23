@@ -23,6 +23,14 @@ static ASSETS: &[SvgAsset] = &[
         id: 2,
         svg: include_str!("../assets/hive.svg"),
     },
+    SvgAsset {
+        id: 3,
+        svg: include_str!("../assets/chat-outline.svg"),
+    },
+    SvgAsset {
+        id: 4,
+        svg: include_str!("../assets/chat-alert.svg"),
+    },
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +38,8 @@ pub(crate) enum Artwork {
     Bee,
     BeeHidden,
     Hive,
+    Chat,
+    ChatAlert,
 }
 
 type DecorationEvidence = (
@@ -49,21 +59,14 @@ struct PaneGeometry {
 }
 
 impl PaneGeometry {
-    fn prepare(&mut self, size: Size, rects: &[(String, Rect)]) {
+    fn prepare(&mut self, size: Size, rects: impl Iterator<Item = Rect> + Clone) {
         let cell = [size.cell_width, size.cell_height];
-        if self.cell == cell
-            && self.rects.len() == rects.len()
-            && self
-                .rects
-                .iter()
-                .zip(rects)
-                .all(|(old, (_, rect))| old == rect)
-        {
+        if self.cell == cell && self.rects.iter().copied().eq(rects.clone()) {
             return;
         }
         self.cell = cell;
         self.rects.clear();
-        self.rects.extend(rects.iter().map(|(_, rect)| *rect));
+        self.rects.extend(rects);
         self.placements.clear();
         let [cw, ch] = cell;
         let excess = i64::from(ch.saturating_sub(cw));
@@ -250,8 +253,16 @@ impl ChromeGraphics {
         }
     }
 
-    /// Cache complete native split geometry; unchanged renders allocate nothing.
-    pub(crate) fn prepare_panes(&mut self, size: Size, rects: &[(String, Rect)]) {
+    pub(crate) fn retain_chat_inlay_source(&self, frame: &mut Frame) {
+        if self.0.is_enabled()
+            && let Some(styles) = &self.1
+        {
+            self.0.retain_decoration_sources(frame, &styles[5..6]);
+        }
+    }
+
+    /// Cache the visible frames' geometry in paint order, independent of pane IDs.
+    pub(crate) fn prepare_panes(&mut self, size: Size, rects: impl Iterator<Item = Rect> + Clone) {
         if self.0.is_enabled() {
             self.3.prepare(size, rects);
         }
@@ -420,6 +431,31 @@ impl ChromeGraphics {
         base: u32,
         accent: Option<u8>,
     ) -> bool {
+        self.decorate_region_clipped(frame, card, text_body, base, accent, None)
+    }
+
+    /// Place the shared region material without covering neighboring chat cells.
+    pub(crate) fn decorate_inlay(
+        &self,
+        frame: &mut Frame,
+        card: Rect,
+        text_body: Rect,
+        base: u32,
+    ) -> bool {
+        let before = frame.placements.len();
+        self.decorate_region_clipped(frame, card, text_body, base, None, Some(card))
+            && frame.placements.len() != before
+    }
+
+    fn decorate_region_clipped(
+        &self,
+        frame: &mut Frame,
+        card: Rect,
+        text_body: Rect,
+        base: u32,
+        accent: Option<u8>,
+        clip: Option<Rect>,
+    ) -> bool {
         if !self.0.is_enabled()
             || text_body.width == 0
             || text_body.height == 0
@@ -444,6 +480,12 @@ impl ChromeGraphics {
         let cw = i64::from(frame.size.cell_width);
         let ch = i64::from(frame.size.cell_height);
         let margin = (cw + 1) / 2;
+        let clip = clip.unwrap_or(Rect {
+            x: 0,
+            y: 0,
+            width: frame.size.cols,
+            height: frame.size.rows,
+        });
         let geometry = DecorationGeometry {
             bounds_px: [
                 i64::from(card.x) * cw + margin,
@@ -452,10 +494,10 @@ impl ChromeGraphics {
                 (i64::from(card.y) + i64::from(card.height)) * ch - margin,
             ],
             clip_px: [
-                0,
-                0,
-                u32::from(frame.size.cols) * frame.size.cell_width,
-                u32::from(frame.size.rows) * frame.size.cell_height,
+                u32::from(clip.x) * frame.size.cell_width,
+                u32::from(clip.y) * frame.size.cell_height,
+                (u32::from(clip.x) + u32::from(clip.width)) * frame.size.cell_width,
+                (u32::from(clip.y) + u32::from(clip.height)) * frame.size.cell_height,
             ],
         };
         self.0.decorate_window_with_geometry(
@@ -504,6 +546,8 @@ impl ChromeGraphics {
         let marker = match artwork {
             Artwork::Bee | Artwork::Hive => ["●", " "],
             Artwork::BeeHidden => ["◌", " "],
+            Artwork::Chat => ["◇", " "],
+            Artwork::ChatAlert => ["!", " "],
         };
         if !cells
             .iter()
@@ -527,6 +571,8 @@ impl ChromeGraphics {
             Artwork::Bee | Artwork::BeeHidden => (1, i32::from(col), 0),
             // MAIN positions the hive half a cell left into its tree gutter.
             Artwork::Hive => (2, i32::from(col) - 1, frame.size.cell_width / 2),
+            Artwork::Chat => (3, i32::from(col), 0),
+            Artwork::ChatAlert => (4, i32::from(col), 0),
         };
         if !self.0.place(
             artwork_frame,
@@ -725,7 +771,7 @@ mod tests {
             assert!(chrome.drain().unwrap());
         };
         chrome.prepare(&host, size, &[]);
-        chrome.prepare_panes(size, &[("pane".into(), rect)]);
+        chrome.prepare_panes(size, std::iter::once(rect));
         prepared(&mut chrome);
         let mut markers = Vec::new();
         for artwork in [Artwork::Hive, Artwork::Bee, Artwork::BeeHidden] {
@@ -765,10 +811,31 @@ mod tests {
         for accent in [None, Some(4), Some(3)] {
             assert!(chrome.decorate_guide(&mut rich, guide, body, 256, accent));
         }
+        let mut inlay = bkpr_tui_framework::graphics_frame(size);
+        assert!(chrome.decorate_inlay(&mut inlay, guide, body, 1));
+        assert!(!inlay.placements.is_empty());
+        let edges = |rect: Rect| {
+            [
+                u32::from(rect.x) * size.cell_width,
+                u32::from(rect.y) * size.cell_height,
+                u32::from(rect.x + rect.width) * size.cell_width,
+                u32::from(rect.y + rect.height) * size.cell_height,
+            ]
+        };
+        let [left, top, right, bottom] = edges(guide);
+        let [body_left, body_top, body_right, body_bottom] = edges(body);
+        for placement in &inlay.placements {
+            let x = u32::try_from(placement.col).unwrap() * size.cell_width + placement.offset_x;
+            let y = u32::try_from(placement.row).unwrap() * size.cell_height + placement.offset_y;
+            let x_end = x + placement.width;
+            let y_end = y + placement.height;
+            assert!(x >= left && y >= top && x_end <= right && y_end <= bottom);
+            assert!(x_end <= body_left || y_end <= body_top || x >= body_right || y >= body_bottom);
+        }
 
         chrome.set_enabled(false);
         chrome.prepare(&host, size, &[]);
-        chrome.prepare_panes(size, &[]);
+        chrome.prepare_panes(size, std::iter::empty());
         for (artwork, frame, effects, original, _) in &mut markers {
             effects.images.clear();
             effects.placements.clear();
@@ -828,37 +895,28 @@ mod tests {
             cell_width: 9,
             cell_height: 20,
         };
-        let rects = vec![
-            (
-                "left".into(),
-                Rect {
-                    x: 0,
-                    y: 0,
-                    width: 21,
-                    height: 24,
-                },
-            ),
-            (
-                "upper".into(),
-                Rect {
-                    x: 20,
-                    y: 0,
-                    width: 20,
-                    height: 13,
-                },
-            ),
-            (
-                "lower".into(),
-                Rect {
-                    x: 20,
-                    y: 12,
-                    width: 20,
-                    height: 12,
-                },
-            ),
+        let rects = [
+            Rect {
+                x: 0,
+                y: 0,
+                width: 21,
+                height: 24,
+            },
+            Rect {
+                x: 20,
+                y: 0,
+                width: 20,
+                height: 13,
+            },
+            Rect {
+                x: 20,
+                y: 12,
+                width: 20,
+                height: 12,
+            },
         ];
         let mut cache = PaneGeometry::default();
-        cache.prepare(size, &rects);
+        cache.prepare(size, rects.into_iter());
         assert_eq!(
             cache.placements,
             [
@@ -878,7 +936,7 @@ mod tests {
         );
         let rect_storage = cache.rects.as_ptr();
         let placement_storage = cache.placements.as_ptr();
-        cache.prepare(size, &rects);
+        cache.prepare(size, rects.into_iter());
         assert_eq!(cache.rects.as_ptr(), rect_storage);
         assert_eq!(cache.placements.as_ptr(), placement_storage);
         // The fork saturates excess height: unusually wide cells never produce
@@ -889,7 +947,7 @@ mod tests {
                 cell_height: 9,
                 ..size
             },
-            &rects,
+            rects.into_iter(),
         );
         assert_eq!(cache.placements[1].bounds_px, [400, 0, 800, 117]);
         assert_eq!(cache.placements[2].bounds_px, [400, 108, 800, 216]);
@@ -903,28 +961,22 @@ mod tests {
             cell_width: 9,
             cell_height: 20,
         };
-        let rects = vec![
-            (
-                "upper".into(),
-                Rect {
-                    x: 0,
-                    y: 0,
-                    width: 10,
-                    height: 10,
-                },
-            ),
-            (
-                "corner".into(),
-                Rect {
-                    x: 9,
-                    y: 9,
-                    width: 10,
-                    height: 10,
-                },
-            ),
+        let rects = [
+            Rect {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 10,
+            },
+            Rect {
+                x: 9,
+                y: 9,
+                width: 10,
+                height: 10,
+            },
         ];
         let mut cache = PaneGeometry::default();
-        cache.prepare(size, &rects);
+        cache.prepare(size, rects.into_iter());
         assert_eq!(
             cache.placements[0],
             DecorationGeometry {

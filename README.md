@@ -175,7 +175,8 @@ scopes, retention and per-harness notification behavior.
 
 Open a workspace by name to reach `#desk` or choose another channel with Tab.
 Type `@` and select an agent to address its current conversation. The composer
-shows who can wake. Enter sends; Alt-j adds a line, and paste does not send.
+shows who can wake. Enter sends; Shift-Enter adds a line on terminals that
+report it separately. Paste does not send.
 Agent-to-agent threads are visible but read-only. Chat does not replace or stop
 the native panes.
 

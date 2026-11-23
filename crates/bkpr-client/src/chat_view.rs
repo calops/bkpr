@@ -1,5 +1,5 @@
 use super::{Anchor, Chat, Draft, Focus, Send, chat_images};
-use bkpr_protocol::{Cursor, CursorShape, Frame, Size, channels::*};
+use bkpr_protocol::{Cursor, CursorShape, Frame, SelectionSpan, Size, channels::*};
 use bkpr_tui_framework::{
     Rect, Role, Theme, UiSurface, clear, graphics_frame, markdown, safe_text, text, text_width,
     window,
@@ -8,6 +8,8 @@ use std::{
     collections::{HashMap, VecDeque},
     hash::{DefaultHasher, Hash, Hasher},
 };
+use unicode_segmentation::UnicodeSegmentation as _;
+use unicode_width::UnicodeWidthStr as _;
 
 const MAX_NICK: u16 = 16;
 const LIST_MIN_WIDTH: u16 = 55;
@@ -16,12 +18,31 @@ pub(in crate::app) struct Entry {
     pub(super) message: ChannelMessage,
     document: markdown::Document,
     width: u16,
-    rows: Vec<Vec<Run>>,
+    rows: Vec<WrappedRow>,
 }
 
 struct Run {
     text: String,
     style: markdown::Style,
+}
+
+struct WrappedRow {
+    runs: Vec<Run>,
+    continuation_prefix: u16,
+    join_spaces: Option<usize>,
+}
+
+impl WrappedRow {
+    fn glyphs(&self, x: u16) -> impl Iterator<Item = (u16, u16, &str)> {
+        self.runs
+            .iter()
+            .flat_map(|run| run.text.graphemes(true))
+            .scan(x, |col, glyph| {
+                let start = *col;
+                *col += glyph.width() as u16;
+                Some((start, *col, glyph))
+            })
+    }
 }
 
 impl Entry {
@@ -49,14 +70,17 @@ impl Entry {
             .document
             .wrap(width.into())
             .into_iter()
-            .map(|row| {
-                row.runs
+            .map(|row| WrappedRow {
+                runs: row
+                    .runs
                     .into_iter()
                     .map(|run| Run {
                         text: run.text.to_owned(),
                         style: run.style,
                     })
-                    .collect()
+                    .collect(),
+                continuation_prefix: row.continuation_prefix as u16,
+                join_spaces: row.join_spaces,
             })
             .collect();
     }
@@ -99,10 +123,50 @@ struct Range {
     len: usize,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct HistoryRow {
+    sequence: u64,
+    offset: usize,
+    y: u16,
+    x: u16,
+    prefix: u16,
+    end: u16,
+}
+
+impl HistoryRow {
+    fn text(self, entries: &VecDeque<Entry>) -> Option<&WrappedRow> {
+        let entry = entries
+            .binary_search_by_key(&self.sequence, Entry::sequence)
+            .ok()?;
+        entries[entry].rows.get(self.offset)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Point {
+    row: usize,
+    start: u16,
+    end: u16,
+}
+
+struct HistorySelection {
+    anchor: Point,
+    head: Point,
+    dragging: bool,
+}
+
+impl HistorySelection {
+    fn bounds(&self) -> (Point, Point) {
+        (self.anchor.min(self.head), self.anchor.max(self.head))
+    }
+}
+
 pub(super) struct Paint {
     pub(super) surface: UiSurface,
     pub(super) rendered: Vec<u64>,
     hits: Vec<(Rect, Hit)>,
+    inlays: Vec<(Rect, Rect)>,
+    inlay_mask: Option<u8>,
     outer: Rect,
     images: Frame,
     history: Rect,
@@ -110,6 +174,11 @@ pub(super) struct Paint {
     start: usize,
     tail: usize,
     key: Option<PaintKey>,
+    rows: Vec<HistoryRow>,
+    previous_rows: Vec<HistoryRow>,
+    selection: Option<HistorySelection>,
+    selection_spans: Vec<SelectionSpan>,
+    copy_selection: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -134,6 +203,8 @@ impl Default for Paint {
             surface: UiSurface::new(initial),
             rendered: Vec::new(),
             hits: Vec::new(),
+            inlays: Vec::with_capacity(3),
+            inlay_mask: None,
             outer: Rect::default(),
             images: graphics_frame(initial),
             history: Rect::default(),
@@ -141,6 +212,11 @@ impl Default for Paint {
             start: 0,
             tail: 0,
             key: None,
+            rows: Vec::new(),
+            previous_rows: Vec::new(),
+            selection: None,
+            selection_spans: Vec::new(),
+            copy_selection: false,
         }
     }
 }
@@ -150,6 +226,8 @@ impl Paint {
         self.hits.clear();
         self.rendered.clear();
         self.ranges.clear();
+        self.rows.clear();
+        self.clear_selection();
         self.key = None;
     }
 
@@ -175,28 +253,33 @@ impl Paint {
             .partition_point(|range| range.start <= start)
             .checked_sub(1)?;
         let range = &self.ranges[index];
+        let anchor = Anchor {
+            sequence: range.sequence,
+            line: start - range.start,
+        };
         let boundary = if delta < 0 {
             start == 0
         } else {
             start == self.tail
         };
+        if start != self.start {
+            self.clear_selection();
+        }
         self.start = start;
-        Some((
-            Anchor {
-                sequence: range.sequence,
-                line: start - range.start,
-            },
-            boundary,
-        ))
+        Some((anchor, boundary))
     }
 
     fn begin(&mut self, key: PaintKey, theme: &Theme) {
+        std::mem::swap(&mut self.rows, &mut self.previous_rows);
+        self.rows.clear();
         self.key = Some(key);
         self.outer = key.outer;
         self.history = Rect::default();
         self.ranges.clear();
         self.rendered.clear();
         self.hits.clear();
+        self.inlays.clear();
+        self.inlay_mask = None;
         self.images.images.clear();
         self.images.placements.clear();
         self.start = 0;
@@ -237,14 +320,136 @@ impl Paint {
         }
     }
 
+    fn inlay(&mut self, outer: Rect) -> Rect {
+        let mut body = window::content(outer.size(self.surface.frame.size));
+        body.x += outer.x;
+        body.y += outer.y;
+        if body != outer {
+            self.inlays.push((outer, body));
+        }
+        body
+    }
+
     fn target(&mut self, rect: Rect, hit: Hit) {
         if rect.height > 0 && rect.width > 0 {
             self.hits.push((rect, hit));
         }
     }
+
+    fn clear_selection(&mut self) {
+        self.selection = None;
+        self.selection_spans.clear();
+        self.copy_selection = false;
+    }
+
+    fn selection_point(
+        &self,
+        entries: &VecDeque<Entry>,
+        x: u16,
+        y: u16,
+        begin: bool,
+    ) -> Option<Point> {
+        let index = match self.rows.binary_search_by_key(&y, |row| row.y) {
+            Ok(index) => index,
+            Err(_) if begin => return None,
+            Err(index) => {
+                match (
+                    index.checked_sub(1).and_then(|i| self.rows.get(i)),
+                    self.rows.get(index),
+                ) {
+                    (Some(before), Some(after)) if y - before.y > after.y - y => index,
+                    (Some(_), _) => index - 1,
+                    (None, Some(_)) => index,
+                    (None, None) => return None,
+                }
+            }
+        };
+        let row = self.rows[index];
+        let left = row.x + row.prefix;
+        if begin && (!self.history.contains(x, y) || x < left) {
+            return None;
+        }
+        if left == row.end {
+            return Some(Point {
+                row: index,
+                start: left,
+                end: left,
+            });
+        }
+        let x = x.clamp(left, row.end - 1);
+        let (start, end, _) = row
+            .text(entries)?
+            .glyphs(row.x)
+            .find(|&(_, end, _)| x < end)?;
+        Some(Point {
+            row: index,
+            start,
+            end,
+        })
+    }
+
+    fn update_selection_spans(&mut self) {
+        self.selection_spans.clear();
+        let Some(selection) = self.selection.as_ref() else {
+            return;
+        };
+        let (lo, hi) = selection.bounds();
+        if lo == hi {
+            return;
+        }
+        for (index, row) in self.rows.iter().enumerate().take(hi.row + 1).skip(lo.row) {
+            let (start, end) = row.selected_columns(index, lo, hi);
+            if start < end {
+                self.selection_spans.push(SelectionSpan {
+                    row: row.y,
+                    start,
+                    end,
+                });
+            }
+        }
+    }
+}
+
+impl HistoryRow {
+    fn selected_columns(self, index: usize, lo: Point, hi: Point) -> (u16, u16) {
+        let start = if lo.row == index {
+            lo.start
+        } else {
+            self.x + self.prefix
+        };
+        let end = if hi.row == index { hi.end } else { self.end };
+        (start, end)
+    }
 }
 
 impl Chat {
+    pub(in crate::app) fn inlays(&self) -> &[(Rect, Rect)] {
+        &self.paint.inlays
+    }
+
+    pub(in crate::app) fn set_graphical_inlays(&mut self, mask: u8, theme: &Theme) {
+        let paint = &mut self.paint;
+        if paint.inlay_mask == Some(mask) {
+            return;
+        }
+        paint.inlay_mask = Some(mask);
+        for index in 0..paint.inlays.len() {
+            let (outer, _) = paint.inlays[index];
+            for (mut rect, label, _) in window::border_rows(
+                outer.size(paint.surface.frame.size),
+                "",
+                window::Border::Rounded,
+            ) {
+                rect.x += outer.x;
+                rect.y += outer.y;
+                if mask & (1 << index) != 0 {
+                    clear(&mut paint.surface.frame, rect);
+                } else {
+                    paint.line(theme, rect, &label, Role::Border, false);
+                }
+            }
+        }
+    }
     pub(in crate::app) fn redraw(&mut self) {
         self.paint.key = None;
     }
@@ -268,6 +473,169 @@ impl Chat {
         ))
     }
 
+    /// Hit only text in the current painted channel history, leaving typing to the composer.
+    pub(in crate::app) fn begin_history_selection(
+        &mut self,
+        outer: Rect,
+        screen: Size,
+        x: u16,
+        y: u16,
+    ) -> bool {
+        self.clear_history_selection();
+        let Some(anchor) = self.history_point(outer, screen, x, y, true) else {
+            return false;
+        };
+        self.paint.selection = Some(HistorySelection {
+            anchor,
+            head: anchor,
+            dragging: true,
+        });
+        if self.focus != Some(Focus::Composer) {
+            self.focus = Some(Focus::Composer);
+            self.redraw();
+        }
+        true
+    }
+
+    /// Continue a captured gesture; a nonempty release authorizes automatic copy.
+    pub(in crate::app) fn drag_history_selection(
+        &mut self,
+        outer: Rect,
+        screen: Size,
+        x: u16,
+        y: u16,
+        release: bool,
+    ) -> bool {
+        if !self
+            .paint
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.dragging)
+        {
+            return false;
+        }
+        let Some(head) = self.history_point(outer, screen, x, y, false) else {
+            self.clear_history_selection();
+            return false;
+        };
+        let selection = self.paint.selection.as_mut().expect("captured selection");
+        selection.dragging = !release;
+        if selection.head != head {
+            selection.head = head;
+            self.paint.update_selection_spans();
+        }
+        release && self.can_copy_history()
+    }
+
+    fn history_point(
+        &self,
+        outer: Rect,
+        screen: Size,
+        x: u16,
+        y: u16,
+        begin: bool,
+    ) -> Option<Point> {
+        let paint = &self.paint;
+        if self.editor.is_some()
+            || paint.outer != outer
+            || paint.surface.frame.size != outer.size(screen)
+        {
+            return None;
+        }
+        paint.selection_point(
+            &self.active.as_ref()?.history.entries,
+            x.saturating_sub(outer.x),
+            y.saturating_sub(outer.y),
+            begin,
+        )
+    }
+
+    /// The compositor applies the same selection annotation as for native panes.
+    pub(in crate::app) fn history_selection_spans(&self) -> &[SelectionSpan] {
+        &self.paint.selection_spans
+    }
+
+    /// Discard the range and any export not yet written by the terminal loop.
+    pub(in crate::app) fn clear_history_selection(&mut self) {
+        self.paint.clear_selection();
+    }
+
+    /// A completed and still visible nonempty body range can be copied again.
+    pub(in crate::app) fn can_copy_history(&self) -> bool {
+        self.is_attending()
+            && !self.paint.selection_spans.is_empty()
+            && self
+                .paint
+                .selection
+                .as_ref()
+                .is_some_and(|selection| !selection.dragging)
+    }
+
+    /// Retain one local copy request until the current projection has been painted.
+    pub(in crate::app) fn request_history_copy(&mut self) {
+        self.paint.copy_selection = self.can_copy_history();
+    }
+
+    /// Drop the queued write without changing the retained selection.
+    pub(in crate::app) fn cancel_history_copy(&mut self) {
+        self.paint.copy_selection = false;
+    }
+
+    /// Take the rendered text, preserving logical row joins without copying gutters.
+    pub(in crate::app) fn take_history_copy(
+        &mut self,
+        limit: usize,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        if !std::mem::take(&mut self.paint.copy_selection) || !self.can_copy_history() {
+            return Ok(None);
+        }
+        let Some(entries) = self.active.as_ref().map(|active| &active.history.entries) else {
+            return Ok(None);
+        };
+        let (lo, hi) = self
+            .paint
+            .selection
+            .as_ref()
+            .expect("completed selection")
+            .bounds();
+        let mut result = Vec::new();
+        let mut previous: Option<(HistoryRow, Option<usize>)> = None;
+        for (index, &row) in self
+            .paint
+            .rows
+            .iter()
+            .enumerate()
+            .take(hi.row + 1)
+            .skip(lo.row)
+        {
+            let Some(text) = row.text(entries) else {
+                return Ok(None);
+            };
+            if let Some((prior, join_spaces)) = previous {
+                let spaces = join_spaces
+                    .filter(|_| prior.sequence == row.sequence && prior.offset + 1 == row.offset);
+                let count = spaces.unwrap_or(1);
+                check_copy_size(result.len() + count, limit)?;
+                result.resize(
+                    result.len() + count,
+                    if spaces.is_some() { b' ' } else { b'\n' },
+                );
+            }
+            let (start, end) = row.selected_columns(index, lo, hi);
+            for (left, right, glyph) in text.glyphs(row.x) {
+                if right > end {
+                    break;
+                }
+                if left >= start && (left < right || left > start) {
+                    check_copy_size(result.len() + glyph.len(), limit)?;
+                    result.extend_from_slice(glyph.as_bytes());
+                }
+            }
+            previous = Some((row, text.join_spaces));
+        }
+        Ok(Some(result))
+    }
+
     pub(in crate::app) fn paint(
         &mut self,
         outer: Rect,
@@ -289,7 +657,27 @@ impl Chat {
         if self.paint.key == Some(key) {
             return;
         }
+        let geometry_changed = self.paint.outer != outer || self.paint.surface.frame.size != size;
+        let old_history = self.paint.history;
         self.paint.begin(key, theme);
+        self.paint_contents(screen, key, theme);
+        if geometry_changed
+            || self.paint.history != old_history
+            || self.paint.rows != self.paint.previous_rows
+        {
+            self.paint.clear_selection();
+        }
+    }
+
+    fn paint_contents(&mut self, screen: Size, key: PaintKey, theme: &Theme) {
+        let PaintKey {
+            outer,
+            size,
+            read_only,
+            graphics,
+            focused,
+            ..
+        } = key;
         self.images.start_frame();
         self.images_wanted.clear();
         let paint = &mut self.paint;
@@ -314,24 +702,23 @@ impl Chat {
         } else {
             0
         };
-        let list_height = size.rows.saturating_sub(1);
         if list_width > 0 {
+            let outer = Rect {
+                x: 0,
+                y: 0,
+                width: list_width,
+                height: size.rows,
+            };
+            let body = paint.inlay(outer);
             paint.line(
                 theme,
-                row(0, 0, list_width),
-                " Channels",
+                row(body.x, body.y, body.width),
+                "Channels",
                 Role::Title,
                 false,
             );
-            paint.target(
-                Rect {
-                    x: 0,
-                    y: 0,
-                    width: list_width,
-                    height: size.rows,
-                },
-                Hit::List,
-            );
+            paint.target(outer, Hit::List);
+            let list_height = body.height.saturating_sub(1);
             let selected = self.active.as_ref().map(|active| &active.id);
             let offset = self
                 .list_cursor
@@ -354,7 +741,7 @@ impl Chat {
                 };
                 let name = channel_name(summary);
                 let full = format!("{lead} {name}");
-                let bounds = row(0, line as u16 + 1, list_width);
+                let bounds = row(body.x, body.y + line as u16 + 1, body.width);
                 let chosen = self.focus == Some(Focus::Channels) && self.list_cursor == index;
                 let role = if summary.unread_attention {
                     Role::Warning
@@ -372,11 +759,6 @@ impl Chat {
         }
         let left = list_width + u16::from(channels_wide);
         let columns = size.cols.saturating_sub(left);
-        if channels_wide {
-            for y in 0..size.rows {
-                paint.line(theme, row(list_width, y, 1), "│", Role::Border, false);
-            }
-        }
         let summary = self
             .active
             .as_ref()
@@ -432,14 +814,15 @@ impl Chat {
         };
         let draft = self.drafts.get(&active.id);
         let writing = !read_only && !summary.direct;
+        let inset = u16::from(columns >= 3 && size.rows >= 9);
         let (draft_lines, caret_line) = draft.map_or_else(
             || (Vec::new(), 0),
-            |draft| draft.lines(usize::from(columns.saturating_sub(3))),
+            |draft| draft.lines(usize::from(columns.saturating_sub(3 + 2 * inset))),
         );
         let composer_rows = if writing {
             (draft_lines.len().max(1) as u16)
                 .min(4)
-                .min(size.rows.saturating_sub(3))
+                .min(size.rows.saturating_sub(3 + 4 * inset))
         } else {
             0
         };
@@ -449,18 +832,23 @@ impl Chat {
             0
         };
         let completion_rows = if draft.is_some_and(|draft| draft.completion.is_some()) && writing {
-            (choices.max(1) as u16).min(size.rows.saturating_sub(composer_rows + 4))
+            (choices.max(1) as u16).min(size.rows.saturating_sub(composer_rows + 4 + 4 * inset))
         } else {
             0
         };
         let footer = size.rows.saturating_sub(1);
-        let composer = footer.saturating_sub(composer_rows);
-        let completion_at = composer.saturating_sub(completion_rows);
-        let history_rect = Rect {
+        let composer = footer.saturating_sub(composer_rows + inset);
+        let completion_at = composer.saturating_sub(inset + completion_rows);
+        let history_outer = Rect {
             x: left,
             y: 1,
             width: columns,
             height: completion_at.saturating_sub(1),
+        };
+        let history_rect = if inset != 0 {
+            paint.inlay(history_outer)
+        } else {
+            history_outer
         };
         paint.history = history_rect;
         paint.images.size = history_rect.size(screen);
@@ -477,10 +865,15 @@ impl Chat {
             graphics,
         );
         history.visible_through = paint.rendered.last().copied().unwrap_or(0);
-        if history.entries.is_empty() {
+        if history.entries.is_empty() && history_rect.height != 0 {
+            let (_, gutter) = history_columns(history_rect.width);
             paint.line(
                 theme,
-                row(left, history_rect.y, columns),
+                row(
+                    history_rect.x + gutter,
+                    history_rect.y,
+                    history_rect.width - gutter,
+                ),
                 history.error.as_deref().unwrap_or(if history.loaded {
                     "No messages yet"
                 } else {
@@ -527,7 +920,7 @@ impl Chat {
         } else if let Some(draft) = draft {
             (Role::Info, draft.wake_preview(summary.settings.user_wake))
         } else {
-            (Role::Muted, "Enter sends · Alt-j adds a line".into())
+            (Role::Muted, String::new())
         };
         if size.rows >= 2 {
             let bounds = row(left, footer, columns);
@@ -573,7 +966,17 @@ impl Chat {
                 }
             }
         }
+        if inset != 0 && composer_rows != 0 {
+            paint.inlay(Rect {
+                x: left,
+                y: composer - 1,
+                width: columns,
+                height: composer_rows + 2,
+            });
+        }
         if composer_rows > 0 {
+            let left = left + inset;
+            let columns = columns.saturating_sub(2 * inset);
             let enabled = !self.sends.contains_key(&active.id);
             let has_composer_focus = self.focus == Some(Focus::Composer) && focused && enabled;
             let visible_from = caret_line.saturating_sub(composer_rows.saturating_sub(1) as usize);
@@ -664,19 +1067,30 @@ fn paint_history(
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let compact = area.width < 34;
-    let nick = if compact {
-        0
-    } else {
-        MAX_NICK.min(area.width / 4)
-    };
-    let gutter = if compact { 0 } else { nick + 9 };
-    let width = area.width.saturating_sub(gutter).max(1);
+    let (nick, gutter) = history_columns(area.width);
+    let compact = gutter == 0;
+    let width = area.width - gutter;
+    if !compact {
+        let x = area.x + nick + 7;
+        for y in area.y..area.y + area.height {
+            draw(
+                &mut paint.surface.frame,
+                theme,
+                x,
+                y,
+                "│",
+                Role::Border,
+                false,
+                None,
+            );
+        }
+    }
     let mut total = 0;
     let mut duplicates = HashMap::<&str, Option<&ParticipantId>>::new();
-    for entry in entries.iter_mut() {
+    let entry_count = entries.len();
+    for (index, entry) in entries.iter_mut().enumerate() {
         entry.wrap(width);
-        let len = entry.len(compact, graphics);
+        let len = entry.len(compact, graphics) + usize::from(index + 1 < entry_count);
         paint.ranges.push(Range {
             sequence: entry.sequence(),
             start: total,
@@ -721,7 +1135,11 @@ fn paint_history(
             break;
         }
         let upper = start.max(at);
-        let lower = end.min(at + len);
+        let message_end = at + len - usize::from(index + 1 < entry_count);
+        let lower = end.min(message_end);
+        if upper >= lower {
+            continue;
+        }
         let meta = &entry.message.message;
         let display_name = safe_text(&meta.author.display_name);
         let duplicate = duplicates.get(meta.author.display_name.as_str()) == Some(&None);
@@ -761,32 +1179,32 @@ fn paint_history(
                 Role::Muted,
                 false,
             );
-            if compact {
-                paint.line(
-                    theme,
-                    row(area.x + 6, y, area.width.saturating_sub(6)),
-                    &name,
-                    role,
-                    false,
-                );
+            let label = window::fit(
+                &name,
+                if compact {
+                    area.width.saturating_sub(6)
+                } else {
+                    nick
+                },
+            );
+            let aligned = if compact {
+                0
             } else {
-                let label = window::fit(&name, nick);
-                let aligned = (text_width(&label) as u16).min(nick);
-                paint.line(
-                    theme,
-                    row(area.x + 6 + nick - aligned, y, aligned),
-                    &label,
-                    role,
-                    false,
-                );
-                paint.line(
-                    theme,
-                    row(area.x + nick + 7, y, 1),
-                    "│",
-                    Role::Border,
-                    false,
-                );
-            }
+                nick - text_width(&label) as u16
+            };
+            draw(
+                &mut paint.surface.frame,
+                theme,
+                area.x + 6 + aligned,
+                y,
+                &label,
+                role,
+                false,
+                (meta.author.kind == ParticipantKind::User).then_some(markdown::Style {
+                    bold: true,
+                    ..markdown::Style::default()
+                }),
+            );
         }
         let relative =
             |line: usize| (line >= upper && line < lower).then(|| area.y + (line - start) as u16);
@@ -838,7 +1256,7 @@ fn paint_history(
             }
             line += 1;
         }
-        for (offset, runs) in entry
+        for (offset, wrapped) in entry
             .rows
             .iter()
             .enumerate()
@@ -849,7 +1267,7 @@ fn paint_history(
                 continue;
             };
             let mut col = x;
-            for run in runs {
+            for run in &wrapped.runs {
                 let style = run.style;
                 let role = if style.link {
                     Role::Info
@@ -871,6 +1289,14 @@ fn paint_history(
                     Some(style),
                 );
             }
+            paint.rows.push(HistoryRow {
+                sequence,
+                offset,
+                y,
+                x,
+                prefix: wrapped.continuation_prefix,
+                end: col,
+            });
         }
         line += entry.rows.len().max(1);
         for attachment in &entry.message.attachments {
@@ -919,9 +1345,18 @@ fn paint_history(
             },
             Hit::History(Some(index)),
         );
-        if lower == at + len {
+        if lower == message_end {
             paint.rendered.push(sequence);
         }
+    }
+}
+
+fn history_columns(width: u16) -> (u16, u16) {
+    if width < 34 {
+        (0, 0)
+    } else {
+        let nick = MAX_NICK.min(width / 4);
+        (nick, nick + 9)
     }
 }
 
@@ -934,11 +1369,17 @@ fn row(x: u16, y: u16, width: u16) -> Rect {
     }
 }
 
+fn check_copy_size(bytes: usize, limit: usize) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        bytes <= limit,
+        "Selection exceeds clipboard payload limit; nothing sent"
+    );
+    Ok(())
+}
+
 fn channel_name(summary: &ChannelSummary) -> String {
     let name = safe_text(&summary.name);
-    if summary.direct {
-        format!("DM {name}")
-    } else if name.starts_with('#') {
+    if summary.direct || name.starts_with('#') {
         name
     } else {
         format!("#{name}")
@@ -1010,5 +1451,204 @@ fn style_cells(
                 cell.style.underline = 1;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{
+        App,
+        chat::Completion,
+        tests::{attach_fixture, fixture, key, size},
+    };
+    use crate::controller::content;
+    use bkpr_tui_framework::{
+        ClientEvent, HitMap, ReplyDemux, Scene, Surface, SurfaceContent, decode_input,
+    };
+    use termwiz::input::InputParser;
+
+    fn pointer(
+        app: &mut App,
+        size: Size,
+        hits: &HitMap,
+        (x, y): (u16, u16),
+        code: u8,
+        event: char,
+    ) {
+        let bytes = format!("\x1b[<{code};{};{}{event}", x + 1, y + 1);
+        let parts = ReplyDemux::default().feed(bytes.as_bytes());
+        for event in decode_input(&mut InputParser::new(), parts, false) {
+            let ClientEvent::Mouse {
+                event,
+                button,
+                action,
+            } = event
+            else {
+                panic!("expected SGR mouse event");
+            };
+            app.mouse(event, Some((button, action)), size, &[], &[], hits)
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn channel_drag_copies_logical_text_and_retires_at_geometry_change() {
+        let (mut app, input) = fixture();
+        attach_fixture(&mut app);
+        let id = ChannelId("fixture-channel".into());
+        app.chat.open("workspace".into());
+        app.chat.replace_catalog(HashMap::from([(
+            id.clone(),
+            ChannelSummary {
+                id,
+                workspace_id: "workspace".into(),
+                name: "#desk".into(),
+                membership: MembershipMode::WorkspaceWide,
+                settings: ChannelSettings::default(),
+                last_sequence: 2,
+                read_through: 0,
+                unread_attention: false,
+                direct: false,
+            },
+        )]));
+        let job = app.chat.next_job(false).unwrap().0;
+        let job = app.chat.track(job);
+        let entries = [
+            "**界**  one two three  four five six seven eight\nlast",
+            "終 tail",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| {
+            Entry::new(ChannelMessage {
+                message: MessageSummary {
+                    id: MessageId(format!("message-{index}")),
+                    sequence: index as u64 + 1,
+                    author: Participant {
+                        id: ParticipantId("workspace-user".into()),
+                        kind: ParticipantKind::User,
+                        display_name: "User".into(),
+                    },
+                    posted_at_ms: 0,
+                    intent: PostIntent::Note,
+                    mentions: Vec::new(),
+                    reply_to: None,
+                    attachments: Vec::new(),
+                },
+                text: text.into(),
+                attachments: Vec::new(),
+            })
+        })
+        .collect();
+        assert!(
+            app.chat
+                .complete(
+                    &job,
+                    Ok(Completion::History {
+                        entries,
+                        older: false
+                    }),
+                    true,
+                )
+                .is_none()
+        );
+        let size = size();
+        let theme = Theme::default();
+        let outer = content(app.screen_geometry(size).1);
+        app.chat.paint(outer, size, &theme, false, false, true);
+        let frame = &app.chat.surface().frame;
+        let hits = Scene {
+            size,
+            surfaces: vec![Surface {
+                palette: None,
+                id: "ui:chat",
+                content: SurfaceContent::Cells,
+                rect: outer,
+                frame,
+                selection: &[],
+                search: &[],
+                focused: true,
+                faint: false,
+            }],
+        }
+        .hit_map();
+        let locate = |glyph: &str| {
+            frame
+                .rows
+                .iter()
+                .enumerate()
+                .find_map(|(y, row)| {
+                    let x = row.cells.iter().position(|cell| cell.text == glyph)?;
+                    Some((x, y))
+                })
+                .unwrap()
+        };
+        let (first_x, first_y) = locate("界");
+        let (last_x, last_y) = locate("終");
+        let to = (outer.x + first_x as u16 + 1, outer.y + first_y as u16);
+        let from = (outer.x + last_x as u16 + 1, outer.y + last_y as u16);
+        let blank = &frame.rows[last_y - 1].cells;
+        assert_eq!(blank[first_x - 2].text, "│");
+        assert!(
+            blank[first_x..first_x + 4]
+                .iter()
+                .all(|cell| cell.text == " ")
+        );
+        assert!(
+            frame.rows[first_y].cells[..first_x]
+                .iter()
+                .any(|cell| cell.text == "Y" && cell.style.bold)
+        );
+        let cursor = (frame.cursor.x, frame.cursor.y);
+        assert!(frame.cursor.visible);
+
+        pointer(&mut app, size, &hits, from, 0, 'M');
+        pointer(&mut app, size, &hits, to, 32, 'M');
+        let spans = app.chat.history_selection_spans();
+        assert_eq!(spans[0].start, first_x as u16);
+        assert_eq!(spans.last().unwrap().end, last_x as u16 + 2);
+        assert!(!spans.iter().any(|span| span.row as usize == last_y - 1));
+        pointer(&mut app, size, &hits, to, 0, 'm');
+        let mut out = Vec::new();
+        app.history_clipboard(&mut out).unwrap();
+        let expected = b"\x1b]52;c;55WMICBvbmUgdHdvIHRocmVlICBmb3VyIGZpdmUgc2l4IHNldmVuIGVpZ2h0Cmxhc3QK57WC\x1b\\";
+        assert_eq!(out, expected);
+        out.clear();
+        let mut prefix = key("KeyB");
+        prefix.modifiers = 2;
+        let mut copy = key("KeyY");
+        copy.text = "y".into();
+        app.key(prefix, &mut out, size, &[]).unwrap();
+        app.key(copy, &mut out, size, &[]).unwrap();
+        app.history_clipboard(&mut out).unwrap();
+        assert_eq!(out, expected);
+        out.clear();
+
+        let mut typed = key("KeyX");
+        typed.text = "x".into();
+        app.key(typed, &mut out, size, &[]).unwrap();
+        app.chat.paint(outer, size, &theme, false, false, true);
+        let frame = &app.chat.surface().frame;
+        assert_eq!(
+            frame.rows[cursor.1 as usize].cells[cursor.0 as usize].text,
+            "x"
+        );
+        assert!(frame.cursor.visible);
+
+        pointer(&mut app, size, &hits, from, 0, 'M');
+        pointer(&mut app, size, &hits, to, 32, 'M');
+        let resized = Size {
+            cols: size.cols - 4,
+            ..size
+        };
+        let outer = content(app.screen_geometry(resized).1);
+        app.chat.paint(outer, resized, &theme, false, false, true);
+        pointer(&mut app, resized, &hits, to, 0, 'm');
+        app.history_clipboard(&mut out).unwrap();
+        assert!(out.is_empty());
+        assert!(app.chat.history_selection_spans().is_empty());
+        assert!(app.pointer_capture.is_none());
+        assert!(input.try_recv().is_err());
     }
 }
