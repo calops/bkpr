@@ -97,7 +97,8 @@ pub(crate) enum ButtonAction {
 
 /// Shared identity copy label and cell geometry.
 pub(crate) fn copy_button() -> Button<'static> {
-    Button::new("\u{f0c5}")
+    // Nerd Font can paint the icon into the next blank cell.
+    Button::new("\u{f0c5} ")
 }
 
 impl ButtonAction {

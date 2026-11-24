@@ -227,18 +227,17 @@ mod tests {
             .map(|rect| {
                 let row = &surface.frame.rows[usize::from(rect.y)].cells;
                 let cells = &row[usize::from(rect.x)..usize::from(rect.x + rect.width)];
+                assert_eq!(cells.len(), 4);
                 assert_eq!(cells[0].text, "[");
-                assert_eq!(cells.last().unwrap().text, "]");
-                let icon = cells
-                    .iter()
-                    .position(|cell| cell.text == "\u{f0c5}")
-                    .unwrap();
+                assert_eq!(cells[1].text, "\u{f0c5}");
+                assert_eq!(cells[2].text, " ");
+                assert_eq!(cells[3].text, "]");
                 assert!(
                     row[..usize::from(rect.x)]
                         .iter()
                         .any(|cell| cell.text == "…")
                 );
-                (content.x + rect.x + icon as u16, content.y + rect.y)
+                (content.x + rect.x + 1, content.y + rect.y)
             })
             .collect()
     }
