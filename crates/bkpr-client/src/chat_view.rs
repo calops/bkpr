@@ -961,17 +961,24 @@ impl Chat {
             let reserved = 1 + u16::from(!self.ids.is_empty());
             let has_settings = writing && body.height > reserved;
             let has_create = can_create && body.height >= reserved + 2 + u16::from(has_settings);
-            let list_height = body
-                .height
-                .saturating_sub(1 + u16::from(has_settings) + 2 * u16::from(has_create));
+            let actions = u16::from(has_settings) + 2 * u16::from(has_create);
+            let first_channel = 1 + u16::from(
+                !list_only && !self.ids.is_empty() && body.height > reserved + actions,
+            );
+            let list_height = body.height.saturating_sub(first_channel + actions);
+            let (title, indent) = if list_only {
+                ("Choose a channel", 0)
+            } else {
+                let title = "Channels";
+                (
+                    title,
+                    body.width.saturating_sub(text_width(title) as u16) / 2,
+                )
+            };
             paint.card_line(
                 theme,
-                row(body.x, body.y, body.width),
-                if list_only {
-                    "Choose a channel"
-                } else {
-                    "Channels"
-                },
+                row(body.x + indent, body.y, body.width - indent),
+                title,
                 Role::Title,
                 false,
                 list_background,
@@ -992,7 +999,7 @@ impl Chat {
                 let lead = if summary.unread_attention { "! " } else { "  " };
                 let name = channel_name(summary);
                 let full = format!("{lead}{name}");
-                let bounds = row(body.x, body.y + line as u16 + 1, body.width);
+                let bounds = row(body.x, body.y + first_channel + line as u16, body.width);
                 let chosen = list_only && self.list_cursor == index;
                 let role = if summary.unread_attention {
                     Role::Warning
@@ -1017,7 +1024,12 @@ impl Chat {
             if has_create {
                 let visible = (self.ids.len().saturating_sub(offset)).min(usize::from(list_height));
                 paint.target(
-                    row(body.x, body.y + visible as u16 + 2, body.width).inset_horizontal(1),
+                    row(
+                        body.x,
+                        body.y + first_channel + visible as u16 + 1,
+                        body.width,
+                    )
+                    .inset_horizontal(1),
                     Hit::Create,
                 );
             }
@@ -2038,7 +2050,7 @@ mod tests {
             })
         };
         for (hit, y) in [
-            (Hit::Create, list_body.y + 3),
+            (Hit::Create, list_body.y + 4),
             (Hit::Manage, list_body.y + list_body.height - 1),
         ] {
             let button = row(list_body.x, y, list_body.width).inset_horizontal(1);
@@ -2054,7 +2066,15 @@ mod tests {
             );
         }
         assert!(matches!(
+            chat.paint.hit(list_body.x, list_body.y + 1),
+            Some(Hit::List)
+        ));
+        assert!(matches!(
             chat.paint.hit(list_body.x, list_body.y + 2),
+            Some(Hit::Channel(0))
+        ));
+        assert!(matches!(
+            chat.paint.hit(list_body.x, list_body.y + 3),
             Some(Hit::List)
         ));
 

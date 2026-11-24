@@ -5856,6 +5856,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         let mut image_surface = UiSurface::new(initial_size);
         let mut image_effects = graphics_frame(initial_size);
         let mut channel_form_effects = graphics_frame(initial_size);
+        let mut channel_choice_surface = UiSurface::new(initial_size);
+        let mut channel_choice_effects = graphics_frame(initial_size);
         let mut chat_button_effects = graphics_frame(initial_size);
         let mut guide_effects = graphics_frame(initial_size);
         let mut artwork_effects = graphics_frame(initial_size);
@@ -6217,6 +6219,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             };
             let mut form_region = None;
             let mut modal_graphical = false;
+            let mut channel_choice_rect = None;
             if let Some((outer, _)) = placement
                 && let Some(layout) = &picker_cards
             {
@@ -6373,16 +6376,21 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         graphics.button_painter(true),
                     );
                 } else if app.chat.editor_open() {
-                    channel_form_effects.size = local;
-                    channel_form_effects.images.clear();
-                    channel_form_effects.placements.clear();
-                    app.chat.paint_editor(
-                        &mut popup_surface,
-                        local,
+                    for effects in [&mut channel_form_effects, &mut channel_choice_effects] {
+                        effects.size = local;
+                        effects.images.clear();
+                        effects.placements.clear();
+                    }
+                    channel_choice_rect = app.chat.paint_editor(
+                        chat_controls::EditorSurfaces {
+                            surface: &mut popup_surface,
+                            effects: &mut channel_form_effects,
+                            choices: &mut channel_choice_surface,
+                            choice_effects: &mut channel_choice_effects,
+                        },
                         &theme,
                         app.options.read_only,
-                        &mut channel_form_effects,
-                        graphics.button_painter(true),
+                        &graphics,
                     );
                 } else if let Some(form) = &app.state.form {
                     modal(&mut popup_surface, local, form, &app.registry);
@@ -6707,7 +6715,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 app.overlays.present(
                     "ui:guide",
                     OverlayPlacement::framed(rect, size),
-                    if app.sidebar_menu.is_some() {
+                    if app.sidebar_menu.is_some() || app.chat.editor_open() {
                         OverlayPolicy::PASSIVE
                     } else {
                         OverlayPolicy::COMPANION
@@ -7573,6 +7581,35 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             focused: false,
                             faint: false,
                         });
+                    }
+                    if layer.id == "ui:modal"
+                        && let Some(rect) = channel_choice_rect
+                    {
+                        let origin = layer.placement.content;
+                        let rect = Rect {
+                            x: origin.x + rect.x,
+                            y: origin.y + rect.y,
+                            ..rect
+                        };
+                        surfaces.push(Surface {
+                            palette: None,
+                            id: "ui:modal:channel-choices",
+                            content: SurfaceContent::All,
+                            rect,
+                            frame: &channel_choice_surface.frame,
+                            selection: &[],
+                            search: &[],
+                            focused: false,
+                            faint: false,
+                        });
+                        if !channel_choice_effects.placements.is_empty() {
+                            surfaces.push(button_graphics(
+                                "ui:modal:channel-choice-rim",
+                                origin,
+                                &channel_choice_effects,
+                                false,
+                            ));
+                        }
                     }
                 }
                 if let Some(artwork) = artwork_surface {

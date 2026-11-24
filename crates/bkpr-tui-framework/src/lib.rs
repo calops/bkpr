@@ -12,6 +12,7 @@ pub mod color;
 pub mod context_menu;
 pub mod decoration;
 pub mod dropdown;
+pub mod form;
 pub mod graphics;
 mod graphics_cache;
 pub mod image_viewer;

@@ -1,5 +1,5 @@
 //! Typed dropdown choices and anchored cell geometry; callers own input and commit policy.
-use crate::{Rect, text_width, window};
+use crate::{Rect, Role, RoleSpan, Theme, UiSurface, form, window};
 
 /// An ordered, borrowed set of choice values and sanitized, single-line labels.
 pub struct Dropdown<'a, T> {
@@ -42,51 +42,97 @@ impl<'a, T: Copy + Eq> Dropdown<'a, T> {
 
     /// Present the current value with a trailing disclosure indicator.
     pub fn trigger(&self, rect: Rect, value: T, open: bool) -> window::TextLine {
+        self.trigger_line(rect, value, open, None)
+    }
+
+    /// Present the value and disclosure indicator with fixed side padding.
+    /// A placed graphical face replaces the brackets without moving either.
+    pub fn trigger_with_face(
+        &self,
+        rect: Rect,
+        value: T,
+        open: bool,
+        graphical: bool,
+    ) -> window::TextLine {
+        self.trigger_line(rect, value, open, form::edges(rect, graphical))
+    }
+
+    fn trigger_line(
+        &self,
+        rect: Rect,
+        value: T,
+        open: bool,
+        edges: Option<[char; 2]>,
+    ) -> window::TextLine {
         let indicator = if open { '▴' } else { '▾' };
         if rect.width == 0 {
             return (rect, String::new(), false);
         }
-        let mut line = self.index(value).map_or_else(String::new, |index| {
-            let reserved = if rect.width > 2 { 2 } else { 1 };
-            window::fit(self.choices[index].1, rect.width - reserved)
+        let width = rect.width - 2 * u16::from(edges.is_some());
+        let reserved = if width > 2 { 2 } else { 1 };
+        let mut line = String::with_capacity(usize::from(rect.width - 1) + indicator.len_utf8());
+        if let Some([left, _]) = edges {
+            line.push(left);
+        }
+        let used = self.index(value).map_or(0, |index| {
+            window::push_fit(&mut line, self.choices[index].1, width - reserved)
         });
-        let padding = usize::from(rect.width) - text_width(&line) - 1;
-        line.reserve_exact(padding + indicator.len_utf8());
-        line.extend(std::iter::repeat_n(' ', padding));
+        line.extend(std::iter::repeat_n(' ', usize::from(width - 1) - used));
         line.push(indicator);
+        if let Some([_, right]) = edges {
+            line.push(right);
+        }
         (rect, line, false)
     }
 
-    /// Fit choices below the trigger when possible, or above it when that shows more rows.
-    /// With only the trigger row available, choices scroll in that row instead.
+    /// Fit a bordered popup below the trigger when possible, or above it when
+    /// that shows more choices. In very tight views it can cover the trigger;
+    /// omit the border if there is not room for both edges and a choice.
     pub fn layout(&self, trigger: Rect, viewport: Rect, active: usize) -> Option<Layout> {
-        if self.choices.is_empty() || trigger.width == 0 || !viewport.contains(trigger.x, trigger.y)
+        if self.choices.is_empty()
+            || trigger.height != 1
+            || trigger.width == 0
+            || !viewport.contains(trigger.x, trigger.y)
         {
             return None;
         }
-        let count = u16::try_from(self.choices.len()).unwrap_or(u16::MAX);
+        let right = viewport.x.saturating_add(viewport.width);
+        let mut x = trigger.x;
+        if trigger.width >= 3 && right - viewport.x >= 3 {
+            x = x.min(right - 3);
+        }
+        let width = trigger.width.min(right - x);
         let bottom = viewport.y.saturating_add(viewport.height);
-        let below = bottom.saturating_sub(trigger.y + 1).min(count);
-        let above = (trigger.y - viewport.y).min(count);
-        let (y, height) = if below >= above && below != 0 {
+        let below = bottom - trigger.y - 1;
+        let above = trigger.y - viewport.y;
+        let count = u16::try_from(self.choices.len()).unwrap_or(u16::MAX);
+        let framed = width >= 3 && bottom - viewport.y >= 3;
+        let budget = count.saturating_add(if framed { 2 } else { 0 });
+        let below = below.min(budget);
+        let above = above.min(budget);
+        let minimum = if framed { 3 } else { 1 };
+        let (y, height) = if below >= above && below >= minimum {
             (trigger.y + 1, below)
-        } else if above != 0 {
+        } else if above >= minimum {
             (trigger.y - above, above)
+        } else if framed {
+            let height = budget.min(bottom - viewport.y);
+            ((trigger.y + 1).min(bottom - height), height)
         } else {
             (trigger.y, 1)
         };
+        let outer = Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+        let rows = window::content_cells(width, height).height;
         Some(Layout {
-            bounds: Rect {
-                x: trigger.x,
-                y,
-                width: trigger
-                    .width
-                    .min(viewport.x.saturating_add(viewport.width) - trigger.x),
-                height,
-            },
+            outer,
             first: active
                 .min(self.choices.len() - 1)
-                .saturating_sub(usize::from(height) - 1),
+                .saturating_sub(usize::from(rows) - 1),
         })
     }
 
@@ -106,31 +152,94 @@ impl<'a, T: Copy + Eq> Dropdown<'a, T> {
         text.push_str(label);
         Some((rect, text, false))
     }
+
+    /// Paint the popup in its own outer-local surface, with no visible cursor.
+    /// Seed the surface with the host cell metrics and compose it at
+    /// [`Layout::outer`]. Only omit the Unicode rim when a graphical one is
+    /// placed. A visible hovered choice takes precedence over the active choice.
+    pub fn paint_popup(
+        &self,
+        surface: &mut UiSurface,
+        layout: Layout,
+        value: T,
+        selection: (usize, Option<usize>),
+        theme: &Theme,
+        graphical: bool,
+    ) {
+        let (active, hover) = selection;
+        let size = layout.outer.size(surface.frame.size);
+        let local = Layout {
+            outer: Rect {
+                x: 0,
+                y: 0,
+                ..layout.outer
+            },
+            ..layout
+        };
+        let mut lines = if graphical {
+            Vec::new()
+        } else {
+            window::border_rows(size, "", window::Border::Rounded)
+        };
+        lines.extend(
+            local
+                .indices()
+                .filter_map(|index| self.option(local, index, value)),
+        );
+        surface.paint(size, lines, None);
+
+        let selected = hover
+            .and_then(|index| local.row(index))
+            .or_else(|| local.row(active));
+        let mut spans = window::theme_spans(size);
+        spans[0] = RoleSpan {
+            rect: selected.unwrap_or_default(),
+            role: Role::Selected,
+        };
+        surface.apply_theme(
+            theme,
+            Role::Panel,
+            if graphical { &spans[..1] } else { &spans },
+        );
+    }
 }
 
-/// The visible part of an open dropdown, in surface-local coordinates.
+/// The visible dropdown bounds and choice mapping, in the caller's coordinates.
 #[derive(Clone, Copy)]
 pub struct Layout {
-    bounds: Rect,
+    outer: Rect,
     first: usize,
 }
 
 impl Layout {
-    /// Entire list rectangle, clipped to the caller's viewport.
+    /// Entire popup rectangle, including the border when it fits.
+    pub fn outer(self) -> Rect {
+        self.outer
+    }
+
+    /// Choice content rectangle; the surrounding border is not interactive.
     pub fn bounds(self) -> Rect {
-        self.bounds
+        let body = window::content_cells(self.outer.width, self.outer.height);
+        Rect {
+            x: self.outer.x + body.x,
+            y: self.outer.y + body.y,
+            ..body
+        }
     }
 
     /// Choice indices in display order.
     pub fn indices(self) -> std::ops::Range<usize> {
-        self.first..self.first + usize::from(self.bounds.height)
+        self.first..self.first + usize::from(self.bounds().height)
     }
 
-    fn row(self, index: usize) -> Option<Rect> {
-        self.indices().contains(&index).then(|| Rect {
-            y: self.bounds.y + (index - self.first) as u16,
+    /// Hit bounds of a visible choice, or `None` if it is scrolled out of view.
+    pub fn row(self, index: usize) -> Option<Rect> {
+        let bounds = self.bounds();
+        let offset = index.checked_sub(self.first)?;
+        (offset < usize::from(bounds.height)).then(|| Rect {
+            y: bounds.y + offset as u16,
             height: 1,
-            ..self.bounds
+            ..bounds
         })
     }
 }
@@ -156,7 +265,7 @@ mod tests {
         x: 2,
         y: 4,
         width: 12,
-        height: 6,
+        height: 8,
     };
     const TRIGGER: Rect = Rect {
         x: 7,
@@ -185,11 +294,20 @@ mod tests {
     fn choice_lines_fit_below_or_above_the_trigger_without_changing_order() {
         let below = OPTIONS.layout(TRIGGER, VIEWPORT, 1).unwrap();
         assert_eq!(
-            below.bounds(),
+            below.outer(),
             Rect {
                 x: 7,
                 y: 6,
                 width: 7,
+                height: 5,
+            }
+        );
+        assert_eq!(
+            below.bounds(),
+            Rect {
+                x: 8,
+                y: 7,
+                width: 5,
                 height: 3,
             }
         );
@@ -198,7 +316,7 @@ mod tests {
         assert_eq!(
             rect,
             Rect {
-                y: 7,
+                y: 8,
                 height: 1,
                 ..below.bounds()
             }
@@ -207,8 +325,9 @@ mod tests {
         assert!(OPTIONS.option(below, 3, Choice::Some).is_none());
 
         let above = OPTIONS
-            .layout(Rect { y: 9, ..TRIGGER }, VIEWPORT, 1)
+            .layout(Rect { y: 11, ..TRIGGER }, VIEWPORT, 1)
             .unwrap();
+        assert_eq!(above.outer(), below.outer());
         assert_eq!(above.bounds(), below.bounds());
         assert_eq!(above.indices(), below.indices());
     }
@@ -225,6 +344,7 @@ mod tests {
             ..VIEWPORT
         };
         let layout = OPTIONS.layout(trigger, viewport, 2).unwrap();
+        assert_eq!(layout.outer(), trigger);
         assert_eq!(layout.bounds(), trigger);
         assert_eq!(layout.indices(), 2..3);
         assert_eq!(OPTIONS.option(layout, 2, Choice::Some).unwrap().0, trigger);
@@ -242,5 +362,62 @@ mod tests {
                 .1,
             "全  ▴"
         );
+    }
+
+    #[test]
+    fn short_viewport_keeps_a_border_and_the_active_row() {
+        let viewport = Rect {
+            height: 4,
+            ..VIEWPORT
+        };
+        let layout = OPTIONS.layout(TRIGGER, viewport, 2).unwrap();
+        assert_eq!(
+            layout.outer(),
+            Rect {
+                x: 7,
+                width: 7,
+                ..viewport
+            }
+        );
+        assert_eq!(layout.indices(), 1..3);
+        assert_eq!(layout.row(2).unwrap().y, 6);
+        assert!(!layout.bounds().contains(layout.outer().x, 6));
+        assert!(layout.row(0).is_none());
+    }
+
+    #[test]
+    fn trigger_switches_faces_without_moving_wide_text_or_disclosure() {
+        let rect = Rect {
+            width: 7,
+            ..TRIGGER
+        };
+        assert_eq!(
+            OPTIONS.trigger_with_face(rect, Choice::All, false, false),
+            (rect, "[全  ▾]".into(), false)
+        );
+        assert_eq!(
+            OPTIONS.trigger_with_face(rect, Choice::All, true, true),
+            (rect, " 全  ▴ ".into(), false)
+        );
+    }
+
+    #[test]
+    fn popup_replaces_only_the_rim_in_outer_local_coordinates() {
+        let layout = OPTIONS.layout(TRIGGER, VIEWPORT, 1).unwrap();
+        let size = layout.outer().size(bkpr_protocol::Size {
+            cols: VIEWPORT.width,
+            rows: VIEWPORT.height,
+            cell_width: 8,
+            cell_height: 16,
+        });
+        let mut surface = UiSurface::new(size);
+        let theme = Theme::default();
+        OPTIONS.paint_popup(&mut surface, layout, Choice::Some, (1, None), &theme, false);
+        assert_eq!(surface.frame.rows[0].cells[0].text, "╭");
+        assert_eq!(surface.frame.rows[2].cells[1].text, "•");
+        OPTIONS.paint_popup(&mut surface, layout, Choice::Some, (1, None), &theme, true);
+        assert_eq!(surface.frame.rows[0].cells[0].text, " ");
+        assert_eq!(surface.frame.rows[2].cells[1].text, "•");
+        assert!(!surface.frame.cursor.visible);
     }
 }

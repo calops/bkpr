@@ -27,7 +27,7 @@ const MAX_COLORS: usize = 32;
 const MAX_IMAGES: usize = 64;
 const MAX_ASSETS: usize = 8;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
-const MAX_DECORATIONS: usize = 17;
+const MAX_DECORATIONS: usize = 21;
 const MAX_DECORATION_CACHE: usize = MAX_DECORATIONS;
 const MAX_DECORATION_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RETAINED_DECORATION_BYTES: usize = 1024 * 1024;
@@ -1830,7 +1830,7 @@ mod tests {
         assert_eq!(work(&graphics).decoration_hits, 1);
 
         // More unique materials than the entry budget must evict, not grow.
-        for value in 50..70 {
+        for value in 50..50 + MAX_DECORATION_CACHE as u8 {
             changed.surface = [value; 3];
             graphics.prepare_with_decorations(&host, size, &[], &[changed]);
             prepared(&mut graphics);

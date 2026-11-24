@@ -135,10 +135,10 @@ struct SplitGeometry {
 }
 pub(crate) struct ChromeGraphics(
     SvgGraphics,
-    Option<[DecorationStyle; 17]>,
+    Option<[DecorationStyle; 21]>,
     Option<DecorationEvidence>,
     SplitGeometry,
-    Option<bkpr_tui_framework::button::Materials>,
+    Option<[bkpr_tui_framework::button::Materials; 2]>,
 );
 impl ChromeGraphics {
     pub(crate) fn new(cache_root: Option<std::path::PathBuf>) -> io::Result<Self> {
@@ -215,9 +215,12 @@ impl ChromeGraphics {
                     kind: bkpr_tui_framework::decoration::DecorationKind::RecessedTransparentLeftGutter,
                     ..pane
                 };
-                let buttons = crate::appearance::button_materials(host, size);
-                self.4 = Some(buttons);
+                let muted_face = crate::appearance::blend(pane.foreground, pane.background, 8);
+                let buttons = crate::appearance::button_materials(host, size).with_disabled(muted_face);
+                let fields = crate::appearance::field_materials(pane.foreground, pane.background, size);
+                self.4 = Some([buttons, fields]);
                 let [idle, hover, pressed] = *buttons.styles();
+                let [field, field_hover, field_pressed] = *fields.styles();
                 [
                     pane,
                     popup,
@@ -236,6 +239,10 @@ impl ChromeGraphics {
                     idle,
                     hover,
                     pressed,
+                    field,
+                    field_hover,
+                    field_pressed,
+                    buttons.disabled_style().expect("disabled button face configured"),
                 ]
             });
             self.2 = Some(evidence);
@@ -249,7 +256,7 @@ impl ChromeGraphics {
     }
 
     pub(crate) fn button_keys(&self) -> [Option<bkpr_protocol::ImageKey>; 3] {
-        self.4.map_or([None; 3], |buttons| {
+        self.4.map_or([None; 3], |[buttons, _]| {
             buttons.styles().map(|style| self.0.decoration_key(style))
         })
     }
@@ -258,22 +265,37 @@ impl ChromeGraphics {
         &self,
         enabled: bool,
     ) -> impl FnMut(&mut Frame, Rect, bkpr_tui_framework::button::State) -> bool + '_ {
-        let mut base = 1;
-        let mut retained = false;
+        let mut place = self.form_control_painter();
         move |frame, rect, state| {
+            enabled
+                && state != bkpr_tui_framework::button::State::Disabled
+                && place(frame, rect, state, false)
+        }
+    }
+
+    pub(crate) fn form_control_painter(
+        &self,
+    ) -> impl FnMut(&mut Frame, Rect, bkpr_tui_framework::button::State, bool) -> bool + '_ {
+        let mut base = 1;
+        let mut retained = [false; 2];
+        move |frame, rect, state, neutral| {
             let id = base;
             base += 64;
-            enabled
-                && self.4.is_some_and(|buttons| {
-                    if !buttons.place(&self.0, frame, rect, state, id) {
-                        return false;
+            let index = usize::from(neutral);
+            self.4.is_some_and(|materials| {
+                let material = &materials[index];
+                if !material.place(&self.0, frame, rect, state, id) {
+                    return false;
+                }
+                if !retained[index] {
+                    self.0.retain_decoration_sources(frame, material.styles());
+                    if let Some(disabled) = material.disabled_style() {
+                        self.0.retain_decoration_sources(frame, &[disabled]);
                     }
-                    if !retained {
-                        self.0.retain_decoration_sources(frame, buttons.styles());
-                        retained = true;
-                    }
-                    true
-                })
+                    retained[index] = true;
+                }
+                true
+            })
         }
     }
 

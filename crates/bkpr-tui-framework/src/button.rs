@@ -16,7 +16,7 @@ pub enum State {
     Hover,
     /// Pointer inside after a press captured by this control.
     Pressed,
-    /// Unavailable action, presented with muted bracketed text and no bevel.
+    /// Unavailable action, using an optional muted face or a dim text fallback.
     Disabled,
 }
 
@@ -69,15 +69,32 @@ impl<'a> Button<'a> {
     /// Bounds below three cells omit the brackets; wider bounds reserve both side cells.
     /// A wide icon is omitted if its full slot doesn't fit.
     /// The cursor stays unchanged.
-    pub fn paint(
+    pub fn paint(&self, frame: &mut Frame, rect: Rect, ink: &Style, state: State, graphical: bool) {
+        self.paint_inner(frame, rect, ink, state, graphical, true);
+    }
+
+    /// Paint the shared button geometry with caller-supplied ink in both modes.
+    /// Use this when the graphical face is independent of the text color.
+    pub fn paint_with_ink(
+        &self,
+        frame: &mut Frame,
+        rect: Rect,
+        ink: &Style,
+        state: State,
+        graphical: bool,
+    ) {
+        self.paint_inner(frame, rect, ink, state, graphical, false);
+    }
+
+    fn paint_inner(
         &self,
         frame: &mut Frame,
         mut rect: Rect,
         ink: &Style,
         state: State,
         graphical: bool,
+        contrast: bool,
     ) {
-        let graphical = graphical && state != State::Disabled;
         rect.width = rect.width.min(frame.size.cols.saturating_sub(rect.x));
         if rect.width == 0 || rect.height != 1 {
             return;
@@ -111,7 +128,7 @@ impl<'a> Button<'a> {
         }
         text(frame, start, rect.y, label, false);
         let mut style = ink.clone();
-        if graphical {
+        if graphical && contrast && state != State::Disabled {
             let face = crate::color::luminance(state.face(ink.foreground));
             let black = crate::color::luminance([0; 3]);
             let white = crate::color::luminance([255; 3]);
@@ -125,7 +142,7 @@ impl<'a> Button<'a> {
         style.background = background;
         style.background_source = background_source;
         style.inverse = !graphical && matches!(state, State::Hover | State::Pressed);
-        style.faint |= state == State::Disabled;
+        style.faint |= !graphical && state == State::Disabled;
         if !graphical && state == State::Pressed {
             style.bold = true;
             style.underline = 1;
@@ -157,15 +174,18 @@ impl State {
     }
 }
 
-/// The three reusable, shadowless face materials for one host cell size and palette.
+/// Reusable, shadowless face materials for one host cell size and palette.
 #[derive(Clone, Copy)]
-pub struct Materials([DecorationStyle; 3]);
+pub struct Materials {
+    enabled: [DecorationStyle; 3],
+    disabled: Option<DecorationStyle>,
+}
 
 impl Materials {
     /// Use the same RGB accent supplied as text ink in plain mode. The framework
     /// derives the three faces. Radius and bevel thickness use physical pixels.
     pub fn new(ink: [u8; 3], radius_px: u32, bevel_milli: u32, highlight: u16, shade: u16) -> Self {
-        Self([State::Idle, State::Hover, State::Pressed].map(|state| {
+        let enabled = [State::Idle, State::Hover, State::Pressed].map(|state| {
             let face = state.face(ink);
             DecorationStyle {
                 kind: if state == State::Pressed {
@@ -186,12 +206,35 @@ impl Materials {
                 lip_highlight_milli: highlight.min(1000),
                 lip_shade_milli: shade.min(1000),
             }
-        }))
+        });
+        Self {
+            enabled,
+            disabled: None,
+        }
     }
 
-    /// Materials to request together through the existing graphics worker.
+    /// Add a muted, non-interactive face using the same radius and bounds as
+    /// the enabled faces. Supply its fill color independently of the text ink.
+    pub fn with_disabled(mut self, ink: [u8; 3]) -> Self {
+        let idle = self.enabled[State::Idle as usize];
+        self.disabled = Some(DecorationStyle {
+            background: ink,
+            surface: ink,
+            lip_highlight_milli: idle.lip_highlight_milli / 2,
+            lip_shade_milli: idle.lip_shade_milli / 2,
+            ..idle
+        });
+        self
+    }
+
+    /// Optional disabled face to request through the same graphics worker.
+    pub fn disabled_style(&self) -> Option<DecorationStyle> {
+        self.disabled
+    }
+
+    /// Enabled materials to request together through the existing graphics worker.
     pub fn styles(&self) -> &[DecorationStyle; 3] {
-        &self.0
+        &self.enabled
     }
 
     /// Append a prepared, below-text button face entirely inside its hitbox.
@@ -206,7 +249,6 @@ impl Materials {
     ) -> bool {
         let [cw, ch] = [frame.size.cell_width, frame.size.cell_height].map(i64::from);
         if !graphics.is_enabled()
-            || state == State::Disabled
             || rect.width < 3
             || rect.height != 1
             || !(4..=512).contains(&cw)
@@ -214,6 +256,14 @@ impl Materials {
         {
             return false;
         }
+        let style = if state == State::Disabled {
+            let Some(style) = self.disabled else {
+                return false;
+            };
+            style
+        } else {
+            self.enabled[state as usize]
+        };
         let [left, top, right, bottom] = [
             i64::from(rect.x) * cw,
             i64::from(rect.y) * ch,
@@ -224,7 +274,7 @@ impl Materials {
         graphics.decorate_window_with_geometry(
             frame,
             rect,
-            self.0[state as usize],
+            style,
             base,
             &[],
             DecorationGeometry {
@@ -232,5 +282,49 @@ impl Materials {
                 clip_px,
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_face_keeps_the_caller_ink_and_label_column() {
+        let size = bkpr_protocol::Size {
+            cols: 9,
+            rows: 1,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        let rect = Rect {
+            x: 2,
+            y: 0,
+            width: 5,
+            height: 1,
+        };
+        let foreground = [110, 120, 130];
+        let ink = Style {
+            foreground,
+            foreground_source: ColorSource::Rgb(foreground),
+            ..crate::default_style()
+        };
+        let button = Button::new("OK");
+        let mut frame = crate::blank(size);
+        button.paint(&mut frame, rect, &ink, State::Disabled, false);
+        assert_eq!(frame.rows[0].cells[2].text, "[");
+        assert_eq!(frame.rows[0].cells[3].text, "O");
+        assert!(frame.rows[0].cells[3].style.faint);
+
+        button.paint(&mut frame, rect, &ink, State::Disabled, true);
+        let cells = &frame.rows[0].cells;
+        assert_eq!(cells[2].text, " ");
+        assert_eq!(cells[3].text, "O");
+        assert_eq!(
+            cells[3].style.foreground_source,
+            ColorSource::Rgb(foreground)
+        );
+        assert!(!cells[3].style.faint);
+        assert!(!cells[3].style.inverse);
     }
 }

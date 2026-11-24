@@ -506,22 +506,15 @@ impl Chat {
 
     pub(super) fn paint_editor(
         &mut self,
-        surface: &mut UiSurface,
-        size: bkpr_protocol::Size,
+        surfaces: chat_controls::EditorSurfaces<'_>,
         theme: &bkpr_tui_framework::Theme,
         read_only: bool,
-        effects: &mut bkpr_protocol::Frame,
-        place: impl FnMut(
-            &mut bkpr_protocol::Frame,
-            bkpr_tui_framework::Rect,
-            bkpr_tui_framework::button::State,
-        ) -> bool,
-    ) {
-        if let Some(editor) = &mut self.editor {
-            editor
-                .form
-                .paint(surface, size, theme, !read_only, effects, place);
-        }
+        graphics: &crate::chrome_graphics::ChromeGraphics,
+    ) -> Option<bkpr_tui_framework::Rect> {
+        self.editor
+            .as_mut()?
+            .form
+            .paint(surfaces, theme, !read_only, Some(graphics))
     }
 
     pub(super) fn editor_mouse(
