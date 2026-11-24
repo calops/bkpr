@@ -127,6 +127,12 @@ const SIDEBAR_EDGE_PANE: usize = 11;
 const CHAT_PANE: usize = 12;
 const CYAN_PANE: usize = 13;
 
+pub(crate) enum FormControlFace {
+    Action,
+    Neutral,
+    Recessed { focused: bool },
+}
+
 #[derive(Default)]
 struct SplitGeometry {
     workspace: PaneGeometry,
@@ -135,16 +141,17 @@ struct SplitGeometry {
 }
 pub(crate) struct ChromeGraphics(
     SvgGraphics,
-    Option<[DecorationStyle; 21]>,
+    Option<[DecorationStyle; 23]>,
     Option<DecorationEvidence>,
     SplitGeometry,
     Option<[bkpr_tui_framework::button::Materials; 2]>,
+    Option<bkpr_tui_framework::form::RecessedFields>,
 );
 impl ChromeGraphics {
     pub(crate) fn new(cache_root: Option<std::path::PathBuf>) -> io::Result<Self> {
         std::hint::black_box(NOTICES);
         SvgGraphics::new_with_cache(ASSETS, 2, 1, cache_root)
-            .map(|graphics| Self(graphics, None, None, SplitGeometry::default(), None))
+            .map(|graphics| Self(graphics, None, None, SplitGeometry::default(), None, None))
     }
     pub(crate) fn register_uploads(&mut self, terminal: &mut bkpr_tui_framework::TerminalGuard) {
         self.0.register_uploads(terminal);
@@ -192,6 +199,7 @@ impl ChromeGraphics {
         );
         if self.2 != Some(evidence) {
             self.4 = None;
+            self.5 = None;
             self.1 = crate::appearance::decoration_styles(host, size).map(|[pane, popup]| {
                 let guide = |accent| DecorationStyle {
                     background: crate::appearance::guide_background(host, accent)
@@ -221,6 +229,9 @@ impl ChromeGraphics {
                 self.4 = Some([buttons, fields]);
                 let [idle, hover, pressed] = *buttons.styles();
                 let [field, field_hover, field_pressed] = *fields.styles();
+                let recesses = crate::appearance::recessed_fields(host, size, pane);
+                let [recessed, recessed_focus] = *recesses.styles();
+                self.5 = Some(recesses);
                 [
                     pane,
                     popup,
@@ -243,6 +254,8 @@ impl ChromeGraphics {
                     field_hover,
                     field_pressed,
                     buttons.disabled_style().expect("disabled button face configured"),
+                    recessed,
+                    recessed_focus,
                 ]
             });
             self.2 = Some(evidence);
@@ -269,19 +282,29 @@ impl ChromeGraphics {
         move |frame, rect, state| {
             enabled
                 && state != bkpr_tui_framework::button::State::Disabled
-                && place(frame, rect, state, false)
+                && place(frame, rect, state, FormControlFace::Action)
         }
     }
 
     pub(crate) fn form_control_painter(
         &self,
-    ) -> impl FnMut(&mut Frame, Rect, bkpr_tui_framework::button::State, bool) -> bool + '_ {
+    ) -> impl FnMut(&mut Frame, Rect, bkpr_tui_framework::button::State, FormControlFace) -> bool + '_
+    {
         let mut base = 1;
         let mut retained = [false; 2];
-        move |frame, rect, state, neutral| {
+        move |frame, rect, state, face| {
             let id = base;
             base += 64;
-            let index = usize::from(neutral);
+            let index = match face {
+                FormControlFace::Action => 0,
+                FormControlFace::Neutral => 1,
+                FormControlFace::Recessed { focused } => {
+                    return self
+                        .5
+                        .as_ref()
+                        .is_some_and(|fields| fields.place(&self.0, frame, rect, focused, id));
+                }
+            };
             self.4.is_some_and(|materials| {
                 let material = &materials[index];
                 if !material.place(&self.0, frame, rect, state, id) {

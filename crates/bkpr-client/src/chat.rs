@@ -492,6 +492,15 @@ impl Chat {
         self.editor.is_some()
     }
 
+    pub(super) fn editor_height(&self, width: u16, read_only: bool) -> Option<u16> {
+        Some(
+            self.editor
+                .as_ref()?
+                .form
+                .preferred_height(width, !read_only),
+        )
+    }
+
     pub(super) fn close_editor(&mut self) {
         if self.editor.take().is_some() {
             self.redraw();

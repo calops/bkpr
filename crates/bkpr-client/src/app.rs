@@ -1490,8 +1490,12 @@ impl App {
             (64, (crate::themes::THEMES.len() as u16).saturating_add(6))
         } else if self.recovery.open() {
             (100, screen.rows.saturating_sub(4).min(36))
-        } else if self.chat.editor_open() {
-            (56, screen.rows.saturating_sub(4).min(23))
+        } else if let Some(height) = self.chat.editor_height(
+            56.min(screen.cols.saturating_sub(4).max(1))
+                .saturating_sub(2),
+            self.options.read_only,
+        ) {
+            (56, height.min(screen.rows.saturating_sub(4).max(1)))
         } else {
             match self.state.form.as_ref().map(|form| &form.kind) {
                 Some(FormKind::CreateWorkspace | FormKind::CreateWindow) => (76, 12),

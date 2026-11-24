@@ -37,7 +37,7 @@
 * **tui:** use inset shared buttons with Nerd Font icons for channel creation and settings, with matching hitboxes in fancy and plain modes.
 * **tui:** use standard modal dialogs for channel creation and settings, with shared form controls and composer focus restoration.
 * **tui:** round shared fancy button corners without changing their hitboxes or plain presentation.
-* **tui:** use rounded fancy fields and floating dropdowns in channel forms; keep the same hit geometry in plain mode.
+* **tui:** fit channel dialogs to their content, with recessed fancy text fields and checkboxes, floating dropdowns, and matching hit geometry in plain mode.
 * **tui:** center the Channels heading and separate it from the first channel with a blank row.
 * **channels:** new `#desk` channels wake only explicitly mentioned agents for agent-authored posts; existing settings are unchanged.
 

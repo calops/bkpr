@@ -45,6 +45,17 @@ pub enum DecorationKind {
     ButtonRaised,
     /// Shadowless recessed face painted between the cell background and text.
     ButtonPressed,
+    /// Recessed below-text face with a solid fill, including the center tile.
+    RecessedField,
+}
+
+impl DecorationKind {
+    fn fills_center(self) -> bool {
+        matches!(
+            self,
+            Self::ButtonRaised | Self::ButtonPressed | Self::RecessedField
+        )
+    }
 }
 
 /// Physical-pixel material; fractional values use thousandths of a pixel or unit.
@@ -241,12 +252,7 @@ impl PreparedDecoration {
         let mut fragments = [[0_u32; 8]; 64];
         let mut count = 0;
         for (index, (x, y, sx, sy, width, height)) in parts.into_iter().enumerate() {
-            if index == 8
-                && !matches!(
-                    self.style.kind,
-                    DecorationKind::ButtonRaised | DecorationKind::ButtonPressed
-                )
-            {
+            if index == 8 && !self.style.kind.fills_center() {
                 break;
             }
             let left = (origin_x + i64::from(x)).max(clip_left);
@@ -360,6 +366,7 @@ impl PreparedDecoration {
                     DecorationKind::ButtonRaised
                         | DecorationKind::ButtonPressed
                         | DecorationKind::RecessedOpaqueOpening
+                        | DecorationKind::RecessedField
                 ) {
                     ImageLayer::BelowText
                 } else {
@@ -567,10 +574,16 @@ impl Material {
             DecorationKind::Recessed
             | DecorationKind::RecessedTransparentLeftGutter
             | DecorationKind::RecessedOpaqueOpening
+            | DecorationKind::RecessedField
                 if distance >= 0.0 =>
             {
                 let shadow = opacity * self.blurred_outside(tile, x, y);
-                if gutter || self.style.kind == DecorationKind::RecessedOpaqueOpening {
+                if gutter
+                    || matches!(
+                        self.style.kind,
+                        DecorationKind::RecessedOpaqueOpening | DecorationKind::RecessedField
+                    )
+                {
                     let [r, g, b] = self.style.background.map(|c| f64::from(c) * (1.0 - shadow));
                     [r, g, b, 255.0]
                 } else {
@@ -581,7 +594,8 @@ impl Material {
             // outside mask stays opaque, as in the source recessed material.
             DecorationKind::Recessed
             | DecorationKind::RecessedTransparentLeftGutter
-            | DecorationKind::RecessedOpaqueOpening => {
+            | DecorationKind::RecessedOpaqueOpening
+            | DecorationKind::RecessedField => {
                 let [r, g, b] = self.bevel(tile, x, y, distance);
                 [r, g, b, 255.0]
             }
@@ -614,10 +628,7 @@ pub(crate) fn rasterize(style: DecorationStyle, cell: [u32; 2]) -> Option<Vec<u8
     let tile = [width / 3, height / 3];
     let material = Material { style, tile, cell };
     let mut pixels = vec![0; bytes];
-    if matches!(
-        style.kind,
-        DecorationKind::ButtonRaised | DecorationKind::ButtonPressed
-    ) {
+    if style.kind.fills_center() {
         for y in tile[1]..2 * tile[1] {
             let start = ((y * width + tile[0]) * 4) as usize;
             for pixel in pixels[start..start + tile[0] as usize * 4].chunks_exact_mut(4) {

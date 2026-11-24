@@ -93,11 +93,29 @@ pub(crate) fn field_materials(
     control_materials(blend(foreground, background, 12), size)
 }
 
+pub(crate) fn recessed_fields(
+    host: &ColorProbe,
+    size: Size,
+    pane: DecorationStyle,
+) -> bkpr_tui_framework::form::RecessedFields {
+    let accent = theme_styles(host).base[Role::Accent as usize].foreground;
+    bkpr_tui_framework::form::RecessedFields::new(
+        pane,
+        pane.surface,
+        [pane.background, blend(accent, pane.background, 18)],
+        control_radius(size),
+        size.cell_width,
+    )
+}
+
+fn control_radius(size: Size) -> u32 {
+    (size.cell_width / 2).clamp(1, 7).min(size.cell_height / 3)
+}
+
 fn control_materials(face: [u8; 3], size: Size) -> bkpr_tui_framework::button::Materials {
-    let radius = (size.cell_width / 2).clamp(1, 7).min(size.cell_height / 3);
     bkpr_tui_framework::button::Materials::new(
         face,
-        radius,
+        control_radius(size),
         (size.cell_width * 180).clamp(1000, 2600),
         400,
         420,

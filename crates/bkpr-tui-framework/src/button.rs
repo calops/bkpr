@@ -247,15 +247,6 @@ impl Materials {
         state: State,
         base: u32,
     ) -> bool {
-        let [cw, ch] = [frame.size.cell_width, frame.size.cell_height].map(i64::from);
-        if !graphics.is_enabled()
-            || rect.width < 3
-            || rect.height != 1
-            || !(4..=512).contains(&cw)
-            || !(6..=512).contains(&ch)
-        {
-            return false;
-        }
         let style = if state == State::Disabled {
             let Some(style) = self.disabled else {
                 return false;
@@ -264,25 +255,44 @@ impl Materials {
         } else {
             self.enabled[state as usize]
         };
-        let [left, top, right, bottom] = [
-            i64::from(rect.x) * cw,
-            i64::from(rect.y) * ch,
-            (i64::from(rect.x) + i64::from(rect.width)) * cw,
-            (i64::from(rect.y) + 1) * ch,
-        ];
-        let clip_px = [left, top, right, bottom].map(|edge| edge as u32);
-        graphics.decorate_window_with_geometry(
-            frame,
-            rect,
-            style,
-            base,
-            &[],
-            DecorationGeometry {
-                bounds_px: [left + cw / 4, top + 1, right - cw / 4, bottom - 1],
-                clip_px,
-            },
-        )
+        place_row_face(graphics, frame, rect, style, base)
     }
+}
+
+pub(crate) fn place_row_face(
+    graphics: &SvgGraphics,
+    frame: &mut Frame,
+    rect: Rect,
+    style: DecorationStyle,
+    base: u32,
+) -> bool {
+    let [cw, ch] = [frame.size.cell_width, frame.size.cell_height].map(i64::from);
+    if !graphics.is_enabled()
+        || rect.width < 3
+        || rect.height != 1
+        || !(4..=512).contains(&cw)
+        || !(6..=512).contains(&ch)
+    {
+        return false;
+    }
+    let [left, top, right, bottom] = [
+        i64::from(rect.x) * cw,
+        i64::from(rect.y) * ch,
+        (i64::from(rect.x) + i64::from(rect.width)) * cw,
+        (i64::from(rect.y) + 1) * ch,
+    ];
+    let clip_px = [left, top, right, bottom].map(|edge| edge as u32);
+    graphics.decorate_window_with_geometry(
+        frame,
+        rect,
+        style,
+        base,
+        &[],
+        DecorationGeometry {
+            bounds_px: [left + cw / 4, top + 1, right - cw / 4, bottom - 1],
+            clip_px,
+        },
+    )
 }
 
 #[cfg(test)]

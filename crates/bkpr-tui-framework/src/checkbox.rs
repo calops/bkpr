@@ -44,7 +44,7 @@ impl<'a> Checkbox<'a> {
 
     fn marked_line(&self, rect: Rect, graphical: bool, right_pad: u16) -> TextLine {
         let mark = if graphical {
-            if self.checked { " ✓ " } else { " · " }
+            if self.checked { " × " } else { " · " }
         } else {
             match (rect.width >= 3, self.checked) {
                 (true, true) => "[x]",
@@ -107,7 +107,7 @@ mod tests {
         );
         assert_eq!(
             checkbox.line_with_face(rect, true),
-            (rect, " ✓  界".into(), false)
+            (rect, " ×  界".into(), false)
         );
         let compact = Rect { width: 2, ..rect };
         assert_eq!(

@@ -1,5 +1,5 @@
 //! Client-local channel drafts; the app owns endpoint authority and write receipts.
-use crate::chrome_graphics::ChromeGraphics;
+use crate::chrome_graphics::{ChromeGraphics, FormControlFace};
 use crate::keyguide::{self, Action, Context};
 use bkpr_protocol::channels::{
     ChannelId, ChannelRequest, ChannelResponse, ChannelSettings, ChannelSummary, MAX_MEMBERS,
@@ -910,6 +910,25 @@ impl Editor {
         None
     }
 
+    fn status_lines(
+        &self,
+        width: u16,
+        writable: bool,
+    ) -> Option<(Vec<std::borrow::Cow<'_, str>>, Role)> {
+        let (message, role) = self.status(writable)?;
+        let width = width.saturating_sub(2 * u16::from(width >= 5)).max(1);
+        Some((textwrap::wrap(message, usize::from(width)), role))
+    }
+
+    /// Unclipped height in cells, including the outer modal border.
+    pub(super) fn preferred_height(&self, width: u16, writable: bool) -> u16 {
+        let rows = self.nav.rows.len() - usize::from(self.is_create());
+        let status = self
+            .status_lines(width, writable)
+            .map_or(0, |(lines, _)| lines.len());
+        u16::try_from(rows + status + 3).unwrap_or(u16::MAX)
+    }
+
     /// Paint the local editor viewport and retain its exact pointer hit identities.
     pub(super) fn paint(
         &mut self,
@@ -929,9 +948,13 @@ impl Editor {
         if self.painted_size.replace(size) != Some(size) {
             self.cancel_press();
         }
-        let status = self.status(writable).is_some();
-        let header = u16::from(size.rows >= if status { 3 } else { 2 });
-        let status_rows = u16::from(status && size.rows >= 2);
+        let status_len = self
+            .status_lines(size.cols, writable)
+            .map_or(0, |(lines, _)| {
+                u16::try_from(lines.len()).unwrap_or(u16::MAX)
+            });
+        let status_rows = status_len.min(size.rows / 2);
+        let header = u16::from(size.rows.saturating_sub(status_rows) >= 2);
         let body = size.rows - header - status_rows;
         self.nav.viewport(usize::from(body));
         let mut lines = Vec::with_capacity(2 * usize::from(size.rows));
@@ -1032,9 +1055,16 @@ impl Editor {
             };
             let mut hittable = true;
             if *field == Field::Name {
-                let graphical = place
-                    .as_mut()
-                    .is_some_and(|place| place(effects, rect, state(editable, focused), true));
+                let graphical = place.as_mut().is_some_and(|place| {
+                    place(
+                        effects,
+                        rect,
+                        ButtonState::Idle,
+                        FormControlFace::Recessed {
+                            focused: focused && editable,
+                        },
+                    )
+                });
                 let (input, caret) = input_line(rect, &self.name, graphical);
                 for line in input {
                     add(line, role);
@@ -1062,7 +1092,7 @@ impl Editor {
                         effects,
                         rect,
                         state(editable, focused || open.is_some()),
-                        true,
+                        FormControlFace::Neutral,
                     )
                 });
                 add(
@@ -1086,10 +1116,17 @@ impl Editor {
                     place(
                         effects,
                         Checkbox::mark(rect),
-                        state(editable, focused),
-                        true,
+                        ButtonState::Idle,
+                        FormControlFace::Recessed {
+                            focused: focused && editable,
+                        },
                     )
                 });
+                let role = if graphical && checked && editable {
+                    Role::Base
+                } else {
+                    role
+                };
                 add(
                     Checkbox::new(checked, &label).line_with_face(rect, graphical),
                     role,
@@ -1105,9 +1142,22 @@ impl Editor {
             }
         }
         if status_rows > 0
-            && let Some((message, role)) = self.status(writable)
+            && let Some((messages, role)) = self.status_lines(size.cols, writable)
         {
-            add((full_row(size.rows - 1), message.into(), false), role);
+            for (index, line) in messages
+                .into_iter()
+                .take(usize::from(status_rows))
+                .enumerate()
+            {
+                add(
+                    (
+                        full_row(size.rows - status_rows + index as u16),
+                        line.into_owned(),
+                        false,
+                    ),
+                    role,
+                );
+            }
         }
         let choice_rect = popup.map(|(field, menu, value, layout, active)| {
             let mut hover = None;
@@ -1140,9 +1190,18 @@ impl Editor {
         surface.paint(size, lines, cursor);
         surface.apply_theme(theme, Role::Panel, &spans);
         for (rect, label, state, neutral) in buttons {
-            let graphical = place
-                .as_mut()
-                .is_some_and(|place| place(effects, rect, state, neutral));
+            let graphical = place.as_mut().is_some_and(|place| {
+                place(
+                    effects,
+                    rect,
+                    state,
+                    if neutral {
+                        FormControlFace::Neutral
+                    } else {
+                        FormControlFace::Action
+                    },
+                )
+            });
             let button = Button::new(label);
             let ink = theme.style(match state {
                 ButtonState::Disabled => Role::Muted,

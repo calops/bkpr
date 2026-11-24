@@ -1,6 +1,59 @@
 //! Shared text geometry for single-row form faces.
 
 use crate::{Rect, TextInput, window};
+use crate::{
+    button::place_row_face,
+    decoration::{DecorationKind, DecorationStyle},
+    graphics::SvgGraphics,
+};
+use bkpr_protocol::Frame;
+
+/// Two below-text faces for a single-row recessed field. Focus changes the
+/// material, but pointer presses never move the face or reverse its bevel.
+pub struct RecessedFields([DecorationStyle; 2]);
+
+impl RecessedFields {
+    /// Set the surrounding matte and the idle/focused opening colors using a
+    /// native pane material as the source of the inset shadow.
+    pub fn new(
+        pane: DecorationStyle,
+        matte: [u8; 3],
+        colors: [[u8; 3]; 2],
+        radius_px: u32,
+        cell_width: u32,
+    ) -> Self {
+        Self(colors.map(|background| DecorationStyle {
+            kind: DecorationKind::RecessedField,
+            inset_px: [0; 2],
+            outset_px: [0; 2],
+            radius_px,
+            background,
+            surface: matte,
+            sigma_milli: (cell_width * 150).max(750),
+            offset_milli: [0, 650],
+            shadow_opacity_milli: 540,
+            ..pane
+        }))
+    }
+
+    /// Materials to request on the existing graphics worker.
+    pub fn styles(&self) -> &[DecorationStyle; 2] {
+        &self.0
+    }
+
+    /// Place a field face inside its hit rectangle, reserving 64 placement IDs.
+    /// Returns false when graphics are unavailable or geometry is too small.
+    pub fn place(
+        &self,
+        graphics: &SvgGraphics,
+        frame: &mut Frame,
+        rect: Rect,
+        focused: bool,
+        base: u32,
+    ) -> bool {
+        place_row_face(graphics, frame, rect, self.0[usize::from(focused)], base)
+    }
+}
 
 pub(crate) fn edges(rect: Rect, graphical: bool) -> Option<[char; 2]> {
     (rect.width >= 3).then_some(if graphical { [' '; 2] } else { ['[', ']'] })
