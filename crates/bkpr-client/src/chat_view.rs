@@ -2128,7 +2128,7 @@ mod tests {
         app.image_viewer
             .as_ref()
             .unwrap()
-            .paint(&mut viewer, &theme);
+            .paint(&mut viewer, &theme, |_, _| false);
         assert!(Arc::ptr_eq(&viewer.frame.images[0], &image));
         let placement = &viewer.frame.placements[0];
         assert_eq!((placement.source_width, placement.source_height), (6, 5));
