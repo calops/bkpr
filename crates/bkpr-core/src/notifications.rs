@@ -10,6 +10,9 @@
 //! 64 policy rules, 512 queued work items and 32 simultaneous subscriptions.
 //! Episode suppression is volatile and resets on host restart; retained records
 //! never restore live source authority.
+//! Channel attention deduplicates committed messages across restarts and policy
+//! changes with up to 4096 body-free receipts, independent of notification history.
+//! Admission fails rather than evicting a receipt that is still in its retry horizon.
 //! Cursors acknowledge both retained sequence and committed observation-loss
 //! generation. Historical loss remains diagnostic; an acknowledged boundary does
 //! not force repeated gaps or disable otherwise operational subscriptions.
@@ -30,8 +33,8 @@ mod tests;
 
 use anyhow::{Context, Result, bail, ensure};
 use bkpr_protocol::{
-    NotificationCursor, NotificationHealth, NotificationPage, NotificationPolicy,
-    NotificationQuery, NotificationRequest, NotificationSource, Payload,
+    ChannelNotificationSource, NotificationCursor, NotificationHealth, NotificationPage,
+    NotificationPolicy, NotificationQuery, NotificationRequest, PaneNotificationSource, Payload,
 };
 use crossbeam_channel::{Receiver, Sender, bounded, select_biased};
 use std::{
@@ -50,6 +53,8 @@ const SUBSCRIPTIONS: usize = 32;
 const CANCEL_INTERVAL: Duration = Duration::from_millis(25);
 const STORAGE_WAIT: Duration = Duration::from_secs(5);
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
+/// Maximum age of an immutable channel post eligible for the host handoff.
+pub(crate) const CHANNEL_ATTENTION_RETRY_MS: u64 = storage::MAX_AGE_MS;
 
 /// An already authenticated foreground status, or withdrawal of that authority.
 ///
@@ -58,7 +63,7 @@ const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 #[derive(Clone, Debug)]
 pub struct NotificationObservation {
     /// Authenticated session, pane, harness and immutable process identity.
-    pub source: NotificationSource,
+    pub source: PaneNotificationSource,
     /// `working`, `blocked`, `error`, `idle`, `done`, or `None` for withdrawal.
     pub state: Option<String>,
     /// Optional `permission`, `question` or `auth` category.
@@ -162,11 +167,13 @@ enum Command {
     PolicyGet,
     PolicySet(NotificationPolicy),
     Push(Box<bkpr_protocol::PushRequest>),
+    ChannelAttention(ChannelNotificationSource, u64),
 }
 enum Reply {
     Page(NotificationPage),
     Policies(Vec<NotificationPolicy>),
     Push(serde_json::Value),
+    Recorded,
 }
 enum Work {
     Observation(NotificationObservation),
@@ -261,6 +268,24 @@ impl NotificationService {
                 .is_err()
         {
             self.record_dropped_observations(1);
+        }
+    }
+
+    /// Durably accept attention from one already committed, authenticated channel post.
+    ///
+    /// Call outside the channel writer with the original post timestamp on every retry.
+    /// Success covers the host decision (including policy suppression) and any push
+    /// admission, not delivery. A timeout leaves the outcome unknown; retry with the
+    /// same session and message identity before the retry horizon expires.
+    pub fn record_channel_attention(
+        &self,
+        source: ChannelNotificationSource,
+        observed_at_ms: u64,
+    ) -> Result<()> {
+        source.validate()?;
+        match self.command(Command::ChannelAttention(source, observed_at_ms), &|| true)? {
+            Reply::Recorded => Ok(()),
+            _ => unreachable!(),
         }
     }
 
@@ -499,6 +524,7 @@ impl Reply {
             Self::Page(page) => serde_json::to_value(page)?,
             Self::Policies(policies) => serde_json::to_value(policies)?,
             Self::Push(value) => value,
+            Self::Recorded => unreachable!("channel attention is an internal command"),
         }))
     }
 }
@@ -651,15 +677,7 @@ fn process(store: &mut storage::Store, work: Work, shared: &Shared) {
                 return;
             }
             match store.observe(observation, now_ms()) {
-                Ok(changed) => {
-                    if changed {
-                        match store.retained() {
-                            Ok(retained) => shared.retained.store(retained, Ordering::Relaxed),
-                            Err(error) => shared.fail(&error),
-                        }
-                        shared.wake();
-                    }
-                }
+                Ok(changed) => publish_change(store, shared, changed),
                 Err(error) => {
                     shared.drop_observations(1);
                     if store.failed() {
@@ -698,6 +716,12 @@ fn process(store: &mut storage::Store, work: Work, shared: &Shared) {
                     }
                 }
                 Command::Push(request) => store.push_request(*request, now_ms()).map(Reply::Push),
+                Command::ChannelAttention(source, observed_at_ms) => store
+                    .record_channel_attention(source, observed_at_ms, now_ms())
+                    .map(|changed| {
+                        publish_change(store, shared, changed);
+                        Reply::Recorded
+                    }),
             };
             // Validation errors must not poison a healthy store. Storage errors mark
             // their origin inside Store, independently of request/cursor rejection.
@@ -714,5 +738,15 @@ fn process(store: &mut storage::Store, work: Work, shared: &Shared) {
             }
             let _ = reply.try_send(result.map_err(|error| error.to_string()));
         }
+    }
+}
+
+fn publish_change(store: &storage::Store, shared: &Shared, changed: bool) {
+    if changed {
+        match store.retained() {
+            Ok(retained) => shared.retained.store(retained, Ordering::Relaxed),
+            Err(error) => shared.fail(&error),
+        }
+        shared.wake();
     }
 }

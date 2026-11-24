@@ -1,7 +1,7 @@
 use super::{push_transport::Publisher, *};
 use bkpr_protocol::{
-    HarnessKind, NotificationKind, NotificationScope, ProcessIdentity, PushEndpointPolicy,
-    PushRequest, PushRevision, PushSubscription, SessionInfo,
+    ChannelAttentionKind, HarnessKind, NotificationKind, NotificationScope, ProcessIdentity,
+    PushEndpointPolicy, PushRequest, PushRevision, PushSubscription, SessionInfo,
 };
 use rusqlite::params;
 use serde_json::Value;
@@ -68,7 +68,7 @@ fn revision_of(receipt: &Value) -> PushRevision {
 }
 fn observation() -> NotificationObservation {
     NotificationObservation {
-        source: bkpr_protocol::NotificationSource {
+        source: PaneNotificationSource {
             session: SessionInfo {
                 name: "test".into(),
                 session_id: "session".into(),
@@ -935,4 +935,63 @@ fn empty_filters_mute_automatic_events_without_losing_the_verified_test_route() 
         serde_json::from_slice::<Value>(&event.payload).unwrap()["type"],
         "notification"
     );
+}
+
+#[test]
+fn channel_attention_receipt_record_and_scoped_push_commit_together() {
+    let (_root, mut store) = fixture();
+    let event = tests::channel_source("push-message", ChannelAttentionKind::Report);
+    for (request_id, pane_id) in [("workspace-phone", None), ("pane-phone", Some("pane-a"))] {
+        let mut request = enrollment(request_id, None);
+        let PushRequest::Enroll { scope, .. } = &mut request else {
+            unreachable!()
+        };
+        *scope = NotificationScope {
+            session_id: Some(event.session.session_id.clone()),
+            workspace_id: Some(event.workspace_id.clone()),
+            pane_id: pane_id.map(str::to_owned),
+        };
+        let receipt = store.push_request(request, 1).unwrap();
+        confirm(&mut store, &receipt, 2);
+    }
+    store
+        .connection
+        .execute_batch(
+            "CREATE TEMP TRIGGER fail_channel_job BEFORE INSERT ON push_jobs
+             WHEN NEW.kind='notification' BEGIN SELECT RAISE(ABORT, 'fixture'); END;",
+        )
+        .unwrap();
+    assert!(store.record_channel_attention(event.clone(), 3, 3).is_err());
+    assert_eq!(store.retained().unwrap(), 0);
+    assert_eq!(
+        store
+            .connection
+            .query_row("SELECT COUNT(*) FROM channel_attention_receipts", [], |r| {
+                r.get::<_, u64>(0)
+            })
+            .unwrap(),
+        0
+    );
+    store
+        .connection
+        .execute_batch("DROP TRIGGER fail_channel_job")
+        .unwrap();
+    assert!(store.record_channel_attention(event.clone(), 3, 4).unwrap());
+    assert!(!store.record_channel_attention(event, 3, 5).unwrap());
+    assert_eq!(store.retained().unwrap(), 1);
+    let mut statement = store
+        .connection
+        .prepare("SELECT payload FROM push_jobs WHERE kind='notification'")
+        .unwrap();
+    let payloads: Vec<Vec<u8>> = statement
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(payloads.len(), 1);
+    let payload: Value = serde_json::from_slice(&payloads[0]).unwrap();
+    assert_eq!(payload["session_id"], "session-a");
+    assert_eq!(payload["kind"], "attention");
+    assert_eq!(payload["attention_kind"], Value::Null);
+    assert!(!payload.to_string().contains("push-message"));
 }

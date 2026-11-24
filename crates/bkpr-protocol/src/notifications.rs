@@ -1,4 +1,5 @@
 //! Host-owned semantic notification records, scoped policy and resumable queries.
+use crate::channels::{ChannelId, MessageId};
 use crate::{HarnessKind, ProcessIdentity, SessionInfo};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -26,10 +27,72 @@ pub enum NotificationKind {
     Done,
 }
 
+/// User-attention intent carried by a committed channel message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelAttentionKind {
+    /// A question for the user.
+    Question,
+    /// A result or finding for the user.
+    Report,
+}
+
 /// Authenticated source retained without credentials, conversation or terminal contents.
+///
+/// The wire forms are disjoint: pane sources require pane authority fields and
+/// channel sources require message identity and intent. Neither accepts extra fields.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum NotificationSource {
+    /// A transition reported by an authenticated pane integration.
+    Pane(PaneNotificationSource),
+    /// Attention intent from a committed channel message.
+    Channel(ChannelNotificationSource),
+}
+
+impl NotificationSource {
+    /// Session that owns the pane or channel.
+    pub fn session(&self) -> &SessionInfo {
+        match self {
+            Self::Pane(source) => &source.session,
+            Self::Channel(source) => &source.session,
+        }
+    }
+
+    /// Workspace that owns the channel or contained the pane, when known.
+    pub fn workspace_id(&self) -> Option<&str> {
+        match self {
+            Self::Pane(source) => source.workspace_id.as_deref(),
+            Self::Channel(source) => Some(&source.workspace_id),
+        }
+    }
+
+    /// Pane identity for pane notifications only.
+    pub fn pane_id(&self) -> Option<&str> {
+        self.as_pane().map(|source| source.pane_id.as_str())
+    }
+
+    /// Pane-specific origin and process authority, when present.
+    pub fn as_pane(&self) -> Option<&PaneNotificationSource> {
+        match self {
+            Self::Pane(source) => Some(source),
+            Self::Channel(_) => None,
+        }
+    }
+
+    /// Validate the source's bounded identities and kind-specific authority.
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::Pane(source) => source.validate(),
+            Self::Channel(source) => source.validate(),
+        }
+    }
+}
+
+/// Authenticated origin of a pane observation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NotificationSource {
+pub struct PaneNotificationSource {
     /// Persistent session identity qualified by the observed runtime identities.
     pub session: SessionInfo,
     /// Workspace at observation time, qualified by the session.
@@ -47,24 +110,14 @@ pub struct NotificationSource {
     /// Exact managed native binding generation when applicable.
     pub binding_generation: Option<u64>,
 }
-impl NotificationSource {
+
+impl PaneNotificationSource {
     /// Reject empty, control-containing or over-256-byte identities and invalid process IDs.
     /// Session names may contain up to 1024 UTF-8 bytes and must be valid session names.
     pub fn validate(&self) -> Result<()> {
-        crate::valid_session_name(&self.session.name)?;
-        ensure!(
-            self.session.name.len() <= 1024,
-            "notification session name exceeds limit"
-        );
-        for value in [
-            &self.session.session_id,
-            &self.session.daemon_id,
-            &self.session.session_instance_id,
-            &self.pane_id,
-            &self.process.birth,
-        ] {
-            valid_id(value)?;
-        }
+        validate_source_session(&self.session)?;
+        valid_id(&self.pane_id)?;
+        valid_id(&self.process.birth)?;
         for value in [&self.workspace_id, &self.window_id, &self.launch_id]
             .into_iter()
             .flatten()
@@ -79,6 +132,55 @@ impl NotificationSource {
     }
 }
 
+/// Body-free origin of attention from a committed shared-channel message.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelNotificationSource {
+    /// Persistent session identity qualified by the observed runtime identities.
+    pub session: SessionInfo,
+    /// Owning workspace, qualified by the session.
+    pub workspace_id: String,
+    /// Stable channel identity in the owning session.
+    pub channel_id: ChannelId,
+    /// Immutable identity of the committed message.
+    pub message_id: MessageId,
+    /// Sequence of the committed message in its channel, not the host notification sequence.
+    pub sequence: u64,
+    /// User-attention intent of the message.
+    pub intent: ChannelAttentionKind,
+}
+
+impl ChannelNotificationSource {
+    /// Validate bounded session, workspace, channel and message identities and sequence.
+    pub fn validate(&self) -> Result<()> {
+        validate_source_session(&self.session)?;
+        valid_id(&self.workspace_id)?;
+        valid_id(self.channel_id.as_ref())?;
+        valid_id(self.message_id.as_ref())?;
+        ensure!(
+            self.sequence > 0,
+            "channel message sequence must be nonzero"
+        );
+        Ok(())
+    }
+}
+
+fn validate_source_session(session: &SessionInfo) -> Result<()> {
+    crate::valid_session_name(&session.name)?;
+    ensure!(
+        session.name.len() <= 1024,
+        "notification session name exceeds limit"
+    );
+    for value in [
+        &session.session_id,
+        &session.daemon_id,
+        &session.session_instance_id,
+    ] {
+        valid_id(value)?;
+    }
+    Ok(())
+}
+
 /// One durable semantic record; its presence does not imply provider delivery or display.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -91,7 +193,7 @@ pub struct Notification {
     pub source: NotificationSource,
     /// Allowlisted semantic transition.
     pub kind: NotificationKind,
-    /// Optional attention category: permission, question or auth; never arbitrary text.
+    /// Optional pane attention category: permission, question or auth; never arbitrary text.
     pub attention_kind: Option<String>,
     /// Observation time in Unix milliseconds, not a storage-commit receipt.
     pub observed_at_ms: u64,
@@ -108,6 +210,12 @@ impl Notification {
             self.expires_at_ms >= self.observed_at_ms,
             "notification expiry precedes observation"
         );
+        if matches!(&self.source, NotificationSource::Channel(_)) {
+            ensure!(
+                self.kind == NotificationKind::Attention && self.attention_kind.is_none(),
+                "channel notifications require attention kind without a pane attention category"
+            );
+        }
         if let Some(kind) = &self.attention_kind {
             ensure!(
                 self.kind == NotificationKind::Attention,
@@ -688,7 +796,7 @@ mod tests {
         let mut notification = Notification {
             sequence: 1,
             id: "notification".into(),
-            source: NotificationSource {
+            source: NotificationSource::Pane(PaneNotificationSource {
                 session: SessionInfo {
                     name: "session name".into(),
                     session_id: "session".into(),
@@ -705,7 +813,7 @@ mod tests {
                 },
                 launch_id: Some("launch".into()),
                 binding_generation: Some(0),
-            },
+            }),
             kind: NotificationKind::Attention,
             attention_kind: Some("permission".into()),
             observed_at_ms: 100,
@@ -722,12 +830,12 @@ mod tests {
         assert!(notification.validate().is_err());
         notification.attention_kind = None;
         assert!(notification.validate().is_ok());
-        notification.source.process.pid = 0;
-        assert!(notification.validate().is_err());
-        notification.source.process.pid = 1;
-        notification.source.process.birth = "x".repeat(257);
-        assert!(notification.validate().is_err());
-        notification.source.process.birth = "birth".into();
+        let mut source = notification.source.as_pane().unwrap().clone();
+        source.process.pid = 0;
+        assert!(source.validate().is_err());
+        source.process.pid = 1;
+        source.process.birth = "x".repeat(257);
+        assert!(source.validate().is_err());
         notification.expires_at_ms = 99;
         assert!(notification.validate().is_err());
         notification.expires_at_ms = 200;
@@ -736,6 +844,125 @@ mod tests {
         let mut source = serde_json::to_value(&notification.source).unwrap();
         source["token"] = serde_json::json!("secret");
         assert!(serde_json::from_value::<NotificationSource>(source).is_err());
+    }
+
+    #[test]
+    fn pane_source_keeps_legacy_json_shape() {
+        let legacy = serde_json::json!({
+            "session": {
+                "name": "session name",
+                "session_id": "session",
+                "daemon_id": "daemon",
+                "session_instance_id": "instance",
+            },
+            "workspace_id": null,
+            "window_id": null,
+            "pane_id": "pane",
+            "harness": "omp",
+            "process": { "pid": 1, "birth": "birth" },
+            "launch_id": null,
+            "binding_generation": null,
+        });
+        let source: NotificationSource = serde_json::from_value(legacy.clone()).unwrap();
+        let pane = source.as_pane().unwrap();
+        assert_eq!(source.session(), &pane.session);
+        assert_eq!(source.pane_id(), Some("pane"));
+        assert_eq!(source.workspace_id(), None);
+        assert_eq!(serde_json::to_value(source).unwrap(), legacy);
+
+        let mut mixed = legacy;
+        mixed["channel_id"] = serde_json::json!("channel");
+        assert!(serde_json::from_value::<NotificationSource>(mixed).is_err());
+    }
+
+    #[test]
+    fn channel_sources_are_body_free_and_disjoint_from_pane_sources() {
+        for (intent, json_intent) in [
+            (ChannelAttentionKind::Question, "question"),
+            (ChannelAttentionKind::Report, "report"),
+        ] {
+            let value = serde_json::json!({
+                "session": {
+                    "name": "session name",
+                    "session_id": "session",
+                    "daemon_id": "daemon",
+                    "session_instance_id": "instance",
+                },
+                "workspace_id": "workspace",
+                "channel_id": "channel",
+                "message_id": "message",
+                "sequence": 42,
+                "intent": json_intent,
+            });
+            let source: NotificationSource = serde_json::from_value(value.clone()).unwrap();
+            let NotificationSource::Channel(channel) = &source else {
+                panic!("expected channel source");
+            };
+            assert_eq!(channel.intent, intent);
+            assert_eq!(source.session(), &channel.session);
+            assert_eq!(source.workspace_id(), Some("workspace"));
+            assert_eq!(source.pane_id(), None);
+            assert!(source.as_pane().is_none());
+            assert_eq!(serde_json::to_value(&source).unwrap(), value);
+
+            for field in ["pane_id", "text"] {
+                let mut mixed = value.clone();
+                mixed[field] = serde_json::json!("unexpected");
+                assert!(serde_json::from_value::<NotificationSource>(mixed).is_err());
+            }
+            let mut incomplete = value.clone();
+            incomplete["workspace_id"] = serde_json::Value::Null;
+            assert!(serde_json::from_value::<NotificationSource>(incomplete).is_err());
+
+            let mut ordinary_post = value;
+            ordinary_post["intent"] = serde_json::json!("note");
+            assert!(serde_json::from_value::<NotificationSource>(ordinary_post).is_err());
+        }
+    }
+
+    #[test]
+    fn channel_attention_validates_metadata_without_a_pane_attention_category() {
+        let mut source = ChannelNotificationSource {
+            session: SessionInfo {
+                name: "session name".into(),
+                session_id: "session".into(),
+                daemon_id: "daemon".into(),
+                session_instance_id: "instance".into(),
+            },
+            workspace_id: "workspace".into(),
+            channel_id: ChannelId("channel".into()),
+            message_id: MessageId("message".into()),
+            sequence: 42,
+            intent: ChannelAttentionKind::Report,
+        };
+        source.sequence = 0;
+        assert!(source.validate().is_err());
+        source.sequence = 42;
+        source.workspace_id.clear();
+        assert!(source.validate().is_err());
+        source.workspace_id = "workspace".into();
+        source.channel_id = ChannelId("bad\nidentity".into());
+        assert!(source.validate().is_err());
+        source.channel_id = ChannelId("channel".into());
+        source.message_id = MessageId("x".repeat(257));
+        assert!(source.validate().is_err());
+        source.message_id = MessageId("message".into());
+
+        let mut notification = Notification {
+            sequence: 1,
+            id: "notification".into(),
+            source: NotificationSource::Channel(source),
+            kind: NotificationKind::Attention,
+            attention_kind: None,
+            observed_at_ms: 100,
+            expires_at_ms: 200,
+        };
+        assert!(notification.validate().is_ok());
+        notification.attention_kind = Some("question".into());
+        assert!(notification.validate().is_err());
+        notification.attention_kind = None;
+        notification.kind = NotificationKind::Done;
+        assert!(notification.validate().is_err());
     }
 
     #[test]

@@ -219,8 +219,9 @@ pub(super) fn enqueue_notification(
     store_id: &str,
     now: u64,
 ) -> Result<bool> {
+    let session = notification.source.session();
     let payload = serde_json::to_vec(
-        &json!({"type":"notification","notification_id":notification.id,"store_id":store_id,"session_id":notification.source.session.session_id,"session_name":notification.source.session.name,"kind":notification.kind,"attention_kind":notification.attention_kind}),
+        &json!({"type":"notification","notification_id":notification.id,"store_id":store_id,"session_id":session.session_id,"session_name":session.name,"kind":notification.kind,"attention_kind":notification.attention_kind}),
     )?;
     let mut statement = tx.prepare(
         "SELECT id,generation,descriptor FROM push_destinations WHERE state='active' ORDER BY id",

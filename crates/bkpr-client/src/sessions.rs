@@ -1706,31 +1706,37 @@ impl Coordinator {
                 .then(|| session.app.as_ref().and_then(App::focused_application))
                 .flatten();
             for record in page.notifications {
-                if !session.owner.as_ref().is_some_and(|attachment| {
-                    crate::desktop::source_session_is_current(&record.source, attachment.info())
-                }) {
-                    continue;
-                }
-                let context = session
-                    .owner
-                    .as_ref()
-                    .zip(session.app.as_ref())
-                    .map(|(attachment, app)| {
-                        crate::desktop::Context::resolve(
-                            &record.source,
-                            attachment.info(),
-                            &app.registry,
-                        )
-                    })
-                    .unwrap_or_default();
-                if context.current
-                    && attended
-                        .as_ref()
-                        .is_some_and(|(pane, _)| *pane == record.source.pane_id)
-                {
-                    continue;
-                }
-                self.desktop.show(owner, record, context, terminal, out)?;
+                self.desktop.show(
+                    owner,
+                    record,
+                    |source| {
+                        let attachment = session.owner.as_ref()?;
+                        if !crate::desktop::source_session_is_current(source, attachment.info()) {
+                            return None;
+                        }
+                        let context = session
+                            .app
+                            .as_ref()
+                            .map(|app| {
+                                crate::desktop::Context::resolve(
+                                    source,
+                                    attachment.info(),
+                                    &app.registry,
+                                )
+                            })
+                            .unwrap_or_default();
+                        if context.current
+                            && attended
+                                .as_ref()
+                                .is_some_and(|(pane, _)| *pane == source.pane_id)
+                        {
+                            return None;
+                        }
+                        Some(context)
+                    },
+                    terminal,
+                    out,
+                )?;
             }
             out.flush()?;
             break;

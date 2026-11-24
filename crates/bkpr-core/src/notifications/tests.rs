@@ -1,6 +1,8 @@
 use super::*;
 use bkpr_protocol::{
-    HarnessKind, Notification, NotificationKind, NotificationScope, ProcessIdentity, SessionInfo,
+    ChannelAttentionKind, HarnessKind, Notification, NotificationKind, NotificationScope,
+    NotificationSource, ProcessIdentity, SessionInfo,
+    channels::{ChannelId, MessageId},
 };
 use std::{
     fs,
@@ -26,8 +28,8 @@ fn store(root: &Path) -> storage::Store {
         storage::Opened::Unavailable(_) => panic!("fixture store unexpectedly unavailable"),
     }
 }
-fn source() -> NotificationSource {
-    NotificationSource {
+fn source() -> PaneNotificationSource {
+    PaneNotificationSource {
         session: SessionInfo {
             name: "test".into(),
             session_id: "session-a".into(),
@@ -46,6 +48,20 @@ fn source() -> NotificationSource {
         binding_generation: Some(1),
     }
 }
+pub(super) fn channel_source(
+    message_id: &str,
+    intent: ChannelAttentionKind,
+) -> ChannelNotificationSource {
+    ChannelNotificationSource {
+        session: source().session,
+        workspace_id: "workspace-a".into(),
+        channel_id: ChannelId("channel-a".into()),
+        message_id: MessageId(message_id.into()),
+        sequence: 1,
+        intent,
+    }
+}
+
 fn observation(state: Option<&str>) -> NotificationObservation {
     NotificationObservation {
         source: source(),
@@ -198,7 +214,10 @@ fn replacement_and_stale_withdrawal_do_not_complete_or_rearm_current_episode() {
             .iter()
             .all(|n| n.kind == NotificationKind::Attention)
     );
-    assert_eq!(records[1].source.process.birth, "birth-b");
+    assert_eq!(
+        records[1].source.as_pane().unwrap().process.birth,
+        "birth-b"
+    );
 }
 
 #[test]
@@ -241,7 +260,7 @@ fn records_sequences_and_policy_survive_restart_but_episode_authority_does_not()
     );
     assert_eq!(resumed.notifications[0].kind, NotificationKind::Done);
     assert_eq!(
-        resumed.notifications[0].source.session.session_id,
+        resumed.notifications[0].source.session().session_id,
         "session-a"
     );
 }
@@ -453,26 +472,27 @@ fn filters_advance_cursors_and_new_inspection_returns_newest_matching_page() {
 }
 
 fn seed(store: &mut storage::Store, count: usize, large: bool, now: u64) {
+    let mut source = source();
+    if large {
+        source.session.name = "n".repeat(1024);
+        source.session.session_id = "s".repeat(256);
+        source.session.daemon_id = "d".repeat(256);
+        source.session.session_instance_id = "i".repeat(256);
+        source.workspace_id = Some("w".repeat(256));
+        source.window_id = Some("v".repeat(256));
+        source.pane_id = "p".repeat(256);
+        source.process.birth = "b".repeat(256);
+        source.launch_id = Some("l".repeat(256));
+    }
     let mut record = Notification {
         sequence: 1,
         id: "record".into(),
-        source: source(),
+        source: NotificationSource::Pane(source),
         kind: NotificationKind::Attention,
         attention_kind: None,
         observed_at_ms: now,
         expires_at_ms: now + storage::MAX_AGE_MS,
     };
-    if large {
-        record.source.session.name = "n".repeat(1024);
-        record.source.session.session_id = "s".repeat(256);
-        record.source.session.daemon_id = "d".repeat(256);
-        record.source.session.session_instance_id = "i".repeat(256);
-        record.source.workspace_id = Some("w".repeat(256));
-        record.source.window_id = Some("v".repeat(256));
-        record.source.pane_id = "p".repeat(256);
-        record.source.process.birth = "b".repeat(256);
-        record.source.launch_id = Some("l".repeat(256));
-    }
     let transaction = store.connection_for_test().transaction().unwrap();
     for sequence in 1..=count {
         record.sequence = sequence as u64;
@@ -562,7 +582,10 @@ fn session_requests_clamp_scopes_and_reject_cross_session_policy_writes() {
     )
     .unwrap();
     assert_eq!(page.notifications.len(), 1);
-    assert_eq!(page.notifications[0].source.session.session_id, "session-a");
+    assert_eq!(
+        page.notifications[0].source.session().session_id,
+        "session-a"
+    );
     let request = NotificationRequest::Inspect {
         query: NotificationQuery {
             scope: NotificationScope {
@@ -1071,4 +1094,180 @@ fn acknowledged_loss_cursor_can_resume_an_idle_subscription_without_repeated_gap
     );
     worker.join().unwrap();
     service.shutdown().unwrap();
+}
+
+#[test]
+fn channel_attention_worker_deduplicates_sessions_and_survives_restart() {
+    let (_directory, root) = root();
+    let service = NotificationService::open(&root).unwrap();
+    let observed_at = now_ms();
+    let question = channel_source("same-message", ChannelAttentionKind::Question);
+    service
+        .record_channel_attention(question.clone(), observed_at)
+        .unwrap();
+    let retained = inspect(&service);
+    assert_eq!(retained.health.retained, 1);
+    service.shutdown().unwrap();
+
+    let service = NotificationService::open(&root).unwrap();
+    let mut retry = question.clone();
+    retry.session.session_instance_id = "opening-b".into();
+    service
+        .record_channel_attention(retry, observed_at)
+        .unwrap();
+    let mut report = channel_source("same-message", ChannelAttentionKind::Report);
+    report.session.session_id = "session-b".into();
+    service
+        .record_channel_attention(report.clone(), observed_at)
+        .unwrap();
+    let page = inspect(&service);
+    assert_eq!(page.health.retained, 2);
+    assert_eq!(page.notifications[0], retained.notifications[0]);
+    assert_eq!(
+        page.notifications[0].source,
+        NotificationSource::Channel(question)
+    );
+    assert_eq!(
+        page.notifications[1].source,
+        NotificationSource::Channel(report)
+    );
+    assert!(page.notifications.iter().all(|record| {
+        record.kind == NotificationKind::Attention && record.attention_kind.is_none()
+    }));
+    service.shutdown().unwrap();
+}
+
+#[test]
+fn suppressed_channel_attention_is_durable_until_the_original_retry_deadline() {
+    let (_directory, root) = root();
+    let mut first = store(&root);
+    let observed_at = now_ms();
+    let suppressed = channel_source("suppressed", ChannelAttentionKind::Question);
+    let scope = NotificationScope {
+        session_id: Some(suppressed.session.session_id.clone()),
+        workspace_id: Some(suppressed.workspace_id.clone()),
+        pane_id: None,
+    };
+    first
+        .set_policy(NotificationPolicy {
+            scope: scope.clone(),
+            kinds: vec![],
+        })
+        .unwrap();
+    first
+        .set_policy(NotificationPolicy {
+            scope: NotificationScope {
+                pane_id: Some("pane-a".into()),
+                ..scope.clone()
+            },
+            kinds: vec![NotificationKind::Attention],
+        })
+        .unwrap();
+    assert!(
+        !first
+            .record_channel_attention(suppressed.clone(), observed_at, observed_at)
+            .unwrap()
+    );
+    assert_eq!(first.retained().unwrap(), 0);
+    drop(first);
+
+    let mut reopened = store(&root);
+    reopened
+        .set_policy(NotificationPolicy {
+            scope,
+            kinds: vec![NotificationKind::Attention],
+        })
+        .unwrap();
+    let deadline = observed_at + CHANNEL_ATTENTION_RETRY_MS;
+    assert_eq!(reopened.next_expiry().unwrap(), Some(deadline));
+    assert!(
+        !reopened
+            .record_channel_attention(suppressed.clone(), observed_at, deadline - 1)
+            .unwrap()
+    );
+    assert!(!reopened.expire(deadline).unwrap());
+    assert_eq!(reopened.next_expiry().unwrap(), None);
+    assert!(
+        reopened
+            .record_channel_attention(suppressed, observed_at, deadline)
+            .is_err()
+    );
+    assert_eq!(reopened.retained().unwrap(), 0);
+    assert!(!reopened.failed());
+}
+
+#[test]
+fn channel_attention_retry_does_not_restore_pruned_history() {
+    let (_directory, root) = root();
+    let mut first = store(&root);
+    let observed_at = now_ms();
+    let event = channel_source("pruned", ChannelAttentionKind::Report);
+    assert!(
+        first
+            .record_channel_attention(event.clone(), observed_at, observed_at)
+            .unwrap()
+    );
+    first
+        .connection
+        .execute("UPDATE notifications SET expires=0", [])
+        .unwrap();
+    drop(first);
+
+    let mut reopened = store(&root);
+    let pruned = page(&mut reopened, None);
+    assert!(pruned.notifications.is_empty());
+    assert!(
+        !reopened
+            .record_channel_attention(event, observed_at, now_ms())
+            .unwrap()
+    );
+    let after = page(&mut reopened, Some(&pruned.cursor));
+    assert_eq!(after.cursor, pruned.cursor);
+    assert!(after.notifications.is_empty());
+}
+
+#[test]
+fn channel_attention_receipt_capacity_preserves_existing_retry_guarantees() {
+    let (_directory, root) = root();
+    let mut store = store(&root);
+    let now = now_ms();
+    let existing = channel_source("existing", ChannelAttentionKind::Question);
+    let new = channel_source("new", ChannelAttentionKind::Report);
+    assert!(
+        store
+            .record_channel_attention(existing.clone(), now, now)
+            .unwrap()
+    );
+    store
+        .connection
+        .execute(
+            "WITH RECURSIVE filled(id) AS (
+                SELECT 1 UNION ALL SELECT id+1 FROM filled WHERE id<?1
+            )
+            INSERT INTO channel_attention_receipts
+            SELECT 'fixture', CAST(id AS TEXT), ?2 FROM filled",
+            rusqlite::params![
+                (storage::MAX_CHANNEL_ATTENTION_RECEIPTS - 1) as i64,
+                now + 1
+            ],
+        )
+        .unwrap();
+    assert!(
+        !store
+            .record_channel_attention(existing.clone(), now, now)
+            .unwrap()
+    );
+    assert!(
+        store
+            .record_channel_attention(new.clone(), now, now)
+            .is_err()
+    );
+    assert!(!store.failed());
+    assert!(store.record_channel_attention(new, now, now + 1).unwrap());
+    assert!(
+        !store
+            .record_channel_attention(existing, now, now + 1)
+            .unwrap()
+    );
+    assert_eq!(store.retained().unwrap(), 2);
 }

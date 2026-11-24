@@ -1,8 +1,9 @@
-use super::{NotificationObservation, now_ms};
+use super::{CHANNEL_ATTENTION_RETRY_MS, NotificationObservation, now_ms};
 use anyhow::{Context, Result, ensure};
 use bkpr_protocol::{
-    Notification, NotificationCursor, NotificationHealth, NotificationKind, NotificationPage,
-    NotificationPolicy, NotificationQuery, NotificationScope, NotificationSource,
+    ChannelNotificationSource, Notification, NotificationCursor, NotificationHealth,
+    NotificationKind, NotificationPage, NotificationPolicy, NotificationQuery, NotificationScope,
+    NotificationSource, PaneNotificationSource,
 };
 use fs2::FileExt;
 use rusqlite::{Connection, OpenFlags, Transaction, params};
@@ -22,6 +23,7 @@ const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_RECORD_BYTES: usize = 8192;
 const PAGE_BYTES: usize = 128 * 1024;
 pub(super) const MAX_EPISODES: usize = 4096;
+pub(super) const MAX_CHANNEL_ATTENTION_RECEIPTS: usize = 4096;
 pub(super) const MAX_AGE_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 const APPLICATION_ID: i64 = 0x424b4e31;
 
@@ -51,6 +53,15 @@ impl std::fmt::Display for EpisodeCapacity {
 }
 impl std::error::Error for EpisodeCapacity {}
 
+#[derive(Debug)]
+struct ChannelAttentionCapacity;
+impl std::fmt::Display for ChannelAttentionCapacity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("notification channel attention receipt capacity exceeded")
+    }
+}
+impl std::error::Error for ChannelAttentionCapacity {}
+
 pub(super) struct Unavailable {
     _directory: File,
     _lease: Arc<Lease>,
@@ -76,14 +87,14 @@ struct Identity {
     binding_generation: Option<u64>,
 }
 impl Identity {
-    fn matches(&self, source: &NotificationSource) -> bool {
+    fn matches(&self, source: &PaneNotificationSource) -> bool {
         self.session_instance_id == source.session.session_instance_id
             && self.process == source.process
             && self.harness == source.harness
             && self.launch_id == source.launch_id
             && self.binding_generation == source.binding_generation
     }
-    fn new(source: &NotificationSource) -> Self {
+    fn new(source: &PaneNotificationSource) -> Self {
         Self {
             session_instance_id: source.session.session_instance_id.clone(),
             process: source.process.clone(),
@@ -216,6 +227,16 @@ impl Store {
             )?;
             transaction.commit()?;
         }
+        connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS channel_attention_receipts (
+                session_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                expires INTEGER NOT NULL,
+                PRIMARY KEY(session_id,message_id)
+            ) WITHOUT ROWID;
+            CREATE INDEX IF NOT EXISTS channel_attention_expiry
+                ON channel_attention_receipts(expires);",
+        )?;
         super::push_store::initialize(&connection)?;
         let store_id: String = connection.query_row(
             "SELECT store_id FROM metadata WHERE singleton=1",
@@ -400,6 +421,111 @@ impl Store {
         }
         Ok(())
     }
+    fn policy_enables(
+        &self,
+        kind: NotificationKind,
+        session_id: &str,
+        workspace_id: Option<&str>,
+        pane_id: Option<&str>,
+    ) -> bool {
+        self.policies
+            .iter()
+            .filter(|policy| scope_matches(&policy.scope, session_id, workspace_id, pane_id))
+            .max_by_key(|policy| specificity(&policy.scope))
+            .is_some_and(|policy| policy.kinds.contains(&kind))
+    }
+
+    pub(super) fn record_channel_attention(
+        &mut self,
+        source: ChannelNotificationSource,
+        observed_at_ms: u64,
+        now: u64,
+    ) -> Result<bool> {
+        let expires = observed_at_ms.saturating_add(CHANNEL_ATTENTION_RETRY_MS);
+        ensure!(
+            observed_at_ms <= now && now < expires,
+            "channel attention timestamp is outside the retry horizon"
+        );
+        let result = self.record_channel_attention_inner(source, observed_at_ms, now, expires);
+        if result
+            .as_ref()
+            .is_err_and(|error| error.downcast_ref::<ChannelAttentionCapacity>().is_none())
+        {
+            self.failed = true;
+        }
+        result
+    }
+
+    fn record_channel_attention_inner(
+        &mut self,
+        source: ChannelNotificationSource,
+        observed_at_ms: u64,
+        now: u64,
+        expires: u64,
+    ) -> Result<bool> {
+        let session_id = &source.session.session_id;
+        let message_id = source.message_id.as_ref();
+        let now_sql = as_i64(now)?;
+        let known: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM channel_attention_receipts
+                WHERE session_id=?1 AND message_id=?2 AND expires>?3)",
+            params![session_id, message_id, now_sql],
+            |row| row.get(0),
+        )?;
+        if known {
+            return Ok(false);
+        }
+        let enabled = self.policy_enables(
+            NotificationKind::Attention,
+            session_id,
+            Some(&source.workspace_id),
+            None,
+        );
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "DELETE FROM channel_attention_receipts WHERE expires<=?1",
+            [now_sql],
+        )?;
+        let receipts: usize = transaction.query_row(
+            "SELECT COUNT(*) FROM channel_attention_receipts",
+            [],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            receipts < MAX_CHANNEL_ATTENTION_RECEIPTS,
+            ChannelAttentionCapacity
+        );
+        transaction.execute(
+            "INSERT INTO channel_attention_receipts VALUES (?1,?2,?3)",
+            params![session_id, message_id, as_i64(expires)?],
+        )?;
+        let push_created = if enabled {
+            insert_notification(
+                &transaction,
+                &self.store_id,
+                NotificationSource::Channel(source),
+                NotificationKind::Attention,
+                None,
+                observed_at_ms,
+                now,
+            )?
+            .1
+        } else {
+            false
+        };
+        transaction.commit()?;
+        self.accepted_record_or_receipt(push_created);
+        Ok(enabled)
+    }
+
+    fn accepted_record_or_receipt(&mut self, push_created: bool) {
+        self.push_dirty |= push_created;
+        if push_created {
+            self.push_deadline_cache = None;
+        }
+        self.next_expiry = None;
+    }
+
     pub(super) fn observe(
         &mut self,
         observation: NotificationObservation,
@@ -475,11 +601,12 @@ impl Store {
             _ => None,
         };
         let enabled = candidate.filter(|kind| {
-            self.policies
-                .iter()
-                .filter(|policy| matches_scope(&policy.scope, source))
-                .max_by_key(|policy| specificity(&policy.scope))
-                .is_some_and(|policy| policy.kinds.contains(kind))
+            self.policy_enables(
+                *kind,
+                &source.session.session_id,
+                source.workspace_id.as_deref(),
+                Some(&source.pane_id),
+            )
         });
         if prior.is_some_and(|episode| episode.state == state && episode.seen == seen)
             && enabled.is_none()
@@ -488,67 +615,29 @@ impl Store {
         }
         if let Some(kind) = enabled {
             let transaction = self.connection.transaction()?;
-            let sequence: i64 = transaction.query_row(
-                "SELECT sequence FROM metadata WHERE singleton=1",
-                [],
-                |row| row.get(0),
-            )?;
-            let sequence = sequence
-                .checked_add(1)
-                .context("notification sequence exhausted")?;
-            let notification = Notification {
-                sequence: sequence as u64,
-                id: Uuid::new_v4().to_string(),
-                source: observation.source,
-                attention_kind: if kind == NotificationKind::Attention {
+            let (notification, push_created) = insert_notification(
+                &transaction,
+                &self.store_id,
+                NotificationSource::Pane(observation.source),
+                kind,
+                if kind == NotificationKind::Attention {
                     observation.kind
                 } else {
                     None
                 },
-                kind,
-                observed_at_ms: observation.observed_at_ms,
-                expires_at_ms: now.saturating_add(MAX_AGE_MS),
-            };
-            notification.validate()?;
-            let record = serde_json::to_string(&notification)?;
-            ensure!(
-                record.len() <= MAX_RECORD_BYTES,
-                "notification record exceeds byte bound"
-            );
-            transaction.execute(
-                "INSERT INTO notifications VALUES (?1,?2,?3,?4)",
-                params![
-                    sequence,
-                    as_i64(notification.expires_at_ms)?,
-                    record.len() as i64,
-                    record
-                ],
-            )?;
-            transaction.execute(
-                "UPDATE metadata SET sequence=?1 WHERE singleton=1",
-                [sequence],
-            )?;
-            let push_created = super::push_store::enqueue_notification(
-                &transaction,
-                &notification,
-                &self.store_id,
+                observation.observed_at_ms,
                 now,
             )?;
-            prune_transaction(&transaction, now)?;
             transaction.commit()?;
-            self.push_dirty |= push_created;
-            if push_created {
-                self.push_deadline_cache = None;
-            }
-            self.update_episode(&notification.source, state, seen);
-            self.next_expiry = None;
+            self.accepted_record_or_receipt(push_created);
+            self.update_episode(notification.source.as_pane().unwrap(), state, seen);
             Ok(true)
         } else {
             self.update_episode(&observation.source, state, seen);
             Ok(false)
         }
     }
-    fn update_episode(&mut self, source: &NotificationSource, state: State, seen: u8) {
+    fn update_episode(&mut self, source: &PaneNotificationSource, state: State, seen: u8) {
         if !self.episodes.contains_key(&source.session.session_id) {
             self.episodes
                 .insert(source.session.session_id.clone(), BTreeMap::new());
@@ -583,18 +672,29 @@ impl Store {
         if let Some(expiry) = self.next_expiry {
             return Ok(expiry);
         }
-        let expiry =
-            self.connection
-                .query_row("SELECT MIN(expires) FROM notifications", [], |row| {
-                    row.get(0)
-                })?;
+        let expiry = self.connection.query_row(
+            "SELECT MIN(expires) FROM (
+                SELECT MIN(expires) AS expires FROM notifications
+                UNION ALL
+                SELECT MIN(expires) FROM channel_attention_receipts
+            )",
+            [],
+            |row| row.get(0),
+        )?;
         self.next_expiry = Some(expiry);
         Ok(expiry)
     }
     pub(super) fn expire(&mut self, now: u64) -> Result<bool> {
         let result = (|| {
             let before = self.retained()?;
-            self.prune(now)?;
+            let transaction = self.connection.transaction()?;
+            transaction.execute(
+                "DELETE FROM channel_attention_receipts WHERE expires<=?1",
+                [as_i64(now)?],
+            )?;
+            prune_transaction(&transaction, now)?;
+            transaction.commit()?;
+            self.next_expiry = None;
             Ok(self.retained()? != before)
         })();
         if result.is_err() {
@@ -718,6 +818,58 @@ impl Store {
         })
     }
 }
+
+fn insert_notification(
+    transaction: &Transaction<'_>,
+    store_id: &str,
+    source: NotificationSource,
+    kind: NotificationKind,
+    attention_kind: Option<String>,
+    observed_at_ms: u64,
+    now: u64,
+) -> Result<(Notification, bool)> {
+    let sequence: i64 = transaction.query_row(
+        "SELECT sequence FROM metadata WHERE singleton=1",
+        [],
+        |row| row.get(0),
+    )?;
+    let sequence = sequence
+        .checked_add(1)
+        .context("notification sequence exhausted")?;
+    let notification = Notification {
+        sequence: sequence as u64,
+        id: Uuid::new_v4().to_string(),
+        source,
+        attention_kind,
+        kind,
+        observed_at_ms,
+        expires_at_ms: now.saturating_add(MAX_AGE_MS),
+    };
+    notification.validate()?;
+    let record = serde_json::to_string(&notification)?;
+    ensure!(
+        record.len() <= MAX_RECORD_BYTES,
+        "notification record exceeds byte bound"
+    );
+    transaction.execute(
+        "INSERT INTO notifications VALUES (?1,?2,?3,?4)",
+        params![
+            sequence,
+            as_i64(notification.expires_at_ms)?,
+            record.len() as i64,
+            record
+        ],
+    )?;
+    transaction.execute(
+        "UPDATE metadata SET sequence=?1 WHERE singleton=1",
+        [sequence],
+    )?;
+    let push_created =
+        super::push_store::enqueue_notification(transaction, &notification, store_id, now)?;
+    prune_transaction(transaction, now)?;
+    Ok((notification, push_created))
+}
+
 fn as_i64(value: u64) -> Result<i64> {
     i64::try_from(value).context("notification integer exceeds durable range")
 }
@@ -737,18 +889,32 @@ fn ambiguous(a: &NotificationScope, b: &NotificationScope) -> bool {
         && overlap(&a.pane_id, &b.pane_id)
 }
 pub(super) fn matches_scope(scope: &NotificationScope, source: &NotificationSource) -> bool {
+    scope_matches(
+        scope,
+        &source.session().session_id,
+        source.workspace_id(),
+        source.pane_id(),
+    )
+}
+
+fn scope_matches(
+    scope: &NotificationScope,
+    session_id: &str,
+    workspace_id: Option<&str>,
+    pane_id: Option<&str>,
+) -> bool {
     scope
         .session_id
         .as_ref()
-        .is_none_or(|id| id == &source.session.session_id)
+        .is_none_or(|id| id.as_str() == session_id)
         && scope
             .workspace_id
             .as_ref()
-            .is_none_or(|id| source.workspace_id.as_ref() == Some(id))
+            .is_none_or(|id| workspace_id == Some(id.as_str()))
         && scope
             .pane_id
             .as_ref()
-            .is_none_or(|id| id == &source.pane_id)
+            .is_none_or(|id| pane_id == Some(id.as_str()))
 }
 fn prune_transaction(transaction: &Transaction<'_>, now: u64) -> Result<()> {
     let expired: Option<i64> = transaction.query_row(

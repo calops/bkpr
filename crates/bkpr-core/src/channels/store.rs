@@ -29,7 +29,7 @@ mod wakes;
 
 const APPLICATION_ID: i64 = 0x424b4348;
 // Versions 1–6 predate staging. Version 7 predates wakes.
-const STORE_VERSION: i64 = 13;
+const STORE_VERSION: i64 = 14;
 const FIRST_STAGING_VERSION: i64 = 7;
 const ORDERED_WAKE_VERSION: i64 = 9;
 const STORE_NAME: &str = "channels.sqlite3";
@@ -113,7 +113,7 @@ const ATTACHMENT_STAGING_SCHEMA: &str = "
     INSERT INTO attachment_budget VALUES(1,0);";
 
 const RETIRE_OLD_WAKE_WORK: &str = "
-    UPDATE notification_work SET pending=0 WHERE pending=1;
+    UPDATE notification_work SET pending=0 WHERE pending=1 AND launch_id IS NOT NULL;
     UPDATE channel_batches SET outcome='unknown' WHERE outcome IS NULL;";
 
 const WAKE_QUEUE_SCHEMA: &str = "
@@ -226,6 +226,13 @@ impl Store {
             if matches!(version, 0..=4 | 7..=9 | 12) {
                 tx.execute_batch(include_str!("catalog.sql"))?;
             }
+            if matches!(version, 0..=5 | 7..=10 | 12 | 13) {
+                tx.execute_batch(
+                    "UPDATE notification_work SET pending=0 WHERE pending=1 AND launch_id IS NULL;
+                     CREATE INDEX pending_channel_attention ON notification_work(message_id)
+                        WHERE pending=1 AND launch_id IS NULL;",
+                )?;
+            }
             if (1..FIRST_STAGING_VERSION).contains(&version) {
                 migrate_attachment_staging(&tx)?;
             }
@@ -294,7 +301,7 @@ impl Store {
         {
             let mut statement = self.connection.prepare(
                 "SELECT c.workspace_id FROM notification_work w
-                 JOIN channels c ON c.id=w.channel_id WHERE w.pending=1
+                 JOIN channels c ON c.id=w.channel_id WHERE w.pending=1 AND w.launch_id IS NOT NULL
                     AND NOT EXISTS(SELECT 1 FROM direct_channels d WHERE d.channel_id=c.id)
                  UNION SELECT c.workspace_id FROM channel_batches b
                  JOIN channels c ON c.id=b.channel_id WHERE b.outcome IS NULL AND b.revoked=0
@@ -314,7 +321,7 @@ impl Store {
         let tx = self.connection.transaction()?;
         {
             let mut statement = tx.prepare(
-                "UPDATE notification_work SET pending=0 WHERE pending=1 AND channel_id IN
+                "UPDATE notification_work SET pending=0 WHERE pending=1 AND launch_id IS NOT NULL AND channel_id IN
                     (SELECT id FROM channels WHERE workspace_id=?1 AND id NOT IN (SELECT channel_id FROM direct_channels))",
             )?;
             for id in &closed {
@@ -1283,6 +1290,53 @@ impl Store {
         )? == 1)
     }
 
+    pub(super) fn next_attention(
+        &self,
+        session: &bkpr_protocol::SessionInfo,
+    ) -> Result<Option<(bkpr_protocol::ChannelNotificationSource, u64)>> {
+        use bkpr_protocol::{ChannelAttentionKind, ChannelNotificationSource};
+        let event: Option<(String, String, MessageSummary)> = self
+            .connection
+            .query_row(
+                "SELECT c.workspace_id,c.id,p.summary FROM notification_work w
+             JOIN posts p ON p.id=w.message_id JOIN channels c ON c.id=w.channel_id
+             WHERE w.pending=1 AND w.launch_id IS NULL ORDER BY w.message_id LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, json(row, 2)?)),
+            )
+            .optional()?;
+        event
+            .map(|(workspace_id, channel_id, post)| {
+                let intent = match post.intent {
+                    PostIntent::Question => ChannelAttentionKind::Question,
+                    PostIntent::Report => ChannelAttentionKind::Report,
+                    PostIntent::Note => {
+                        anyhow::bail!("non-attention post in channel attention work")
+                    }
+                };
+                Ok((
+                    ChannelNotificationSource {
+                        session: session.clone(),
+                        workspace_id,
+                        channel_id: ChannelId(channel_id),
+                        message_id: post.id,
+                        sequence: post.sequence,
+                        intent,
+                    },
+                    post.posted_at_ms,
+                ))
+            })
+            .transpose()
+    }
+
+    pub(super) fn finish_attention(&self, id: &MessageId) -> Result<()> {
+        self.connection.execute(
+            "UPDATE notification_work SET pending=0 WHERE message_id=?1 AND launch_id IS NULL AND pending=1",
+            [id.as_ref()],
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn compact_members(
         &mut self,
         request: ChannelRequest,
@@ -1809,8 +1863,7 @@ fn store_version(connection: &Connection, empty: bool) -> Result<i64> {
     )?;
     ensure!(
         (empty && application == 0 && version == 0)
-            || (application == APPLICATION_ID
-                && matches!(version, 1..=5 | FIRST_STAGING_VERSION..=10 | 12..=STORE_VERSION)),
+            || (application == APPLICATION_ID && (1..=STORE_VERSION).contains(&version)),
         "foreign or unsupported channel store"
     );
     Ok(version)

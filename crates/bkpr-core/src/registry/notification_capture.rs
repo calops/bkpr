@@ -1,5 +1,6 @@
 use super::*;
 use crate::notifications::{NotificationObservation, NotificationService};
+use bkpr_protocol::PaneNotificationSource;
 use bkpr_terminal_engine::ProgramStatusView;
 
 #[derive(Default)]
@@ -56,7 +57,7 @@ impl Capture {
     }
 }
 
-fn same_authority(left: &NotificationSource, right: &NotificationSource) -> bool {
+fn same_authority(left: &PaneNotificationSource, right: &PaneNotificationSource) -> bool {
     left.session.session_id == right.session.session_id
         && left.session.session_instance_id == right.session.session_instance_id
         && left.session.daemon_id == right.session.daemon_id
@@ -107,7 +108,43 @@ impl Registry {
         self.inner
             .notifications
             .set(service)
-            .map_err(|_| anyhow::anyhow!("notifications already configured"))
+            .map_err(|_| anyhow::anyhow!("notifications already configured"))?;
+        let weak = Arc::downgrade(&self.inner);
+        let wake = self.inner.channels.attention_waker();
+        std::thread::Builder::new()
+            .name("bkpr-channel-attention".into())
+            .spawn(move || {
+                loop {
+                    let Some(inner) = weak.upgrade() else { break };
+                    let cancelled = || inner.state.lock().unwrap().closing;
+                    if cancelled() {
+                        break;
+                    }
+                    let service = inner.notifications.get().unwrap();
+                    let delivered =
+                        inner
+                            .channels
+                            .deliver_attention(service, &inner.session, &cancelled);
+                    drop(inner);
+                    match delivered {
+                        Ok(true) => continue,
+                        Err(_) => {
+                            crate::diagnostics::record("channels.attention", None, "deferred");
+                            if wake.recv_timeout(Duration::from_secs(1)).is_err()
+                                && weak.strong_count() == 0
+                            {
+                                break;
+                            }
+                        }
+                        Ok(false) => {
+                            if wake.recv().is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            })?;
+        Ok(())
     }
 
     /// Inspect or subscribe within this registry's exact persistent session scope.
@@ -210,7 +247,7 @@ pub(super) fn source(
     info: &PaneInfo,
     published: &crate::Published,
     captures: &crate::harness::Captures,
-) -> Option<NotificationSource> {
+) -> Option<PaneNotificationSource> {
     let harness = info.harness.as_ref()?;
     let process = published.program_identity.as_ref()?;
     if published.lifecycle != "running"
@@ -235,7 +272,7 @@ pub(super) fn source(
     } else {
         (None, None)
     };
-    Some(NotificationSource {
+    Some(PaneNotificationSource {
         session: session.clone(),
         workspace_id: info.workspace_id.clone(),
         window_id: info.window_id.clone(),
@@ -248,7 +285,7 @@ pub(super) fn source(
 }
 
 pub(super) fn observation(
-    source: NotificationSource,
+    source: PaneNotificationSource,
     status: Option<&ProgramStatus>,
     observed_at_ms: u64,
 ) -> NotificationObservation {

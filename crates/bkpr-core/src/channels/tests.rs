@@ -2150,7 +2150,8 @@ fn visibility_index_migration_preserves_member_access_and_durable_history() {
     let accepted = f.as_actor(&f.a, send(&id, original.clone())).unwrap();
     f.drop_wake_schema();
     f.sql(
-        "DROP TRIGGER catalog_channel_created;
+        "DROP INDEX pending_channel_attention;
+         DROP TRIGGER catalog_channel_created;
          DROP TRIGGER catalog_channel_updated;
          DROP TABLE catalog_workspaces;
          DROP TABLE catalog_events;
@@ -2180,7 +2181,7 @@ fn visibility_index_migration_preserves_member_access_and_durable_history() {
             ))
         })
         .unwrap();
-    assert_eq!((sync, version), (3, 13));
+    assert_eq!((sync, version), (3, 14));
 }
 
 #[test]
@@ -2489,6 +2490,7 @@ fn legacy_attachment_migration_caps_staged_bytes_and_retains_posted_history() {
     f.sql(
         "DROP TABLE staged_attachments;
          DROP TABLE attachment_budget;
+         DROP INDEX pending_channel_attention;
          DROP TRIGGER catalog_channel_created;
          DROP TRIGGER catalog_channel_updated;
          DROP TABLE catalog_workspaces;
@@ -2873,4 +2875,47 @@ fn catalog_overrun_resets_without_losing_history_or_unread() {
         panic!("expected history");
     };
     assert_eq!(messages[0].text, post("still unread").text);
+}
+
+#[test]
+fn pending_channel_attention_survives_channel_store_reopen() {
+    let f = Fixture::new();
+    let id = f.wide(ChannelSettings {
+        attention_reports: true,
+        ..quiet()
+    });
+    let post = posted(
+        f.as_actor(
+            &f.a,
+            send(
+                &id,
+                ChannelPost {
+                    intent: PostIntent::Report,
+                    ..post("recoverable report")
+                },
+            ),
+        )
+        .unwrap(),
+    );
+    let Fixture { root, engine, .. } = f;
+    drop(engine);
+    let reopened = ChannelEngine::new(root.path().to_owned());
+    let session = bkpr_protocol::SessionInfo {
+        name: "recovered".into(),
+        session_id: "session-user".into(),
+        daemon_id: "host".into(),
+        session_instance_id: "new-runtime".into(),
+    };
+    reopened
+        .with_store(|store| {
+            let (event, observed) = store.next_attention(&session)?.unwrap();
+            assert_eq!(event.channel_id, id);
+            assert_eq!(event.message_id, post.id);
+            assert_eq!(event.session, session);
+            assert_eq!(observed, post.posted_at_ms);
+            store.finish_attention(&post.id)?;
+            assert!(store.next_attention(&session)?.is_none());
+            Ok(())
+        })
+        .unwrap();
 }

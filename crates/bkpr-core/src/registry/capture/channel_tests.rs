@@ -305,6 +305,84 @@ fn post(id: &ChannelId, text: &str, intent: PostIntent) -> ChannelRequest {
 }
 
 #[test]
+fn committed_channel_attention_reaches_host_once_without_post_body() {
+    use bkpr_protocol::{
+        ChannelAttentionKind, NotificationKind, NotificationPage, NotificationQuery,
+        NotificationRequest, NotificationSource,
+    };
+    let root = private_root();
+    let root = root.path();
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.join("omp")).unwrap();
+    let (registry, _server) = open(root);
+    let service =
+        crate::notifications::NotificationService::open(&root.join("notifications")).unwrap();
+    registry.configure_notifications(service.clone()).unwrap();
+    let spec = launch_spec(root, "reporter", NATIVE_ID);
+    send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: Some(spec.clone()),
+        },
+    );
+    let author = live(&registry, &spec.home);
+    let workspace = registry.snapshot().unwrap().workspaces.remove(0);
+    let ChannelResponse::Listed { channels, .. } = channel(
+        &registry,
+        None,
+        ChannelRequest::List {
+            workspace_id: workspace.id.clone(),
+            after: None,
+            limit: 8,
+        },
+    )
+    .unwrap() else {
+        panic!("expected channels");
+    };
+    let desk = channels.into_iter().find(|c| c.name == "#desk").unwrap();
+    let body = "unique private report body";
+    let request = || post(&desk.id, body, PostIntent::Report);
+    let first = agent_channel(&registry, &author, request()).unwrap();
+    assert_eq!(agent_channel(&registry, &author, request()).unwrap(), first);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let value = service
+            .request(
+                NotificationRequest::Inspect {
+                    query: NotificationQuery::default(),
+                    after: None,
+                },
+                None,
+                &|| true,
+            )
+            .unwrap()
+            .into_json()
+            .unwrap();
+        assert!(!value.to_string().contains(body));
+        let page: NotificationPage = serde_json::from_value(value).unwrap();
+        if let [record] = page.notifications.as_slice() {
+            assert_eq!(record.kind, NotificationKind::Attention);
+            let NotificationSource::Channel(source) = &record.source else {
+                panic!("expected channel source");
+            };
+            assert_eq!(source.workspace_id, workspace.id);
+            assert_eq!(source.channel_id, desk.id);
+            assert_eq!(source.message_id.0, first["message"]["id"]);
+            assert_eq!(source.intent, ChannelAttentionKind::Report);
+            break;
+        }
+        assert!(page.notifications.is_empty());
+        assert!(
+            std::time::Instant::now() < deadline,
+            "attention was not routed"
+        );
+        thread::sleep(std::time::Duration::from_millis(10));
+    }
+    registry.shutdown().unwrap();
+    service.shutdown().unwrap();
+}
+
+#[test]
 fn verified_resume_inherits_channel_history_but_not_live_delivery() {
     let root = private_root();
     let root = root.path();

@@ -116,6 +116,10 @@ pub struct ChannelEngine {
     subscriptions: AtomicUsize,
     generation: Mutex<u64>,
     changed: Condvar,
+    attention_wake: (
+        crossbeam_channel::Sender<()>,
+        crossbeam_channel::Receiver<()>,
+    ),
 }
 
 type LaunchActive = dyn Fn(&str) -> bool + Send + Sync;
@@ -158,6 +162,7 @@ impl ChannelEngine {
             subscriptions: AtomicUsize::new(0),
             generation: Mutex::new(0),
             changed: Condvar::new(),
+            attention_wake: crossbeam_channel::bounded(1),
         }
     }
 
@@ -273,6 +278,17 @@ impl ChannelEngine {
             if changed {
                 self.invalidate();
             }
+            if changed
+                && matches!(
+                    &response,
+                    ChannelResponse::Posted {
+                        attention: true,
+                        ..
+                    }
+                )
+            {
+                let _ = self.attention_wake.0.try_send(());
+            }
             Ok(response)
         })
     }
@@ -306,6 +322,39 @@ impl ChannelEngine {
             Err(StoreAdmission::Busy) => Ok(None),
             Err(error) => Err(error.into_error()),
         }
+    }
+
+    pub(crate) fn attention_waker(&self) -> crossbeam_channel::Receiver<()> {
+        self.attention_wake.1.clone()
+    }
+
+    pub(crate) fn deliver_attention(
+        &self,
+        service: &crate::notifications::NotificationService,
+        session: &bkpr_protocol::SessionInfo,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<bool> {
+        let event = {
+            let mut writer = self
+                .acquire_store(Instant::now() + STORE_WAIT, cancelled)
+                .map_err(StoreAdmission::into_error)?;
+            writer.store.as_mut().unwrap().next_attention(session)?
+        };
+        let Some((source, at)) = event else {
+            return Ok(false);
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis();
+        let id = source.message_id.clone();
+        if now < u128::from(at.saturating_add(crate::notifications::CHANNEL_ATTENTION_RETRY_MS)) {
+            service.record_channel_attention(source, at)?;
+        }
+        let mut writer = self
+            .acquire_store(Instant::now() + STORE_WAIT, cancelled)
+            .map_err(StoreAdmission::into_error)?;
+        writer.store.as_mut().unwrap().finish_attention(&id)?;
+        Ok(true)
     }
 
     /// Wake waiters to recheck authority after workspace, attachment or session invalidation.
