@@ -132,7 +132,8 @@ impl PaneGeometry {
 
 const NATIVE_PANE: usize = 0;
 const SIDEBAR_EDGE_PANE: usize = 11;
-const CYAN_PANE: usize = 12;
+const CHAT_PANE: usize = 12;
+const CYAN_PANE: usize = 13;
 
 #[derive(Default)]
 struct SplitGeometry {
@@ -141,7 +142,7 @@ struct SplitGeometry {
 }
 pub(crate) struct ChromeGraphics(
     SvgGraphics,
-    Option<[DecorationStyle; 16]>,
+    Option<[DecorationStyle; 17]>,
     Option<DecorationEvidence>,
     SplitGeometry,
     Option<bkpr_tui_framework::button::Materials>,
@@ -209,9 +210,12 @@ impl ChromeGraphics {
                         .unwrap_or(popup.background),
                     ..popup
                 };
-                let tinted_pane = DecorationStyle {
-                    background: crate::appearance::chat_background(host, Some(6))
-                        .unwrap_or(pane.background),
+                let [neutral, cyan, parent] =
+                    crate::appearance::chat_backgrounds(host).unwrap_or([pane.background; 3]);
+                let chat_pane = |background| DecorationStyle {
+                    kind: bkpr_tui_framework::decoration::DecorationKind::RecessedOpaqueOpening,
+                    background,
+                    surface: parent,
                     ..pane
                 };
                 let sidebar_edge = DecorationStyle {
@@ -234,7 +238,8 @@ impl ChromeGraphics {
                     region(Some(3)),
                     region(Some(4)),
                     sidebar_edge,
-                    tinted_pane,
+                    chat_pane(neutral),
+                    chat_pane(cyan),
                     idle,
                     hover,
                     pressed,
@@ -371,7 +376,7 @@ impl ChromeGraphics {
         let mut ready = 0;
         for (index, &(_, _, accent)) in sections.iter().enumerate() {
             let style = match accent {
-                None => styles[NATIVE_PANE],
+                None => styles[CHAT_PANE],
                 Some(6) => styles[CYAN_PANE],
                 _ => continue,
             };
@@ -950,8 +955,9 @@ mod tests {
         for (index, rect) in absolute.into_iter().enumerate() {
             assert!(chrome.decorate_pane(&mut native, rect, index, 1 + index as u32 * 64, false));
         }
-        assert_eq!(chat, native);
         assert_eq!(chat.images.len(), 1);
+        assert_ne!(chat.images[0].pixels, native.images[0].pixels);
+        assert_eq!(chat.placements.len(), native.placements.len());
         sections[2].2 = Some(6);
         let mut tinted = bkpr_tui_framework::graphics_frame(size);
         assert_eq!(
@@ -961,12 +967,11 @@ mod tests {
         assert_eq!(tinted.images.len(), 2);
         assert_eq!(tinted.placements.len(), native.placements.len());
         for (mut tinted, native) in tinted.placements.into_iter().zip(native.placements) {
-            assert_eq!(
-                tinted.image_id != native.image_id,
-                native.placement_id > 2 * 64
-            );
+            assert_ne!(tinted.image_id, native.image_id);
             tinted.image_id = native.image_id;
             tinted.generation = native.generation;
+            assert_eq!(tinted.layer, bkpr_protocol::ImageLayer::BelowText);
+            tinted.layer = native.layer;
             assert_eq!(tinted, native);
         }
 

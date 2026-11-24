@@ -29,7 +29,7 @@
 * **agents:** scope native collaboration approvals to verified managed Claude registrations and fresh, admitted Codex threads
 * **tui:** retain recent channel history when switching. Shift-Enter is the only newline shortcut.
 * **tui:** copy a chat history selection without leaving the composer, edit drafts with readline shortcuts, and label new posts and mentions with the effective pane title.
-* **tui:** keep chat in one pane with recessed sections. Match neutral interiors to the pane, tint only the composer, and retain the same layout in plain and fancy modes.
+* **tui:** keep chat in one pane with recessed sections. Use slightly lighter section interiors, tint the full composer, and match the edge materials to the pane and section fills.
 * **tui:** align workspace chat badges with pane status icons and extend selected sidebar highlights cleanly to the pane edge.
 
 ## [0.11.0](https://github.com/calops/bkpr/compare/v0.10.0...v0.11.0) (2026-11-23)

@@ -35,6 +35,8 @@ pub enum DecorationKind {
     Recessed,
     /// Recessed material with a transparent left gutter outside the bevel.
     RecessedTransparentLeftGutter,
+    /// Recess with a known opening fill, composited above backgrounds but below glyphs.
+    RecessedOpaqueOpening,
     /// Exterior shadow with a transparent interior.
     Raised,
     /// Exterior shadow with an opaque interior in the sparse perimeter tiles.
@@ -355,7 +357,9 @@ impl PreparedDecoration {
                 source_height,
                 layer: if matches!(
                     self.style.kind,
-                    DecorationKind::ButtonRaised | DecorationKind::ButtonPressed
+                    DecorationKind::ButtonRaised
+                        | DecorationKind::ButtonPressed
+                        | DecorationKind::RecessedOpaqueOpening
                 ) {
                     ImageLayer::BelowText
                 } else {
@@ -560,11 +564,13 @@ impl Material {
                     [0.0; 4]
                 }
             }
-            DecorationKind::Recessed | DecorationKind::RecessedTransparentLeftGutter
+            DecorationKind::Recessed
+            | DecorationKind::RecessedTransparentLeftGutter
+            | DecorationKind::RecessedOpaqueOpening
                 if distance >= 0.0 =>
             {
                 let shadow = opacity * self.blurred_outside(tile, x, y);
-                if gutter {
+                if gutter || self.style.kind == DecorationKind::RecessedOpaqueOpening {
                     let [r, g, b] = self.style.background.map(|c| f64::from(c) * (1.0 - shadow));
                     [r, g, b, 255.0]
                 } else {
@@ -573,7 +579,9 @@ impl Material {
             }
             // Rounded corners may reach into native content cells. Their
             // outside mask stays opaque, as in the source recessed material.
-            DecorationKind::Recessed | DecorationKind::RecessedTransparentLeftGutter => {
+            DecorationKind::Recessed
+            | DecorationKind::RecessedTransparentLeftGutter
+            | DecorationKind::RecessedOpaqueOpening => {
                 let [r, g, b] = self.bevel(tile, x, y, distance);
                 [r, g, b, 255.0]
             }
@@ -747,6 +755,26 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn opaque_opening_keeps_child_color_beyond_the_cell_gutter() {
+        let style = DecorationStyle {
+            kind: DecorationKind::RecessedOpaqueOpening,
+            ..material()
+        };
+        let material = Material {
+            style,
+            cell: [10, 20],
+            tile: atlas_size(style, [10, 20]).unwrap().map(|side| side / 3),
+        };
+        assert_eq!(material.sample(1, 1.5, 0.5), [20.0, 20.0, 20.0, 255.0]);
+        let [r, g, b, alpha] = material.sample(1, 1.5, 25.5);
+        assert_eq!(alpha, 255.0);
+        for channel in [r, g, b] {
+            assert!((channel - 30.0).abs() < 0.1);
+        }
+    }
+
     #[test]
     fn stretched_edges_do_not_filter_neighboring_corner_tiles() {
         let transparent = DecorationStyle {

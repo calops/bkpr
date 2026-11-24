@@ -193,7 +193,7 @@ struct PaintKey {
     read_only: bool,
     graphics: bool,
     focused: bool,
-    backgrounds: [ColorSource; 2],
+    backgrounds: [ColorSource; 3],
 }
 
 impl Default for Paint {
@@ -306,9 +306,9 @@ impl Paint {
         frame.foreground = fg;
         frame.background = bg;
         frame.palette.clear();
-        let style = theme.style(Role::Base);
+        let style = card_style(theme, Role::Base, key.backgrounds[2]);
         for cell in frame.rows.iter_mut().flat_map(|row| &mut row.cells) {
-            cell.style.clone_from(style);
+            cell.style.clone_from(&style);
         }
     }
 
@@ -534,6 +534,8 @@ impl Chat {
             return;
         }
         paint.inlay_mask = Some(mask);
+        let parent = paint.key.expect("painted chat").backgrounds[2];
+        let mut border_rows = Vec::new();
         let mut plain = [Rect::default(); 3];
         let mut count = 0;
         for (index, &(outer, _, _)) in paint.inlays.iter().enumerate() {
@@ -541,20 +543,24 @@ impl Chat {
                 plain[count] = outer;
                 count += 1;
             }
-            let frame = &mut paint.surface.frame;
             let bottom = outer.y + outer.height - 1;
             let right = outer.x + outer.width - 1;
-            clear(frame, row(outer.x, outer.y, outer.width));
-            clear(frame, row(outer.x, bottom, outer.width));
+            border_rows.extend([
+                row(outer.x, outer.y, outer.width),
+                row(outer.x, bottom, outer.width),
+            ]);
             for y in outer.y + 1..bottom {
-                clear(frame, row(outer.x, y, 1));
-                clear(frame, row(right, y, 1));
+                border_rows.extend([row(outer.x, y, 1), row(right, y, 1)]);
             }
+        }
+        for rect in border_rows {
+            clear(&mut paint.surface.frame, rect);
+            paint.fill_card(theme, rect, parent);
         }
         let mut lines = Vec::new();
         window::tiled_border_rows(paint.surface.frame.size, &plain[..count], None, &mut lines);
         for (rect, label, _) in lines {
-            paint.line(theme, rect, &label, Role::Border, false);
+            paint.card_line(theme, rect, &label, Role::Border, false, parent);
         }
     }
     pub(in crate::app) fn redraw(&mut self) {
@@ -752,7 +758,7 @@ impl Chat {
         read_only: bool,
         graphics: bool,
         focused: bool,
-        backgrounds: [ColorSource; 2],
+        backgrounds: [ColorSource; 3],
     ) {
         let size = outer.size(screen);
         let key = PaintKey {
@@ -786,7 +792,7 @@ impl Chat {
             read_only,
             graphics,
             focused,
-            backgrounds: [list_background, composer_background],
+            backgrounds: [list_background, composer_background, _],
             ..
         } = key;
         self.images.start_frame();
@@ -1638,9 +1644,10 @@ mod tests {
     };
     use termwiz::input::InputParser;
 
-    const BACKGROUNDS: [ColorSource; 2] = [
+    const BACKGROUNDS: [ColorSource; 3] = [
         ColorSource::Rgb([14, 15, 16]),
         ColorSource::Rgb([15, 22, 24]),
+        ColorSource::Rgb([8, 9, 10]),
     ];
 
     fn open_channel(chat: &mut Chat, last_sequence: u64) {

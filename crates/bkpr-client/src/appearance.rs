@@ -390,14 +390,15 @@ pub(crate) fn guide_background(host: &ColorProbe, accent: Option<u8>) -> Option<
     )
 }
 
-/// Chat recesses match the pane interior; only the input has a subdued accent.
-pub(crate) fn chat_background(host: &ColorProbe, accent: Option<u8>) -> Option<[u8; 3]> {
-    let background = guide_background(host, None)?;
-    Some(
-        accent
-            .and_then(|index| host.palette.get(&usize::from(index)))
-            .map_or(background, |&color| mode_tint(background, color, 0.16)),
-    )
+/// List, composer, and parent fills for the nested workspace chat pane.
+pub(crate) fn chat_backgrounds(host: &ColorProbe) -> Option<[[u8; 3]; 3]> {
+    let parent = guide_background(host, None)?;
+    let neutral = blend([255; 3], parent, 5);
+    let composer = host
+        .palette
+        .get(&6)
+        .map_or(neutral, |&accent| mode_tint(neutral, accent, 0.16));
+    Some([neutral, composer, parent])
 }
 
 fn theme_styles(evidence: &ColorProbe) -> ThemeStyles {

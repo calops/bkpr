@@ -5717,7 +5717,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         let mut theme = Theme::default();
         let mut ui_palette = crate::themes::Palette::default();
         let mut chat_palette = None;
-        let mut chat_backgrounds = [ColorSource::Default; 2];
+        let mut chat_backgrounds = [ColorSource::Default; 3];
         let mut project_palette = crate::project_colors::ProjectPalette::default();
         let mut chrome_projects = Vec::new();
         let mut chrome_foregrounds = Vec::new();
@@ -6794,10 +6794,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 );
                 if chat_palette != Some(palette) {
                     chat_palette = Some(palette);
-                    chat_backgrounds = [None, Some(6)].map(|accent| {
-                        crate::appearance::chat_background(ui_colors, accent)
-                            .map_or(ColorSource::Default, ColorSource::Rgb)
-                    });
+                    chat_backgrounds = crate::appearance::chat_backgrounds(ui_colors)
+                        .map_or([ColorSource::Default; 3], |rgb| rgb.map(ColorSource::Rgb));
                 }
                 app.chat.paint(
                     chat_rect,
