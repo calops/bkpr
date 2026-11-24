@@ -1,6 +1,7 @@
 use super::*;
 use crate::attachments::SessionTarget;
 use crate::transport::Lifecycle;
+use bkpr_protocol::{ChannelNotificationSource, NotificationSource};
 use std::{io, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 
@@ -1592,7 +1593,6 @@ impl Coordinator {
                 true
             }
             Ok(Update::Reset) => {
-                self.desktop.cancel_channels(owner);
                 app.chat.reset_catalog();
                 true
             }
@@ -1600,15 +1600,7 @@ impl Coordinator {
                 let mut changed = false;
                 for change in changes {
                     match change {
-                        ChannelCatalogChange::Upsert { channel, attention } => {
-                            if let Some(attention) = attention {
-                                self.desktop.queue_channel(
-                                    owner,
-                                    channel.workspace_id.clone(),
-                                    channel.id.clone(),
-                                    attention,
-                                );
-                            }
+                        ChannelCatalogChange::Upsert { channel, .. } => {
                             changed |= app.chat.upsert(channel);
                         }
                         ChannelCatalogChange::WorkspaceClosed { workspace_id } => {
@@ -1620,7 +1612,6 @@ impl Coordinator {
             }
             Err(error) => {
                 session.catalog.take();
-                self.desktop.cancel_channels(owner);
                 app.chat.catalog_error(&error);
                 true
             }
@@ -1797,41 +1788,45 @@ impl Coordinator {
                 slot: index,
                 generation: session.generation,
             };
-            let attended = (index == self.selected && terminal.observed_focus() == Some(true))
+            let Some(attachment) = &session.owner else {
+                continue;
+            };
+            let physically_focused =
+                index == self.selected && terminal.observed_focus() == Some(true);
+            let attended = physically_focused
                 .then(|| session.app.as_ref().and_then(App::focused_application))
                 .flatten();
             for record in page.notifications {
-                self.desktop.show(
-                    owner,
-                    record,
-                    |source| {
-                        let attachment = session.owner.as_ref()?;
-                        if !crate::desktop::source_session_is_current(source, attachment.info()) {
-                            return None;
-                        }
-                        let context = session
-                            .app
-                            .as_ref()
-                            .map(|app| {
-                                crate::desktop::Context::resolve(
-                                    source,
-                                    attachment.info(),
-                                    &app.registry,
-                                )
-                            })
-                            .unwrap_or_default();
-                        if context.current
-                            && attended
-                                .as_ref()
-                                .is_some_and(|(pane, _)| *pane == source.pane_id)
-                        {
-                            return None;
-                        }
-                        Some(context)
-                    },
-                    terminal,
-                    out,
-                )?;
+                let NotificationSource::Pane(source) = &record.source else {
+                    if let NotificationSource::Channel(source) = &record.source
+                        && crate::desktop::source_session_is_current(
+                            &source.session,
+                            attachment.info(),
+                        )
+                    {
+                        self.desktop.queue_channel(owner, record);
+                    }
+                    continue;
+                };
+                if !crate::desktop::source_session_is_current(&source.session, attachment.info()) {
+                    continue;
+                }
+                let context = session
+                    .app
+                    .as_ref()
+                    .map(|app| {
+                        crate::desktop::Context::resolve(source, attachment.info(), &app.registry)
+                    })
+                    .unwrap_or_default();
+                if context.current
+                    && attended
+                        .as_ref()
+                        .is_some_and(|(pane, _)| *pane == source.pane_id)
+                {
+                    continue;
+                }
+                let context = context.description(source);
+                self.desktop.show(owner, record, &context, terminal, out)?;
             }
             out.flush()?;
             break;
@@ -1857,47 +1852,52 @@ impl Coordinator {
             }) else {
                 continue;
             };
-            let Some(app) = &session.app else { continue };
-            let Some(workspace) = app
-                .registry
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.id == alert.target.workspace)
-            else {
+            let NotificationSource::Channel(source) = &alert.record.source else {
                 continue;
             };
-            let Some(channel) = app.chat.channel(&workspace.id, &alert.target.channel) else {
+            let Some(attachment) = &session.owner else {
                 continue;
             };
-            if channel.read_through >= alert.target.attention.sequence {
+            if !crate::desktop::source_session_is_current(&source.session, attachment.info()) {
                 continue;
             }
+            let app = session.app.as_ref();
+            let channel =
+                app.and_then(|app| app.chat.channel(&source.workspace_id, &source.channel_id));
             let attending = alert.owner.slot == self.selected
                 && terminal.observed_focus() == Some(true)
-                && app.chat.is_attending()
-                && !app.state.sidebar.active
-                && !app.state.prefix
-                && app.session_navigation_allowed()
-                && !app.diagnostic_active()
-                && app.image_viewer.is_none()
-                && app
-                    .chat
-                    .rendered(&channel.id, alert.target.attention.sequence);
+                && channel.is_some()
+                && app.is_some_and(|app| {
+                    app.chat.workspace() == Some(source.workspace_id.as_str())
+                        && app.chat.is_attending()
+                        && !app.state.sidebar.active
+                        && !app.state.prefix
+                        && app.session_navigation_allowed()
+                        && !app.diagnostic_active()
+                        && app.image_viewer.is_none()
+                        && app.chat.rendered(
+                            &source.channel_id,
+                            &source.message_id,
+                            source.sequence,
+                        )
+                });
             if attending {
                 continue;
             }
+            let workspace = app.and_then(|app| {
+                app.registry
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == source.workspace_id)
+            });
             let context = format!(
                 "{} · {} · {}",
-                safe_text(
-                    session
-                        .identity
-                        .as_ref()
-                        .map_or("Session", |info| info.name.as_str())
-                ),
-                safe_text(&workspace.name),
-                safe_text(&channel.name),
+                safe_text(&attachment.info().name),
+                safe_text(workspace.map_or("Unknown workspace", |workspace| &workspace.name)),
+                safe_text(channel.map_or("Unknown channel", |channel| &channel.name)),
             );
-            self.desktop.show_channel(alert, &context, terminal, out)?;
+            self.desktop
+                .show(alert.owner, alert.record, &context, terminal, out)?;
             attempted = true;
         }
         if attempted {
@@ -1909,21 +1909,24 @@ impl Coordinator {
     fn open_channel_notification(
         &mut self,
         owner: crate::tree::Owner,
-        target: crate::desktop::ChannelTarget,
+        target: ChannelNotificationSource,
         size: Size,
     ) -> Result<()> {
         let current = self.sessions.get(owner.slot).is_some_and(|session| {
             session.present
                 && session.phase == Phase::Online
                 && session.generation == owner.generation
+                && session.owner.as_ref().is_some_and(|attachment| {
+                    crate::desktop::source_session_is_current(&target.session, attachment.info())
+                })
                 && session.app.as_ref().is_some_and(|app| {
                     app.registry
                         .workspaces
                         .iter()
-                        .any(|workspace| workspace.id == target.workspace)
+                        .any(|workspace| workspace.id == target.workspace_id)
                         && app
                             .chat
-                            .contains_channel(&target.workspace, &target.channel)
+                            .contains_channel(&target.workspace_id, &target.channel_id)
                 })
         });
         if !current {
@@ -1936,12 +1939,12 @@ impl Coordinator {
             self.select(owner.slot, size)?;
             if self.selected == owner.slot {
                 let app = self.app_mut();
-                app.open_chat(target.workspace.clone());
+                app.open_chat(target.workspace_id.clone());
                 app.chat.jump(
-                    target.workspace,
-                    target.channel,
-                    target.attention.message_id,
-                    target.attention.sequence,
+                    target.workspace_id,
+                    target.channel_id,
+                    target.message_id,
+                    target.sequence,
                 );
             }
         }
@@ -1965,8 +1968,8 @@ impl Coordinator {
         };
         terminal.close_notification(out, id)?;
         let source = match target.source {
-            crate::desktop::Source::Pane(source) => source,
-            crate::desktop::Source::Channel(channel) => {
+            NotificationSource::Pane(source) => source,
+            NotificationSource::Channel(channel) => {
                 self.open_channel_notification(target.owner, channel, size)?;
                 return Ok(true);
             }

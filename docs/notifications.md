@@ -324,13 +324,13 @@ Each admitted session has one cancellable observer outside the management-worker
 
 Only a positively observed, locally focused application pane with matching current source identity suppresses an alert. Logical session focus is not physical evidence. Click navigation requires confirmed activation reporting and closure support; otherwise the terminal may provide focus-only or non-actionable presentation according to its capabilities. Activation checks attachment generation, host/session runtime, pane ownership, process birth, launch and binding generation against current published metadata, then uses ordinary client navigation. Retired sources and blocking dialogs produce an honest local toast, not input injection, process creation or deferred automatic navigation.
 
-Workspace channel questions and reports use the same OSC 99 presentation. A
-live catalog update carries the original message reference, not its body or
-attachments. Nearby reports in the same channel coalesce into one alert for
-the newest report. Clicking a channel alert opens its original message, and
-suppression requires that message to be rendered in the physically focused
-channel view. Channel unread attention is durable even when the alert can't
-be shown. New attachments and catalog resets don't replay old alerts.
+Workspace channel questions and reports arrive on the same notification
+subscription as pane alerts. The typed source carries the owning session,
+workspace, channel, message ID and sequence, not the body or attachments.
+Clicking opens the original message. The TUI suppresses presentation only
+when the exact source is rendered in the physically focused channel view.
+The catalog supplies unread badges, not notifications. New attachments and
+reconnects start a fresh feed baseline without replaying older alerts.
 
 Unconfirmed/unsupported OSC 99 means no OS presentation attempt; a UI toast is not an OS delivery receipt. OSC 99 has no provider-acceptance/display acknowledgement, so successful writes remain unknown outcomes. Multiple TUI instances may independently notify, and the OS may group or discard attempts. No direct native fallback or new dependency is installed: [notify-rust 4.19](https://docs.rs/notify-rust/4.19.0/notify_rust/) was evaluated, but a TUI-local native provider can target the wrong machine when the TUI itself is SSH-hosted. The selected terminal path preserves viewing-machine ownership.
 

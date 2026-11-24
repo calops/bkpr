@@ -207,11 +207,14 @@ impl Chat {
         self.channel(workspace, channel).is_some()
     }
 
-    pub(super) fn rendered(&self, channel: &ChannelId, sequence: u64) -> bool {
-        self.active
-            .as_ref()
-            .is_some_and(|active| active.id == *channel)
-            && self.paint.rendered.contains(&sequence)
+    pub(super) fn rendered(&self, channel: &ChannelId, message: &MessageId, sequence: u64) -> bool {
+        self.paint.rendered.contains(&sequence)
+            && self.active.as_ref().is_some_and(|active| {
+                active.id == *channel
+                    && active.history.entries.iter().any(|entry| {
+                        entry.sequence() == sequence && entry.message.message.id == *message
+                    })
+            })
     }
 
     pub(super) fn summary(&self) -> Option<&ChannelSummary> {
