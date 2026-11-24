@@ -14,12 +14,6 @@ const HISTORY_ROWS: usize = 160;
 const HISTORY_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Focus {
-    Composer,
-    Channels,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
 struct Anchor {
     sequence: u64,
     line: usize,
@@ -166,7 +160,7 @@ pub(super) struct Chat {
     recent_history: VecDeque<(ChannelId, History)>,
     selected: HashMap<String, ChannelId>,
     ids: Vec<ChannelId>,
-    focus: Option<Focus>,
+    channel_chooser: bool,
     list_cursor: usize,
     drafts: HashMap<ChannelId, Draft>,
     sends: HashMap<ChannelId, Send>,
@@ -191,12 +185,12 @@ impl Chat {
         self.workspace.is_some()
     }
 
-    pub(super) fn is_editing(&self) -> bool {
-        self.editor.is_some()
+    pub(super) fn dialog_open(&self) -> bool {
+        self.editor.is_some() || self.channel_chooser
     }
 
     pub(super) fn is_attending(&self) -> bool {
-        self.focus == Some(Focus::Composer) && !self.is_editing()
+        self.visible() && !self.dialog_open()
     }
 
     pub(super) fn channel(&self, workspace: &str, channel: &ChannelId) -> Option<&ChannelSummary> {
@@ -222,13 +216,12 @@ impl Chat {
 
     pub(super) fn open(&mut self, workspace: String) {
         if self.workspace.as_ref() == Some(&workspace) {
-            self.focus = Some(Focus::Composer);
+            self.set_channel_chooser(false);
             self.redraw();
             return;
         }
         self.close();
         self.workspace = Some(workspace);
-        self.focus = Some(Focus::Composer);
         self.refresh_channels();
     }
 
@@ -238,7 +231,7 @@ impl Chat {
         }
         self.retain_active_history();
         self.workspace = None;
-        self.focus = None;
+        self.channel_chooser = false;
         self.editor = None;
         self.images_wanted.clear();
         self.mark = None;
@@ -447,6 +440,21 @@ impl Chat {
         }
     }
 
+    pub(super) fn set_channel_chooser(&mut self, open: bool) {
+        if self.channel_chooser == open {
+            return;
+        }
+        self.channel_chooser = open;
+        if open {
+            self.list_cursor = self
+                .active
+                .as_ref()
+                .and_then(|active| self.ids.iter().position(|id| *id == active.id))
+                .unwrap_or(0);
+        }
+        self.paint.invalidate_hits();
+    }
+
     fn writable(&self, read_only: bool) -> bool {
         !read_only && self.summary().is_some_and(|channel| !channel.direct)
     }
@@ -464,7 +472,7 @@ impl Chat {
             if !read_only {
                 editor.form.paste(text);
             }
-        } else if self.focus == Some(Focus::Composer)
+        } else if !self.channel_chooser
             && self.writable(read_only)
             && let Some(active) = &self.active
             && !self.sends.contains_key(&active.id)
@@ -475,6 +483,7 @@ impl Chat {
     }
 
     fn start_editor(&mut self, create: bool) {
+        self.set_channel_chooser(false);
         let form = if create {
             self.workspace.clone().map(chat_controls::Editor::create)
         } else {
@@ -504,9 +513,9 @@ impl Chat {
     }
 
     pub(super) fn context(&self) -> Context {
-        if self.is_editing() {
+        if self.editor.is_some() {
             Context::ChatControls
-        } else if self.focus == Some(Focus::Channels) {
+        } else if self.channel_chooser {
             Context::ChatChannels
         } else if self.completing() {
             Context::ChatMention
@@ -528,15 +537,17 @@ impl Chat {
             ChatAction::Send | ChatAction::Newline | ChatAction::Edit(_) => {
                 self.writable(read_only) && send.is_none()
             }
-            ChatAction::Choose if self.completing() => self.active.as_ref().is_some_and(|active| {
-                active.roster_ready
-                    && self
-                        .drafts
-                        .get(&active.id)
-                        .is_some_and(|draft| draft.choices(&active.roster).next().is_some())
-            }),
+            ChatAction::Choose if !self.channel_chooser && self.completing() => {
+                self.active.as_ref().is_some_and(|active| {
+                    active.roster_ready
+                        && self
+                            .drafts
+                            .get(&active.id)
+                            .is_some_and(|draft| draft.choices(&active.roster).next().is_some())
+                })
+            }
             ChatAction::Choose => !self.ids.is_empty(),
-            ChatAction::ToggleList | ChatAction::Back => true,
+            ChatAction::ChannelChooser | ChatAction::Back => true,
         }
     }
 
@@ -550,20 +561,15 @@ impl Chat {
             event,
             |action| !matches!(action, Action::Chat(action) if !self.supports(action, read_only)),
         );
-        let composing = self.focus == Some(Focus::Composer);
         match action {
-            Some(Action::Chat(ChatAction::ToggleList)) => {
-                self.focus = Some(if composing {
-                    Focus::Channels
-                } else {
-                    Focus::Composer
-                });
+            Some(Action::Chat(ChatAction::ChannelChooser)) => {
+                self.set_channel_chooser(!self.channel_chooser);
             }
             Some(Action::Chat(ChatAction::Back)) => {
-                if self.completing() {
+                if self.channel_chooser {
+                    self.set_channel_chooser(false);
+                } else if self.completing() {
                     self.draft().unwrap().completion = None;
-                } else if !composing {
-                    self.focus = Some(Focus::Composer);
                 } else {
                     return Effect::Native;
                 }
@@ -583,7 +589,7 @@ impl Chat {
                     draft.edit(edit);
                 }
             }
-            Some(Action::Chat(ChatAction::Choose)) if composing => {
+            Some(Action::Chat(ChatAction::Choose)) if !self.channel_chooser => {
                 if let Some(active) = &self.active
                     && let Some(draft) = self.drafts.get_mut(&active.id)
                 {
@@ -594,7 +600,7 @@ impl Chat {
                 if let Some(id) = self.ids.get(self.list_cursor).cloned() {
                     self.select(id);
                 }
-                self.focus = Some(Focus::Composer);
+                self.set_channel_chooser(false);
             }
             Some(Action::History(HistoryAction::PageUp)) => {
                 self.scroll(-(self.paint.page_rows().max(1) as isize))
@@ -603,15 +609,15 @@ impl Chat {
                 self.scroll(self.paint.page_rows().max(1) as isize)
             }
             Some(Action::History(HistoryAction::Live)) => self.live_tail(),
-            Some(Action::Navigate(navigation)) => self.navigate(navigation, composing),
-            _ if composing && self.writable(read_only) => self.composer_key(event),
+            Some(Action::Navigate(navigation)) => self.navigate(navigation),
+            _ if !self.channel_chooser && self.writable(read_only) => self.composer_key(event),
             _ => {}
         }
         Effect::None
     }
 
-    fn navigate(&mut self, navigation: Navigation, composing: bool) {
-        if composing {
+    fn navigate(&mut self, navigation: Navigation) {
+        if !self.channel_chooser {
             if let Some(active) = &self.active
                 && let Some(draft) = self.drafts.get_mut(&active.id)
             {
@@ -787,10 +793,9 @@ impl Chat {
                 if let Some(id) = self.ids.get(index).cloned() {
                     self.select(id);
                 }
-                self.focus = Some(Focus::Composer);
+                self.set_channel_chooser(false);
             }
-            (B::Left, A::Press, Some(Hit::List)) => self.focus = Some(Focus::Channels),
-            (B::Left, A::Press, Some(Hit::Composer)) => self.focus = Some(Focus::Composer),
+            (B::Left, A::Press, Some(Hit::OpenChannels)) => self.set_channel_chooser(true),
             (B::Left, A::Press, Some(Hit::Mention(index))) if writable => {
                 if let Some(active) = &self.active
                     && let Some(draft) = self.drafts.get_mut(&active.id)
@@ -812,7 +817,6 @@ impl Chat {
                 {
                     self.drafts.entry(active.id.clone()).or_default().reply_to =
                         Some(entry.message.message.id.clone());
-                    self.focus = Some(Focus::Composer);
                 }
             }
             _ => {}
@@ -1069,7 +1073,6 @@ impl Chat {
                         if select {
                             self.editor = None;
                             self.select(id);
-                            self.focus = Some(Focus::Composer);
                         }
                     }
                     result => {

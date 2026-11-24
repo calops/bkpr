@@ -2364,7 +2364,7 @@ impl App {
         self.state.form.is_none()
             && self.sidebar_menu.is_none()
             && !self.picker_open()
-            && !self.chat.is_editing()
+            && !self.chat.dialog_open()
             && self
                 .consent
                 .as_ref()

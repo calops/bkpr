@@ -155,7 +155,8 @@ pub enum ChatAction {
     Newline,
     /// Edits the active message draft without changing chat focus.
     Edit(EditAction),
-    ToggleList,
+    /// Opens or dismisses the explicit keyboard channel chooser.
+    ChannelChooser,
     Choose,
     Back,
 }
@@ -369,7 +370,8 @@ impl Action {
                 ChatAction::Edit(EditAction::Home) => "start of line",
                 ChatAction::Edit(EditAction::End) => "end of line",
                 ChatAction::Edit(edit) => Self::Edit(edit).description(context),
-                ChatAction::ToggleList => "channels / composer",
+                ChatAction::ChannelChooser if context == Context::ChatChannels => "close chooser",
+                ChatAction::ChannelChooser => "choose channel",
                 ChatAction::Choose if context == Context::ChatMention => "select agent mention",
                 ChatAction::Choose => "open channel",
                 ChatAction::Back => match context {
@@ -686,7 +688,7 @@ static BINDINGS: &[Binding] = &[
         "Tab",
         0,
         "Tab",
-        A::Chat(ChatAction::ToggleList),
+        A::Chat(ChatAction::ChannelChooser),
         4,
         false,
     ),
@@ -2011,7 +2013,7 @@ mod tests {
         );
         assert_eq!(
             lookup(Context::Chat, &tab),
-            Some(A::Chat(ChatAction::ToggleList))
+            Some(A::Chat(ChatAction::ChannelChooser))
         );
         assert_eq!(
             lookup(Context::ChatMention, &enter),

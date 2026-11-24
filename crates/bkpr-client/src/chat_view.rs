@@ -1,4 +1,4 @@
-use super::{Anchor, Chat, Draft, Focus, Send, chat_images};
+use super::{Anchor, Chat, Draft, Send, chat_images};
 use bkpr_protocol::{
     ColorSource, Cursor, CursorShape, Frame, SelectionSpan, Size, Style, channels::*,
 };
@@ -112,6 +112,7 @@ impl Entry {
 pub(super) enum Hit {
     Channel(usize),
     List,
+    OpenChannels,
     History(Option<usize>),
     Composer,
     Mention(usize),
@@ -380,6 +381,7 @@ impl Paint {
         theme: &Theme,
         body: Rect,
         background: ColorSource,
+        title: &str,
         settings: bool,
         create: bool,
     ) {
@@ -411,7 +413,7 @@ impl Paint {
             self.card_line(
                 theme,
                 row(body.x, body.y, remaining),
-                "Channels",
+                title,
                 Role::Title,
                 false,
                 background,
@@ -431,7 +433,7 @@ impl Paint {
         } else {
             self.line(theme, bounds, label, Role::Info, false);
         }
-        self.target(bounds, Hit::List);
+        self.target(bounds, Hit::OpenChannels);
     }
 
     fn target(&mut self, rect: Rect, hit: Hit) {
@@ -624,10 +626,6 @@ impl Chat {
             head: anchor,
             dragging: true,
         });
-        if self.focus != Some(Focus::Composer) {
-            self.focus = Some(Focus::Composer);
-            self.redraw();
-        }
         true
     }
 
@@ -840,7 +838,8 @@ impl Chat {
             width: size.cols,
             height: size.rows,
         };
-        let split = (size.cols >= LIST_MIN_WIDTH)
+        let list_only = self.channel_chooser;
+        let split = (!list_only && size.cols >= LIST_MIN_WIDTH)
             .then(|| {
                 crate::tiling::partition_at(
                     full,
@@ -850,7 +849,6 @@ impl Chat {
             })
             .flatten();
         let channels_wide = split.is_some();
-        let list_only = !channels_wide && self.focus == Some(Focus::Channels);
         let (list, thread_column) = split
             .map_or((list_only.then_some(full), full), |(list, _, right)| {
                 (Some(list), right)
@@ -864,7 +862,18 @@ impl Chat {
         if let Some(outer) = list {
             let body = paint.inlay(theme, outer, list_background, None);
             paint.target(outer, Hit::List);
-            paint.channel_controls(theme, body, list_background, writing, can_create);
+            paint.channel_controls(
+                theme,
+                body,
+                list_background,
+                if list_only {
+                    "Choose a channel"
+                } else {
+                    "Channels"
+                },
+                writing,
+                can_create,
+            );
             let list_height = body.height.saturating_sub(1);
             let selected = self.active.as_ref().map(|active| &active.id);
             let offset = self
@@ -888,7 +897,7 @@ impl Chat {
                 let name = channel_name(summary);
                 let full = format!("{lead}{name}");
                 let bounds = row(body.x, body.y + line as u16 + 1, body.width);
-                let chosen = self.focus == Some(Focus::Channels) && self.list_cursor == index;
+                let chosen = list_only && self.list_cursor == index;
                 let role = if summary.unread_attention {
                     Role::Warning
                 } else if selected == Some(id) {
@@ -1191,7 +1200,7 @@ impl Chat {
             let columns = body.width - button_width - composer_padding;
             let composer = body.y;
             let enabled = !self.sends.contains_key(&active.id);
-            let has_composer_focus = self.focus == Some(Focus::Composer) && focused && enabled;
+            let has_composer_focus = focused && enabled;
             let visible_from = caret_line.saturating_sub(composer_rows.saturating_sub(1) as usize);
             paint.target(
                 Rect {
@@ -1854,11 +1863,13 @@ mod tests {
         };
         assert_eq!(chat.paint.history, thread_body);
         assert_eq!(thread.y + thread.height, composer.y + 1);
-        assert!(matches!(chat.paint.hit(body.x, body.y), Some(Hit::List)));
+        assert!(matches!(
+            chat.paint.hit(body.x, body.y),
+            Some(Hit::OpenChannels)
+        ));
         assert_eq!(chat.surface().frame.cursor.y, body.y);
 
-        chat.focus = Some(Focus::Channels);
-        chat.redraw();
+        chat.set_channel_chooser(true);
         chat.paint(
             area(narrow),
             narrow,
@@ -1879,6 +1890,12 @@ mod tests {
                 .background_source,
             theme.selected_style(Role::Accent).background_source
         );
+
+        chat.set_channel_chooser(false);
+        chat.catalog.values_mut().next().unwrap().direct = true;
+        chat.paint(area(wide), wide, &theme, false, false, true, BACKGROUNDS);
+        assert!(!chat.surface().frame.cursor.visible);
+        assert!(!has_action(&chat, |hit| matches!(hit, Hit::Composer)));
     }
 
     #[test]

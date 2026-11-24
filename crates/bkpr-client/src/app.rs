@@ -865,6 +865,7 @@ impl App {
         );
     }
     fn enter_sidebar(&mut self) {
+        self.chat.set_channel_chooser(false);
         self.retire_resize();
         self.selection_focus_lost();
         self.close_search();

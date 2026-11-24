@@ -393,8 +393,7 @@ impl App {
     }
 
     pub(super) fn history_selection_owner(&self) -> bool {
-        self.chat.visible()
-            && !self.chat.is_editing()
+        self.chat.is_attending()
             && self.host_focused
             && !self.backgrounded
             && !self.state.sidebar.active
