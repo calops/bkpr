@@ -601,6 +601,7 @@ impl App {
         self.button_pointer = None;
         self.popover_button = None;
         self.chat.cancel_button_press();
+        self.chat.cancel_editor_press();
         self.recovery.cancel_button_press();
         if let Some(finder) = &mut self.finder {
             finder.cancel_copy_press();
@@ -835,6 +836,7 @@ impl App {
         {
             return;
         }
+        self.chat.close_editor();
         self.cancel_recovery();
         self.state.cancel();
         self.restore_theme_preview();
@@ -1488,6 +1490,8 @@ impl App {
             (64, (crate::themes::THEMES.len() as u16).saturating_add(6))
         } else if self.recovery.open() {
             (100, screen.rows.saturating_sub(4).min(36))
+        } else if self.chat.editor_open() {
+            (56, screen.rows.saturating_sub(4).min(23))
         } else {
             match self.state.form.as_ref().map(|form| &form.kind) {
                 Some(FormKind::CreateWorkspace | FormKind::CreateWindow) => (76, 12),
@@ -3364,6 +3368,7 @@ impl App {
             if self.consent.is_some()
                 || self.paste_offer.is_some()
                 || self.state.form.is_some()
+                || self.chat.editor_open()
                 || self.picker_open()
             {
                 let mut response = Some(Operation::Pane {
@@ -4293,7 +4298,7 @@ impl App {
             }
             return Ok(false);
         }
-        if self.state.form.is_some() || self.picker_open() {
+        if self.state.form.is_some() || self.picker_open() || self.chat.editor_open() {
             if self.state.prefix {
                 self.state.prefix = false;
                 self.state.suppressed.insert(event.key.clone());
@@ -4309,6 +4314,15 @@ impl App {
                 self.state.suppressed.insert(event.key);
                 return Ok(false);
             }
+        }
+        if self.chat.editor_open() {
+            self.state.suppressed.insert(event.key.clone());
+            let effect = self.chat.key(&event, self.options.read_only);
+            self.chat_effect(effect);
+            if !self.chat.editor_open() {
+                self.cancel_modal();
+            }
+            return Ok(false);
         }
         if self.overlays.escape_target() == Some("ui:modal")
             && crate::keyguide::lookup(self.guide_context(), &event)
@@ -4558,6 +4572,9 @@ impl App {
             self.chat.redraw();
             let effect = self.chat.key(&event, self.options.read_only);
             self.chat_effect(effect);
+            if self.chat.editor_open() {
+                self.begin_modal();
+            }
             return Ok(false);
         }
         if self.selection_key(&event)? {
@@ -4917,6 +4934,7 @@ impl App {
                     finder.cancel_copy_press();
                 }
                 self.recovery.cancel_button_press();
+                self.chat.cancel_editor_press();
             }
             if !matches!(
                 route,
@@ -4980,6 +4998,23 @@ impl App {
                 }
                 PointerRoute::Dismiss("ui:modal") => {
                     self.cancel_modal();
+                    return Ok(());
+                }
+                PointerRoute::Target {
+                    id: "ui:modal",
+                    content: true,
+                } if self.chat.editor_open() && !consent_open => {
+                    let rect = self.overlays.layer("ui:modal").unwrap().placement.content;
+                    let mut local = mouse;
+                    local.x -= rect.x;
+                    local.y -= rect.y;
+                    let effect =
+                        self.chat
+                            .editor_mouse(local, action, event_button, self.options.read_only);
+                    self.chat_effect(effect);
+                    if !self.chat.editor_open() {
+                        self.cancel_modal();
+                    }
                     return Ok(());
                 }
                 PointerRoute::Target {
@@ -5104,6 +5139,9 @@ impl App {
                 self.chat
                     .update_button_pointer(chat_target.then_some(point));
                 self.chat.release_button(self.options.read_only);
+                if self.chat.editor_open() && self.overlays.layer("ui:modal").is_none() {
+                    self.begin_modal();
+                }
             } else if action == MouseAction::Motion && chat_target {
                 self.chat.update_button_pointer(Some(point));
             }
@@ -5154,6 +5192,7 @@ impl App {
             return Ok(());
         }
         let modal = self.state.form.is_some()
+            || self.chat.editor_open()
             || self.picker_open()
             || self
                 .consent
@@ -5816,6 +5855,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         let mut popover_effects = graphics_frame(initial_size);
         let mut image_surface = UiSurface::new(initial_size);
         let mut image_effects = graphics_frame(initial_size);
+        let mut channel_form_effects = graphics_frame(initial_size);
         let mut chat_button_effects = graphics_frame(initial_size);
         let mut guide_effects = graphics_frame(initial_size);
         let mut artwork_effects = graphics_frame(initial_size);
@@ -6152,7 +6192,10 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     app.views.get(pane).map(|view| &view.metadata)
                 });
             }
-            let regular_modal = consent_open || app.state.form.is_some() || app.picker_open();
+            let regular_modal = consent_open
+                || app.state.form.is_some()
+                || app.picker_open()
+                || app.chat.editor_open();
             let popup =
                 regular_modal || app.image_viewer.is_some() || app.diagnostic_view.is_some();
             let placement = (regular_modal && app.image_viewer.is_none()).then(|| {
@@ -6327,6 +6370,18 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         &mut popup_surface.frame,
                         &theme,
                         pointer,
+                        graphics.button_painter(true),
+                    );
+                } else if app.chat.editor_open() {
+                    channel_form_effects.size = local;
+                    channel_form_effects.images.clear();
+                    channel_form_effects.placements.clear();
+                    app.chat.paint_editor(
+                        &mut popup_surface,
+                        local,
+                        &theme,
+                        app.options.read_only,
+                        &mut channel_form_effects,
                         graphics.button_painter(true),
                     );
                 } else if let Some(form) = &app.state.form {
@@ -7502,6 +7557,23 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         focused: false,
                         faint: faint_background && !layer.policy.modal,
                     });
+                    if layer.id == "ui:modal"
+                        && app.chat.editor_open()
+                        && !consent_open
+                        && !channel_form_effects.placements.is_empty()
+                    {
+                        surfaces.push(Surface {
+                            palette: None,
+                            id: "ui:modal:channel-controls",
+                            content: SurfaceContent::Graphics,
+                            rect: layer.placement.content,
+                            frame: &channel_form_effects,
+                            selection: &[],
+                            search: &[],
+                            focused: false,
+                            faint: false,
+                        });
+                    }
                 }
                 if let Some(artwork) = artwork_surface {
                     surfaces.push(artwork);

@@ -488,6 +488,56 @@ impl Chat {
         }
     }
 
+    pub(super) fn editor_open(&self) -> bool {
+        self.editor.is_some()
+    }
+
+    pub(super) fn close_editor(&mut self) {
+        if self.editor.take().is_some() {
+            self.redraw();
+        }
+    }
+
+    pub(super) fn cancel_editor_press(&mut self) {
+        if let Some(editor) = &mut self.editor {
+            editor.form.cancel_press();
+        }
+    }
+
+    pub(super) fn paint_editor(
+        &mut self,
+        surface: &mut UiSurface,
+        size: bkpr_protocol::Size,
+        theme: &bkpr_tui_framework::Theme,
+        read_only: bool,
+        effects: &mut bkpr_protocol::Frame,
+        place: impl FnMut(
+            &mut bkpr_protocol::Frame,
+            bkpr_tui_framework::Rect,
+            bkpr_tui_framework::button::State,
+        ) -> bool,
+    ) {
+        if let Some(editor) = &mut self.editor {
+            editor
+                .form
+                .paint(surface, size, theme, !read_only, effects, place);
+        }
+    }
+
+    pub(super) fn editor_mouse(
+        &mut self,
+        mouse: termwiz::input::MouseEvent,
+        action: bkpr_protocol::MouseAction,
+        button: bkpr_protocol::MouseButton,
+        read_only: bool,
+    ) -> Effect {
+        let Some(editor) = &mut self.editor else {
+            return Effect::None;
+        };
+        let action = editor.form.mouse(mouse, action, button, !read_only);
+        self.editor_action(action)
+    }
+
     fn activate_button(&mut self, hit: Hit, read_only: bool) {
         if self.editor.is_some() {
             return;
@@ -521,7 +571,7 @@ impl Chat {
         match action {
             chat_controls::EditorAction::None => Effect::None,
             chat_controls::EditorAction::Close => {
-                self.editor = None;
+                self.close_editor();
                 Effect::None
             }
             chat_controls::EditorAction::Submit(request) => {
@@ -789,13 +839,6 @@ impl Chat {
         read_only: bool,
     ) -> Effect {
         use bkpr_protocol::{MouseAction as A, MouseButton as B};
-        if let Some(editor) = &mut self.editor {
-            let action =
-                editor
-                    .form
-                    .mouse(mouse, button == B::Left && action == A::Press, !read_only);
-            return self.editor_action(action);
-        }
         let hit = self.paint.hit(mouse.x, mouse.y);
         let writable = self.writable(read_only);
         match (button, action, hit) {

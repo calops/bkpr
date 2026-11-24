@@ -4,13 +4,18 @@ use bkpr_protocol::channels::{
     ChannelId, ChannelRequest, ChannelResponse, ChannelSettings, ChannelSummary, MAX_MEMBERS,
     MAX_NAME_BYTES, MAX_PAGE_LIMIT, MembershipMode, Participant, ParticipantId, WakePolicy,
 };
-use bkpr_protocol::{Cursor, CursorShape, KeyAction, KeyEvent, Size};
+use bkpr_protocol::{
+    Cursor, CursorShape, Frame, KeyAction, KeyEvent, MouseAction, MouseButton, Size,
+};
 use bkpr_tui_framework::{
-    Navigation, NavigationRow, Rect, Role, RoleSpan, TextInput, Theme, UiSurface, text_width,
-    window,
+    Navigation, NavigationRow, Rect, Role, RoleSpan, TextInput, Theme, UiSurface,
+    button::{Button, State as ButtonState},
+    checkbox::Checkbox,
+    dropdown::Dropdown,
+    text_width, window,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use termwiz::input::{MouseButtons, MouseEvent};
+use termwiz::input::MouseEvent;
 
 /// A local editor action for the app to handle against its current owner.
 pub(super) enum EditorAction {
@@ -76,7 +81,7 @@ impl Fetch {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Field {
     Name,
     UserWake,
@@ -109,6 +114,36 @@ impl NavigationRow<Field> for Row {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ControlHit {
+    rect: Rect,
+    field: Field,
+    choice: Option<usize>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Choice {
+    Wake(WakePolicy),
+    Membership(MembershipMode),
+}
+
+const WAKE: Dropdown<'_, Choice> = Dropdown::new(&[
+    (Choice::Wake(WakePolicy::All), "All"),
+    (Choice::Wake(WakePolicy::AddressedOrAll), "Mentions or all"),
+    (Choice::Wake(WakePolicy::AddressedOnly), "Mentions only"),
+    (Choice::Wake(WakePolicy::None), "None"),
+]);
+const MEMBERSHIP: Dropdown<'_, Choice> = Dropdown::new(&[
+    (
+        Choice::Membership(MembershipMode::WorkspaceWide),
+        "Workspace-wide",
+    ),
+    (
+        Choice::Membership(MembershipMode::Explicit),
+        "Explicit members",
+    ),
+]);
+
 /// A create or management draft tied to one exact workspace and optional channel.
 pub(super) struct Editor {
     workspace_id: String,
@@ -131,8 +166,11 @@ pub(super) struct Editor {
     submit: SubmitState,
     error: Option<String>,
     nav: Navigation<Field, Row>,
-    painted_cols: u16,
-    painted_hits: Vec<Option<Field>>,
+    painted_size: Option<Size>,
+    painted_hits: Vec<ControlHit>,
+    pointer: Option<(u16, u16)>,
+    pressed: Option<ControlHit>,
+    dropdown: Option<(Field, usize)>,
 }
 
 impl Editor {
@@ -153,7 +191,10 @@ impl Editor {
             Self::new(
                 summary.workspace_id.clone(),
                 Some(summary.id.clone()),
-                format!("Manage #{}", summary.name),
+                format!(
+                    "Manage #{}",
+                    summary.name.strip_prefix('#').unwrap_or(&summary.name)
+                ),
                 summary.membership,
                 summary.settings,
             )
@@ -193,8 +234,11 @@ impl Editor {
             submit: SubmitState::Editable,
             error: None,
             nav: Navigation::default(),
-            painted_cols: 0,
+            painted_size: None,
             painted_hits: Vec::new(),
+            pointer: None,
+            pressed: None,
+            dropdown: None,
         };
         editor.rebuild_rows();
         editor
@@ -354,6 +398,9 @@ impl Editor {
         if key.action == KeyAction::Release {
             return EditorAction::None;
         }
+        if self.handle_dropdown_key(key, writable) {
+            return EditorAction::None;
+        }
         let plain = key.modifiers & 15 == 0;
         let name_focused = self.nav.cursor == Some(Field::Name);
         match key.key.as_str() {
@@ -367,6 +414,9 @@ impl Editor {
             "End" if plain && !name_focused => self.nav.navigate(isize::MAX),
             "Enter" if plain && key.action == KeyAction::Press => {
                 if let Some(field) = self.nav.cursor.clone() {
+                    if writable && self.editable() && self.open_dropdown(&field) {
+                        return EditorAction::None;
+                    }
                     return self.activate(
                         if name_focused { Field::Create } else { field },
                         writable,
@@ -405,36 +455,139 @@ impl Editor {
         EditorAction::None
     }
 
-    /// Route surface-local pointer coordinates; `left_pressed` is the initial press edge.
+    /// Cancel the gesture and pointer highlight when modal ownership changes.
+    pub(super) fn cancel_press(&mut self) {
+        self.pressed = None;
+        self.pointer = None;
+        self.nav.hover(None);
+    }
+
+    /// Route modal-local presses, releases, hover, and wheel events.
     pub(super) fn mouse(
         &mut self,
         mouse: MouseEvent,
-        left_pressed: bool,
+        action: MouseAction,
+        button: MouseButton,
         writable: bool,
     ) -> EditorAction {
-        let index = usize::from(mouse.y);
-        let inside = mouse.x < self.painted_cols && index < self.painted_hits.len();
-        if inside && mouse.mouse_buttons.contains(MouseButtons::VERT_WHEEL) {
-            let up = mouse.mouse_buttons.contains(MouseButtons::WHEEL_POSITIVE);
-            self.nav.hover(None);
-            self.nav.scroll_by(if up { -3 } else { 3 });
+        self.pointer = Some((mouse.x, mouse.y));
+        if matches!(button, MouseButton::WheelUp | MouseButton::WheelDown) {
+            self.cancel_press();
+            let delta = if button == MouseButton::WheelUp {
+                -3
+            } else {
+                3
+            };
+            if let Some((field, index)) = &self.dropdown {
+                let (menu, _) = self.choices(field).expect("open dropdown");
+                self.dropdown = Some((field.clone(), menu.move_by(*index, delta)));
+            } else {
+                self.nav.scroll_by(delta);
+            }
             return EditorAction::None;
         }
-        let target = if inside {
-            self.painted_hits[index].as_ref()
-        } else {
-            None
-        };
-        self.nav.hover(target);
-        if left_pressed
-            && let Some(field) = target
-            && self.nav.rows.iter().any(|row| row.target() == Some(field))
-        {
-            let field = field.clone();
-            self.nav.select(field.clone());
-            return self.activate(field, writable, 1);
+        let target = self
+            .painted_hits
+            .iter()
+            .rev()
+            .find(|hit| hit.rect.contains(mouse.x, mouse.y));
+        self.nav.hover(target.map(|hit| &hit.field));
+        match (button, action) {
+            (MouseButton::Left, MouseAction::Press) => self.pressed = target.cloned(),
+            (MouseButton::Left, MouseAction::Release) => {
+                let pressed = self.pressed.take();
+                let Some(hit) = pressed.filter(|hit| Some(hit) == target) else {
+                    return EditorAction::None;
+                };
+                self.nav.select(hit.field.clone());
+                if let Some(choice) = hit.choice {
+                    if writable && self.editable() {
+                        self.commit_dropdown(&hit.field, choice);
+                    }
+                } else if !(writable && self.editable() && self.open_dropdown(&hit.field)) {
+                    self.dropdown = None;
+                    return self.activate(hit.field, writable, 1);
+                }
+            }
+            _ => {}
         }
         EditorAction::None
+    }
+
+    fn choices(&self, field: &Field) -> Option<(&'static Dropdown<'static, Choice>, Choice)> {
+        match field {
+            Field::UserWake => Some((&WAKE, Choice::Wake(self.settings.user_wake))),
+            Field::AgentWake => Some((&WAKE, Choice::Wake(self.settings.agent_wake))),
+            Field::Mode => Some((&MEMBERSHIP, Choice::Membership(self.membership))),
+            _ => None,
+        }
+    }
+
+    fn open_dropdown(&mut self, field: &Field) -> bool {
+        let Some((menu, value)) = self.choices(field) else {
+            return false;
+        };
+        if self
+            .dropdown
+            .as_ref()
+            .is_some_and(|(current, _)| current == field)
+        {
+            self.dropdown = None;
+        } else {
+            self.dropdown = Some((field.clone(), menu.index(value).expect("current choice")));
+        }
+        true
+    }
+
+    fn commit_dropdown(&mut self, field: &Field, index: usize) {
+        self.dropdown = None;
+        if let Some(value) = self.choices(field).and_then(|(menu, _)| menu.value(index)) {
+            self.set_choice(field, value);
+        }
+    }
+
+    fn set_choice(&mut self, field: &Field, value: Choice) {
+        match (field, value) {
+            (Field::UserWake, Choice::Wake(wake)) => self.settings.user_wake = wake,
+            (Field::AgentWake, Choice::Wake(wake)) => self.settings.agent_wake = wake,
+            (Field::Mode, Choice::Membership(mode)) => {
+                self.membership = mode;
+                self.rebuild_rows();
+            }
+            _ => unreachable!("choice belongs to field"),
+        }
+        self.error = None;
+    }
+
+    fn handle_dropdown_key(&mut self, key: &KeyEvent, writable: bool) -> bool {
+        let Some((field, index)) = self.dropdown.clone() else {
+            return false;
+        };
+        if key.modifiers & 15 != 0 && key.key != "Tab" {
+            return true;
+        }
+        let (menu, _) = self.choices(&field).expect("open dropdown");
+        match key.key.as_str() {
+            "Escape" if key.action == KeyAction::Press => self.dropdown = None,
+            "Enter" | "Space" if key.action == KeyAction::Press && writable && self.editable() => {
+                self.commit_dropdown(&field, index);
+            }
+            "ArrowUp" | "ArrowDown" | "Home" | "End" => {
+                let delta = match key.key.as_str() {
+                    "ArrowUp" => -1,
+                    "ArrowDown" => 1,
+                    "Home" => isize::MIN,
+                    _ => isize::MAX,
+                };
+                self.dropdown = Some((field, menu.move_by(index, delta)));
+            }
+            "Tab" => {
+                self.dropdown = None;
+                return false;
+            }
+            _ => {}
+        }
+        true
     }
 
     /// Paste into the channel name only; other rows do not interpret pasted text.
@@ -501,23 +654,16 @@ impl Editor {
                 self.roster_fetch = Fetch::Queued(Some(after));
             }
             _ if !writable || !self.editable() => return EditorAction::None,
-            Field::UserWake => {
-                self.settings.user_wake = cycle_wake(self.settings.user_wake, direction);
-            }
-            Field::AgentWake => {
-                self.settings.agent_wake = cycle_wake(self.settings.agent_wake, direction);
+            field @ (Field::UserWake | Field::AgentWake | Field::Mode) => {
+                let (menu, value) = self.choices(&field).expect("dropdown field");
+                if let Some(value) = menu.cycle(value, direction < 0) {
+                    self.set_choice(&field, value);
+                }
             }
             Field::Questions => {
                 self.settings.attention_questions = !self.settings.attention_questions
             }
             Field::Reports => self.settings.attention_reports = !self.settings.attention_reports,
-            Field::Mode => {
-                self.membership = match self.membership {
-                    MembershipMode::Explicit => MembershipMode::WorkspaceWide,
-                    MembershipMode::WorkspaceWide => MembershipMode::Explicit,
-                };
-                self.rebuild_rows();
-            }
             Field::Member(id)
                 if self.membership == MembershipMode::Explicit && self.saved_ready() =>
             {
@@ -616,6 +762,8 @@ impl Editor {
     }
 
     fn rebuild_rows(&mut self) {
+        self.pressed = None;
+        self.painted_hits.clear();
         let create = self.is_create();
         let saved_ready = self.saved_ready();
         let rows = &mut self.nav.rows;
@@ -737,55 +885,102 @@ impl Editor {
         size: Size,
         theme: &Theme,
         writable: bool,
+        effects: &mut Frame,
+        mut place: impl FnMut(&mut Frame, Rect, ButtonState) -> bool,
     ) {
+        if self.painted_size.replace(size) != Some(size) {
+            self.cancel_press();
+        }
         let status = self.status(writable).is_some();
-        let header_rows = u16::from(size.rows >= if status { 3 } else { 2 });
+        let header = u16::from(size.rows >= if status { 3 } else { 2 });
         let status_rows = u16::from(status && size.rows >= 2);
-        let body_rows = usize::from(size.rows - header_rows - status_rows);
-        self.nav.viewport(body_rows);
-        self.painted_cols = size.cols;
-        self.painted_hits.resize(usize::from(size.rows), None);
-        let mut lines: Vec<window::TextLine> = Vec::with_capacity(usize::from(size.rows));
-        let mut spans = Vec::with_capacity(usize::from(size.rows));
+        let body = size.rows - header - status_rows;
+        self.nav.viewport(usize::from(body));
+        let mut lines = Vec::with_capacity(2 * usize::from(size.rows));
+        let mut spans = Vec::with_capacity(lines.capacity());
+        let mut buttons = Vec::new();
+        let mut hits = std::mem::take(&mut self.painted_hits);
+        hits.clear();
         let mut cursor = None;
-        let mut line = |y, label, selected, role| {
-            let rect = Rect {
-                x: 0,
-                y,
-                width: size.cols,
-                height: 1,
-            };
-            lines.push((rect, label, selected));
-            if role != Role::Panel {
-                spans.push(RoleSpan { rect, role });
-            }
+        let mut popup = None;
+        let viewport = Rect {
+            x: 0,
+            y: header,
+            width: size.cols,
+            height: body,
         };
-        if header_rows > 0 {
-            line(0, self.title.clone(), false, Role::Title);
-            self.painted_hits[0] = None;
+        let inset = u16::from(size.cols >= 5);
+        let control_x = if size.cols >= 43 { 23 } else { size.cols / 2 };
+        let full_row = |y| form_row(inset, y, size.cols - 2 * inset);
+        let aligned = |y| form_row(control_x, y, size.cols.saturating_sub(control_x + inset));
+        let mut add = |line: window::TextLine, role| {
+            spans.push(RoleSpan { rect: line.0, role });
+            lines.push(line);
+        };
+        if header > 0 {
+            add((full_row(0), self.title.clone(), false), Role::Title);
         }
         let start = self.nav.scroll;
-        let visible_rows = self.nav.rows.len().saturating_sub(start).min(body_rows);
-        self.painted_hits[usize::from(header_rows) + visible_rows..].fill(None);
-        for (visible, row) in self.nav.rows.iter().skip(start).take(body_rows).enumerate() {
-            let y = header_rows + visible as u16;
-            let field = match row {
-                Row::Control(field) => field,
-                Row::Heading(heading) => {
-                    self.painted_hits[usize::from(y)] = None;
-                    line(y, (*heading).into(), false, Role::Title);
-                    continue;
-                }
+        for (index, row) in self
+            .nav
+            .rows
+            .iter()
+            .skip(start)
+            .take(usize::from(body))
+            .enumerate()
+        {
+            let y = header + index as u16;
+            let Row::Control(field) = row else {
+                let Row::Heading(title) = row else {
+                    unreachable!()
+                };
+                add(
+                    (
+                        form_row(inset, y, control_x.saturating_sub(inset)),
+                        (*title).into(),
+                        false,
+                    ),
+                    Role::Info,
+                );
+                continue;
             };
-            let selected = self.nav.cursor.as_ref() == Some(field);
-            let hovered = !selected && self.nav.hover.as_ref() == Some(field);
-            let mut role = if hovered { Role::Hover } else { Role::Panel };
-            let label = if *field == Field::Name {
-                let prefix = if size.cols > 6 { "Name: " } else { "" };
-                let (text, caret) = self.name.visible(usize::from(size.cols) - prefix.len());
-                if selected && size.cols > 0 && writable && self.editable() {
+            let focused = self.nav.cursor.as_ref() == Some(field);
+            let hovered = self.nav.hover.as_ref() == Some(field);
+            let editable = writable && self.editable();
+            let rect = if let Some(label) = field_label(field) {
+                let label_rect = form_row(inset, y, control_x.saturating_sub(inset + 1));
+                add((label_rect, label.into(), false), Role::Muted);
+                aligned(y)
+            } else if matches!(field, Field::Member(_)) {
+                full_row(y)
+            } else {
+                aligned(y)
+            };
+            let role = if !editable {
+                Role::Muted
+            } else if focused {
+                Role::Accent
+            } else if hovered {
+                Role::Hover
+            } else {
+                Role::Base
+            };
+            if *field == Field::Name {
+                let frame_pad = u16::from(rect.width >= 4);
+                let input = rect.inset_horizontal(frame_pad);
+                let (text, caret) = self.name.visible(usize::from(input.width));
+                // Reserve the same field edge and cursor position in all modes.
+                if frame_pad != 0 {
+                    add((form_row(rect.x, y, 1), "[".into(), false), role);
+                    add(
+                        (form_row(rect.x + rect.width - 1, y, 1), "]".into(), false),
+                        role,
+                    );
+                }
+                add((input, text, false), role);
+                if focused && editable && input.width > 0 {
                     cursor = Some(Cursor {
-                        x: (prefix.len() + caret) as u16,
+                        x: input.x + (caret as u16).min(input.width - 1),
                         y,
                         visible: true,
                         blinking: true,
@@ -793,105 +988,152 @@ impl Editor {
                         color: None,
                     });
                 }
-                format!("{prefix}{text}")
-            } else {
-                let (label, enabled) = self.label(field, start + visible + 1, size.cols, writable);
-                if !enabled && !hovered {
-                    role = Role::Muted;
+            } else if let Some((menu, value)) = self.choices(field) {
+                let open = self
+                    .dropdown
+                    .as_ref()
+                    .filter(|(current, _)| current == field);
+                add(menu.trigger(rect, value, open.is_some()), role);
+                if let Some((_, active)) = open
+                    && let Some(layout) = menu.layout(rect, viewport, *active)
+                {
+                    popup = Some((field, menu, value, layout, *active));
                 }
-                label
-            };
-            line(y, label, selected, role);
-            let hit = &mut self.painted_hits[usize::from(y)];
-            if hit.as_ref() != Some(field) {
-                *hit = Some(field.clone());
+            } else if let Some((checked, label)) =
+                self.checkbox(field, start + index + 1, rect.width)
+            {
+                let role = if editable && checked && !focused && !hovered {
+                    Role::Success
+                } else {
+                    role
+                };
+                add(Checkbox::new(checked, &label).line(rect), role);
+            } else if let Some((label, enabled)) = self.action_label(field, editable) {
+                let hit = ControlHit {
+                    rect,
+                    field: field.clone(),
+                    choice: None,
+                };
+                let pointer =
+                    ButtonState::at(rect, self.pointer, self.pressed.as_ref() == Some(&hit));
+                let state = if !enabled {
+                    ButtonState::Disabled
+                } else if focused && pointer == ButtonState::Idle {
+                    ButtonState::Hover
+                } else {
+                    pointer
+                };
+                add((rect, String::new(), false), Role::Panel);
+                buttons.push((rect, label, state));
+            }
+            if rect.width != 0 {
+                hits.push(ControlHit {
+                    rect,
+                    field: field.clone(),
+                    choice: None,
+                });
             }
         }
         if status_rows > 0
             && let Some((message, role)) = self.status(writable)
         {
-            line(size.rows - 1, message.into(), false, role);
+            add((full_row(size.rows - 1), message.into(), false), role);
+        }
+        if let Some((field, menu, value, layout, active)) = popup {
+            for index in layout.indices() {
+                if let Some((rect, mut label, _)) = menu.option(layout, index, value) {
+                    let width = text_width(&label);
+                    label.extend(std::iter::repeat_n(
+                        ' ',
+                        usize::from(rect.width).saturating_sub(width),
+                    ));
+                    let selected = self
+                        .pointer
+                        .filter(|&(x, y)| layout.bounds().contains(x, y))
+                        .map_or(index == active, |(x, y)| rect.contains(x, y));
+                    add(
+                        (rect, label, selected),
+                        if selected { Role::Accent } else { Role::Title },
+                    );
+                    hits.push(ControlHit {
+                        rect,
+                        field: field.clone(),
+                        choice: Some(index),
+                    });
+                }
+            }
         }
         surface.paint(size, lines, cursor);
         surface.apply_theme(theme, Role::Panel, &spans);
+        for (rect, label, state) in buttons {
+            if popup.is_some_and(|(_, _, _, layout, _)| layout.bounds().contains(rect.x, rect.y)) {
+                continue;
+            }
+            let graphical = place(effects, rect, state);
+            Button::new(label).paint(
+                &mut surface.frame,
+                rect,
+                theme.style(Role::Accent),
+                state,
+                graphical,
+            );
+        }
+        self.painted_hits = hits;
     }
 
-    fn label(&self, field: &Field, ordinal: usize, width: u16, writable: bool) -> (String, bool) {
-        let editable = writable && self.editable();
+    fn checkbox(&self, field: &Field, ordinal: usize, width: u16) -> Option<(bool, String)> {
         match field {
-            Field::UserWake => (
-                format!("User wake: {}", wake_label(self.settings.user_wake)),
-                editable,
-            ),
-            Field::AgentWake => (
-                format!("Agent wake: {}", wake_label(self.settings.agent_wake)),
-                editable,
-            ),
-            Field::Questions => (
-                format!(
-                    "{} Question attention",
-                    check(self.settings.attention_questions)
-                ),
-                editable,
-            ),
-            Field::Reports => (
-                format!(
-                    "{} Report attention",
-                    check(self.settings.attention_reports)
-                ),
-                editable,
-            ),
-            Field::Mode => (
-                match self.membership {
-                    MembershipMode::WorkspaceWide => "Mode: Workspace-wide",
-                    MembershipMode::Explicit => "Mode: Explicit members",
-                }
-                .into(),
-                editable,
-            ),
-            Field::SaveSettings => (
-                "[ Save settings ]".into(),
-                editable && self.settings != self.saved_settings,
-            ),
-            Field::SaveMembership => (
-                "[ Save membership ]".into(),
-                editable && self.membership_dirty() && self.saved_ready(),
-            ),
-            Field::Create => (
-                "[ Create channel ]".into(),
-                editable && !self.name.value.trim().is_empty() && self.name.error().is_none(),
-            ),
-            Field::Close => ("[ Close ]".into(), true),
+            Field::Questions => Some((self.settings.attention_questions, String::new())),
+            Field::Reports => Some((self.settings.attention_reports, String::new())),
             Field::Member(id) => {
                 let label = self
                     .roster_member(id)
                     .map(|p| p.display_name.as_str())
                     .or_else(|| self.selected_labels.get(id).map(String::as_str))
                     .unwrap_or("Saved member");
-                (
-                    member_label(self.selected.contains(id), ordinal, label, id, width),
-                    editable,
-                )
+                Some((
+                    self.selected.contains(id),
+                    member_label(ordinal, label, id, width.saturating_sub(4)),
+                ))
             }
+            _ => None,
+        }
+    }
+
+    fn action_label(&self, field: &Field, editable: bool) -> Option<(&'static str, bool)> {
+        Some(match field {
+            Field::SaveSettings => (
+                "\u{f0193} Save settings",
+                editable && self.settings != self.saved_settings,
+            ),
+            Field::SaveMembership => (
+                "\u{f0193} Save membership",
+                editable && self.membership_dirty() && self.saved_ready(),
+            ),
+            Field::Create => (
+                "\u{f0415} Create channel",
+                editable && !self.name.value.trim().is_empty() && self.name.error().is_none(),
+            ),
+            Field::Close => ("\u{f0156} Close", true),
             Field::RetrySaved => (
-                "[ Retry saved members ]".into(),
+                "Retry saved members",
                 matches!(self.saved_fetch, Fetch::Failed(..)),
             ),
             Field::RetryRoster => (
-                "[ Retry workspace roster ]".into(),
+                "Retry workspace roster",
                 matches!(self.roster_fetch, Fetch::Failed(..)),
             ),
             Field::FirstRoster => (
-                "[ First roster page ]".into(),
+                "First roster page",
                 !matches!(self.in_flight, Some((Read::Roster, _))),
             ),
             Field::NextRoster(_) => (
-                "[ Next roster page ]".into(),
+                "Next roster page",
                 matches!(self.roster_fetch, Fetch::Idle)
                     && !matches!(self.in_flight, Some((Read::Roster, _))),
             ),
-            Field::Name => unreachable!(),
-        }
+            _ => return None,
+        })
     }
 }
 
@@ -911,18 +1153,29 @@ fn page_advances<'a>(
     next.is_none_or(|next| saw_record && previous == Some(next))
 }
 
-fn check(selected: bool) -> &'static str {
-    if selected { "[x]" } else { "[ ]" }
+fn form_row(x: u16, y: u16, width: u16) -> Rect {
+    Rect {
+        x,
+        y,
+        width,
+        height: 1,
+    }
 }
 
-fn member_label(
-    selected: bool,
-    ordinal: usize,
-    label: &str,
-    id: &ParticipantId,
-    width: u16,
-) -> String {
-    let prefix = format!("{} {ordinal} ", check(selected));
+fn field_label(field: &Field) -> Option<&'static str> {
+    Some(match field {
+        Field::Name => "\u{f03eb} Name",
+        Field::UserWake => "\u{f0004} User wake",
+        Field::AgentWake => "\u{f06a9} Agent wake",
+        Field::Questions => "\u{f0596} Question attention",
+        Field::Reports => "\u{f0219} Report attention",
+        Field::Mode => "\u{f0849} Membership mode",
+        _ => return None,
+    })
+}
+
+fn member_label(ordinal: usize, label: &str, id: &ParticipantId, width: u16) -> String {
+    let prefix = format!("{ordinal} ");
     let room = width.saturating_sub(prefix.len() as u16);
     if room < 12 {
         return format!("{prefix}{label}");
@@ -940,30 +1193,11 @@ fn member_label(
     format!("{prefix}{label} {identity}")
 }
 
-fn wake_label(wake: WakePolicy) -> &'static str {
-    match wake {
-        WakePolicy::All => "All",
-        WakePolicy::AddressedOrAll => "Mentions or all",
-        WakePolicy::AddressedOnly => "Mentions only",
-        WakePolicy::None => "None",
-    }
-}
-
-fn cycle_wake(wake: WakePolicy, direction: i8) -> WakePolicy {
-    use WakePolicy::{AddressedOnly, AddressedOrAll, All, None};
-    match (wake, direction < 0) {
-        (All, false) | (AddressedOnly, true) => AddressedOrAll,
-        (AddressedOrAll, false) | (None, true) => AddressedOnly,
-        (AddressedOnly, false) | (All, true) => None,
-        (None, false) | (AddressedOrAll, true) => All,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use bkpr_protocol::channels::{ChannelRosterEntry, ParticipantKind};
-    use termwiz::input::Modifiers;
+    use termwiz::input::{Modifiers, MouseButtons};
 
     fn id(value: &str) -> ParticipantId {
         ParticipantId(value.into())
@@ -1026,22 +1260,46 @@ mod tests {
         }
     }
 
-    fn click(editor: &mut Editor, field: Field) -> EditorAction {
-        let y = editor
+    fn paint(editor: &mut Editor, size: Size) {
+        editor.paint(
+            &mut UiSurface::new(size),
+            size,
+            &Theme::default(),
+            true,
+            &mut bkpr_tui_framework::graphics_frame(size),
+            |_, _, _| false,
+        );
+    }
+
+    fn hit(editor: &Editor, field: Field) -> Rect {
+        editor
             .painted_hits
             .iter()
-            .position(|hit| hit.as_ref() == Some(&field))
-            .expect("field must have been painted");
+            .find(|hit| hit.field == field)
+            .expect("field must have been painted")
+            .rect
+    }
+
+    fn pointer(editor: &mut Editor, rect: Rect, action: MouseAction) -> EditorAction {
         editor.mouse(
             MouseEvent {
-                x: 0,
-                y: y as u16,
+                x: rect.x,
+                y: rect.y,
                 mouse_buttons: MouseButtons::LEFT,
                 modifiers: Modifiers::empty(),
             },
-            true,
+            action,
+            MouseButton::Left,
             true,
         )
+    }
+
+    fn choose(editor: &mut Editor, field: Field, steps: usize) {
+        assert!(matches!(enter(editor, field), EditorAction::None));
+        for _ in 0..steps {
+            editor.key(&event("ArrowDown"), true);
+        }
+        editor.key(&event("Enter"), true);
     }
 
     #[test]
@@ -1049,12 +1307,11 @@ mod tests {
         let mut editor = Editor::create("exact-workspace".into());
         assert!(editor.take_observation().is_none());
         editor.paste("Incident review");
-        enter(&mut editor, Field::UserWake);
-        enter(&mut editor, Field::AgentWake);
-        enter(&mut editor, Field::AgentWake);
+        choose(&mut editor, Field::UserWake, 1);
+        choose(&mut editor, Field::AgentWake, 2);
         enter(&mut editor, Field::Questions);
         enter(&mut editor, Field::Reports);
-        enter(&mut editor, Field::Mode);
+        choose(&mut editor, Field::Mode, 1);
         assert_eq!(
             editor.take_observation(),
             Some(ChannelRequest::UserRoster {
@@ -1072,8 +1329,10 @@ mod tests {
             cell_width: 8,
             cell_height: 16,
         };
-        editor.paint(&mut UiSurface::new(size), size, &Theme::default(), true);
-        click(&mut editor, Field::Member(id("agent-b")));
+        paint(&mut editor, size);
+        let member = hit(&editor, Field::Member(id("agent-b")));
+        pointer(&mut editor, member, MouseAction::Press);
+        pointer(&mut editor, member, MouseAction::Release);
         let EditorAction::Submit(request) = enter(&mut editor, Field::Create) else {
             panic!("expected one create write");
         };
@@ -1171,7 +1430,7 @@ mod tests {
     #[test]
     fn a_roster_page_receipt_cannot_retarget_a_click_on_the_previous_page() {
         let mut editor = Editor::create("exact-workspace".into());
-        enter(&mut editor, Field::Mode);
+        choose(&mut editor, Field::Mode, 1);
         assert!(editor.take_observation().is_some());
         editor.observe(Ok(roster(&["agent-a"], Some("agent-a"))));
         let size = Size {
@@ -1180,14 +1439,17 @@ mod tests {
             cell_width: 8,
             cell_height: 16,
         };
-        editor.paint(&mut UiSurface::new(size), size, &Theme::default(), true);
+        paint(&mut editor, size);
+        let member = hit(&editor, Field::Member(id("agent-a")));
+        pointer(&mut editor, member, MouseAction::Press);
         enter(&mut editor, Field::NextRoster(id("agent-a")));
         assert!(matches!(
             editor.take_observation(),
             Some(ChannelRequest::UserRoster { after: Some(cursor), .. }) if cursor == id("agent-a")
         ));
         editor.observe(Ok(roster(&["agent-b"], None)));
-        click(&mut editor, Field::Member(id("agent-a")));
+        paint(&mut editor, size);
+        pointer(&mut editor, member, MouseAction::Release);
         assert!(editor.selected.is_empty());
     }
 

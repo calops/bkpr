@@ -922,12 +922,6 @@ impl Chat {
         self.images.start_frame();
         self.images_wanted.clear();
         let paint = &mut self.paint;
-        if let Some(editor) = &mut self.editor {
-            editor
-                .form
-                .paint(&mut paint.surface, size, theme, !read_only);
-            return;
-        }
         if let Some(active) = &mut self.active {
             active.history.visible_through = 0;
         }
