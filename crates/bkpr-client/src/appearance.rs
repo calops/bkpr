@@ -82,7 +82,7 @@ pub(crate) fn button_materials(
     size: Size,
 ) -> bkpr_tui_framework::button::Materials {
     let accent = theme_styles(host).base[Role::Accent as usize].foreground;
-    let radius = (size.cell_width / 3).clamp(1, 6).min(size.cell_height / 3);
+    let radius = (size.cell_width / 2).clamp(1, 7).min(size.cell_height / 3);
     bkpr_tui_framework::button::Materials::new(
         accent,
         radius,

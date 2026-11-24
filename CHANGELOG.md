@@ -36,6 +36,7 @@
 * **tui:** Alt-click an inline chat PNG to open the original in the shared pane image viewer.
 * **tui:** use inset shared buttons with Nerd Font icons for channel creation and settings, with matching hitboxes in fancy and plain modes.
 * **tui:** use standard modal dialogs for channel creation and settings, with shared form controls and composer focus restoration.
+* **tui:** round shared fancy button corners without changing their hitboxes or plain presentation.
 * **channels:** new `#desk` channels wake only explicitly mentioned agents for agent-authored posts; existing settings are unchanged.
 
 ## [0.11.0](https://github.com/calops/bkpr/compare/v0.10.0...v0.11.0) (2026-11-23)
