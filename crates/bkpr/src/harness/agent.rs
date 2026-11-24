@@ -2,7 +2,8 @@
 use super::Capture;
 use anyhow::{Context, Result, bail};
 use bkpr_protocol::{
-    AgentBindingGuard, AgentRequest, AgentScope, HarnessKind, NativeConversation, Operation, Payload,
+    AgentBindingGuard, AgentRequest, AgentScope, HarnessKind, NativeConversation, Operation,
+    Payload,
     channels::{
         ChannelId, ChannelMentionSpan, ChannelPost, ChannelRequest, ChannelSettings,
         MAX_ALT_TEXT_BYTES, MAX_ATTACHMENTS, MAX_ID_BYTES, MAX_MEMBERS, MAX_MENTIONS,
