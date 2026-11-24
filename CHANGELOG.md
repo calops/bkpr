@@ -30,7 +30,7 @@
 * **agents:** scope native collaboration approvals to verified managed Claude registrations and fresh, admitted Codex threads
 * **tui:** retain recent channel history when switching. Shift-Enter is the only newline shortcut.
 * **tui:** copy a chat history selection without leaving the composer, edit drafts with readline shortcuts, and label new posts and mentions with the effective pane title.
-* **tui:** keep chat in one pane with recessed sections and native single-line split junctions; keep bevels visible over section fills.
+* **tui:** keep chat in one pane with recessed sections. Use slightly lighter section interiors, tint the full composer, and match the edge materials to the pane and section fills.
 * **tui:** align workspace chat badges with pane status icons and extend selected sidebar highlights cleanly to the pane edge.
 * **tui:** center the empty chat, highlight channel rows on hover, and keep typing in the composer after channel or history clicks. Tab opens a separate channel chooser.
 * **tui:** Alt-click an inline chat PNG to open the original in the shared pane image viewer.

@@ -115,16 +115,6 @@ impl PaneGeometry {
         let Some((&rect, &geometry)) = self.rects.get(index).zip(self.placements.get(index)) else {
             return false;
         };
-        let geometry = if style.inset_px == [0, 0] {
-            // An uninset opening ends at the shared split, not at the far edge
-            // of the overlapping cell. Each side shades inward from that line.
-            DecorationGeometry {
-                bounds_px: geometry.clip_px.map(i64::from),
-                ..geometry
-            }
-        } else {
-            geometry
-        };
         rect.width >= 3
             && rect.height >= 3
             && graphics
@@ -219,8 +209,6 @@ impl ChromeGraphics {
                     kind: bkpr_tui_framework::decoration::DecorationKind::RecessedOpaqueOpening,
                     background,
                     surface: parent,
-                    inset_px: [0, 0],
-                    radius_px: 0,
                     ..pane
                 };
                 let sidebar_edge = DecorationStyle {
@@ -903,18 +891,25 @@ mod tests {
                 height: 9,
             },
         ];
+        let absolute = split.map(|rect| Rect {
+            x: rect.x + origin.x,
+            y: rect.y + origin.y,
+            ..rect
+        });
         let mut sections = split.map(|rect| (rect, crate::controller::content(rect), None));
         let mut chat = bkpr_tui_framework::graphics_frame(size);
         assert_eq!(
             chrome.decorate_chat_panes(&mut chat, origin, &sections, 1, &[], [None; 2]),
             0b111
         );
+        let mut native = bkpr_tui_framework::graphics_frame(size);
+        chrome.prepare_panes(size, absolute.into_iter());
+        for (index, rect) in absolute.into_iter().enumerate() {
+            assert!(chrome.decorate_pane(&mut native, rect, index, 1 + index as u32 * 64, false));
+        }
         assert_eq!(chat.images.len(), 1);
-        assert!(
-            chat.placements
-                .iter()
-                .all(|p| p.layer == bkpr_protocol::ImageLayer::BelowText)
-        );
+        assert_ne!(chat.images[0].pixels, native.images[0].pixels);
+        assert_eq!(chat.placements.len(), native.placements.len());
         sections[2].2 = Some(6);
         let mut tinted = bkpr_tui_framework::graphics_frame(size);
         assert_eq!(
@@ -922,37 +917,15 @@ mod tests {
             0b111
         );
         assert_eq!(tinted.images.len(), 2);
-        let composer = tinted
-            .placements
-            .iter()
-            .find(|p| (129..193).contains(&p.placement_id))
-            .unwrap();
-        let history = tinted
-            .placements
-            .iter()
-            .find(|p| (65..129).contains(&p.placement_id))
-            .unwrap();
-        assert_ne!(composer.image_id, history.image_id);
-        let cw = i64::from(size.cell_width);
-        let ch = i64::from(size.cell_height);
-        let pixels = |p: &bkpr_protocol::Placement| {
-            (
-                i64::from(p.col) * cw + i64::from(p.offset_x),
-                i64::from(p.row) * ch + i64::from(p.offset_y),
-            )
-        };
-        let seam_x = (i64::from(origin.x) + 20) * cw + cw / 2;
-        let seam_y = (i64::from(origin.y) + 11) * ch + ch / 2;
-        for placement in &tinted.placements {
-            assert_eq!(placement.layer, bkpr_protocol::ImageLayer::BelowText);
-            let (x, y) = pixels(placement);
-            match placement.placement_id {
-                ..65 => assert!(x + i64::from(placement.width) <= seam_x),
-                65..129 => assert!(x >= seam_x && y + i64::from(placement.height) <= seam_y),
-                _ => assert!(x >= seam_x && y >= seam_y),
-            }
+        assert_eq!(tinted.placements.len(), native.placements.len());
+        for (mut tinted, native) in tinted.placements.into_iter().zip(native.placements) {
+            assert_ne!(tinted.image_id, native.image_id);
+            tinted.image_id = native.image_id;
+            tinted.generation = native.generation;
+            assert_eq!(tinted.layer, bkpr_protocol::ImageLayer::BelowText);
+            tinted.layer = native.layer;
+            assert_eq!(tinted, native);
         }
-        assert_eq!(pixels(composer), (seam_x, seam_y));
 
         chrome.set_enabled(false);
         chrome.prepare(&host, size, &[]);
