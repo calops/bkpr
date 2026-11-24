@@ -998,6 +998,21 @@ fn focused_tree_pane(
         && session.window.as_ref() == pane.window_id.as_ref()
 }
 
+fn selected_tree_row(
+    entry: &crate::tree::TreeRow,
+    tree: &crate::tree::Tree,
+    session: &crate::tree::Session,
+    active: crate::tree::Owner,
+) -> bool {
+    (tree.active && entry.target.is_some() && entry.target == tree.cursor)
+        || focused_tree_pane(entry, session, active)
+        || (entry.owner == active
+            && session.window.is_none()
+            && matches!(&entry.target, Some(target)
+                if matches!(&target.node, crate::tree::Node::Native(SidebarTarget::Workspace(id))
+                    if session.workspace.as_ref() == Some(id))))
+}
+
 struct NativeRowContext<'a> {
     registry: &'a RegistrySnapshot,
     entry: &'a crate::tree::TreeRow,
@@ -1444,13 +1459,7 @@ fn render_chrome(
             cursor.x = marker_x;
             cursor.y = row;
         }
-        let selected_chat = entry.owner == active
-            && session.window.is_none()
-            && matches!(&entry.target, Some(target)
-                if matches!(&target.node, crate::tree::Node::Native(SidebarTarget::Workspace(id))
-                    if session.workspace.as_ref() == Some(id)));
-        let row_selected =
-            (selected || selected_chat || focused_tree_pane(entry, session, active)) && !plate;
+        let row_selected = selected_tree_row(entry, tree, session, active) && !plate;
         if row_selected {
             let columns = unicode_width::UnicodeWidthStr::width(label.as_str());
             label.extend(std::iter::repeat_n(
@@ -1929,10 +1938,9 @@ pub(crate) fn theme_tree_chrome(
         if !pane_graphics.is_empty() && highlighted {
             continue;
         }
-        let selected = tree.active && entry.target.is_some() && entry.target == tree.cursor;
         let background = if highlighted {
             tree_popup.map(|(_, background)| background)
-        } else if selected || focused_tree_pane(entry, session, active) {
+        } else if selected_tree_row(entry, tree, session, active) {
             Some(theme.background(Role::Base, true))
         } else if entry.target.is_some() && entry.target == tree.hover {
             Some(theme.background(Role::Hover, false))

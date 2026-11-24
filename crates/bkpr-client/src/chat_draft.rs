@@ -398,7 +398,10 @@ mod tests {
         let mut draft = Draft::default();
         assert_eq!(draft.completion_wake_preview(WakePolicy::All), None);
         assert!(draft.insert("@", true));
-        assert_eq!(draft.completion_wake_preview(WakePolicy::None), Some("No wake"));
+        assert_eq!(
+            draft.completion_wake_preview(WakePolicy::None),
+            Some("No wake")
+        );
         assert_eq!(
             draft.completion_wake_preview(WakePolicy::All),
             Some("Wakes all eligible")
@@ -410,7 +413,10 @@ mod tests {
             );
         }
         draft.select_mention(&twin_roster(), Some(1));
-        assert_eq!(draft.completion_wake_preview(WakePolicy::AddressedOnly), None);
+        assert_eq!(
+            draft.completion_wake_preview(WakePolicy::AddressedOnly),
+            None
+        );
     }
 
     #[test]

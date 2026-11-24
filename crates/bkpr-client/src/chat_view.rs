@@ -865,11 +865,27 @@ impl Chat {
         let left = list_width + u16::from(channels_wide);
         let columns = size.cols.saturating_sub(left);
         let (Some(active), Some(summary)) = (&mut self.active, summary) else {
+            let thread = paint.inlay(
+                theme,
+                Rect {
+                    x: left,
+                    y: 0,
+                    width: columns,
+                    height: size.rows,
+                },
+                list_background,
+                None,
+            );
             let reserve = if channels_wide {
                 0
             } else {
-                let (label, reserve) = narrow_channels_button(columns, 8);
-                paint.channels_button(theme, row(left, 0, text_width(label) as u16), label, None);
+                let (label, reserve) = narrow_channels_button(thread.width, 8);
+                paint.channels_button(
+                    theme,
+                    row(thread.x, thread.y, text_width(label) as u16),
+                    label,
+                    Some(list_background),
+                );
                 reserve
             };
             let (label, role) = if let Some(error) = &self.catalog_error {
@@ -879,12 +895,13 @@ impl Chat {
             } else {
                 ("Loading channels…", Role::Muted)
             };
-            paint.line(
+            paint.card_line(
                 theme,
-                row(left + reserve, 0, columns - reserve),
+                row(thread.x + reserve, thread.y, thread.width - reserve),
                 label,
                 role,
                 false,
+                list_background,
             );
             return;
         };
@@ -925,14 +942,16 @@ impl Chat {
         };
         let status_rows = u16::from(status.is_some() && size.rows > 1);
         let has_composer = writing && size.rows > 1 + status_rows;
-        let inset = u16::from(has_composer && columns >= 5 && size.rows >= 5);
+        let inset = u16::from(has_composer && columns >= 5 && size.rows >= 6 + status_rows);
+        let history_inset =
+            u16::from(columns >= 3 && size.rows >= 3 && (!has_composer || inset != 0));
         let composer_columns = columns.saturating_sub(2 * inset);
         let (button, button_width) = if channels_wide {
             ("", 0)
         } else if has_composer {
             narrow_channels_button(composer_columns, 8)
         } else {
-            narrow_channels_button(columns, 34)
+            narrow_channels_button(columns.saturating_sub(2 * history_inset), 34)
         };
         let history_indent = if has_composer { 0 } else { button_width };
         let (draft_lines, caret_line) = if has_composer {
@@ -947,7 +966,7 @@ impl Chat {
         let composer_rows = if has_composer {
             (draft_lines.len().max(1) as u16)
                 .min(4)
-                .min(size.rows - 1 - status_rows - 2 * inset)
+                .min(size.rows - 1 - status_rows - 2 * inset - 2 * history_inset)
         } else {
             0
         };
@@ -959,20 +978,38 @@ impl Chat {
         };
         let completion_rows =
             if has_composer && draft.is_some_and(|draft| draft.completion.is_some()) {
-                (choices.max(1) as u16).min(composer_at.saturating_sub(1 + status_rows))
+                (choices.max(1) as u16)
+                    .min(composer_at.saturating_sub(1 + status_rows + 2 * history_inset))
             } else {
                 0
             };
-        let completion_at = composer_at - completion_rows;
+        let thread_outer = Rect {
+            x: left,
+            y: 0,
+            width: columns,
+            height: composer_at,
+        };
+        let thread = if history_inset != 0 {
+            paint.inlay(theme, thread_outer, list_background, None)
+        } else {
+            paint.fill_card(theme, thread_outer, list_background);
+            thread_outer
+        };
+        let completion_at = thread.y + thread.height - completion_rows;
         let status_at = completion_at - status_rows;
         let history_rect = Rect {
-            x: left + history_indent,
-            y: 0,
-            width: columns - history_indent,
-            height: status_at,
+            x: thread.x + history_indent,
+            y: thread.y,
+            width: thread.width - history_indent,
+            height: status_at - thread.y,
         };
         if history_indent != 0 {
-            paint.channels_button(theme, row(left, 0, text_width(button) as u16), button, None);
+            paint.channels_button(
+                theme,
+                row(thread.x, thread.y, text_width(button) as u16),
+                button,
+                Some(list_background),
+            );
         }
         paint.history = history_rect;
         paint.images.size = history_rect.size(screen);
@@ -1010,7 +1047,7 @@ impl Chat {
             && let Some((role, label, hit)) = status
         {
             let bounds = row(history_rect.x, status_at, history_rect.width);
-            paint.line(theme, bounds, &label, role, false);
+            paint.card_line(theme, bounds, &label, role, false, list_background);
             if let Some(hit) = hit {
                 paint.target(bounds, hit);
             }
@@ -1027,12 +1064,13 @@ impl Chat {
                     } else {
                         "Loading eligible agents…"
                     });
-                paint.line(
+                paint.card_line(
                     theme,
-                    row(left, completion_at, columns),
+                    row(thread.x, completion_at, thread.width),
                     label,
                     Role::Muted,
                     false,
+                    list_background,
                 );
             } else {
                 for (i, (index, entry, chosen)) in draft
@@ -1040,19 +1078,35 @@ impl Chat {
                     .take(completion_rows.into())
                     .enumerate()
                 {
-                    let bounds = row(left, completion_at + i as u16, columns);
+                    let bounds = row(thread.x, completion_at + i as u16, thread.width);
                     let mut label = Draft::selection_label(entry, index);
                     if chosen
                         && let Some(scope) =
                             draft.completion_wake_preview(summary.settings.user_wake)
-                        && text_width(&label) + text_width(scope) + 3 <= usize::from(columns)
+                        && text_width(&label) + text_width(scope) + 3 <= usize::from(thread.width)
                     {
                         label.push_str(" · ");
                         label.push_str(scope);
                     }
-                    paint.line(theme, bounds, &label, Role::Secondary, chosen);
+                    paint.card_line(
+                        theme,
+                        bounds,
+                        &label,
+                        Role::Secondary,
+                        chosen,
+                        list_background,
+                    );
                     paint.target(bounds, Hit::Mention(index));
                 }
+            }
+        }
+        let background = card_style(theme, Role::Base, list_background);
+        for y in history_rect.y..status_at {
+            let cells = &mut paint.surface.frame.rows[usize::from(y)].cells;
+            let x = usize::from(history_rect.x);
+            for cell in &mut cells[x..x + usize::from(history_rect.width)] {
+                cell.style.background_source = background.background_source;
+                cell.style.background = background.background;
             }
         }
         if composer_rows > 0 {
@@ -1626,7 +1680,7 @@ mod tests {
     }
 
     #[test]
-    fn channel_materials_reclaim_thread_rows_and_keep_controls_reachable() {
+    fn three_aligned_channel_cards_keep_controls_reachable() {
         let mut chat = Chat::default();
         open_channel(&mut chat, 0);
         let theme = Theme::default();
@@ -1638,20 +1692,30 @@ mod tests {
             height: size.rows,
         };
         chat.paint(area(wide), wide, &theme, false, false, true, BACKGROUNDS);
-        let &[(list, list_body, None), (composer, composer_body, Some(6))] = chat.inlays() else {
-            panic!("expected only a neutral list card and an accented composer");
+        let &[
+            (list, list_body, None),
+            (thread, thread_body, None),
+            (composer, composer_body, Some(6)),
+        ] = chat.inlays()
+        else {
+            panic!("expected neutral list and thread cards plus an accented composer");
         };
-        assert_eq!(chat.paint.history.y, 0);
-        assert_eq!(chat.paint.history.height, composer.y);
-        assert_eq!(composer.y + composer.height, wide.rows);
-        assert_eq!(list.y + list.height, wide.rows);
+        assert_eq!(chat.paint.history, thread_body);
+        assert_eq!(list.y, thread.y);
+        assert_eq!((composer.x, composer.width), (thread.x, thread.width));
+        assert_eq!(composer.y, thread.y + thread.height);
+        assert_eq!(composer.y + composer.height, list.y + list.height);
         let frame = &chat.surface().frame;
-        for (index, body) in [list_body, composer_body].into_iter().enumerate() {
+        for (body, background) in [
+            (list_body, BACKGROUNDS[0]),
+            (thread_body, BACKGROUNDS[0]),
+            (composer_body, BACKGROUNDS[1]),
+        ] {
             assert_eq!(
                 frame.rows[usize::from(body.y)].cells[usize::from(body.x)]
                     .style
                     .background_source,
-                BACKGROUNDS[index]
+                background
             );
         }
         let has_action = |chat: &Chat, predicate: fn(Hit) -> bool| {
@@ -1668,10 +1732,11 @@ mod tests {
         });
         chat.redraw();
         chat.paint(area(wide), wide, &theme, false, false, true, BACKGROUNDS);
-        assert_eq!(chat.paint.history.height + 1, composer.y);
-        assert_eq!(chat.inlays()[1].0, composer);
+        assert_eq!(chat.paint.history.height + 1, thread_body.height);
+        assert_eq!(chat.inlays()[2].0, composer);
         assert!(matches!(
-            chat.paint.hit(chat.paint.history.x, composer.y - 1),
+            chat.paint
+                .hit(thread_body.x, thread_body.y + thread_body.height - 1),
             Some(Hit::Latest)
         ));
         chat.live_tail();
@@ -1687,11 +1752,11 @@ mod tests {
             true,
             BACKGROUNDS,
         );
-        let &[(composer, body, Some(6))] = chat.inlays() else {
-            panic!("expected only the composer on a narrow thread");
+        let &[(thread, thread_body, None), (composer, body, Some(6))] = chat.inlays() else {
+            panic!("expected stacked thread and composer on a narrow terminal");
         };
-        assert_eq!(chat.paint.history.y, 0);
-        assert_eq!(chat.paint.history.height, composer.y);
+        assert_eq!(chat.paint.history, thread_body);
+        assert_eq!(thread.y + thread.height, composer.y);
         assert!(matches!(chat.paint.hit(body.x, body.y), Some(Hit::List)));
         assert_eq!(chat.surface().frame.cursor.y, body.y);
 
