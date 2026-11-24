@@ -3,7 +3,7 @@
 //! Layers own geometry and input/focus lifecycle, never product content or IO.
 //! Submit their frames through `Scene` in `layers()` order after base surfaces.
 use crate::{Rect, window};
-use bkpr_protocol::Size;
+use bkpr_protocol::{MouseButton, Size};
 
 /// Input ownership and owner-handled dismissal rules for a layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,9 +150,9 @@ pub enum PointerRoute {
     },
 }
 #[derive(Clone, Copy)]
-enum Capture {
-    Layer(&'static str),
-    Retired,
+struct Capture {
+    button: MouseButton,
+    owner: Option<&'static str>,
 }
 
 /// Focus tokens are opaque consumer values. Updating/reflowing a layer preserves
@@ -213,8 +213,10 @@ impl<F> OverlayStack<F> {
         let index = self.layers.iter().position(|layer| layer.id == id)?;
         // Preserve a removed owner's gesture tombstone until release. Never hand
         // the remainder of a dismissed overlay's click to the underlying app.
-        if matches!(self.captured, Some(Capture::Layer(owner)) if owner == id) {
-            self.captured = Some(Capture::Retired);
+        if let Some(capture) = &mut self.captured
+            && capture.owner == Some(id)
+        {
+            capture.owner = None;
         }
         self.layers.remove(index).return_focus
     }
@@ -251,16 +253,36 @@ impl<F> OverlayStack<F> {
                 intersect(clip(layer.placement.content, screen), layer.placement.outer);
         }
     }
-    /// Routes screen-cell coordinates, capturing presses through release.
-    /// Removed gesture owners continue blocking until release; wheels route afresh.
-    pub fn route_pointer(&mut self, x: u16, y: u16, phase: PointerPhase) -> PointerRoute {
+    /// The initiating button, including when the captured layer was removed.
+    pub fn pointer_button(&self) -> Option<MouseButton> {
+        self.captured.map(|capture| capture.button)
+    }
+    /// Ends capture on host focus loss, returning the button whose late release
+    /// the host must swallow before routing across surfaces again.
+    pub fn take_pointer_capture(&mut self) -> Option<MouseButton> {
+        self.captured.take().map(|capture| capture.button)
+    }
+    /// Routes screen-cell coordinates, capturing a press through that button's release.
+    /// Wheels route afresh; other button transitions cannot reach the captured layer.
+    pub fn route_pointer(
+        &mut self,
+        x: u16,
+        y: u16,
+        phase: PointerPhase,
+        button: MouseButton,
+    ) -> PointerRoute {
         if phase != PointerPhase::Wheel
             && let Some(captured) = self.captured
         {
+            if matches!(phase, PointerPhase::Press | PointerPhase::Release)
+                && button != captured.button
+            {
+                return PointerRoute::Block;
+            }
             if phase == PointerPhase::Release {
                 self.captured = None;
             }
-            let Capture::Layer(id) = captured else {
+            let Some(id) = captured.owner else {
                 return PointerRoute::Block;
             };
             return self
@@ -273,7 +295,10 @@ impl<F> OverlayStack<F> {
         for layer in self.layers.iter().rev() {
             if layer.policy.pointer && layer.placement.outer.contains(x, y) {
                 if phase == PointerPhase::Press {
-                    self.captured = Some(Capture::Layer(layer.id));
+                    self.captured = Some(Capture {
+                        button,
+                        owner: Some(layer.id),
+                    });
                 }
                 return PointerRoute::Target {
                     id: layer.id,
@@ -282,7 +307,10 @@ impl<F> OverlayStack<F> {
             }
             if layer.policy.modal {
                 if phase == PointerPhase::Press && layer.policy.dismiss_on_outside {
-                    self.captured = Some(Capture::Layer(layer.id));
+                    self.captured = Some(Capture {
+                        button,
+                        owner: Some(layer.id),
+                    });
                     return PointerRoute::Dismiss(layer.id);
                 }
                 return PointerRoute::Block;
@@ -334,7 +362,7 @@ mod tests {
         assert_eq!(stack.keyboard_owner(), Some("form"));
         assert_eq!(stack.escape_target(), Some("form"));
         assert_eq!(
-            stack.route_pointer(3, 3, PointerPhase::Wheel),
+            stack.route_pointer(3, 3, PointerPhase::Wheel, MouseButton::WheelDown),
             PointerRoute::Target {
                 id: "guide",
                 content: true
@@ -360,7 +388,7 @@ mod tests {
         );
         assert_eq!(stack.keyboard_owner(), Some("modal"));
         assert_eq!(
-            stack.route_pointer(3, 3, PointerPhase::Wheel),
+            stack.route_pointer(3, 3, PointerPhase::Wheel, MouseButton::WheelDown),
             PointerRoute::Target {
                 id: "modal",
                 content: true
@@ -371,7 +399,7 @@ mod tests {
         stack.present("changing", placement(), Policy::MODAL, None);
         assert_eq!(stack.keyboard_owner(), Some("changing"));
         assert_eq!(
-            stack.route_pointer(3, 3, PointerPhase::Wheel),
+            stack.route_pointer(3, 3, PointerPhase::Wheel, MouseButton::WheelDown),
             PointerRoute::Target {
                 id: "changing",
                 content: true
@@ -384,20 +412,20 @@ mod tests {
         let mut stack = OverlayStack::<()>::default();
         stack.present("form", placement(), Policy::MODAL, None);
         assert_eq!(
-            stack.route_pointer(0, 0, PointerPhase::Press),
+            stack.route_pointer(0, 0, PointerPhase::Press, MouseButton::Left),
             PointerRoute::Dismiss("form")
         );
         stack.remove("form");
         assert_eq!(
-            stack.route_pointer(0, 0, PointerPhase::Motion),
+            stack.route_pointer(0, 0, PointerPhase::Motion, MouseButton::Left),
             PointerRoute::Block
         );
         assert_eq!(
-            stack.route_pointer(0, 0, PointerPhase::Release),
+            stack.route_pointer(0, 0, PointerPhase::Release, MouseButton::Left),
             PointerRoute::Block
         );
         assert_eq!(
-            stack.route_pointer(0, 0, PointerPhase::Press),
+            stack.route_pointer(0, 0, PointerPhase::Press, MouseButton::Left),
             PointerRoute::Pass
         );
     }
@@ -405,15 +433,15 @@ mod tests {
     fn replaced_owner_does_not_receive_a_retired_gestures_release() {
         let mut stack = OverlayStack::<()>::default();
         stack.present("form", placement(), Policy::MODAL, None);
-        stack.route_pointer(3, 3, PointerPhase::Press);
+        stack.route_pointer(3, 3, PointerPhase::Press, MouseButton::Left);
         stack.remove("form");
         stack.present("form", placement(), Policy::MODAL, None);
         assert_eq!(
-            stack.route_pointer(3, 3, PointerPhase::Release),
+            stack.route_pointer(3, 3, PointerPhase::Release, MouseButton::Left),
             PointerRoute::Block
         );
         assert_eq!(
-            stack.route_pointer(3, 3, PointerPhase::Press),
+            stack.route_pointer(3, 3, PointerPhase::Press, MouseButton::Left),
             PointerRoute::Target {
                 id: "form",
                 content: true
@@ -425,25 +453,31 @@ mod tests {
         let mut stack = OverlayStack::<()>::default();
         stack.present("card", placement(), Policy::PASSIVE, None);
         assert_eq!(
-            stack.route_pointer(3, 3, PointerPhase::Press),
+            stack.route_pointer(3, 3, PointerPhase::Press, MouseButton::Left),
             PointerRoute::Target {
                 id: "card",
                 content: true
             }
         );
+        for phase in [PointerPhase::Press, PointerPhase::Release] {
+            assert_eq!(
+                stack.route_pointer(0, 0, phase, MouseButton::Right),
+                PointerRoute::Block
+            );
+        }
         assert_eq!(
-            stack.route_pointer(0, 0, PointerPhase::Motion),
+            stack.route_pointer(0, 0, PointerPhase::Motion, MouseButton::Left),
             PointerRoute::Target {
                 id: "card",
                 content: false
             }
         );
         assert_eq!(
-            stack.route_pointer(0, 0, PointerPhase::Wheel),
+            stack.route_pointer(0, 0, PointerPhase::Wheel, MouseButton::WheelDown),
             PointerRoute::Pass
         );
         assert_eq!(
-            stack.route_pointer(0, 0, PointerPhase::Release),
+            stack.route_pointer(0, 0, PointerPhase::Release, MouseButton::Left),
             PointerRoute::Target {
                 id: "card",
                 content: false

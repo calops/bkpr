@@ -75,6 +75,23 @@ pub(crate) fn decoration_styles(host: &ColorProbe, size: Size) -> Option<[Decora
     ])
 }
 
+/// Button faces follow the panel palette. The hover accent changes only the face,
+/// while the framework reverses its bevel independently on press.
+pub(crate) fn button_materials(
+    host: &ColorProbe,
+    size: Size,
+) -> bkpr_tui_framework::button::Materials {
+    let accent = theme_styles(host).base[Role::Accent as usize].foreground;
+    let radius = (size.cell_width / 3).clamp(1, 6).min(size.cell_height / 3);
+    bkpr_tui_framework::button::Materials::new(
+        accent,
+        radius,
+        (size.cell_width * 180).clamp(1000, 2600),
+        400,
+        420,
+    )
+}
+
 /// Physical passive-card attachment from retained fork 18890b23 joined.rs.
 /// The bridge overlaps by one radius before the generic contour removes seams.
 pub(crate) fn joined_surface(

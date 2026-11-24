@@ -8,8 +8,9 @@
 use bkpr_protocol::{
     Cursor, CursorShape, KeyAction, KeyEvent, PaneSnapshot, PaneStatus, RegistrySnapshot, Size,
 };
-use bkpr_protocol::{MouseAction, MouseButton, MouseEvent};
+use bkpr_protocol::{Frame, MouseAction, MouseButton, MouseEvent};
 use bkpr_tui_framework::Rect;
+use bkpr_tui_framework::button::State as ButtonState;
 use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
 use nucleo_matcher::{Matcher, Utf32Str};
 use std::time::{Duration, Instant};
@@ -280,6 +281,7 @@ pub struct Finder {
     last_click: Option<(String, Instant)>,
     preview_lines: Vec<PreviewLine>,
     copy_hits: Vec<(Rect, metadata::IdentityCopy)>,
+    copy_press: Option<(Rect, metadata::IdentityCopy)>,
     preview_key: Option<(u64, String, u16)>,
     painted_size: Option<Size>,
     roles: Vec<RoleSpan>,
@@ -311,6 +313,7 @@ impl Finder {
             last_click: None,
             preview_lines: Vec::new(),
             copy_hits: Vec::new(),
+            copy_press: None,
             preview_key: None,
             painted_size: None,
             roles: Vec::new(),
@@ -392,6 +395,10 @@ impl Finder {
         let previous = self.selected_target().map(|target| target.pane_id.clone());
         self.documents.clear();
         self.preview_key = None;
+        if self.preview_scroll != 0 {
+            self.copy_hits.clear();
+            self.cancel_copy_press();
+        }
         self.preview_scroll = 0;
         for pane in &registry.panes {
             let known = snapshot(&pane.id);
@@ -501,6 +508,13 @@ impl Finder {
             self.selected = self.selected.min(self.results.len().saturating_sub(1));
         }
         self.scroll = self.scroll.min(self.results.len().saturating_sub(1));
+        if self
+            .copy_press
+            .as_ref()
+            .is_some_and(|(_, target)| !self.shows_copy(target))
+        {
+            self.cancel_copy_press();
+        }
     }
 
     #[cfg(test)]
@@ -523,6 +537,8 @@ impl Finder {
         changed
     }
     fn changed(&mut self) {
+        self.copy_hits.clear();
+        self.cancel_copy_press();
         self.parse();
         self.rank();
         self.selected = 0;
@@ -646,6 +662,7 @@ impl Finder {
     }
     pub fn navigate(&mut self, delta: isize, size: Size) {
         let previous = self.selected;
+        let previous_view = self.compact;
         self.selected = self
             .selected
             .saturating_add_signed(delta)
@@ -656,6 +673,10 @@ impl Finder {
         if self.layout(size).list.height == 0 {
             self.compact = CompactView::List;
         }
+        if self.selected != previous || self.compact != previous_view {
+            self.copy_hits.clear();
+            self.cancel_copy_press();
+        }
         self.hovered = None;
         self.last_click = None;
         self.reveal(self.visible_count(size));
@@ -663,10 +684,35 @@ impl Finder {
 
     /// A clipboard action must still belong to the selected, visible preview.
     pub(crate) fn shows_copy(&self, target: &metadata::IdentityCopy) -> bool {
-        self.selected_target()
-            .is_some_and(|selected| selected.pane_id == target.pane())
-            && self.copy_hits.iter().any(|(_, visible)| visible == target)
+        self.results.get(self.selected).is_some_and(|selected| {
+            self.documents[selected.document]
+                .preview
+                .iter()
+                .any(|row| row.shows_copy(target))
+        }) && self.copy_hits.iter().any(|(_, visible)| visible == target)
     }
+    /// Retire a copy press when the parent intercepts release or changes ownership.
+    pub(crate) fn cancel_copy_press(&mut self) {
+        self.copy_press = None;
+    }
+
+    /// Paint visible controls over the themed preview; material coordinates are frame-local.
+    pub(crate) fn paint_buttons(
+        &self,
+        frame: &mut Frame,
+        theme: &Theme,
+        pointer: Option<(u16, u16)>,
+        mut material: impl FnMut(&mut Frame, Rect, ButtonState) -> bool,
+    ) {
+        let button = metadata::copy_button();
+        for hit in &self.copy_hits {
+            let (rect, _) = hit;
+            let state = ButtonState::at(*rect, pointer, self.copy_press.as_ref() == Some(hit));
+            let graphical = material(frame, *rect, state);
+            button.paint(frame, *rect, theme.style(Role::Accent), state, graphical);
+        }
+    }
+
     fn prepare_preview(&mut self, width: u16) {
         let Some(result) = self.results.get(self.selected) else {
             self.preview_lines.clear();
@@ -690,6 +736,8 @@ impl Finder {
         self.preview_key = Some((revision, document.target.pane_id.clone(), width));
     }
     fn scroll_preview(&mut self, delta: isize, size: Size) {
+        let previous_scroll = self.preview_scroll;
+        let previous_view = self.compact;
         self.compact = CompactView::Preview;
         let rect = self.layout(size).preview;
         self.prepare_preview(rect.width);
@@ -698,6 +746,10 @@ impl Finder {
                 .len()
                 .saturating_sub(preview_capacity(rect)),
         );
+        if self.preview_scroll != previous_scroll || self.compact != previous_view {
+            self.copy_hits.clear();
+            self.cancel_copy_press();
+        }
     }
 
     /// Protocol mouse events with x/y converted by the parent to LOCAL CELL
@@ -705,6 +757,14 @@ impl Finder {
     /// selects, a second on the same stable pane within 350ms activates. Wheel
     /// routing uses the actual pointer rectangle, never stale hover state.
     pub fn handle_mouse(&mut self, event: &MouseEvent, size: Size) -> FinderIntent {
+        let pressed = if event.action == MouseAction::Release && event.button == MouseButton::Left {
+            self.copy_press.take()
+        } else {
+            if event.action == MouseAction::Press && event.button == MouseButton::Left {
+                self.cancel_copy_press();
+            }
+            None
+        };
         if !event.x.is_finite()
             || !event.y.is_finite()
             || event.x < 0.0
@@ -732,6 +792,14 @@ impl Finder {
                 .pane_id
                 .clone()
         });
+        if let Some(press) = pressed
+            && in_preview
+            && press.0.contains(x, y)
+            && self.shows_copy(&press.1)
+            && self.copy_hits.contains(&press)
+        {
+            return FinderIntent::CopyIdentity(press.1);
+        }
         if event.action == MouseAction::Press {
             let wheel = match event.button {
                 MouseButton::WheelUp => -3,
@@ -748,12 +816,14 @@ impl Finder {
             }
             if event.button == MouseButton::Left {
                 if in_preview {
-                    if let Some((_, target)) = self
+                    if let Some(hit) = self
                         .copy_hits
                         .iter()
                         .find(|(rect, target)| rect.contains(x, y) && self.shows_copy(target))
                     {
-                        return FinderIntent::CopyIdentity(target.clone());
+                        self.last_click = None;
+                        self.copy_press = Some(hit.clone());
+                        return FinderIntent::None;
                     }
                     self.compact = CompactView::Preview;
                 } else if in_list {
@@ -764,6 +834,7 @@ impl Finder {
                 if let Some(index) = hit {
                     if self.selected != index {
                         self.preview_scroll = 0;
+                        self.copy_hits.clear();
                     }
                     self.selected = index;
                     let target = self.selected_target().unwrap().clone();
@@ -789,6 +860,8 @@ impl Finder {
         if event.action == KeyAction::Release {
             return FinderIntent::None;
         }
+        self.cancel_copy_press();
+        let previous_view = self.compact;
         use crate::keyguide::{Action, Context, Navigation};
         let action = crate::keyguide::lookup(Context::Finder, event);
         if matches!(action, Some(Action::Edit(_))) {
@@ -830,6 +903,9 @@ impl Finder {
                 self.insert(&event.text);
             }
             _ => {}
+        }
+        if self.compact != previous_view {
+            self.copy_hits.clear();
         }
         FinderIntent::None
     }
@@ -1050,17 +1126,23 @@ impl Finder {
                         },
                         slot: span.slot,
                     }));
-                if let Some((hit, target)) = &line.copy {
-                    self.copy_hits.push((
-                        Rect {
-                            x: layout.preview.x + hit.x,
-                            y: layout.preview.y + index as u16,
-                            ..*hit
-                        },
-                        target.clone(),
-                    ));
+                if let Some((hit, metadata::ButtonAction::Copy(target))) = &line.button {
+                    let rect = Rect {
+                        x: layout.preview.x + hit.x,
+                        y: layout.preview.y + index as u16,
+                        ..*hit
+                    };
+                    lines.push((rect, String::new(), false));
+                    self.copy_hits.push((rect, target.clone()));
                 }
             }
+        }
+        if self
+            .copy_press
+            .as_ref()
+            .is_some_and(|press| !self.copy_hits.contains(press))
+        {
+            self.cancel_copy_press();
         }
         let cursor = (layout.input.height > 0
             && layout.input.width > 0

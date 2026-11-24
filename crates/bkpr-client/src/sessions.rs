@@ -2087,6 +2087,7 @@ fn transfer_terminal(from: &mut App, to: &mut App) {
     to.chrome_graphics_enabled = from.chrome_graphics_enabled;
     to.host_focused = from.host_focused;
     to.last_button = from.last_button;
+    to.retired_overlay_button = from.retired_overlay_button.take();
     std::mem::swap(&mut from.state.suppressed, &mut to.state.suppressed);
     to.state.sidebar.preferred_columns = from.state.sidebar.preferred_columns;
     if from.theme_picker.is_some() {

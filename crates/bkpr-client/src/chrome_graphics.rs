@@ -112,15 +112,16 @@ impl PaneGeometry {
 }
 pub(crate) struct ChromeGraphics(
     SvgGraphics,
-    Option<[DecorationStyle; 12]>,
+    Option<[DecorationStyle; 15]>,
     Option<DecorationEvidence>,
     PaneGeometry,
+    Option<bkpr_tui_framework::button::Materials>,
 );
 impl ChromeGraphics {
     pub(crate) fn new(cache_root: Option<std::path::PathBuf>) -> io::Result<Self> {
         std::hint::black_box(NOTICES);
         SvgGraphics::new_with_cache(ASSETS, 2, 1, cache_root)
-            .map(|graphics| Self(graphics, None, None, PaneGeometry::default()))
+            .map(|graphics| Self(graphics, None, None, PaneGeometry::default(), None))
     }
     pub(crate) fn register_uploads(&mut self, terminal: &mut bkpr_tui_framework::TerminalGuard) {
         self.0.register_uploads(terminal);
@@ -149,6 +150,7 @@ impl ChromeGraphics {
             [1, 2, 3, 4, 6].map(|index| host.palette.get(&index).copied()),
         );
         if self.2 != Some(evidence) {
+            self.4 = None;
             self.1 = crate::appearance::decoration_styles(host, size).map(|[pane, popup]| {
                 let guide = |accent| DecorationStyle {
                     background: crate::appearance::guide_background(host, accent)
@@ -164,6 +166,9 @@ impl ChromeGraphics {
                     kind: bkpr_tui_framework::decoration::DecorationKind::RecessedTransparentLeftGutter,
                     ..pane
                 };
+                let buttons = crate::appearance::button_materials(host, size);
+                self.4 = Some(buttons);
+                let [idle, hover, pressed] = *buttons.styles();
                 [
                     pane,
                     popup,
@@ -177,6 +182,9 @@ impl ChromeGraphics {
                     region(Some(3)),
                     region(Some(4)),
                     sidebar_edge,
+                    idle,
+                    hover,
+                    pressed,
                 ]
             });
             self.2 = Some(evidence);
@@ -187,6 +195,35 @@ impl ChromeGraphics {
             sources,
             self.1.as_ref().map_or(&[], |styles| styles.as_slice()),
         );
+    }
+
+    pub(crate) fn button_keys(&self) -> [Option<bkpr_protocol::ImageKey>; 3] {
+        self.4.map_or([None; 3], |buttons| {
+            buttons.styles().map(|style| self.0.decoration_key(style))
+        })
+    }
+
+    pub(crate) fn button_painter(
+        &self,
+        enabled: bool,
+    ) -> impl FnMut(&mut Frame, Rect, bkpr_tui_framework::button::State) -> bool + '_ {
+        let mut base = 1;
+        let mut retained = false;
+        move |frame, rect, state| {
+            let id = base;
+            base += 64;
+            enabled
+                && self.4.is_some_and(|buttons| {
+                    if !buttons.place(&self.0, frame, rect, state, id) {
+                        return false;
+                    }
+                    if !retained {
+                        self.0.retain_decoration_sources(frame, buttons.styles());
+                        retained = true;
+                    }
+                    true
+                })
+        }
     }
 
     pub(crate) fn retain_decoration_sources(&self, frame: &mut Frame) {

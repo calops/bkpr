@@ -26,7 +26,7 @@ const MAX_COLORS: usize = 32;
 const MAX_IMAGES: usize = 64;
 const MAX_ASSETS: usize = 8;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
-const MAX_DECORATIONS: usize = 11;
+const MAX_DECORATIONS: usize = 15;
 const MAX_DECORATION_CACHE: usize = 16;
 const MAX_DECORATION_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RETAINED_DECORATION_BYTES: usize = 1024 * 1024;
@@ -266,7 +266,7 @@ impl SvgGraphics {
         self.prepare_with_decorations(host, size, sources, &[]);
     }
 
-    /// Request icons and the first eleven distinct caller-supplied materials.
+    /// Request icons and the first fifteen distinct caller-supplied materials.
     ///
     /// Exact published resources remain usable while missing variants prepare.
     /// Unresolved colors, unsupported geometry, or exhausted preparation budgets
@@ -431,6 +431,14 @@ impl SvgGraphics {
             self.joined_cache.remember(prepared);
         }
         self.joined = publication.joined;
+    }
+
+    /// Identity of a ready material for retained presentations, when enabled.
+    pub fn decoration_key(&self, style: DecorationStyle) -> Option<bkpr_protocol::ImageKey> {
+        self.enabled
+            .then(|| self.decorations.iter().find(|entry| entry.style == style))
+            .flatten()
+            .map(|entry| entry.image.key())
     }
 
     /// Retain matching-cell material sources without adding placements.

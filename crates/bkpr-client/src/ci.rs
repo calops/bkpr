@@ -7,7 +7,6 @@ use bkpr_protocol::{
 use bkpr_tui_framework::Role;
 
 pub(crate) const WORKFLOW: &str = "\u{f52e}";
-pub(crate) const REFRESH: &str = "[ \u{f021}  ]";
 
 pub(crate) fn state(ci: &CiSnapshot) -> CiStatus {
     if ci.fetch_state != CiFetchState::Ready
@@ -227,15 +226,7 @@ pub(crate) fn content(
         summary.append(" · incomplete", Role::Muted);
     }
     if pane.is_some() && source_known(ci) {
-        summary.right(
-            REFRESH,
-            if ci.fetch_state == CiFetchState::Loading {
-                Role::Muted
-            } else {
-                Role::Panel
-            },
-        );
-        summary.refresh = pane.and_then(|pane| target(project, pane));
+        summary.with_refresh(pane.and_then(|pane| target(project, pane)));
     }
     rows.push(summary);
     if ci.updated_at != 0 {
@@ -442,7 +433,7 @@ pub(crate) mod tests {
         assert!(position("owner/repo #42") < position("Restore project metadata"));
         assert!(position("Restore project metadata") < position("ENG-42"));
         assert!(position("ENG-42") < position("\u{f062c}"));
-        let refresh = rows.iter().find_map(|row| row.refresh.as_ref()).unwrap();
+        let refresh = rows.iter().find_map(Paragraph::refresh_target).unwrap();
         assert_eq!(refresh.pane_id, "exact-pane");
         assert_eq!(refresh.cwd, project.cwd);
         assert_eq!(refresh.head_sha, "remoteabcdef");
@@ -459,10 +450,14 @@ pub(crate) mod tests {
                     assert!(*cells <= columns);
                     assert!(safe_link(url).is_some());
                 }
-                if let Some((rect, target)) = &line.refresh {
-                    assert!(rect.x + rect.width <= columns);
-                    assert_eq!(rect.width, 6);
-                    assert_eq!(target, refresh);
+                if let Some((rect, action)) = &line.button {
+                    assert_eq!(rect.x + rect.width, columns);
+                    assert_eq!(rect.width, action.button().width());
+                    assert_eq!(
+                        action,
+                        &crate::metadata::ButtonAction::Refresh(Some(refresh.clone()))
+                    );
+                    assert!(!line.text.contains('\u{f021}'));
                 }
             }
             if columns == 80 {
@@ -500,11 +495,11 @@ pub(crate) mod tests {
                     .all(|row| !row.text.contains("https://secret.invalid/token"))
             );
             if case == 0 || case == 5 {
-                assert!(rows.iter().all(|row| row.refresh.is_none()));
+                assert!(rows.iter().all(|row| row.refresh_target().is_none()));
             } else {
                 assert_eq!(
                     rows.iter()
-                        .find_map(|row| row.refresh.as_ref())
+                        .find_map(Paragraph::refresh_target)
                         .unwrap()
                         .head_sha,
                     "remoteabcdef"
@@ -522,7 +517,7 @@ pub(crate) mod tests {
         ci.error = Some("Authentication unavailable until keychain unlock".into());
         let mut rows = Vec::new();
         content(Some(&project), Some("exact-pane"), true, &mut rows);
-        let target = rows.iter().find_map(|row| row.refresh.as_ref()).unwrap();
+        let target = rows.iter().find_map(Paragraph::refresh_target).unwrap();
         assert!(target.head_sha.is_empty());
         assert_eq!(target.checked_ref.as_deref(), Some("origin/feature/日本語"));
         assert_eq!(target.local_head_sha, "localabcdef");
@@ -557,11 +552,8 @@ pub(crate) mod tests {
             let mut lines = Vec::new();
             crate::metadata::wrap(&rows, 80, &mut lines);
             assert!(lines.iter().any(|line| line.text.contains("unit tests")));
-            assert_eq!(
-                lines.iter().any(|line| line.text.contains(REFRESH)),
-                actionable
-            );
-            assert_eq!(lines.iter().any(|line| line.refresh.is_some()), actionable);
+            assert_eq!(lines.iter().any(|line| line.button.is_some()), actionable);
+            assert!(lines.iter().all(|line| !line.text.contains('\u{f021}')));
         }
     }
     #[test]

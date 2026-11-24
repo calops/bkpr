@@ -5,6 +5,7 @@
 mod render;
 pub use render::*;
 pub mod animation;
+pub mod button;
 pub mod chord;
 pub mod color;
 pub mod context_menu;

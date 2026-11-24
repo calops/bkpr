@@ -100,7 +100,7 @@ impl Tone {
     }
 }
 
-fn luminance(rgb: [u8; 3]) -> Luminance {
+pub(crate) fn luminance(rgb: [u8; 3]) -> Luminance {
     Srgb::from(rgb).into_format::<f64>().relative_luminance()
 }
 

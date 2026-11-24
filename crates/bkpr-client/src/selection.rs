@@ -280,6 +280,7 @@ impl App {
 
     pub(super) fn selection_focus_lost(&mut self) {
         self.identity_copy.cancel();
+        self.cancel_button_presses();
         let generation = self.terminal_selection.generation;
         self.terminal_selection.generation = generation.wrapping_add(1);
         self.terminal_selection.copies.clear();

@@ -4,7 +4,8 @@
 use crate::controller::SidebarTarget;
 use crate::metadata::{self, Paragraph, ProjectSpan};
 use crate::project_colors::{ProjectPalette, ProjectSlots};
-use bkpr_protocol::{PaneSnapshot, RegistrySnapshot, Size};
+use bkpr_protocol::{CiRefreshTarget, PaneSnapshot, RegistrySnapshot, Size};
+use bkpr_tui_framework::button::State as ButtonState;
 use bkpr_tui_framework::overlay::Placement;
 use bkpr_tui_framework::{
     ForegroundSpan, Rect, Role, RoleSpan, Theme, UiSurface,
@@ -292,6 +293,37 @@ struct PaintKey {
     scroll: usize,
 }
 
+/// An exact owner, target and screen rectangle captured on primary press.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ButtonGesture {
+    owner: crate::tree::Owner,
+    rect: Rect,
+    action: metadata::ButtonAction,
+}
+
+/// A metadata action admitted by release on the original painted target.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ButtonAction {
+    /// Copy the exact bound identity owned by this attachment.
+    Copy {
+        owner: crate::tree::Owner,
+        target: metadata::IdentityCopy,
+    },
+    /// Refresh the precise retained CI source owned by this attachment.
+    Refresh {
+        owner: crate::tree::Owner,
+        target: CiRefreshTarget,
+    },
+}
+
+fn screen_rect(rect: Rect, outer: Rect) -> Rect {
+    Rect {
+        x: outer.x + rect.x,
+        y: outer.y + rect.y,
+        ..rect
+    }
+}
+
 /// Retained passive surface. Ownership of hover/keyboard selection and focus
 /// remains with App; paint never selects a pane or installs a cursor.
 pub struct Popover {
@@ -305,10 +337,9 @@ pub struct Popover {
     roles: Vec<RoleSpan>,
     projects: Vec<ProjectSpan>,
     foregrounds: Vec<ForegroundSpan>,
-    refresh_hits: Vec<(Rect, bkpr_protocol::CiRefreshTarget)>,
-    copy_hits: Vec<(Rect, metadata::IdentityCopy)>,
+    buttons: Vec<(Rect, metadata::ButtonAction)>,
     links: Vec<(u16, u16, u16, String)>,
-    refresh_pending: Option<(crate::tree::Owner, bkpr_protocol::CiRefreshTarget)>,
+    refresh_pending: Option<(crate::tree::Owner, CiRefreshTarget)>,
     graphical: bool,
 }
 impl Popover {
@@ -329,8 +360,7 @@ impl Popover {
             projects: Vec::new(),
             foregrounds: Vec::new(),
             graphical: false,
-            refresh_hits: Vec::new(),
-            copy_hits: Vec::new(),
+            buttons: Vec::new(),
             links: Vec::new(),
             refresh_pending: None,
         }
@@ -351,8 +381,7 @@ impl Popover {
         self.rect = None;
         self.scroll = 0;
         self.max_scroll = 0;
-        self.refresh_hits.clear();
-        self.copy_hits.clear();
+        self.buttons.clear();
         self.clear_links();
     }
     fn clear_links(&mut self) {
@@ -611,8 +640,7 @@ impl Popover {
         };
         self.roles = window::theme_spans(local).to_vec();
         self.projects.clear();
-        self.refresh_hits.clear();
-        self.copy_hits.clear();
+        self.buttons.clear();
         self.clear_links();
         if local.cols >= 3 && local.rows >= 3 {
             self.roles.push(RoleSpan {
@@ -661,25 +689,14 @@ impl Popover {
                 self.links
                     .push((inner.x, inner.y + index as u16, *cells, url.clone()));
             }
-            if let Some((hit, target)) = &line.refresh {
-                self.refresh_hits.push((
-                    Rect {
-                        x: rect.x + inner.x + hit.x,
-                        y: rect.y + inner.y + index as u16,
-                        ..*hit
-                    },
-                    target.clone(),
-                ));
-            }
-            if let Some((hit, target)) = &line.copy {
-                self.copy_hits.push((
-                    Rect {
-                        x: rect.x + inner.x + hit.x,
-                        y: rect.y + inner.y + index as u16,
-                        ..*hit
-                    },
-                    target.clone(),
-                ));
+            if let Some((hit, action)) = &line.button {
+                let button = Rect {
+                    x: inner.x + hit.x,
+                    y: inner.y + index as u16,
+                    ..*hit
+                };
+                lines.push((button, String::new(), false));
+                self.buttons.push((button, action.clone()));
             }
             lines.push((
                 Rect {
@@ -752,17 +769,76 @@ impl Popover {
             }))
         .then_some(key.owner)
     }
-    /// Copy buttons export exact identity bytes, never their clipped labels.
-    pub(crate) fn copy_at(
+    fn button_hit(
         &self,
         tree: &crate::tree::Tree,
         point: (u16, u16),
-    ) -> Option<(crate::tree::Owner, metadata::IdentityCopy)> {
+        allow_refresh: bool,
+    ) -> Option<(crate::tree::Owner, Rect, &metadata::ButtonAction)> {
+        let outer = self.rect?;
+        if self.paint_key.as_ref()?.scroll != self.scroll {
+            return None;
+        }
         let owner = self.current_owner(tree)?;
-        self.copy_hits
-            .iter()
-            .find(|(rect, _)| rect.contains(point.0, point.1))
-            .map(|(_, target)| (owner, target.clone()))
+        let (rect, action) = self.buttons.iter().find_map(|(rect, action)| {
+            let rect = screen_rect(*rect, outer);
+            rect.contains(point.0, point.1).then_some((rect, action))
+        })?;
+        match action {
+            metadata::ButtonAction::Copy(target) => {
+                let session = tree.session(owner)?;
+                let pane = session
+                    .registry
+                    .panes
+                    .iter()
+                    .find(|pane| pane.id == target.pane())?;
+                if !target.matches(pane, session.snapshots.get(target.pane())) {
+                    return None;
+                }
+            }
+            metadata::ButtonAction::Refresh(Some(target)) if allow_refresh => {
+                self.refresh_for_owner(tree, owner, Some(target))?;
+            }
+            metadata::ButtonAction::Refresh(_) => return None,
+        }
+        Some((owner, rect, action))
+    }
+
+    /// Capture the available button under a primary press without dispatching it.
+    pub(crate) fn button_at(
+        &self,
+        tree: &crate::tree::Tree,
+        point: (u16, u16),
+        allow_refresh: bool,
+    ) -> Option<ButtonGesture> {
+        let (owner, rect, action) = self.button_hit(tree, point, allow_refresh)?;
+        Some(ButtonGesture {
+            owner,
+            rect,
+            action: action.clone(),
+        })
+    }
+
+    /// Admit only the original captured button on primary release.
+    pub(crate) fn release_button(
+        &mut self,
+        tree: &crate::tree::Tree,
+        point: (u16, u16),
+        armed: ButtonGesture,
+        allow_refresh: bool,
+    ) -> Option<ButtonAction> {
+        let (owner, rect, action) = self.button_hit(tree, point, allow_refresh)?;
+        if owner != armed.owner || rect != armed.rect || action != &armed.action {
+            return None;
+        }
+        match armed.action {
+            metadata::ButtonAction::Copy(target) => Some(ButtonAction::Copy { owner, target }),
+            metadata::ButtonAction::Refresh(target) => {
+                let target = target?;
+                self.refresh_pending = Some((owner, target.clone()));
+                Some(ButtonAction::Refresh { owner, target })
+            }
+        }
     }
     /// A queued gesture cannot outlive its visible owner or metadata source.
     pub(crate) fn shows_copy(
@@ -772,39 +848,28 @@ impl Popover {
         target: &metadata::IdentityCopy,
     ) -> bool {
         self.current_owner(tree) == Some(owner)
-            && self.copy_hits.iter().any(|(_, visible)| visible == target)
+            && self
+                .paint_key
+                .as_ref()
+                .is_some_and(|key| key.scroll == self.scroll)
+            && self.buttons.iter().any(|(_, action)| {
+                matches!(action, metadata::ButtonAction::Copy(visible) if visible == target)
+            })
     }
-    /// Only a current, visibly painted owner/source may issue refresh. This is
-    /// independent of active terminal focus and rejects stale session generations.
-    fn refresh_candidate(
-        &self,
-        tree: &crate::tree::Tree,
-        point: Option<(u16, u16)>,
-    ) -> Option<(crate::tree::Owner, &bkpr_protocol::CiRefreshTarget)> {
-        let owner = self.current_owner(tree)?;
-        self.refresh_for_owner(tree, owner, point)
-    }
-
     fn refresh_for_owner(
         &self,
         tree: &crate::tree::Tree,
         owner: crate::tree::Owner,
-        point: Option<(u16, u16)>,
-    ) -> Option<(crate::tree::Owner, &bkpr_protocol::CiRefreshTarget)> {
+        exact: Option<&CiRefreshTarget>,
+    ) -> Option<&CiRefreshTarget> {
         let session = tree.session(owner)?;
         let mut targets = self
             .content
             .as_ref()?
             .rows
             .iter()
-            .filter_map(|row| row.refresh.as_ref())
-            .filter(|target| {
-                point.is_none_or(|(x, y)| {
-                    self.refresh_hits
-                        .iter()
-                        .any(|(rect, visible)| visible == *target && rect.contains(x, y))
-                })
-            });
+            .filter_map(Paragraph::refresh_target)
+            .filter(|target| exact.is_none_or(|exact| *target == exact));
         let target = targets.next()?;
         if targets.next().is_some() {
             return None;
@@ -826,7 +891,7 @@ impl Popover {
         {
             return None;
         }
-        Some((owner, target))
+        Some(target)
     }
     pub(crate) fn refresh_available(&self, tree: &crate::tree::Tree) -> bool {
         // Registry updates precede popup painting; unrelated revisions must not
@@ -835,13 +900,13 @@ impl Popover {
             .and_then(|owner| self.refresh_for_owner(tree, owner, None))
             .is_some()
     }
+    /// Admit keyboard refresh for an unambiguous current source.
     pub(crate) fn refresh_at(
         &mut self,
         tree: &crate::tree::Tree,
-        point: Option<(u16, u16)>,
-    ) -> Option<(crate::tree::Owner, bkpr_protocol::CiRefreshTarget)> {
-        let (owner, target) = self.refresh_candidate(tree, point)?;
-        let result = (owner, target.clone());
+    ) -> Option<(crate::tree::Owner, CiRefreshTarget)> {
+        let owner = self.current_owner(tree)?;
+        let result = (owner, self.refresh_for_owner(tree, owner, None)?.clone());
         self.refresh_pending = Some(result.clone());
         Some(result)
     }
@@ -850,7 +915,7 @@ impl Popover {
     pub(crate) fn refresh_receipt(
         &mut self,
         owner: crate::tree::Owner,
-        target: &bkpr_protocol::CiRefreshTarget,
+        target: &CiRefreshTarget,
         known: bool,
     ) {
         if known
@@ -899,6 +964,57 @@ impl Popover {
             &[],
         );
         self.roles.truncate(roles_len);
+    }
+
+    /// Paint the themed card's visible controls. Material placement uses frame-local bounds.
+    pub(crate) fn paint_buttons(
+        &mut self,
+        theme: &Theme,
+        pointer: Option<(u16, u16)>,
+        armed: Option<&ButtonGesture>,
+        allow_refresh: bool,
+        mut material: impl FnMut(&mut bkpr_protocol::Frame, Rect, ButtonState) -> bool,
+    ) {
+        let Some((outer, key)) = self.rect.zip(self.content_key.as_ref()) else {
+            return;
+        };
+        let frame = &mut self.surface.frame;
+        for (rect, action) in &self.buttons {
+            let screen_rect = screen_rect(*rect, outer);
+            let interactive = match action {
+                metadata::ButtonAction::Copy(_) => true,
+                metadata::ButtonAction::Refresh(Some(target)) => {
+                    allow_refresh
+                        && !self
+                            .refresh_pending
+                            .as_ref()
+                            .is_some_and(|(owner, pending)| {
+                                *owner == key.owner && pending == target
+                            })
+                }
+                metadata::ButtonAction::Refresh(None) => false,
+            };
+            let state = if interactive {
+                ButtonState::at(
+                    screen_rect,
+                    pointer,
+                    armed.is_some_and(|gesture| {
+                        gesture.owner == key.owner
+                            && gesture.rect == screen_rect
+                            && &gesture.action == action
+                    }),
+                )
+            } else {
+                ButtonState::Disabled
+            };
+            let graphical = interactive && material(frame, *rect, state);
+            let ink = theme.style(if interactive {
+                Role::Accent
+            } else {
+                Role::Muted
+            });
+            action.button().paint(frame, *rect, ink, state, graphical);
+        }
     }
 }
 
@@ -1667,23 +1783,63 @@ mod tests {
             .paint_tree(&tree, Some(&target), 3, 28, screen)
             .unwrap();
         popup.scroll_by(i32::MAX);
-        popup
+        let card = popup
             .paint_tree(&tree, Some(&target), 3, 28, screen)
             .unwrap();
-        let hit = popup.refresh_hits[0].0;
+        let mut button = None;
+        popup.paint_buttons(&Theme::default(), None, None, true, |_, rect, state| {
+            assert_eq!(state, ButtonState::Idle);
+            button = Some(rect);
+            false
+        });
+        let button = button.unwrap();
+        let cells = &popup.surface.frame.rows[usize::from(button.y)].cells;
+        assert!(
+            cells[usize::from(button.x)..usize::from(button.x + button.width)]
+                .iter()
+                .any(|cell| cell.text == "\u{f021}")
+        );
+        let hit = screen_rect(button, card);
+        let point = (hit.x, hit.y);
+        assert!(popup.button_at(&tree, point, false).is_none());
+        popup.paint_buttons(&Theme::default(), Some(point), None, false, |_, _, _| {
+            panic!("disabled refresh must not place active material")
+        });
+        let disabled =
+            &popup.surface.frame.rows[usize::from(button.y)].cells[usize::from(button.x)];
+        assert!(disabled.style.faint && !disabled.style.inverse);
+        let armed = popup.button_at(&tree, point, true).unwrap();
         registry.revision += 1;
         tree.reconcile(vec![session(registry.clone(), owner)], owner);
         tree.hover = Some(target.clone());
         assert!(popup.refresh_available(&tree));
-        assert!(popup.refresh_at(&tree, Some((hit.x, hit.y))).is_none());
+        assert!(popup.refresh_at(&tree).is_none());
+        assert!(popup.release_button(&tree, point, armed, true).is_none());
         popup
             .paint_tree(&tree, Some(&target), 3, 28, screen)
             .unwrap();
-        let accepted = popup.refresh_at(&tree, Some((hit.x, hit.y))).unwrap();
-        assert_eq!(accepted.0, owner);
-        assert_eq!(accepted.1.pane_id, "terminal");
-        assert_eq!(accepted.1.head_sha, "remoteabcdef");
-        assert!(popup.refresh_at(&tree, Some((hit.x, hit.y))).is_none());
+        let armed = popup.button_at(&tree, point, true).unwrap();
+        assert!(
+            popup
+                .release_button(&tree, (card.x, card.y), armed, true)
+                .is_none()
+        );
+        let armed = popup.button_at(&tree, point, true).unwrap();
+        assert!(
+            popup.refresh_pending.is_none(),
+            "press alone cannot admit refresh"
+        );
+        let Some(ButtonAction::Refresh {
+            owner: accepted_owner,
+            target: accepted,
+        }) = popup.release_button(&tree, point, armed, true)
+        else {
+            panic!("the exact painted source should refresh on release");
+        };
+        assert_eq!(accepted_owner, owner);
+        assert_eq!(accepted.pane_id, "terminal");
+        assert_eq!(accepted.head_sha, "remoteabcdef");
+        assert!(popup.button_at(&tree, point, true).is_none());
         // A new URL with unchanged visible check labels must invalidate annotations.
         registry.revision += 1;
         registry.panes[0]
@@ -1697,7 +1853,7 @@ mod tests {
             .url = Some("https://github.com/owner/repo/actions/runs/99".into());
         tree.reconcile(vec![session(registry.clone(), owner)], owner);
         tree.hover = Some(target.clone());
-        assert!(popup.refresh_at(&tree, Some((hit.x, hit.y))).is_none());
+        assert!(popup.button_at(&tree, point, true).is_none());
         popup
             .paint_tree(&tree, Some(&target), 3, 28, screen)
             .unwrap();
@@ -1747,15 +1903,19 @@ mod tests {
                     == Some("https://github.com/owner/repo/actions/runs/99"))
         );
         // Same labels and styles, different exact source: old refresh cannot win.
+        popup.refresh_receipt(owner, &accepted, true);
+        let armed = popup.button_at(&tree, point, true).unwrap();
         registry.revision += 1;
         registry.panes[0].project.as_mut().unwrap().cwd = "/fixture/repo/subdirectory".into();
         tree.reconcile(vec![session(registry.clone(), owner)], owner);
         tree.hover = Some(target.clone());
-        assert!(popup.refresh_at(&tree, Some((hit.x, hit.y))).is_none());
+        assert!(popup.button_at(&tree, point, true).is_none());
         popup
             .paint_tree(&tree, Some(&target), 3, 28, screen)
             .unwrap();
-        let refreshed = popup.refresh_at(&tree, None).unwrap().1;
+        assert!(popup.button_at(&tree, point, true).is_some());
+        assert!(popup.release_button(&tree, point, armed, true).is_none());
+        let refreshed = popup.refresh_at(&tree).unwrap().1;
         assert_eq!(
             refreshed.cwd,
             std::path::Path::new("/fixture/repo/subdirectory")
@@ -1766,9 +1926,9 @@ mod tests {
             ..owner
         };
         tree.reconcile(vec![session(registry, replacement)], replacement);
-        assert!(popup.refresh_at(&tree, Some((hit.x, hit.y))).is_none());
+        assert!(popup.button_at(&tree, point, true).is_none());
         tree.hover = Some(target);
-        assert!(popup.refresh_at(&tree, Some((hit.x, hit.y))).is_none());
+        assert!(popup.refresh_at(&tree).is_none());
     }
 
     #[test]
@@ -1806,7 +1966,7 @@ mod tests {
             content
                 .rows
                 .iter()
-                .filter(|row| row.refresh.is_some())
+                .filter(|row| row.refresh_target().is_some())
                 .count(),
             1
         );
@@ -1842,7 +2002,7 @@ mod tests {
             content
                 .rows
                 .iter()
-                .filter(|row| row.refresh.is_some())
+                .filter(|row| row.refresh_target().is_some())
                 .count(),
             2
         );

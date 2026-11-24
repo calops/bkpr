@@ -1,8 +1,13 @@
 //! Bounded, non-modal notifications rendered through retained trusted UI surfaces.
 //! Applications own lifetime, placement, theme and optional graphical decoration.
 
-use crate::{Rect, Role, RoleSpan, Theme, UiSurface, overlay::PointerPhase, window};
-use bkpr_protocol::{MouseButton, Size};
+use crate::{
+    Rect, Role, RoleSpan, Theme, UiSurface,
+    button::{Button, State},
+    overlay::PointerPhase,
+    window,
+};
+use bkpr_protocol::{Frame, MouseButton, Size};
 use std::time::{Duration, Instant};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -10,6 +15,7 @@ const MAX_CARDS: usize = 3;
 const MAX_BYTES: usize = 4096;
 const MAX_LINES: u16 = 8;
 const MAX_WIDTH: u16 = 120;
+const DISMISS_LABEL: &str = "x";
 
 /// Stack-issued notification identity, distinct from its reusable decoration slot.
 pub type ToastId = u64;
@@ -59,6 +65,42 @@ pub struct ToastCard {
     rows: Vec<String>,
     spans: [RoleSpan; 6],
     painted: Option<(Size, bool)>,
+    painted_buttons: Option<[State; 2]>,
+}
+
+impl ToastCard {
+    fn button_rect(&self, target: ButtonTarget) -> Option<Rect> {
+        match target {
+            ButtonTarget::Dismiss => Some(self.dismiss).filter(|rect| rect.width != 0),
+            ButtonTarget::Action => self.action,
+        }
+    }
+}
+
+fn paint_card_buttons(
+    frame: &mut Frame,
+    outer: Rect,
+    dismiss: Rect,
+    action: Option<(Rect, &str)>,
+    theme: &Theme,
+    states: [State; 2],
+    mut place: impl FnMut(&mut Frame, Rect, State) -> bool,
+) {
+    for (button, state) in [Some((dismiss, DISMISS_LABEL)), action]
+        .into_iter()
+        .zip(states)
+    {
+        let Some((rect, label)) = button.filter(|(rect, _)| rect.width != 0) else {
+            continue;
+        };
+        let rect = Rect {
+            x: rect.x - outer.x,
+            y: rect.y - outer.y,
+            ..rect
+        };
+        let graphical = place(frame, rect, state);
+        Button::new(label).paint(frame, rect, theme.style(Role::Accent), state, graphical);
+    }
 }
 
 /// Result of routing a pointer event through notification cards.
@@ -74,7 +116,7 @@ pub enum PointerRoute {
     Activated(ToastId),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ButtonTarget {
     Dismiss,
     Action,
@@ -84,7 +126,7 @@ enum ButtonTarget {
 struct Capture {
     id: ToastId,
     button: MouseButton,
-    target: Option<ButtonTarget>,
+    target: Option<(ButtonTarget, Rect)>,
     pressed: u8,
 }
 
@@ -95,6 +137,7 @@ pub struct ToastStack {
     cards: Vec<ToastCard>,
     next_id: ToastId,
     capture: Option<Capture>,
+    pointer: Option<(u16, u16)>,
     layout: Option<(Size, ToastLayout)>,
 }
 
@@ -183,6 +226,7 @@ impl ToastStack {
                 role: Role::Panel,
             }; 6],
             painted: None,
+            painted_buttons: None,
         });
         self.layout = None;
         id
@@ -227,12 +271,44 @@ impl ToastStack {
         self.capture.is_some()
     }
 
+    /// Clear pointer feedback without dropping any captured physical buttons.
+    pub fn clear_button_hover(&mut self) {
+        self.pointer = None;
+    }
+
     /// Only positioned cards are returned. A zero-sized viewport has no cards
     /// to submit, without discarding the queue or changing its deadlines.
     pub fn cards(&self) -> impl Iterator<Item = &ToastCard> {
         self.cards
             .iter()
             .filter(|card| card.outer.width != 0 && card.outer.height != 0)
+    }
+
+    /// Current control styles in dismiss, then action order. Suitable as a
+    /// retained presentation key; missing controls use the idle state.
+    pub fn button_states(&self, card: &ToastCard) -> [State; 2] {
+        button_states(card, self.pointer, self.capture)
+    }
+
+    /// Repaint the controls into a copy of this card's text frame. The callback
+    /// may place material at the supplied card-local bounds; false selects plain
+    /// painting. The caller owns the lifetime of any material it adds.
+    pub fn paint_buttons(
+        &self,
+        card: &ToastCard,
+        frame: &mut Frame,
+        theme: &Theme,
+        place: impl FnMut(&mut Frame, Rect, State) -> bool,
+    ) {
+        paint_card_buttons(
+            frame,
+            card.outer,
+            card.dismiss,
+            card.action.map(|rect| (rect, card.action_text.as_str())),
+            theme,
+            self.button_states(card),
+            place,
+        );
     }
 
     /// Reflow only when viewport, placement or queue changes. The callback owns
@@ -265,7 +341,7 @@ impl ToastStack {
                     window::border_rows(size, "", window::Border::Rounded)
                 };
                 let body = window::content(size);
-                let text_width = text_width(body.width);
+                let text_width = text_width(body.width, card.dismiss.width);
                 for (row, text) in card.rows.iter().enumerate() {
                     if text_width != 0 {
                         lines.push((
@@ -280,28 +356,6 @@ impl ToastStack {
                         ));
                     }
                 }
-                lines.push((
-                    Rect {
-                        x: card.dismiss.x - card.outer.x,
-                        y: card.dismiss.y - card.outer.y,
-                        width: card.dismiss.width,
-                        height: 1,
-                    },
-                    if card.dismiss.width >= 3 { "[x]" } else { "x" }.into(),
-                    false,
-                ));
-                if let Some(action) = card.action {
-                    lines.push((
-                        Rect {
-                            x: action.x - card.outer.x,
-                            y: action.y - card.outer.y,
-                            width: action.width,
-                            height: 1,
-                        },
-                        card.action_text.clone(),
-                        false,
-                    ));
-                }
                 card.surface.paint(size, lines, None);
                 card.spans[..5].copy_from_slice(&window::theme_spans(size));
                 card.spans[5] = RoleSpan {
@@ -313,8 +367,23 @@ impl ToastStack {
                     role: card.message_role,
                 };
                 card.painted = Some((size, card.graphical));
+                card.painted_buttons = None;
             }
-            card.surface.apply_theme(theme, Role::Panel, &card.spans);
+            let theme_changed = card.surface.apply_theme(theme, Role::Panel, &card.spans);
+            let states = button_states(card, self.pointer, self.capture);
+            if !theme_changed && card.painted_buttons == Some(states) {
+                continue;
+            }
+            paint_card_buttons(
+                &mut card.surface.frame,
+                card.outer,
+                card.dismiss,
+                card.action.map(|rect| (rect, card.action_text.as_str())),
+                theme,
+                states,
+                |_, _, _| false,
+            );
+            card.painted_buttons = Some(states);
         }
     }
 
@@ -344,14 +413,19 @@ impl ToastStack {
                 && let Some(label) = &card.action_label
                 && let Some(label) = wrap(label, body_width - 2, 1).pop()
             {
-                card.action_text = format!("[{label}]");
+                card.action_text = label;
             }
             let footer_rows = u16::from(!card.action_text.is_empty());
             let max_rows = layout
                 .max_lines
                 .clamp(1, MAX_LINES)
                 .min(available_rows - footer_rows);
-            card.rows = wrap(&card.message, text_width(body_width), max_rows);
+            let dismiss_width = dismiss_width(body_width);
+            card.rows = wrap(
+                &card.message,
+                text_width(body_width, dismiss_width),
+                max_rows,
+            );
             let height = (card.rows.len() as u16).max(1) + inset + footer_rows;
             card.outer = Rect {
                 x: (screen.cols - width) / 2,
@@ -366,7 +440,6 @@ impl ToastStack {
                 width: body.width,
                 height: body.height,
             };
-            let dismiss_width = if body.width >= 3 { 3 } else { 1 };
             card.dismiss = Rect {
                 x: card.body.x + card.body.width - dismiss_width,
                 y: card.body.y,
@@ -374,7 +447,7 @@ impl ToastStack {
                 height: 1,
             };
             if footer_rows != 0 {
-                let action_width = columns(&card.action_text) as u16;
+                let action_width = Button::new(&card.action_text).width();
                 card.action = Some(Rect {
                     x: card.body.x + card.body.width - action_width,
                     y: card.body.y + card.body.height - 1,
@@ -384,6 +457,15 @@ impl ToastStack {
             }
             card.painted = None;
             y = y.saturating_add(height).saturating_add(layout.gap);
+        }
+        if let Some(capture) = &mut self.capture
+            && let Some((target, rect)) = capture.target
+            && !self
+                .cards
+                .iter()
+                .any(|card| card.id == capture.id && card.button_rect(target) == Some(rect))
+        {
+            capture.target = None;
         }
     }
 
@@ -398,6 +480,7 @@ impl ToastStack {
         phase: PointerPhase,
         button: MouseButton,
     ) -> PointerRoute {
+        self.pointer = Some((x, y));
         if let Some(mut capture) = self.capture {
             let bit = button_bit(button);
             if phase == PointerPhase::Press {
@@ -405,23 +488,17 @@ impl ToastStack {
                 self.capture = Some(capture);
             } else if phase == PointerPhase::Release {
                 capture.pressed &= !bit;
-                let target = (button == capture.button)
-                    .then_some(capture.target)
-                    .flatten()
-                    .filter(|target| {
-                        self.cards.iter().any(|card| {
-                            card.id == capture.id
-                                && match target {
-                                    ButtonTarget::Dismiss => card.dismiss.contains(x, y),
-                                    ButtonTarget::Action => {
-                                        card.action.is_some_and(|rect| rect.contains(x, y))
-                                    }
-                                }
-                        })
-                    });
-                if button == capture.button {
-                    capture.target = None;
-                }
+                let target = if button == capture.button {
+                    capture.target.take().and_then(|(target, rect)| {
+                        (rect.contains(x, y)
+                            && self.cards.iter().any(|card| {
+                                card.id == capture.id && card.button_rect(target) == Some(rect)
+                            }))
+                        .then_some(target)
+                    })
+                } else {
+                    None
+                };
                 self.capture = (capture.pressed != 0).then_some(capture);
                 match target {
                     Some(ButtonTarget::Dismiss) => {
@@ -443,18 +520,35 @@ impl ToastStack {
                 button,
                 target: if button != MouseButton::Left {
                     None
-                } else if card.dismiss.contains(x, y) {
-                    Some(ButtonTarget::Dismiss)
-                } else if card.action.is_some_and(|rect| rect.contains(x, y)) {
-                    Some(ButtonTarget::Action)
                 } else {
-                    None
+                    [ButtonTarget::Dismiss, ButtonTarget::Action]
+                        .into_iter()
+                        .find_map(|target| {
+                            card.button_rect(target)
+                                .filter(|rect| rect.contains(x, y))
+                                .map(|rect| (target, rect))
+                        })
                 },
                 pressed: button_bit(button),
             });
         }
         PointerRoute::Block
     }
+}
+
+fn button_states(
+    card: &ToastCard,
+    pointer: Option<(u16, u16)>,
+    capture: Option<Capture>,
+) -> [State; 2] {
+    [ButtonTarget::Dismiss, ButtonTarget::Action].map(|target| {
+        let Some(rect) = card.button_rect(target) else {
+            return State::Idle;
+        };
+        let armed = capture
+            .is_some_and(|capture| capture.id == card.id && capture.target == Some((target, rect)));
+        State::at(rect, pointer, armed)
+    })
 }
 
 fn button_bit(button: MouseButton) -> u8 {
@@ -472,8 +566,12 @@ fn button_bit(button: MouseButton) -> u8 {
     }
 }
 
-fn text_width(body_width: u16) -> u16 {
-    let dismiss = if body_width >= 3 { 3 } else { 1 };
+fn dismiss_width(body_width: u16) -> u16 {
+    let width = Button::new(DISMISS_LABEL).width();
+    if body_width >= width { width } else { 1 }
+}
+
+fn text_width(body_width: u16, dismiss: u16) -> u16 {
     body_width.saturating_sub(dismiss + 1)
 }
 
@@ -597,6 +695,42 @@ mod tests {
         assert!(stack.expire(now + Duration::from_secs(5)));
         assert!(stack.is_empty());
         assert_eq!(stack.next_deadline(), None);
+    }
+
+    #[test]
+    fn reflow_cancels_button_intent_without_releasing_pointer_ownership() {
+        let now = Instant::now();
+        let mut stack = ToastStack::default();
+        stack.push("first", now, Duration::from_secs(1));
+        let id = stack.push("second", now, Duration::from_secs(5));
+        paint(&mut stack);
+        let card = stack.cards().find(|card| card.id == id).unwrap();
+        let old = card.dismiss;
+        assert_eq!(stack.button_states(card)[0], State::Idle);
+
+        stack.route_pointer(old.x, old.y, PointerPhase::Motion, MouseButton::None);
+        let card = stack.cards().find(|card| card.id == id).unwrap();
+        assert_eq!(stack.button_states(card)[0], State::Hover);
+        stack.route_pointer(old.x, old.y, PointerPhase::Press, MouseButton::Left);
+        let card = stack.cards().find(|card| card.id == id).unwrap();
+        assert_eq!(stack.button_states(card)[0], State::Pressed);
+        stack.route_pointer(old.x, old.y, PointerPhase::Press, MouseButton::Right);
+
+        assert!(stack.expire(now + Duration::from_secs(1)));
+        paint(&mut stack);
+        let new = stack.cards().next().unwrap().dismiss;
+        assert_ne!(old, new);
+        assert_eq!(
+            stack.route_pointer(new.x, new.y, PointerPhase::Release, MouseButton::Left),
+            PointerRoute::Block
+        );
+        assert!(stack.pointer_captured());
+        assert_eq!(
+            stack.route_pointer(0, 23, PointerPhase::Release, MouseButton::Right),
+            PointerRoute::Block
+        );
+        assert!(!stack.pointer_captured());
+        assert_eq!(stack.cards().next().unwrap().id, id);
     }
 
     #[test]
