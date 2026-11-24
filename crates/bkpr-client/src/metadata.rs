@@ -5,6 +5,7 @@ use bkpr_protocol::{
     ChangeSummary, PaneInfo, PaneSnapshot, PaneStatus, ProjectSnapshot, ProjectState,
     RegistrySnapshot,
 };
+use bkpr_tui_framework::button::Button;
 use bkpr_tui_framework::{Rect, Role, RoleSpan};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -85,7 +86,29 @@ impl IdentityCopy {
     }
 }
 
-const COPY_IDENTITY: &str = "[copy]";
+/// A trailing metadata control; a loading CI source has no refresh target.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ButtonAction {
+    /// Export the original foreground identity bytes.
+    Copy(IdentityCopy),
+    /// Requery an exact CI source, when available.
+    Refresh(Option<bkpr_protocol::CiRefreshTarget>),
+}
+
+/// Shared identity copy label and cell geometry.
+pub(crate) fn copy_button() -> Button<'static> {
+    Button::new("\u{f0c5}")
+}
+
+impl ButtonAction {
+    /// Shared geometry and text for either presentation.
+    pub(crate) fn button(&self) -> Button<'static> {
+        match self {
+            Self::Copy(_) => copy_button(),
+            Self::Refresh(_) => Button::new("\u{f021}"),
+        }
+    }
+}
 
 pub(crate) struct Paragraph {
     pub text: String,
@@ -94,8 +117,7 @@ pub(crate) struct Paragraph {
     right: Vec<(String, Role)>,
     suffix: Vec<(String, Role)>,
     link: Option<String>,
-    pub(crate) refresh: Option<bkpr_protocol::CiRefreshTarget>,
-    copy: Option<IdentityCopy>,
+    button: Option<ButtonAction>,
     truncate: bool,
 }
 pub(crate) struct PreviewLine {
@@ -104,8 +126,7 @@ pub(crate) struct PreviewLine {
     pub spans: Vec<RoleSpan>,
     pub projects: Vec<ProjectSpan>,
     pub link: Option<(u16, String)>,
-    pub refresh: Option<(Rect, bkpr_protocol::CiRefreshTarget)>,
-    pub copy: Option<(Rect, IdentityCopy)>,
+    pub button: Option<(Rect, ButtonAction)>,
 }
 
 impl Paragraph {
@@ -117,8 +138,7 @@ impl Paragraph {
             right: Vec::new(),
             suffix: Vec::new(),
             link: None,
-            refresh: None,
-            copy: None,
+            button: None,
             truncate: false,
         }
     }
@@ -150,24 +170,46 @@ impl Paragraph {
         self.truncate = true;
         self
     }
+    /// Reserve a refresh control without authorizing a loading target.
+    pub(crate) fn with_refresh(&mut self, target: Option<bkpr_protocol::CiRefreshTarget>) {
+        self.button = Some(ButtonAction::Refresh(target));
+        self.truncate = true;
+    }
+    /// Current source for keyboard refresh, independent of scroll and clipping.
+    pub(crate) fn refresh_target(&self) -> Option<&bkpr_protocol::CiRefreshTarget> {
+        match &self.button {
+            Some(ButtonAction::Refresh(target)) => target.as_ref(),
+            _ => None,
+        }
+    }
+    /// Whether this paragraph still represents the exact painted copy source.
+    pub(crate) fn shows_copy(&self, target: &IdentityCopy) -> bool {
+        matches!(&self.button, Some(ButtonAction::Copy(current)) if current == target)
+    }
+    fn right_width(&self) -> usize {
+        self.button.as_ref().map_or_else(
+            || self.right.iter().map(|(text, _)| width(text)).sum(),
+            |action| usize::from(action.button().width()),
+        )
+    }
     /// Full text extent including trailing action buttons and semantic suffixes.
     pub(crate) fn preferred_width(&self) -> usize {
         width(&self.text)
             + self
-                .right
+                .suffix
                 .iter()
-                .chain(&self.suffix)
                 .map(|(text, _)| width(text))
                 .sum::<usize>()
-            + usize::from(!self.right.is_empty())
+            + self.right_width()
+            + usize::from(self.button.is_some() || !self.right.is_empty())
     }
     fn identity(target: IdentityCopy) -> Self {
         let mut row = Self::new(
             format!("{}: {}", target.label(), target.value()),
             Role::Muted,
         );
-        row.right(COPY_IDENTITY, Role::Accent);
-        row.copy = Some(target);
+        row.button = Some(ButtonAction::Copy(target));
+        row.truncate = true;
         row
     }
 }
@@ -539,8 +581,7 @@ fn body_line(paragraph: &Paragraph, range: Range<usize>) -> PreviewLine {
             .link
             .as_ref()
             .map(|url| (width(text) as u16, url.clone())),
-        refresh: None,
-        copy: None,
+        button: None,
     };
     for (span, ink) in &paragraph.spans {
         let start = span.start.max(range.start);
@@ -562,12 +603,12 @@ fn body_line(paragraph: &Paragraph, range: Range<usize>) -> PreviewLine {
 }
 
 fn truncate(paragraph: &Paragraph, columns: usize) -> PreviewLine {
-    let right = paragraph
-        .right
-        .iter()
-        .map(|(text, _)| width(text))
-        .sum::<usize>()
-        .min(columns / 2);
+    let right_width = paragraph.right_width();
+    let right = if paragraph.button.is_some() && right_width > columns / 2 {
+        0
+    } else {
+        right_width.min(columns / 2)
+    };
     let suffix_width = paragraph
         .suffix
         .iter()
@@ -591,43 +632,27 @@ fn truncate(paragraph: &Paragraph, columns: usize) -> PreviewLine {
         }
     }
     if right > 0 {
-        line.text.extend(std::iter::repeat_n(
-            ' ',
-            columns.saturating_sub(right + width(&line.text)),
-        ));
-        let mut remaining = right;
-        for (text, role) in &paragraph.right {
-            let end = prefix(text, remaining);
-            append_span(&mut line, &text[..end], *role);
-            remaining = remaining.saturating_sub(width(&text[..end]));
-        }
-        if let Some(target) = &paragraph.refresh
-            && right == width(crate::ci::REFRESH)
-            && paragraph.right.len() == 1
-        {
-            line.refresh = Some((
+        if let Some(action) = &paragraph.button {
+            line.button = Some((
                 Rect {
                     x: (columns - right) as u16,
                     y: 0,
                     width: right as u16,
                     height: 1,
                 },
-                target.clone(),
+                action.clone(),
             ));
-        }
-        if let Some(target) = &paragraph.copy
-            && right == width(COPY_IDENTITY)
-            && paragraph.right.len() == 1
-        {
-            line.copy = Some((
-                Rect {
-                    x: (columns - right) as u16,
-                    y: 0,
-                    width: right as u16,
-                    height: 1,
-                },
-                target.clone(),
+        } else {
+            line.text.extend(std::iter::repeat_n(
+                ' ',
+                columns.saturating_sub(right + width(&line.text)),
             ));
+            let mut remaining = right;
+            for (text, role) in &paragraph.right {
+                let end = prefix(text, remaining);
+                append_span(&mut line, &text[..end], *role);
+                remaining = remaining.saturating_sub(width(&text[..end]));
+            }
         }
     }
     line
@@ -668,8 +693,7 @@ pub(crate) fn wrap(paragraphs: &[Paragraph], columns: u16, lines: &mut Vec<Previ
                         spans: Vec::new(),
                         projects: Vec::new(),
                         link: None,
-                        refresh: None,
-                        copy: None,
+                        button: None,
                     });
                     byte += glyph.len();
                 } else {
@@ -715,6 +739,36 @@ mod tests {
                 base_sha: None,
                 committed: None,
             }),
+        }
+    }
+
+    #[test]
+    fn trailing_button_prefers_full_geometry_and_keeps_links_outside_its_bounds() {
+        let url = "https://github.com/org/repo";
+        let mut row = Paragraph::new("Check 文字", Role::Panel).linked(url);
+        row.with_refresh(None);
+        let button_width = Button::new("\u{f021}").width();
+        assert_eq!(
+            row.preferred_width(),
+            width(&row.text) + 1 + usize::from(button_width)
+        );
+        for columns in [button_width * 2 - 1, button_width * 2, 24] {
+            let mut lines = Vec::new();
+            wrap(std::slice::from_ref(&row), columns, &mut lines);
+            let line = &lines[0];
+            let (linked_cells, link) = line.link.as_ref().unwrap();
+            assert_eq!(link, url);
+            assert!(!line.text.contains('\u{f021}'));
+            assert!(width(&line.text) <= usize::from(columns));
+            if columns < button_width * 2 {
+                assert!(line.button.is_none());
+            } else {
+                let (rect, action) = line.button.as_ref().unwrap();
+                assert_eq!(rect.width, button_width);
+                assert_eq!(rect.x + rect.width, columns);
+                assert!(*linked_cells < rect.x);
+                assert_eq!(action, &ButtonAction::Refresh(None));
+            }
         }
     }
 

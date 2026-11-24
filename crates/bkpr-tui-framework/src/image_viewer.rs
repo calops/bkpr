@@ -1,6 +1,11 @@
 //! Full-resource image viewing and canonical scene image picking.
-use crate::{Rect, Role, RoleSpan, Theme, UiSurface, window};
-use bkpr_protocol::{Frame, Image, ImageKey, ImageLayer, Placement, Size};
+use crate::{
+    Rect, Role, RoleSpan, Theme, UiSurface,
+    button::{Button, State},
+    overlay::PointerPhase,
+    window,
+};
+use bkpr_protocol::{Frame, Image, ImageKey, ImageLayer, MouseButton, Placement, Size};
 use std::sync::Arc;
 
 /// A caller-controlled viewer retaining the original immutable image resource.
@@ -8,13 +13,20 @@ use std::sync::Arc;
 pub struct ImageViewer {
     image: Arc<Image>,
     title: String,
+    pointer: Option<(u16, u16)>,
+    close_press: Option<Rect>,
 }
 
 impl ImageViewer {
     /// Retain an image without decoding, resizing or copying its pixel bytes.
     pub fn new(image: Arc<Image>) -> Self {
         let title = format!("Image · {}×{}", image.width, image.height);
-        Self { image, title }
+        Self {
+            image,
+            title,
+            pointer: None,
+            close_press: None,
+        }
     }
 
     /// Paint a rounded, themed viewer using the surface's current dimensions.
@@ -22,8 +34,15 @@ impl ImageViewer {
     /// upscaling. Subpixel dimensions round down to at least one pixel.
     /// Below 3×3 cells the border and labels are omitted, except the close button.
     /// Empty images or zero-sized physical content produce no image placement.
-    pub fn paint(&self, surface: &mut UiSurface, theme: &Theme) {
+    /// The caller can place close-button material; `false` selects brackets.
+    pub fn paint(
+        &self,
+        surface: &mut UiSurface,
+        theme: &Theme,
+        mut place: impl FnMut(&mut Frame, Rect, State) -> bool,
+    ) {
         let size = surface.frame.size;
+        let close = close_rect(size);
         let decorated = size.cols >= 3 && size.rows >= 3;
         let mut lines = window::border_rows(size, "", window::Border::Rounded);
         let mut spans = window::theme_spans(size).to_vec();
@@ -31,19 +50,12 @@ impl ImageViewer {
             let title = Rect {
                 x: 1,
                 y: 0,
-                width: size.cols.saturating_sub(4),
+                width: close.map_or(0, |rect| rect.x.saturating_sub(2)),
                 height: 1,
             };
             lines.push((title, window::fit(&self.title, title.width), false));
             spans.push(RoleSpan {
                 rect: title,
-                role: Role::Title,
-            });
-        }
-        if let Some(button) = close_rect(size) {
-            lines.push((button, "×".into(), false));
-            spans.push(RoleSpan {
-                rect: button,
                 role: Role::Title,
             });
         }
@@ -55,6 +67,48 @@ impl ImageViewer {
             surface.frame.images.push(Arc::clone(&self.image));
             surface.frame.placements.push(placement);
         }
+        if let Some(rect) = close {
+            let state = State::at(rect, self.pointer, self.close_press == Some(rect));
+            let graphical = place(&mut surface.frame, rect, state);
+            Button::new("×").paint(&mut surface.frame, rect, theme, state, graphical);
+        }
+    }
+
+    /// Observe a local pointer event. Return true only for a primary release
+    /// matching this viewer's own close press at the same button bounds.
+    pub fn route_pointer(
+        &mut self,
+        size: Size,
+        x: u16,
+        y: u16,
+        phase: PointerPhase,
+        button: MouseButton,
+    ) -> bool {
+        self.pointer = Some((x, y));
+        let rect = close_rect(size);
+        if self.close_press != rect {
+            self.close_press = None;
+        }
+        if button != MouseButton::Left {
+            return false;
+        }
+        match phase {
+            PointerPhase::Press => {
+                self.close_press = rect.filter(|rect| rect.contains(x, y));
+                false
+            }
+            PointerPhase::Release => self
+                .close_press
+                .take()
+                .is_some_and(|rect| rect.contains(x, y)),
+            _ => false,
+        }
+    }
+
+    /// Disarm the close gesture and clear feedback when the viewer loses input.
+    pub fn cancel_button_press(&mut self) {
+        self.close_press = None;
+        self.pointer = None;
     }
 }
 
@@ -119,26 +173,16 @@ pub fn hit_test(frame: &Frame, x: f32, y: f32) -> Option<Arc<Image>> {
         .map(|(_, image)| Arc::clone(image))
 }
 
-/// Return whether a local cell is the viewer's top-right close button.
-/// Decorated views keep the corner intact, placing the button one cell left;
-/// tiny views use the final column. Empty views have no button.
-pub fn close_hit(size: Size, x: u16, y: u16) -> bool {
-    close_rect(size).is_some_and(|rect| x == rect.x && y == rect.y)
-}
-
 fn close_rect(size: Size) -> Option<Rect> {
     if size.cols == 0 || size.rows == 0 {
         return None;
     }
+    let corner = u16::from(size.cols >= 3 && size.rows >= 3);
+    let width = Button::new("×").width().min(size.cols - corner);
     Some(Rect {
-        x: size.cols
-            - if size.cols >= 3 && size.rows >= 3 {
-                2
-            } else {
-                1
-            },
+        x: size.cols - corner - width,
         y: 0,
-        width: 1,
+        width,
         height: 1,
     })
 }
@@ -223,7 +267,7 @@ mod tests {
             let image = image(1, format);
             let viewer = ImageViewer::new(Arc::clone(&image));
             let mut surface = UiSurface::new(size());
-            viewer.paint(&mut surface, &Theme::default());
+            viewer.paint(&mut surface, &Theme::default(), |_, _, _| false);
             assert!(Arc::ptr_eq(&surface.frame.images[0], &image));
             let p = &surface.frame.placements[0];
             assert_eq!((p.width, p.height), (100, 50));
@@ -239,7 +283,7 @@ mod tests {
     #[test]
     fn tiny_and_empty_views_stay_bounded() {
         let image = image(1, PixelFormat::Rgb);
-        let viewer = ImageViewer::new(image);
+        let mut viewer = ImageViewer::new(image);
         for cols in 0..4 {
             for rows in 0..4 {
                 let size = Size {
@@ -248,20 +292,81 @@ mod tests {
                     ..size()
                 };
                 let mut surface = UiSurface::new(size);
-                viewer.paint(&mut surface, &Theme::default());
+                let mut placed = None;
+                viewer.paint(&mut surface, &Theme::default(), |_, rect, _| {
+                    assert!(placed.replace(rect).is_none());
+                    false
+                });
                 for p in &surface.frame.placements {
                     let right = p.col as u32 * size.cell_width + p.offset_x + p.width;
                     let bottom = p.row as u32 * size.cell_height + p.offset_y + p.height;
                     assert!(right <= u32::from(cols) * size.cell_width);
                     assert!(bottom <= u32::from(rows) * size.cell_height);
                 }
-                assert_eq!(close_rect(size).is_some(), cols > 0 && rows > 0);
-                if let Some(rect) = close_rect(size) {
-                    assert!(close_hit(size, rect.x, rect.y));
-                    assert!(!close_hit(size, rect.x, 1));
+                assert_eq!(placed.is_some(), cols > 0 && rows > 0);
+                if let Some(rect) = placed {
+                    let close = |viewer: &mut ImageViewer, x, y| {
+                        viewer.route_pointer(size, x, y, PointerPhase::Press, MouseButton::Left);
+                        viewer.route_pointer(size, x, y, PointerPhase::Release, MouseButton::Left)
+                    };
+                    assert!(close(&mut viewer, rect.x, rect.y));
+                    assert!(!close(&mut viewer, rect.x, 1));
                 }
             }
         }
+    }
+
+    #[test]
+    fn close_requires_this_viewers_press_at_unchanged_bounds() {
+        let image = image(1, PixelFormat::Rgb);
+        let mut viewer = ImageViewer::new(Arc::clone(&image));
+        let mut replacement = ImageViewer::new(image);
+        let size = size();
+        let initial = close_rect(size).unwrap();
+        let resized = Size {
+            cols: size.cols + 1,
+            ..size
+        };
+        let moved = close_rect(resized).unwrap();
+        let press = |viewer: &mut ImageViewer| {
+            assert!(!viewer.route_pointer(
+                size,
+                initial.x,
+                initial.y,
+                PointerPhase::Press,
+                MouseButton::Left,
+            ));
+        };
+        press(&mut viewer);
+        assert!(!replacement.route_pointer(
+            size,
+            initial.x,
+            initial.y,
+            PointerPhase::Release,
+            MouseButton::Left,
+        ));
+        assert!(!viewer.route_pointer(
+            resized,
+            moved.x,
+            moved.y,
+            PointerPhase::Release,
+            MouseButton::Left,
+        ));
+        press(&mut viewer);
+        assert!(!viewer.route_pointer(
+            size,
+            initial.x,
+            initial.y,
+            PointerPhase::Release,
+            MouseButton::Right,
+        ));
+        assert!(viewer.route_pointer(
+            size,
+            initial.x + initial.width - 1,
+            initial.y,
+            PointerPhase::Release,
+            MouseButton::Left,
+        ));
     }
 
     #[test]

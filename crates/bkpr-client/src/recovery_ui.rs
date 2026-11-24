@@ -1,6 +1,7 @@
 //! Recovery overlay ownership, worker receipts and local scene presentation.
 use super::recovery_picker::{self as model, Key};
 use super::*;
+use bkpr_tui_framework::button::{Button, State as ButtonState};
 use bkpr_tui_framework::search_list::SearchListIntent;
 use tokio_util::sync::CancellationToken;
 
@@ -51,6 +52,7 @@ struct View {
     list_rect: Rect,
     detail_rect: Rect,
     button: Option<Rect>,
+    button_press: Option<(Rect, Key)>,
     detail_focus: bool,
     scroll: usize,
     lines: Vec<crate::metadata::PreviewLine>,
@@ -131,6 +133,12 @@ impl State {
     pub(super) fn list_focused(&self) -> bool {
         self.view.as_ref().is_none_or(|view| !view.detail_focus)
     }
+
+    pub(super) fn cancel_button_press(&mut self) {
+        if let Some(view) = &mut self.view {
+            view.button_press = None;
+        }
+    }
     /// Paint child surfaces without copying terminal scenes or writing host bytes.
     pub(super) fn paint(
         &mut self,
@@ -138,6 +146,8 @@ impl State {
         size: Size,
         theme: &Theme,
         host: &ColorProbe,
+        pointer: Option<(u16, u16)>,
+        place_button: impl FnMut(&mut Frame, Rect, ButtonState) -> bool,
     ) {
         use bkpr_tui_framework::picker::PickerLayout;
         let enabled = self.can_resume();
@@ -305,6 +315,7 @@ impl State {
                 &[],
                 &detail_background,
             );
+            view.paint_resume_button(theme, pointer, place_button);
             return;
         }
         view.painted = Some(painted);
@@ -332,30 +343,39 @@ impl State {
         }
         view.button = None;
         if local.rows > 0 && local.cols > 0 {
-            let label = if busy {
-                "[ Starting… ]"
-            } else if enabled {
-                "[ Resume ]"
+            let resume = Button::new("Resume");
+            let status = if busy { "Starting…" } else { "Unavailable" };
+            let width = if enabled {
+                resume.width()
             } else {
-                "[ Unavailable ]"
-            };
-            let width = text_width(label).min(usize::from(local.cols)) as u16;
+                text_width(status) as u16
+            }
+            .min(local.cols);
             let rect = Rect {
                 x: local.cols.saturating_sub(width),
                 y: local.rows - 1,
                 width,
                 height: 1,
             };
-            rows.push((rect, label.into(), false));
-            roles.push(RoleSpan {
+            rows.push((
                 rect,
-                role: if enabled { Role::Accent } else { Role::Muted },
-            });
+                if enabled {
+                    String::new()
+                } else {
+                    status.into()
+                },
+                false,
+            ));
             if enabled {
                 view.button = Some(Rect {
                     x: view.detail_rect.x + rect.x,
                     y: view.detail_rect.y + rect.y,
                     ..rect
+                });
+            } else {
+                roles.push(RoleSpan {
+                    rect,
+                    role: Role::Muted,
                 });
             }
         }
@@ -373,6 +393,35 @@ impl State {
         );
         view.details
             .apply_theme_with_colors(theme, Role::Panel, roles, &[], &detail_background);
+        view.paint_resume_button(theme, pointer, place_button);
+    }
+}
+
+impl View {
+    fn paint_resume_button(
+        &mut self,
+        theme: &Theme,
+        pointer: Option<(u16, u16)>,
+        mut place: impl FnMut(&mut Frame, Rect, ButtonState) -> bool,
+    ) {
+        let frame = &mut self.details.frame;
+        frame.images.clear();
+        frame.placements.clear();
+        if self.button_press.as_ref().is_some_and(|(rect, key)| {
+            self.button != Some(*rect) || self.selected.as_ref() != Some(key)
+        }) {
+            self.button_press = None;
+        }
+        if let Some(rect) = self.button {
+            let state = ButtonState::at(rect, pointer, self.button_press.is_some());
+            let rect = Rect {
+                x: rect.x - self.detail_rect.x,
+                y: rect.y - self.detail_rect.y,
+                ..rect
+            };
+            let graphical = place(frame, rect, state);
+            Button::new("Resume").paint(frame, rect, theme, state, graphical);
+        }
     }
 }
 
@@ -416,6 +465,7 @@ impl App {
             list_rect: Rect::default(),
             detail_rect: Rect::default(),
             button: None,
+            button_press: None,
             detail_focus: false,
             scroll: 0,
             lines: Vec::new(),
@@ -589,12 +639,27 @@ impl App {
             return;
         };
         let (x, y) = (event.x as u16, event.y as u16);
-        if event.action == MouseAction::Press
-            && event.button == MouseButton::Left
-            && view.button.is_some_and(|rect| rect.contains(x, y))
-        {
-            self.submit_recovery();
-            return;
+        if event.button == MouseButton::Left {
+            if event.action == MouseAction::Release {
+                if let Some((rect, selected)) = view.button_press.take()
+                    && view.button == Some(rect)
+                    && rect.contains(x, y)
+                    && view
+                        .picker
+                        .as_ref()
+                        .and_then(|picker| picker.list.selected())
+                        == Some(&selected)
+                {
+                    self.submit_recovery();
+                }
+                return;
+            } else if event.action == MouseAction::Press
+                && let Some(rect) = view.button.filter(|rect| rect.contains(x, y))
+                && let Some(selected) = view.selected.clone()
+            {
+                view.button_press = Some((rect, selected));
+                return;
+            }
         }
         if view.detail_rect.contains(x, y) {
             match event.button {

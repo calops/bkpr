@@ -39,6 +39,10 @@ pub enum DecorationKind {
     Raised,
     /// Exterior shadow with an opaque interior in the sparse perimeter tiles.
     RaisedSurface,
+    /// Shadowless raised face painted between the cell background and text.
+    ButtonRaised,
+    /// Shadowless recessed face painted between the cell background and text.
+    ButtonPressed,
 }
 
 /// Physical-pixel material; fractional values use thousandths of a pixel or unit.
@@ -333,7 +337,14 @@ impl PreparedDecoration {
                 source_y: sy,
                 source_width,
                 source_height,
-                layer: ImageLayer::AboveText,
+                layer: if matches!(
+                    self.style.kind,
+                    DecorationKind::ButtonRaised | DecorationKind::ButtonPressed
+                ) {
+                    ImageLayer::BelowText
+                } else {
+                    ImageLayer::AboveText
+                },
                 z: 0,
             });
         }
@@ -347,7 +358,14 @@ pub(crate) fn atlas_size(style: DecorationStyle, cell: [u32; 2]) -> Option<[u32;
         return None;
     }
     let sigma = f64::from(style.sigma_milli) / 1000.0;
-    let support = 5.0 * sigma;
+    let support = if matches!(
+        style.kind,
+        DecorationKind::ButtonRaised | DecorationKind::ButtonPressed
+    ) {
+        0.0
+    } else {
+        5.0 * sigma
+    };
     let axis = |index: usize| {
         let extent = f64::from(style.inset_px[index])
             + f64::from(style.radius_px)
@@ -438,14 +456,19 @@ impl Material {
         outside.clamp(0.0, 1.0)
     }
     fn bevel(&self, tile: usize, x: f64, y: f64, distance: f64) -> [f64; 3] {
-        let raised = self.style.kind == DecorationKind::RaisedSurface;
-        let base = if raised {
+        let inward = matches!(
+            self.style.kind,
+            DecorationKind::RaisedSurface
+                | DecorationKind::ButtonRaised
+                | DecorationKind::ButtonPressed
+        );
+        let base = if inward {
             self.style.background
         } else {
             self.style.surface
         };
         let width = f64::from(self.style.lip_width_milli) / 1000.0;
-        let signed_distance = if raised { -distance } else { distance };
+        let signed_distance = if inward { -distance } else { distance };
         let weight = if width == 0.0 {
             0.0
         } else {
@@ -456,7 +479,11 @@ impl Material {
         }
         let nx = self.distance(tile, x + 0.25, y) - self.distance(tile, x - 0.25, y);
         let ny = self.distance(tile, x, y + 0.25) - self.distance(tile, x, y - 0.25);
-        let orientation = if raised { 1.0 } else { -1.0 };
+        let orientation = if inward && self.style.kind != DecorationKind::ButtonPressed {
+            1.0
+        } else {
+            -1.0
+        };
         let light = (orientation * (nx + ny) * std::f64::consts::FRAC_1_SQRT_2
             / nx.hypot(ny).max(f64::EPSILON))
         .clamp(-1.0, 1.0);
@@ -494,6 +521,14 @@ impl Material {
             return [0.0; 4];
         }
         match self.style.kind {
+            DecorationKind::ButtonRaised | DecorationKind::ButtonPressed => {
+                if distance < 0.0 {
+                    [0.0; 4]
+                } else {
+                    let [r, g, b] = self.bevel(tile, x, y, distance);
+                    [r, g, b, 255.0]
+                }
+            }
             DecorationKind::Raised | DecorationKind::RaisedSurface => {
                 if distance < 0.0 {
                     [

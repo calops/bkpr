@@ -104,6 +104,7 @@ fn raised_material(
     effects: &mut Frame,
     outer: Rect,
     base: u32,
+    top_control: Option<Rect>,
 ) -> bool {
     let local = Rect {
         x: 0,
@@ -111,10 +112,15 @@ fn raised_material(
         width: frame.size.cols,
         height: frame.size.rows,
     };
-    let captions = [
+    let mut captions = [
         material_caption(frame, local, false),
         material_caption(frame, local, true),
     ];
+    if let Some(control) = top_control {
+        captions[0].width = captions[0]
+            .width
+            .max((control.x + control.width).saturating_sub(captions[0].x));
+    }
     let body = window::content(frame.size);
     let exclusions = [body, captions[0], captions[1]].map(|rect| Rect {
         x: outer.x + rect.x,
@@ -126,6 +132,20 @@ fn raised_material(
         && graphics.decorate_window_in_clipped(effects, outer, true, base, &exclusions);
     material_border(frame, local, !ready, &captions);
     ready
+}
+
+fn button_graphics<'a>(id: &'static str, rect: Rect, frame: &'a Frame, faint: bool) -> Surface<'a> {
+    Surface {
+        palette: None,
+        id,
+        content: SurfaceContent::Graphics,
+        rect,
+        frame,
+        selection: &[],
+        search: &[],
+        focused: false,
+        faint,
+    }
 }
 
 const SIDEBAR_MENU: &str = "ui:sidebar-menu";
@@ -540,6 +560,8 @@ struct App {
     pressed_pointers: RefCell<Vec<PressedPointer>>,
     terminal_selection: selection::State,
     identity_copy: identity_copy::State,
+    button_pointer: Option<(&'static str, (u16, u16))>,
+    popover_button: Option<crate::popover::ButtonGesture>,
     resizing: resizing::State,
     search: search::State,
     finder: Option<crate::finder::Finder>,
@@ -563,6 +585,18 @@ struct App {
     host_focused: bool,
 }
 impl App {
+    fn cancel_button_presses(&mut self) {
+        self.button_pointer = None;
+        self.popover_button = None;
+        self.recovery.cancel_button_press();
+        if let Some(finder) = &mut self.finder {
+            finder.cancel_copy_press();
+        }
+        if let Some(viewer) = &mut self.image_viewer {
+            viewer.cancel_button_press();
+        }
+    }
+
     fn notify(&mut self, message: String) {
         let message = match self
             .notification_source
@@ -665,6 +699,7 @@ impl App {
     }
 
     fn open_diagnostic(&mut self, id: diagnostics::DiagnosticId) -> Result<()> {
+        self.cancel_button_presses();
         self.state.prefix = false;
         self.diagnostic_view = Some(diagnostics::Viewer::new(id));
         self.overlays.present(
@@ -1587,11 +1622,11 @@ impl App {
     fn operation(&mut self, operation: Operation) -> Result<()> {
         self.manage(management::Command::Single(operation), None)
     }
-    fn refresh_popup_ci(&mut self, point: Option<(u16, u16)>) {
+    fn refresh_popup_ci(&mut self) {
         if self.options.read_only {
             return;
         }
-        let refresh = self.popover.refresh_at(&self.tree.lock().unwrap(), point);
+        let refresh = self.popover.refresh_at(&self.tree.lock().unwrap());
         if let Some((owner, target)) = refresh {
             self.session_action = Some(SessionAction::CiRefresh { owner, target });
         }
@@ -3871,7 +3906,7 @@ impl App {
             Some(Action::FoldSidebar) => self.tree.lock().unwrap().fold(Some(true)),
             Some(Action::UnfoldSidebar) => self.tree.lock().unwrap().fold(Some(false)),
             Some(Action::ToggleFoldSidebar) => self.tree.lock().unwrap().fold(None),
-            Some(Action::RefreshCi) => self.refresh_popup_ci(None),
+            Some(Action::RefreshCi) => self.refresh_popup_ci(),
             Some(
                 action @ (Action::ActivateSelected
                 | Action::CreateWorkspace
@@ -4485,22 +4520,12 @@ impl App {
             mouse.y,
             !wheel && matches!(event_button, MouseButton::Left | MouseButton::None),
         );
-        if self.image_viewer.is_some() && !self.diagnostic_active() {
-            self.last_button = button;
-            if action == MouseAction::Release {
-                self.pointer_capture = None;
-            } else if action == MouseAction::Press {
-                self.pointer_capture = Some(PointerCapture::Ui);
-                if event_button == MouseButton::Left
-                    && image_viewer::close_hit(size, mouse.x, mouse.y)
-                {
-                    self.image_viewer = None;
-                    self.overlays.remove("ui:image-viewer");
-                    self.notify_focus()?;
-                }
-            }
-            return Ok(());
-        }
+        let point = (mouse.x, mouse.y);
+        self.button_pointer = None;
+        let primary_release = action == MouseAction::Release && event_button == MouseButton::Left;
+        let popover_release = primary_release
+            .then(|| self.popover_button.take())
+            .flatten();
         let captured = self.pointer_capture.clone();
         // Existing pane, selection, divider and UI gestures retain ownership
         // even when a new toast appears underneath their pointer.
@@ -4518,10 +4543,14 @@ impl App {
             if captured.is_none() || toasts.pointer_captured() {
                 toasts.route_pointer(mouse.x, mouse.y, phase, event_button)
             } else {
+                toasts.clear_button_hover();
                 toast::PointerRoute::Pass
             }
         };
         if !matches!(toast_route, toast::PointerRoute::Pass) {
+            if let Some(viewer) = &mut self.image_viewer {
+                viewer.cancel_button_press();
+            }
             if let toast::PointerRoute::Activated(toast) = toast_route {
                 let diagnostic = self.diagnostics.lock().unwrap().for_toast(toast);
                 self.toasts.lock().unwrap().dismiss(toast);
@@ -4536,6 +4565,25 @@ impl App {
             // do not leave a session-local UI capture behind on its old App.
             self.sidebar_resize_hover = false;
             self.update_resize_hover(size, None);
+            return Ok(());
+        }
+        if !self.diagnostic_active()
+            && let Some(viewer) = &mut self.image_viewer
+        {
+            let close = viewer.route_pointer(size, point.0, point.1, phase, event_button);
+            if !wheel {
+                self.last_button = button;
+                if action == MouseAction::Release {
+                    self.pointer_capture = None;
+                } else if action == MouseAction::Press {
+                    self.pointer_capture = Some(PointerCapture::Ui);
+                }
+            }
+            if close {
+                self.image_viewer = None;
+                self.overlays.remove("ui:image-viewer");
+                self.notify_focus()?;
+            }
             return Ok(());
         }
         let resize_point = !wheel
@@ -4623,16 +4671,26 @@ impl App {
             return Ok(());
         }
         if origin.is_none() {
-            let phase = if wheel {
-                PointerPhase::Wheel
-            } else {
-                match action {
-                    MouseAction::Press => PointerPhase::Press,
-                    MouseAction::Release => PointerPhase::Release,
-                    MouseAction::Motion => PointerPhase::Motion,
-                }
-            };
+            let consent_open = self
+                .consent
+                .as_ref()
+                .is_some_and(|consent| !consent.state.allowed && !consent.state.sent);
             let route = self.overlays.route_pointer(mouse.x, mouse.y, phase);
+            if primary_release
+                && (consent_open
+                    || !matches!(
+                        route,
+                        PointerRoute::Target {
+                            id: "ui:modal",
+                            content: true
+                        }
+                    ))
+            {
+                if let Some(finder) = &mut self.finder {
+                    finder.cancel_copy_press();
+                }
+                self.recovery.cancel_button_press();
+            }
             if !matches!(
                 route,
                 PointerRoute::Target {
@@ -4700,13 +4758,9 @@ impl App {
                 PointerRoute::Target {
                     id: "ui:modal",
                     content: true,
-                } if self.recovery.open()
-                    && !self
-                        .consent
-                        .as_ref()
-                        .is_some_and(|consent| !consent.state.allowed && !consent.state.sent) =>
-                {
+                } if self.recovery.open() && !consent_open => {
                     let rect = self.overlays.layer("ui:modal").unwrap().placement.content;
+                    self.button_pointer = Some(("ui:modal", point));
                     self.recovery_mouse(
                         &MouseEvent {
                             x: f32::from(mouse.x - rect.x),
@@ -4755,6 +4809,7 @@ impl App {
                         .is_some_and(|consent| !consent.state.allowed && !consent.state.sent) =>
                 {
                     let rect = self.overlays.layer("ui:modal").unwrap().placement.content;
+                    self.button_pointer = Some(("ui:modal", point));
                     let event = MouseEvent {
                         x: f32::from(mouse.x - rect.x),
                         y: f32::from(mouse.y - rect.y),
@@ -4774,24 +4829,42 @@ impl App {
                     id: crate::popover::SURFACE_ID,
                     ..
                 } => {
-                    match button {
-                        MouseButton::WheelUp => self.popover.scroll_by(-3),
-                        MouseButton::WheelDown => self.popover.scroll_by(3),
-                        MouseButton::Left if action == MouseAction::Press => {
-                            let copy = self
-                                .popover
-                                .copy_at(&self.tree.lock().unwrap(), (mouse.x, mouse.y));
-                            if let Some((owner, target)) = copy {
-                                self.queue_identity_copy(
-                                    owner,
-                                    target,
-                                    identity_copy::Source::Popover,
-                                );
-                            } else {
-                                self.refresh_popup_ci(Some((mouse.x, mouse.y)));
+                    self.button_pointer = Some((crate::popover::SURFACE_ID, point));
+                    if let Some(armed) = popover_release {
+                        use crate::popover::ButtonAction::*;
+                        let action = self.popover.release_button(
+                            &self.tree.lock().unwrap(),
+                            point,
+                            armed,
+                            !self.options.read_only,
+                        );
+                        match action {
+                            Some(Copy { owner, target }) => self.queue_identity_copy(
+                                owner,
+                                target,
+                                identity_copy::Source::Popover,
+                            ),
+                            Some(Refresh { owner, target }) => {
+                                self.session_action =
+                                    Some(SessionAction::CiRefresh { owner, target });
                             }
+                            None => {}
                         }
-                        _ => {}
+                    } else {
+                        match button {
+                            MouseButton::WheelUp => self.popover.scroll_by(-3),
+                            MouseButton::WheelDown => self.popover.scroll_by(3),
+                            MouseButton::Left
+                                if action == MouseAction::Press && captured.is_none() =>
+                            {
+                                self.popover_button = self.popover.button_at(
+                                    &self.tree.lock().unwrap(),
+                                    point,
+                                    !self.options.read_only,
+                                );
+                            }
+                            _ => {}
+                        }
                     }
                     return Ok(());
                 }
@@ -5304,6 +5377,8 @@ impl App {
             pressed_pointers: RefCell::new(Vec::new()),
             terminal_selection: selection::State::default(),
             identity_copy: identity_copy::State::default(),
+            button_pointer: None,
+            popover_button: None,
             resizing: resizing::State::default(),
             search: search::State::default(),
             finder: None,
@@ -5856,6 +5931,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             } else {
                 app.overlays.remove("ui:modal");
             }
+            popup_surface.frame.images.clear();
+            popup_surface.frame.placements.clear();
             if let Some((outer, inner)) = placement {
                 let local = Size {
                     cols: outer.width,
@@ -5876,6 +5953,9 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     window_size = Some(border_key);
                 }
                 let local = inner.size(size);
+                let pointer = app.button_pointer.and_then(|(id, (x, y))| {
+                    (id == "ui:modal" && inner.contains(x, y)).then(|| (x - inner.x, y - inner.y))
+                });
                 if consent_open {
                     popup_surface.paint(
                         local,
@@ -5913,11 +5993,23 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         ui_palette.override_supported(),
                     );
                 } else if app.recovery.open() {
-                    app.recovery
-                        .paint(&mut popup_surface, local, &theme, ui_colors);
+                    app.recovery.paint(
+                        &mut popup_surface,
+                        local,
+                        &theme,
+                        ui_colors,
+                        pointer,
+                        graphics.button_painter(true),
+                    );
                 } else if let Some(finder) = &mut app.finder {
                     finder.paint(&mut popup_surface, local);
                     finder.apply_theme(&mut popup_surface, &theme, ui_colors, &project_palette);
+                    finder.paint_buttons(
+                        &mut popup_surface.frame,
+                        &theme,
+                        pointer,
+                        graphics.button_painter(true),
+                    );
                 } else if let Some(form) = &app.state.form {
                     modal(&mut popup_surface, local, form, &app.registry);
                     let form_palette = if let Some(accent) = form_region {
@@ -5951,6 +6043,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         &mut window_effects,
                         outer,
                         1,
+                        None,
                     );
                 }
             }
@@ -5997,6 +6090,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     &mut diagnostic_effects,
                     placement.outer,
                     1,
+                    None,
                 );
                 app.overlays
                     .present("ui:diagnostics", placement, OverlayPolicy::MODAL, None);
@@ -6066,6 +6160,16 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     );
                     app.popover.apply_theme(&popover_theme, &project_palette);
                 }
+                let pointer = app
+                    .button_pointer
+                    .and_then(|(id, point)| (id == crate::popover::SURFACE_ID).then_some(point));
+                app.popover.paint_buttons(
+                    &popover_theme,
+                    pointer,
+                    app.popover_button.as_ref(),
+                    !app.options.read_only,
+                    graphics.button_painter(true),
+                );
                 app.overlays.present(
                     crate::popover::SURFACE_ID,
                     OverlayPlacement::framed(rect, size),
@@ -6073,6 +6177,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     None,
                 );
             } else {
+                app.popover_button = None;
                 app.overlays.remove(crate::popover::SURFACE_ID);
             }
             if let Some(viewer) = &app.image_viewer {
@@ -6085,13 +6190,19 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 if image_surface.frame.size != size {
                     image_surface = UiSurface::new(size);
                 }
-                viewer.paint(&mut image_surface, &theme);
+                let mut close = None;
+                let mut place = graphics.button_painter(true);
+                viewer.paint(&mut image_surface, &theme, |frame, rect, state| {
+                    close = Some(rect);
+                    place(frame, rect, state)
+                });
                 raised_material(
                     &graphics,
                     &mut image_surface.frame,
                     &mut image_effects,
                     outer,
                     1,
+                    close,
                 );
                 app.overlays.present(
                     "ui:image-viewer",
@@ -6360,6 +6471,14 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 let cached = retained.as_mut().expect("visible toast presentation");
                 cached.outer = card.outer;
                 cached.body = card.body;
+                cached.frame.images.clear();
+                cached.frame.placements.clear();
+                toasts.paint_buttons(
+                    card,
+                    &mut cached.frame,
+                    &toast_theme,
+                    graphics.button_painter(true),
+                );
                 visible_toasts[card.slot] = true;
                 toast_order[toast_count] = card.slot;
                 toast_count += 1;
@@ -6809,6 +6928,14 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                                 faint: false,
                             });
                         }
+                        if !popup_surface.frame.placements.is_empty() {
+                            surfaces.push(button_graphics(
+                                "ui:finder-buttons",
+                                layer.placement.outer,
+                                &popup_surface.frame,
+                                false,
+                            ));
+                        }
                     } else if layer.id == crate::popover::SURFACE_ID && popover_graphical {
                         if let Some(rect) = tooltip {
                             // Full cells in the joined contour include the card's
@@ -6857,6 +6984,14 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                                     focused: false,
                                     faint: faint_background,
                                 });
+                            }
+                            if !app.popover.surface.frame.placements.is_empty() {
+                                surfaces.push(button_graphics(
+                                    "ui:popover-buttons",
+                                    rect,
+                                    &app.popover.surface.frame,
+                                    faint_background,
+                                ));
                             }
                         }
                     } else {
@@ -6977,7 +7112,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         .expect("visible toast presentation");
                     surfaces.push(Surface {
                         palette: None,
-                        id: "ui:toast",
+                        id: ["ui:toast-1", "ui:toast-2", "ui:toast-3"][*slot],
                         content: if card.graphical {
                             SurfaceContent::CellsClipped(Rect {
                                 x: card.body.x - card.outer.x,
@@ -6995,6 +7130,18 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         focused: false,
                         faint: false,
                     });
+                    if card.graphical && !card.frame.placements.is_empty() {
+                        surfaces.push(button_graphics(
+                            [
+                                "ui:toast-buttons-1",
+                                "ui:toast-buttons-2",
+                                "ui:toast-buttons-3",
+                            ][*slot],
+                            card.outer,
+                            &card.frame,
+                            false,
+                        ));
+                    }
                 }
                 if !toast_effects.placements.is_empty() {
                     surfaces.push(Surface {
@@ -7046,6 +7193,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 size
             };
             if geometry_changed {
+                app.cancel_button_presses();
                 app.retire_resize();
                 app.validate_sidebar_resize(input_size);
                 app.clear_resize_hover();
@@ -7498,6 +7646,8 @@ pub(super) mod tests {
                 pressed_pointers: RefCell::new(Vec::new()),
                 terminal_selection: selection::State::default(),
                 identity_copy: identity_copy::State::default(),
+                button_pointer: None,
+                popover_button: None,
                 resizing: resizing::State::default(),
                 search: search::State::default(),
                 finder: None,
