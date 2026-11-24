@@ -97,7 +97,7 @@ pub(crate) enum ButtonAction {
 
 /// Shared identity copy label and cell geometry.
 pub(crate) fn copy_button() -> Button<'static> {
-    Button::wide_icon("\u{f0c5}")
+    Button::wide_icon("\u{f018f}")
 }
 
 impl ButtonAction {

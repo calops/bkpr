@@ -229,7 +229,7 @@ mod tests {
                 let cells = &row[usize::from(rect.x)..usize::from(rect.x + rect.width)];
                 assert_eq!(cells.len(), 4);
                 assert_eq!(cells[0].text, "[");
-                assert_eq!(cells[1].text, "\u{f0c5}");
+                assert_eq!(cells[1].text, "\u{f018f}");
                 assert_eq!(cells[2].text, " ");
                 assert_eq!(cells[3].text, "]");
                 assert!(
