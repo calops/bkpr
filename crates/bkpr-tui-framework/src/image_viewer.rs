@@ -70,7 +70,13 @@ impl ImageViewer {
         if let Some(rect) = close {
             let state = State::at(rect, self.pointer, self.close_press == Some(rect));
             let graphical = place(&mut surface.frame, rect, state);
-            Button::new("×").paint(&mut surface.frame, rect, theme, state, graphical);
+            Button::new("×").paint(
+                &mut surface.frame,
+                rect,
+                theme.style(Role::Accent),
+                state,
+                graphical,
+            );
         }
     }
 

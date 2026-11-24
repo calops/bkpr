@@ -709,7 +709,7 @@ impl Finder {
             let (rect, _) = hit;
             let state = ButtonState::at(*rect, pointer, self.copy_press.as_ref() == Some(hit));
             let graphical = material(frame, *rect, state);
-            button.paint(frame, *rect, theme, state, graphical);
+            button.paint(frame, *rect, theme.style(Role::Accent), state, graphical);
         }
     }
 

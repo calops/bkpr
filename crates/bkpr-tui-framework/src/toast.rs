@@ -99,7 +99,7 @@ fn paint_card_buttons(
             ..rect
         };
         let graphical = place(frame, rect, state);
-        Button::new(label).paint(frame, rect, theme, state, graphical);
+        Button::new(label).paint(frame, rect, theme.style(Role::Accent), state, graphical);
     }
 }
 

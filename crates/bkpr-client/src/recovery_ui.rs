@@ -420,7 +420,7 @@ impl View {
                 ..rect
             };
             let graphical = place(frame, rect, state);
-            Button::new("Resume").paint(frame, rect, theme, state, graphical);
+            Button::new("Resume").paint(frame, rect, theme.style(Role::Accent), state, graphical);
         }
     }
 }

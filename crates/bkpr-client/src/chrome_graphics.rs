@@ -166,7 +166,7 @@ impl ChromeGraphics {
                     kind: bkpr_tui_framework::decoration::DecorationKind::RecessedTransparentLeftGutter,
                     ..pane
                 };
-                let buttons = crate::appearance::button_materials(host, size, pane);
+                let buttons = crate::appearance::button_materials(host, size);
                 self.4 = Some(buttons);
                 let [idle, hover, pressed] = *buttons.styles();
                 [

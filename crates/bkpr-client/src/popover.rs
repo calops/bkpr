@@ -1008,7 +1008,9 @@ impl Popover {
                 ButtonState::Idle
             };
             let graphical = material(frame, *rect, state);
-            action.button().paint(frame, *rect, theme, state, graphical);
+            action
+                .button()
+                .paint(frame, *rect, theme.style(Role::Accent), state, graphical);
         }
     }
 }

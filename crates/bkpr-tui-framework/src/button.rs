@@ -1,8 +1,10 @@
 //! Single-row controls with stable cell geometry across text and graphics modes.
 use crate::decoration::{DecorationGeometry, DecorationKind, DecorationStyle};
 use crate::graphics::SvgGraphics;
-use crate::{Rect, Role, Theme, clear, text, text_width, window};
+use crate::{Rect, clear, text, text_width, window};
 use bkpr_protocol::Frame;
+use bkpr_protocol::{ColorSource, Style};
+use palette::color_difference::Wcag21RelativeContrast;
 
 /// Visual state of a button; the owning surface decides whether to activate it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -51,7 +53,7 @@ impl<'a> Button<'a> {
         &self,
         frame: &mut Frame,
         mut rect: Rect,
-        theme: &Theme,
+        ink: &Style,
         state: State,
         graphical: bool,
     ) {
@@ -85,9 +87,18 @@ impl<'a> Button<'a> {
             text(frame, rect.x + rect.width - 1, rect.y, "]", false);
         }
         text(frame, start, rect.y, label, false);
-        let mut style = theme
-            .style(if graphical { Role::Panel } else { Role::Accent })
-            .clone();
+        let mut style = ink.clone();
+        if graphical {
+            let face = crate::color::luminance(state.face(ink.foreground));
+            let black = crate::color::luminance([0; 3]);
+            let white = crate::color::luminance([255; 3]);
+            style.foreground = if face.relative_contrast(black) >= face.relative_contrast(white) {
+                [0; 3]
+            } else {
+                [255; 3]
+            };
+            style.foreground_source = ColorSource::Rgb(style.foreground);
+        }
         style.background = background;
         style.background_source = background_source;
         style.inverse = !graphical && state != State::Idle;
@@ -103,38 +114,45 @@ impl<'a> Button<'a> {
     }
 }
 
+impl State {
+    fn face(self, ink: [u8; 3]) -> [u8; 3] {
+        match self {
+            Self::Idle => ink,
+            Self::Hover => ink.map(|c| c + (255 - c) / 8),
+            Self::Pressed => ink.map(|c| c - c / 10),
+        }
+    }
+}
+
 /// The three reusable, shadowless face materials for one host cell size and palette.
 #[derive(Clone, Copy)]
 pub struct Materials([DecorationStyle; 3]);
 
 impl Materials {
-    /// Use caller-selected face colors in idle, hovered, pressed order. Radius and
-    /// bevel thickness are physical pixels, independent of label size.
-    pub fn new(
-        faces: [[u8; 3]; 3],
-        radius_px: u32,
-        bevel_milli: u32,
-        highlight: u16,
-        shade: u16,
-    ) -> Self {
-        Self(std::array::from_fn(|index| DecorationStyle {
-            kind: if index == 2 {
-                DecorationKind::ButtonPressed
-            } else {
-                DecorationKind::ButtonRaised
-            },
-            background: faces[index],
-            surface: faces[index],
-            foreground: [255; 3],
-            inset_px: [0; 2],
-            outset_px: [0; 2],
-            radius_px,
-            sigma_milli: 1,
-            offset_milli: [0; 2],
-            shadow_opacity_milli: 0,
-            lip_width_milli: bevel_milli,
-            lip_highlight_milli: highlight.min(1000),
-            lip_shade_milli: shade.min(1000),
+    /// Use the same RGB accent supplied as text ink in plain mode. The framework
+    /// derives the three faces. Radius and bevel thickness use physical pixels.
+    pub fn new(ink: [u8; 3], radius_px: u32, bevel_milli: u32, highlight: u16, shade: u16) -> Self {
+        Self([State::Idle, State::Hover, State::Pressed].map(|state| {
+            let face = state.face(ink);
+            DecorationStyle {
+                kind: if state == State::Pressed {
+                    DecorationKind::ButtonPressed
+                } else {
+                    DecorationKind::ButtonRaised
+                },
+                background: face,
+                surface: face,
+                foreground: [255; 3],
+                inset_px: [0; 2],
+                outset_px: [0; 2],
+                radius_px,
+                sigma_milli: 1,
+                offset_milli: [0; 2],
+                shadow_opacity_milli: 0,
+                lip_width_milli: bevel_milli,
+                lip_highlight_milli: highlight.min(1000),
+                lip_shade_milli: shade.min(1000),
+            }
         }))
     }
 

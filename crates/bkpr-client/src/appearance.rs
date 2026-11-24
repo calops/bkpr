@@ -80,15 +80,11 @@ pub(crate) fn decoration_styles(host: &ColorProbe, size: Size) -> Option<[Decora
 pub(crate) fn button_materials(
     host: &ColorProbe,
     size: Size,
-    pane: DecorationStyle,
 ) -> bkpr_tui_framework::button::Materials {
-    let fg = pane.foreground;
-    let panel = pane.surface;
-    let face = blend(fg, panel, 12);
-    let accent = host.palette.get(&4).copied().unwrap_or(fg);
+    let accent = theme_styles(host).base[Role::Accent as usize].foreground;
     let radius = (size.cell_width / 3).clamp(1, 6).min(size.cell_height / 3);
     bkpr_tui_framework::button::Materials::new(
-        [face, blend(accent, face, 18), blend(accent, face, 26)],
+        accent,
         radius,
         (size.cell_width * 180).clamp(1000, 2600),
         400,
