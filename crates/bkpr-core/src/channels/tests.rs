@@ -644,7 +644,7 @@ fn typed_mentions_and_policy_select_only_current_agents_and_preserve_unread_atte
         .mentions
         .extend([f.a.id.clone(), f.user.id.clone()]);
     let attention = posted(f.as_actor(&f.a, send(&id, question)).unwrap());
-    assert!(f.work(&attention.id).is_empty());
+    assert_eq!(f.work(&attention.id), [(String::new(), None, false, true)]);
     let unread = |actor| {
         f.list(actor)
             .into_iter()
