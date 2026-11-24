@@ -12,6 +12,8 @@ Managed launches obtain authority through the backend's verified launcher/PTY an
 
 `harness/assets.rs` owns private credential files; `integration/shared/native.ts` owns native callback subprocesses. Shared MCP belongs to `harness/agent.rs`; extensions bind native sessions and receivers rather than duplicating tools. Ordinary execution never edits native profiles. Explicit durable operations belong to `harness/install.rs` and its native definitions; preserve unrelated configuration, refuse conflicts and never grant approvals. Inspect/dry-run must not create files or invoke onboarding.
 
+Channel file tools open explicit local paths in the launch-local MCP helper or authenticated Codex relay. Only typed attachment bytes and channel IDs cross the daemon transport; MCP replies carry metadata. Fetch publishes a fresh file without clobbering an existing name.
+
 ## Installation boundaries
 
 `install/` describes native files and owned slots; maintained JSONC CST and `toml_edit` preserve unrelated syntax, while Saphyr only reads native Omp YAML policy. Use `url` for native file-URI resolution, not ad hoc escaping. Profile-scoped records bind executable/version and immutable asset hashes. Persistent commands carry `--installation` explicitly because native MCP clients may filter profile/XDG environment variables.

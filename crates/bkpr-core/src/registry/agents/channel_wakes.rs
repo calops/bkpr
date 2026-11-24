@@ -126,7 +126,7 @@ impl Registry {
         launch: &Launch,
         request: ChannelRequest,
         connected: &dyn Fn() -> bool,
-    ) -> Result<Value> {
+    ) -> Result<Payload> {
         match &request {
             ChannelRequest::List { limit, .. }
             | ChannelRequest::ListMembers { limit, .. }
@@ -143,10 +143,27 @@ impl Registry {
                 !name.contains(&launch.grant.token),
                 "channel name contains a private capability"
             ),
+            ChannelRequest::UploadAttachment { upload, .. } => ensure!(
+                upload
+                    .alt_text
+                    .as_ref()
+                    .is_none_or(|text| !text.contains(&launch.grant.token)),
+                "channel attachment alt text contains a private capability"
+            ),
+            ChannelRequest::GetAttachment { .. } => {}
             _ => bail!("unsupported agent channel operation"),
         }
-        self.request_channels_for(request, Some(launch), connected, ChannelProjection::Agent)?
-            .into_json()
+        let attachment = matches!(
+            request,
+            ChannelRequest::UploadAttachment { .. } | ChannelRequest::GetAttachment { .. }
+        );
+        let payload =
+            self.request_channels_for(request, Some(launch), connected, ChannelProjection::Agent)?;
+        if attachment {
+            Ok(payload)
+        } else {
+            payload.into_json().map(Payload::Control)
+        }
     }
 
     pub(super) fn agent_channel_read(

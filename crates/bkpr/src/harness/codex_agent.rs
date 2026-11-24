@@ -13,7 +13,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
-use bkpr_protocol::{AgentRequest, CaptureEvent, Operation};
+use bkpr_protocol::{AgentRequest, CaptureEvent, Operation, Payload};
 use parking_lot::{Condvar, Mutex};
 use serde_json::{Value, json};
 
@@ -89,10 +89,14 @@ impl Authority {
         value: Value,
         selection: Option<(&Selection, u64)>,
     ) -> Result<Value> {
-        let request = match super::super::agent::resolve_request(value)? {
-            super::super::agent::RequestAction::Local(value) => return Ok(value),
-            super::super::agent::RequestAction::Native(request) => request,
-        };
+        super::super::agent::resolve_request(value)?
+            .dispatch(|request| self.native_request(request, selection))
+    }
+    fn native_request(
+        &self,
+        request: AgentRequest,
+        selection: Option<(&Selection, u64)>,
+    ) -> Result<Payload> {
         let subscription = matches!(request, AgentRequest::ReceiverSubscribe { .. });
         let mut stream = UnixStream::connect(&self.socket)?;
         stream.set_read_timeout(Some(Duration::from_secs(if subscription {
@@ -112,7 +116,7 @@ impl Authority {
         }
         let _active = self.calls.track(&stream)?;
         drop(selected);
-        bkpr_client::transport::checked_stream(
+        bkpr_client::transport::checked_stream_payload(
             &mut stream,
             Operation::Agent {
                 launch_id: self.launch_id.clone(),

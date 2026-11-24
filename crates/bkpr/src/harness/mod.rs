@@ -13,7 +13,9 @@ mod status;
 
 use anyhow::{Context, Result, bail};
 use bkpr_protocol::channels::{ChannelWake, MAX_ID_BYTES};
-use bkpr_protocol::{CaptureEvent, CaptureGrant, ConversationSource, HarnessKind, Operation};
+use bkpr_protocol::{
+    CaptureEvent, CaptureGrant, ConversationSource, HarnessKind, Operation, Payload,
+};
 use serde::Deserialize;
 use std::{
     env,
@@ -529,7 +531,11 @@ impl Capture {
     }
 
     pub(super) fn request(&self, operation: Operation) -> Result<serde_json::Value> {
-        bkpr_client::transport::checked(&self.socket, operation)
+        self.request_payload(operation)?.into_json()
+    }
+
+    pub(super) fn request_payload(&self, operation: Operation) -> Result<Payload> {
+        bkpr_client::transport::checked_payload(&self.socket, operation)
             .map_err(|error| sanitize_request_error(error, &self.grant.token))
     }
     pub(super) fn event(&self, event: CaptureEvent) -> Result<serde_json::Value> {

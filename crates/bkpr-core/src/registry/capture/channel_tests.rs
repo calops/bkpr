@@ -135,23 +135,30 @@ fn send(registry: &Registry, op: Operation) -> Value {
         .unwrap()
 }
 
-fn agent_result(registry: &Registry, launch: &Launch, request: AgentRequest) -> Result<Value> {
+fn launch_request(registry: &Registry, launch: &Launch, operation: Operation) -> Result<Payload> {
     let peer = Peer {
         pid: launch.root.pid,
         uid: unsafe { libc::geteuid() },
         birth: launch.root.identity.clone(),
     };
-    registry
-        .request_authenticated(
-            Request::new(Operation::Agent {
-                launch_id: launch.grant.launch_id.clone(),
-                token: launch.grant.token.clone(),
-                guard: None,
-                request,
-            }),
-            &peer,
-        )?
-        .into_json()
+    registry.request_authenticated(Request::new(operation), &peer)
+}
+
+fn agent_payload(registry: &Registry, launch: &Launch, request: AgentRequest) -> Result<Payload> {
+    launch_request(
+        registry,
+        launch,
+        Operation::Agent {
+            launch_id: launch.grant.launch_id.clone(),
+            token: launch.grant.token.clone(),
+            guard: None,
+            request,
+        },
+    )
+}
+
+fn agent_result(registry: &Registry, launch: &Launch, request: AgentRequest) -> Result<Value> {
+    agent_payload(registry, launch, request)?.into_json()
 }
 
 fn agent(registry: &Registry, launch: &Launch, request: AgentRequest) -> Value {
@@ -1230,4 +1237,144 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     );
     assert_eq!(page["text"].as_str().unwrap(), &body[..4095]);
     assert_eq!(page["next_offset"], 4095);
+}
+
+#[test]
+fn authenticated_channel_attachments_require_live_member() {
+    use bkpr_protocol::channels::{AttachmentMediaType, AttachmentUpload};
+
+    let root = private_root();
+    let root = root.path();
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.join("omp")).unwrap();
+    let (registry, _server) = open(root);
+    let member_spec = launch_spec(root, "member", "native-member");
+    send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: Some(member_spec.clone()),
+        },
+    );
+    let member = live(&registry, &member_spec.home);
+    let workspace = registry.snapshot().unwrap().workspaces.remove(0);
+    let nonmember_spec = launch_spec(root, "nonmember", "native-nonmember");
+    send(
+        &registry,
+        Operation::WindowCreate {
+            workspace_id: workspace.id.clone(),
+            expected_revision: workspace.revision,
+            name: None,
+            spec: nonmember_spec.clone(),
+        },
+    );
+    let nonmember = live(&registry, &nonmember_spec.home);
+    let actor = member.channel_participant.clone().unwrap();
+    assert_ne!(nonmember.channel_participant.as_ref().unwrap(), &actor);
+
+    let ChannelResponse::Channel {
+        channel: restricted,
+    } = channel(
+        &registry,
+        None,
+        ChannelRequest::Create {
+            workspace_id: workspace.id,
+            name: "attachments".into(),
+            membership: MembershipMode::Explicit,
+            members: vec![actor.clone()],
+            settings: Default::default(),
+        },
+    )
+    .unwrap()
+    else {
+        panic!("expected created channel");
+    };
+
+    let mut png = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png, 1, 1);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder
+        .write_header()
+        .unwrap()
+        .write_image_data(&[24, 42, 71])
+        .unwrap();
+    let upload = || ChannelRequest::UploadAttachment {
+        channel_id: restricted.id.clone(),
+        upload: AttachmentUpload {
+            media_type: AttachmentMediaType::Png,
+            alt_text: Some("Example".into()),
+            bytes: png.clone(),
+        },
+    };
+    let call = |launch, request| {
+        agent_payload(
+            &registry,
+            launch,
+            AgentRequest::Channels {
+                request: Box::new(request),
+            },
+        )
+    };
+    let Payload::Channels(ChannelResponse::AttachmentUploaded { attachment }) =
+        call(&member, upload()).unwrap()
+    else {
+        panic!("expected upload metadata");
+    };
+    assert_eq!(attachment.media_type, AttachmentMediaType::Png);
+    assert_eq!(attachment.byte_len as usize, png.len());
+    assert_eq!(attachment.alt_text.as_deref(), Some("Example"));
+
+    let ChannelRequest::Post {
+        channel_id,
+        mut post,
+    } = post(&restricted.id, "attached image", PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    post.attachments.push(attachment.id.clone());
+    let posted = agent_channel(
+        &registry,
+        &member,
+        ChannelRequest::Post { channel_id, post },
+    )
+    .unwrap();
+    assert_eq!(posted["message"]["author"]["id"], json!(actor));
+    assert_eq!(posted["message"]["attachments"], json!([attachment.id]));
+
+    let fetch = || ChannelRequest::GetAttachment {
+        channel_id: restricted.id.clone(),
+        attachment_id: attachment.id.clone(),
+    };
+    let Payload::Channels(ChannelResponse::Attachment {
+        attachment: fetched,
+        bytes,
+    }) = call(&member, fetch()).unwrap()
+    else {
+        panic!("expected fetched attachment");
+    };
+    assert_eq!(fetched, attachment);
+    assert_eq!(bytes.as_ref(), png.as_slice());
+    for request in [upload(), fetch()] {
+        assert_eq!(
+            call(&nonmember, request).unwrap_err().to_string(),
+            "channel unavailable"
+        );
+    }
+
+    // Revoke the launch while its process and explicit channel membership remain.
+    launch_request(
+        &registry,
+        &member,
+        Operation::HarnessEvent {
+            launch_id: member.grant.launch_id.clone(),
+            token: member.grant.token.clone(),
+            event: CaptureEvent::End,
+        },
+    )
+    .unwrap();
+    for request in [upload(), fetch()] {
+        assert_eq!(
+            call(&member, request).unwrap_err().to_string(),
+            "unknown or ended launch"
+        );
+    }
 }

@@ -3,10 +3,11 @@ use super::Capture;
 use anyhow::{Context, Result, bail};
 use bkpr_protocol::{
     AgentBindingGuard, AgentRequest, AgentScope, HarnessKind, NativeConversation, Operation,
+    Payload,
     channels::{
-        AttachmentId, ChannelId, ChannelPost, ChannelRequest, ChannelSettings, MAX_ATTACHMENTS,
-        MAX_ID_BYTES, MAX_MEMBERS, MAX_MENTIONS, MAX_NAME_BYTES, MAX_POST_BYTES, MembershipMode,
-        MessageId, ParticipantId, PostIntent,
+        AttachmentId, ChannelId, ChannelPost, ChannelRequest, ChannelSettings, MAX_ALT_TEXT_BYTES,
+        MAX_ATTACHMENTS, MAX_ID_BYTES, MAX_MEMBERS, MAX_MENTIONS, MAX_NAME_BYTES, MAX_POST_BYTES,
+        MembershipMode, MessageId, ParticipantId, PostIntent,
     },
     control::{self, ControlAction},
 };
@@ -22,8 +23,11 @@ use std::{
     time::Duration,
 };
 
+#[path = "agent_attachments.rs"]
+mod attachments;
 #[path = "mcp_output.rs"]
 pub(super) mod output;
+use attachments::{AttachmentToolRequest, MAX_PATH_BYTES};
 
 pub(super) const MAX_FRAME: usize = 1024 * 1024;
 const MAX_RESPONSE: usize = 8 * 1024 * 1024;
@@ -89,9 +93,10 @@ pub(super) fn tools() -> Value {
     tools
 }
 
-fn channel_tools() -> [Value; 7] {
+fn channel_tools() -> [Value; 9] {
     let id = json!({"type":"string","minLength":1,"maxLength":MAX_ID_BYTES});
     let limit = json!({"type":"integer","minimum":1,"maximum":CHANNEL_PAGE_LIMIT,"default":CHANNEL_PAGE_LIMIT});
+    let path = json!({"type":"string","minLength":1,"maxLength":MAX_PATH_BYTES,"description":"Absolute local file path on the managed launch host, not a URL."});
     let wake_policy = json!({
         "type":"string",
         "enum":["all","addressed_or_all","addressed_only","none"],
@@ -135,6 +140,21 @@ fn channel_tools() -> [Value; 7] {
             },"required":["channel_id","text","idempotency_key"],"additionalProperties":false}
         }),
         json!({
+            "name":"channel_upload",
+            "description":"Upload a local, regular PNG file (up to 4 MiB) to a workspace channel you can post in. Returns attachment metadata only. Pass attachment.id in channel_post.attachments for that same channel. Do not put image bytes in tool arguments.",
+            "inputSchema":{"type":"object","properties":{
+                "channel_id":id,"path":path,
+                "alt_text":{"type":"string","maxLength":MAX_ALT_TEXT_BYTES}
+            },"required":["channel_id","path"],"additionalProperties":false}
+        }),
+        json!({
+            "name":"channel_fetch",
+            "description":"Save an exact accessible channel attachment as a new local PNG file. Use the attachment ID from channel_read. The parent directory must exist; no destination is overwritten. Returns metadata, never image bytes.",
+            "inputSchema":{"type":"object","properties":{
+                "channel_id":id,"attachment_id":id,"path":path
+            },"required":["channel_id","attachment_id","path"],"additionalProperties":false}
+        }),
+        json!({
             "name":"channel_history",
             "description":"Page body-free message summaries in a workspace channel by exact ID; does not mark them read. Default is the newest page. Use before or after (not both), with the returned next_before or next_after as an exclusive sequence bound; after:0 begins at the oldest post. Use channel_read for an exact message.",
             "inputSchema":{"type":"object","properties":{
@@ -166,8 +186,13 @@ fn channel_envelope_tool(name: &str) -> bool {
     )
 }
 
+fn attachment_tool(name: &str) -> bool {
+    matches!(name, "channel_upload" | "channel_fetch")
+}
+
 pub(super) fn public_tool(name: &str) -> bool {
     channel_envelope_tool(name)
+        || attachment_tool(name)
         || matches!(
             name,
             "whoami"
@@ -250,6 +275,20 @@ pub(super) fn validate_control_request(request: &Value) -> Result<()> {
 pub(super) enum RequestAction {
     Local(Value),
     Native(AgentRequest),
+    Attachment(AttachmentToolRequest),
+}
+
+impl RequestAction {
+    pub(super) fn dispatch(
+        self,
+        send: impl FnOnce(AgentRequest) -> Result<Payload>,
+    ) -> Result<Value> {
+        match self {
+            Self::Local(value) => Ok(value),
+            Self::Native(request) => send(request)?.into_json(),
+            Self::Attachment(request) => request.dispatch(send),
+        }
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -388,6 +427,11 @@ pub(super) fn resolve_request(request: Value) -> Result<RequestAction> {
                 request: Box::new(tool.into_request()),
             }))
         }
+        None if request["method"].as_str().is_some_and(attachment_tool) => {
+            Ok(RequestAction::Attachment(
+                serde_json::from_value(request).context("invalid channel attachment arguments")?,
+            ))
+        }
         None => {
             if request["method"] == "channel_wake"
                 && request.get("max_body_bytes").is_some_and(|value| {
@@ -398,9 +442,11 @@ pub(super) fn resolve_request(request: Value) -> Result<RequestAction> {
             {
                 bail!("max_body_bytes must be an integer from 4 through 4096");
             }
-            Ok(RequestAction::Native(
-                serde_json::from_value(request).context("invalid agent request")?,
-            ))
+            let request = serde_json::from_value(request).context("invalid agent request")?;
+            if matches!(request, AgentRequest::Channels { .. }) {
+                bail!("use the named channel tools");
+            }
+            Ok(RequestAction::Native(request))
         }
     }
 }
@@ -414,22 +460,20 @@ fn call_request_guarded(
     request: Value,
     guard: Option<AgentBindingGuard>,
 ) -> Result<Value> {
-    let request = match resolve_request(request)? {
-        RequestAction::Local(value) => return Ok(value),
-        RequestAction::Native(request) => request,
-    };
-    if matches!(request, AgentRequest::ReceiverSubscribe { .. }) {
-        return subscription(capture, request);
-    }
-    capture.request(Operation::Agent {
-        launch_id: capture.grant.launch_id.clone(),
-        token: capture.grant.token.clone(),
-        guard,
-        request,
+    resolve_request(request)?.dispatch(|request| {
+        if matches!(request, AgentRequest::ReceiverSubscribe { .. }) {
+            return subscription(capture, request);
+        }
+        capture.request_payload(Operation::Agent {
+            launch_id: capture.grant.launch_id.clone(),
+            token: capture.grant.token.clone(),
+            guard,
+            request,
+        })
     })
 }
 
-fn subscription(capture: &Capture, request: AgentRequest) -> Result<Value> {
+fn subscription(capture: &Capture, request: AgentRequest) -> Result<Payload> {
     let mut stream = UnixStream::connect(&capture.socket).context("connect native subscription")?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -439,7 +483,7 @@ fn subscription(capture: &Capture, request: AgentRequest) -> Result<Value> {
         guard: None,
         request,
     };
-    bkpr_client::transport::checked_stream(&mut stream, operation)
+    bkpr_client::transport::checked_stream_payload(&mut stream, operation)
         .map_err(|error| super::sanitize_request_error(error, &capture.grant.token))
 }
 
@@ -449,7 +493,7 @@ pub(super) fn request_subscription(value: Value) -> Result<Value> {
     if !matches!(request, AgentRequest::ReceiverSubscribe { .. }) {
         bail!("expected receiver_subscribe");
     }
-    subscription(&Capture::from_environment()?, request)
+    subscription(&Capture::from_environment()?, request)?.into_json()
 }
 
 /// The native Codex supervisor may retain the grant outside the provider child.
@@ -641,6 +685,7 @@ fn is_channel_reply(value: &Value) -> bool {
         Some("channel") => value["channel"].is_object(),
         Some("members") => value["participants"].is_array(),
         Some("posted") => value["wake_count"].is_u64(),
+        Some("attachment_uploaded" | "attachment_fetched") => value["attachment"].is_object(),
         Some("history") => value["messages"].is_array() && value["cursor"].is_object(),
         Some("message_page") => true,
         _ => {

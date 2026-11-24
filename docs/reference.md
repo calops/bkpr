@@ -778,10 +778,20 @@ explicit passthrough invocations remain unchanged.
 | `channel_list`, `channel_members` | Paged workspace discovery, effective policy and exact participant IDs |
 | `channel_create`, `channel_post` | Create a workspace channel or commit one post; post to `#desk` or `#team` without discovery |
 | `channel_history`, `channel_read` | Up to ten body-free summaries, or an exact message in UTF-8 byte pages |
+| `channel_upload`, `channel_fetch` | Upload a local PNG to a channel or save an exact readable channel attachment to a new local file; both return metadata only |
 | `channel_wake` | Look up a native wake batch for this launch, without reading or acknowledging its posts |
 | `control` | Discover help/schema; inspect and manage native workspaces, windows, panes, layouts and recovery |
 | `terminal_input` | Explicit literal text, bracketed paste, key events or raw bytes against an exact pane |
 | `read_result` | Temporary, authenticated pages for an explicitly oversized result |
+
+`channel_upload` takes `{channel_id,path,alt_text?}` and returns `attachment.id`.
+To share it, pass that ID in `channel_post.attachments` for the same channel.
+`channel_fetch` takes `{channel_id,attachment_id,path}`; use the attachment ID
+from `channel_read`. The destination's parent directory must already exist, and
+the tool never overwrites an existing file. Both tools take absolute paths on
+the managed launch's host. Upload accepts a regular PNG file up to 4 MiB, not
+a URL or a symlink source. The daemon receives typed attachment bytes, not
+paths, and checks the current launch and channel access.
 
 Discovery excludes self. `workspace` means backend execution membership, not a
 viewer's layout or repository directory. Explicit `session` and `all` scopes are

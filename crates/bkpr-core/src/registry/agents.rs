@@ -1395,14 +1395,31 @@ impl Registry {
         peer: &Peer,
         request: AgentRequest,
         is_connected: &dyn Fn() -> bool,
-    ) -> Result<Value> {
+    ) -> Result<Payload> {
         crate::harness::validate_callback(peer, &launch)?;
         self.capture_pane(&launch.grant.pane_id)?;
         self.inner.captures.lock().unwrap().admit(&mut launch)?;
-        let id = &launch.grant.launch_id;
         drop(self.agent_request_state(&launch)?);
         #[cfg(test)]
         self.inner.agents.wait_request_barrier(false);
+        let request = match request {
+            AgentRequest::Channels { request } => {
+                return self.agent_channel_request(&launch, *request, is_connected);
+            }
+            request => request,
+        };
+        self.agent_request_value(launch, peer, request, is_connected)
+            .map(Payload::Control)
+    }
+
+    fn agent_request_value(
+        &self,
+        launch: Launch,
+        peer: &Peer,
+        request: AgentRequest,
+        is_connected: &dyn Fn() -> bool,
+    ) -> Result<Value> {
+        let id = &launch.grant.launch_id;
         if let AgentRequest::SendMessage {
             to,
             text,
@@ -1432,9 +1449,6 @@ impl Registry {
             }
         }
         match request {
-            AgentRequest::Channels { request } => {
-                self.agent_channel_request(&launch, *request, is_connected)
-            }
             AgentRequest::ChannelRead {
                 channel_id,
                 message_id,

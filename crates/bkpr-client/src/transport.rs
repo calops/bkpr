@@ -232,7 +232,12 @@ pub fn checked_payload(socket: &Path, operation: Operation) -> Result<Payload> {
 
 /// Dispatch once on a connection whose lifetime and deadlines the caller owns.
 pub fn checked_stream(stream: &mut UnixStream, operation: Operation) -> Result<Value> {
-    checked_response(request_stream(stream, &Request::new(operation))?)
+    checked_stream_payload(stream, operation)?.into_json()
+}
+
+/// Dispatch once on a caller-owned connection and retain the typed native payload.
+pub fn checked_stream_payload(stream: &mut UnixStream, operation: Operation) -> Result<Payload> {
+    checked_payload_response(request_stream(stream, &Request::new(operation))?)
 }
 
 fn validate_response(response: Response) -> Result<Response> {
