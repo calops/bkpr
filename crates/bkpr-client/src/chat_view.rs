@@ -175,8 +175,10 @@ pub(super) enum Hit {
     Manage,
 }
 
-const CHANNEL_BUTTONS: [(Hit, &str); 2] =
-    [(Hit::Create, "+ New channel"), (Hit::Manage, "Settings")];
+const CHANNEL_BUTTONS: [(Hit, &str); 2] = [
+    (Hit::Create, "\u{f0415} New channel"),
+    (Hit::Manage, "\u{f0493} Settings"),
+];
 
 struct Range {
     sequence: u64,
@@ -1021,13 +1023,13 @@ impl Chat {
             if has_create {
                 let visible = (self.ids.len().saturating_sub(offset)).min(usize::from(list_height));
                 paint.target(
-                    row(body.x, body.y + visible as u16 + 2, body.width),
+                    row(body.x, body.y + visible as u16 + 2, body.width).inset_horizontal(1),
                     Hit::Create,
                 );
             }
             if has_settings {
                 paint.target(
-                    row(body.x, body.y + body.height - 1, body.width),
+                    row(body.x, body.y + body.height - 1, body.width).inset_horizontal(1),
                     Hit::Manage,
                 );
             }
@@ -2045,9 +2047,16 @@ mod tests {
             (Hit::Create, list_body.y + 3),
             (Hit::Manage, list_body.y + list_body.height - 1),
         ] {
+            let button = row(list_body.x, y, list_body.width).inset_horizontal(1);
+            assert_eq!(chat.paint.button_at((button.x, y)), Some((button, hit)));
+            assert_eq!(
+                chat.paint.button_at((button.x + button.width - 1, y)),
+                Some((button, hit))
+            );
+            assert_eq!(chat.paint.button_at((list_body.x, y)), None);
             assert_eq!(
                 chat.paint.button_at((list_body.x + list_body.width - 1, y)),
-                Some((row(list_body.x, y, list_body.width), hit))
+                None
             );
         }
         assert!(matches!(
