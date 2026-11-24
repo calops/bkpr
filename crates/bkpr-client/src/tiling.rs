@@ -679,6 +679,141 @@ pub(crate) fn nudge(
     resize(layout, &split, i32::from(current) + offset, Some(forward))
 }
 
+/// Where a dragged pane lands relative to the pane under the pointer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DropZone {
+    /// Exchange the two panes.
+    Centre,
+    /// Split the target, placing the dragged pane on this side.
+    Edge(Direction),
+}
+
+/// A pane-move drop that changes the layout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PaneDrop {
+    pub target: usize,
+    pub zone: DropZone,
+    pub layout: LayoutNode,
+    pub preview: Rect,
+}
+
+/// Edge zones are the outer quarter of the body on each side, at least one
+/// cell; where two overlap, the proportionally nearer edge wins.
+pub(crate) fn drop_zone(body: Rect, x: u16, y: u16) -> Option<DropZone> {
+    if !body.contains(x, y) {
+        return None;
+    }
+    let (col, row) = (u32::from(x - body.x), u32::from(y - body.y));
+    let (width, height) = (u32::from(body.width), u32::from(body.height));
+    let (band_x, band_y) = ((width / 4).max(1), (height / 4).max(1));
+    // Compare distance / dimension without division: cross-multiply.
+    let zone = [
+        (Direction::Left, col, band_x, width),
+        (Direction::Right, width - 1 - col, band_x, width),
+        (Direction::Up, row, band_y, height),
+        (Direction::Down, height - 1 - row, band_y, height),
+    ]
+    .into_iter()
+    .filter(|&(_, distance, band, _)| distance < band)
+    .min_by(|a, b| (u64::from(a.1) * u64::from(b.3)).cmp(&(u64::from(b.1) * u64::from(a.3))))
+    .map_or(DropZone::Centre, |(direction, ..)| {
+        DropZone::Edge(direction)
+    });
+    Some(zone)
+}
+
+/// The pane body under the pointer other than `source`, with its zone.
+/// `frames` are the projected frame rectangles of the window's panes.
+pub(crate) fn drop_target(
+    frames: &[(String, Rect)],
+    source: &str,
+    x: u16,
+    y: u16,
+) -> Option<(usize, DropZone)> {
+    frames
+        .iter()
+        .enumerate()
+        .filter(|(_, (pane, _))| pane != source)
+        .find_map(|(index, (_, frame))| {
+            drop_zone(crate::controller::content(*frame), x, y).map(|zone| (index, zone))
+        })
+}
+
+/// The layout resulting from dropping `source` on `frames[target]`, or `None`
+/// when it would change nothing or could not display both panes in `area`.
+pub(crate) fn pane_drop(
+    layout: &LayoutNode,
+    area: Rect,
+    frames: &[(String, Rect)],
+    source: &str,
+    target: usize,
+    zone: DropZone,
+) -> Option<PaneDrop> {
+    let (target_id, frame) = frames.get(target)?;
+    let (moved, preview) = match zone {
+        DropZone::Centre => {
+            let mut moved = layout.clone();
+            crate::controller::exchange_leaves(&mut moved, source, target_id);
+            (moved, *frame)
+        }
+        DropZone::Edge(direction) => {
+            let (axis, before) = match direction {
+                Direction::Left => (Axis::Horizontal, true),
+                Direction::Right => (Axis::Horizontal, false),
+                Direction::Up => (Axis::Vertical, true),
+                Direction::Down => (Axis::Vertical, false),
+            };
+            let (first, _, second) = partition(*frame, axis, 500)?;
+            let removed = crate::controller::remove_leaf(Some(layout.clone()), source)?;
+            let moved = crate::controller::split_leaf_beside(
+                Some(removed),
+                target_id,
+                source,
+                axis,
+                before,
+            )?;
+            (moved, if before { first } else { second })
+        }
+    };
+    if moved == *layout {
+        return None;
+    }
+    let mut projected = Vec::new();
+    crate::controller::layout_rects(Some(&moved), area, &mut projected);
+    let visible = |pane: &str| {
+        projected.iter().any(|(id, rect)| {
+            let body = crate::controller::content(*rect);
+            id == pane && body.width > 0 && body.height > 0
+        })
+    };
+    (visible(source) && visible(target_id)).then_some(PaneDrop {
+        target,
+        zone,
+        layout: moved,
+        preview,
+    })
+}
+
+/// The four one-cell strips outlining `rect`, for edge feedback painting.
+pub(crate) fn outline(rect: Rect) -> [Rect; 4] {
+    let right = rect.x + rect.width.saturating_sub(1);
+    let bottom = rect.y + rect.height.saturating_sub(1);
+    [
+        Rect { height: 1, ..rect },
+        Rect {
+            y: bottom,
+            height: 1,
+            ..rect
+        },
+        Rect { width: 1, ..rect },
+        Rect {
+            x: right,
+            width: 1,
+            ..rect
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1315,5 +1450,149 @@ mod pointer_tests {
             invalid[1].path.push(false);
             assert!(equalize_targets(&layout, area, &invalid).is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod pane_drop_tests {
+    use super::*;
+    use crate::controller::{content, layout_rects};
+
+    fn leaf(id: &str) -> LayoutNode {
+        LayoutNode::Leaf { pane_id: id.into() }
+    }
+    fn split(axis: Axis, ratio: u16, first: LayoutNode, second: LayoutNode) -> LayoutNode {
+        LayoutNode::Split {
+            axis,
+            ratio,
+            first: Box::new(first),
+            second: Box::new(second),
+        }
+    }
+    fn area() -> Rect {
+        Rect {
+            x: 10,
+            y: 0,
+            width: 90,
+            height: 30,
+        }
+    }
+    fn three() -> LayoutNode {
+        split(
+            Axis::Horizontal,
+            333,
+            leaf("a"),
+            split(Axis::Horizontal, 400, leaf("b"), leaf("c")),
+        )
+    }
+    fn frames(layout: &LayoutNode) -> Vec<(String, Rect)> {
+        let mut frames = Vec::new();
+        layout_rects(Some(layout), area(), &mut frames);
+        frames
+    }
+    fn drop_at(layout: &LayoutNode, source: &str, x: u16, y: u16) -> Option<PaneDrop> {
+        let frames = frames(layout);
+        let (target, zone) = drop_target(&frames, source, x, y)?;
+        pane_drop(layout, area(), &frames, source, target, zone)
+    }
+
+    #[test]
+    fn zones_cover_quarter_bands_and_resolve_corners_proportionally() {
+        let body = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 8,
+        };
+        assert_eq!(drop_zone(body, 20, 4), Some(DropZone::Centre));
+        assert_eq!(drop_zone(body, 9, 4), Some(DropZone::Edge(Direction::Left)));
+        assert_eq!(drop_zone(body, 10, 4), Some(DropZone::Centre));
+        assert_eq!(
+            drop_zone(body, 30, 4),
+            Some(DropZone::Edge(Direction::Right))
+        );
+        assert_eq!(drop_zone(body, 20, 0), Some(DropZone::Edge(Direction::Up)));
+        assert_eq!(
+            drop_zone(body, 20, 7),
+            Some(DropZone::Edge(Direction::Down))
+        );
+        // Two cells from the left of 40 is nearer, proportionally, than one row
+        // from the top of 8.
+        assert_eq!(drop_zone(body, 2, 1), Some(DropZone::Edge(Direction::Left)));
+        assert_eq!(drop_zone(body, 8, 0), Some(DropZone::Edge(Direction::Up)));
+        assert_eq!(drop_zone(body, 40, 4), None);
+        let tiny = Rect {
+            width: 1,
+            height: 1,
+            ..body
+        };
+        assert!(matches!(drop_zone(tiny, 0, 0), Some(DropZone::Edge(_))));
+    }
+
+    #[test]
+    fn centre_drop_swaps_only_the_two_leaves() {
+        let layout = three();
+        let c = content(frames(&layout)[2].1);
+        let dropped = drop_at(&layout, "a", c.x + c.width / 2, c.y + c.height / 2).unwrap();
+        assert_eq!(dropped.zone, DropZone::Centre);
+        assert_eq!(dropped.preview, frames(&layout)[2].1);
+        assert_eq!(
+            dropped.layout,
+            split(
+                Axis::Horizontal,
+                333,
+                leaf("c"),
+                split(Axis::Horizontal, 400, leaf("b"), leaf("a")),
+            )
+        );
+    }
+
+    #[test]
+    fn edge_drop_collapses_the_source_and_splits_the_target_equally() {
+        let layout = three();
+        let b = content(frames(&layout)[1].1);
+        let dropped = drop_at(&layout, "a", b.x + b.width / 2, b.y + b.height - 1).unwrap();
+        assert_eq!(dropped.zone, DropZone::Edge(Direction::Down));
+        assert_eq!(
+            dropped.layout,
+            split(
+                Axis::Horizontal,
+                400,
+                split(Axis::Vertical, 500, leaf("b"), leaf("a")),
+                leaf("c"),
+            )
+        );
+        let (_, _, lower) = partition(frames(&layout)[1].1, Axis::Vertical, 500).unwrap();
+        assert_eq!(dropped.preview, lower);
+        let dropped = drop_at(&layout, "c", b.x, b.y + b.height / 2).unwrap();
+        assert_eq!(
+            dropped.layout,
+            split(
+                Axis::Horizontal,
+                333,
+                leaf("a"),
+                split(Axis::Horizontal, 500, leaf("c"), leaf("b")),
+            )
+        );
+    }
+
+    #[test]
+    fn unchanged_hidden_or_self_drops_are_not_offered() {
+        let pair = split(Axis::Horizontal, 500, leaf("a"), leaf("b"));
+        let b = content(frames(&pair)[1].1);
+        assert!(drop_at(&pair, "a", b.x, b.y + b.height / 2).is_none());
+        let a = content(frames(&pair)[0].1);
+        assert!(drop_at(&pair, "a", a.x + 3, a.y + 3).is_none());
+        assert!(drop_at(&pair, "a", 0, 0).is_none());
+        let short = Rect {
+            height: 4,
+            ..area()
+        };
+        let mut projected = Vec::new();
+        layout_rects(Some(&pair), short, &mut projected);
+        let body = content(projected[1].1);
+        let (target, zone) = drop_target(&projected, "a", body.x + body.width / 2, body.y).unwrap();
+        assert_eq!(zone, DropZone::Edge(Direction::Up));
+        assert!(pane_drop(&pair, short, &projected, "a", target, zone).is_none());
     }
 }

@@ -1305,6 +1305,17 @@ ratios, other windows and backend workspace/window membership stay unchanged.
 Other clients viewing that window see the saved arrangement, but keep their own
 focus. Processes and existing views survive the exchange.
 
+Ctrl+left-drag inside a pane's body moves that pane with the mouse, even when
+the application uses the mouse; no part of the gesture reaches the application.
+While dragging, an outline previews the result over the pane under the pointer:
+its centre swaps the two panes, and its outer quarter on each side splits it on
+that side, giving both halves equal shares and collapsing the dragged pane's old
+split. Releasing over the dragged pane, a divider, the sidebar or a spot whose
+split could not show both panes changes nothing; Esc cancels the drag. Focus
+follows the dragged pane. A layout change from elsewhere during the drag cancels
+it. Some host terminals reserve Ctrl+click (for example to open links) before
+Bkpr receives it.
+
 Each move is one asynchronous revision-checked layout update. Read-only clients
 cannot rearrange panes. While workspace management is pending, another move is
 rejected rather than queued or replayed; wait for completion before moving again.

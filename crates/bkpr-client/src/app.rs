@@ -165,6 +165,8 @@ mod jobs;
 mod management;
 #[path = "pane_feedback.rs"]
 mod pane_feedback;
+#[path = "pane_move.rs"]
+mod pane_move;
 #[path = "pane_scene.rs"]
 mod pane_scene;
 #[path = "recovery_picker.rs"]
@@ -222,6 +224,7 @@ struct PointerOrigin {
 enum PointerCapture {
     Ui,
     Resize,
+    PaneMove,
     SidebarResize { size: Size, offset: i32 },
     Pane(Arc<PointerOrigin>),
     Selection(Arc<PointerOrigin>),
@@ -564,6 +567,7 @@ struct App {
     button_pointer: Option<(&'static str, (u16, u16))>,
     popover_button: Option<crate::popover::ButtonGesture>,
     resizing: resizing::State,
+    pane_move: pane_move::State,
     search: search::State,
     finder: Option<crate::finder::Finder>,
     theme: crate::themes::ThemeId,
@@ -1304,13 +1308,13 @@ impl App {
             sidebar_columns,
             availability,
             management_pending: !self.management.is_empty(),
-            resize_hint: self.resize_hint(),
+            resize_hint: self.gesture_hint(),
         };
         if self.guide.key != Some(key) {
             let available = size.rows;
             let tree_rows = available.div_ceil(2).min(4);
             let max_rows = available.saturating_sub(tree_rows).saturating_sub(2) as usize;
-            let notice = self.resize_hint().or_else(|| {
+            let notice = self.gesture_hint().or_else(|| {
                 (!self.management.is_empty())
                     .then_some("Operation pending; other panes remain interactive")
             });
@@ -3929,6 +3933,36 @@ impl App {
         self.synchronize_tree_focus();
         Ok(true)
     }
+    fn gesture_hint(&self) -> Option<&'static str> {
+        self.resize_hint().or_else(|| self.pane_move_hint())
+    }
+    fn rearrangement_admitted(&self, window: &str) -> Result<()> {
+        if self.options.read_only {
+            bail!("read-only client cannot rearrange panes");
+        }
+        if self.jobs.contains(&format!("manage:window:{window}")) {
+            bail!("Pane move waiting for pending window management; not queued");
+        }
+        Ok(())
+    }
+    fn submit_rearrangement(
+        &mut self,
+        workspace_id: String,
+        window_id: String,
+        expected_revision: u64,
+        layout: LayoutNode,
+    ) -> Result<()> {
+        self.rearrangement_admitted(&window_id)?;
+        let operation = Operation::LayoutUpdate {
+            workspace_id,
+            window_id,
+            expected_revision,
+            layout: Some(layout),
+        };
+        self.retire_resize();
+        self.selection_focus_lost();
+        self.operation(operation)
+    }
     fn move_directional(&mut self, key: &str, size: Size) -> Result<()> {
         if self.options.read_only {
             bail!("read-only client cannot rearrange panes");
@@ -3943,21 +3977,15 @@ impl App {
             .state
             .current_window(&self.registry)
             .context("no window")?;
-        if self.jobs.contains(&format!("manage:window:{}", window.id)) {
-            bail!("Pane move waiting for pending window management; not queued");
-        }
         let focused = self.state.focused.as_deref().context("no focused pane")?;
         let mut layout = window.layout.clone().context("window has no layout")?;
         exchange_leaves(&mut layout, focused, target);
-        let operation = Operation::LayoutUpdate {
-            workspace_id: workspace.id.clone(),
-            window_id: window.id.clone(),
-            expected_revision: window.revision,
-            layout: Some(layout),
-        };
-        self.retire_resize();
-        self.selection_focus_lost();
-        self.operation(operation)
+        self.submit_rearrangement(
+            workspace.id.clone(),
+            window.id.clone(),
+            window.revision,
+            layout,
+        )
     }
     fn dispatch_key(
         &mut self,
@@ -4076,6 +4104,10 @@ impl App {
         if event.action == KeyAction::Repeat
             && self.held.get(&event.key).is_some_and(|held| held.pending)
         {
+            return Ok(false);
+        }
+        self.validate_pane_move(size);
+        if self.pane_move_key(&event) {
             return Ok(false);
         }
         let was_resizing = self.resize_capturing();
@@ -4477,6 +4509,7 @@ impl App {
     ) -> Result<()> {
         self.validate_sidebar_resize(size);
         self.validate_resize(size);
+        self.validate_pane_move(size);
         let button = if mouse.mouse_buttons.contains(MouseButtons::VERT_WHEEL) {
             if mouse.mouse_buttons.contains(MouseButtons::WHEEL_POSITIVE) {
                 MouseButton::WheelUp
@@ -4659,6 +4692,12 @@ impl App {
                 if action == MouseAction::Release {
                     self.update_resize_hover(size, Some((mouse.x, mouse.y)));
                 }
+            }
+            return Ok(());
+        }
+        if matches!(&captured, Some(PointerCapture::PaneMove)) {
+            if !wheel {
+                self.pane_move_pointer(mouse.x, mouse.y, action)?;
             }
             return Ok(());
         }
@@ -5056,6 +5095,14 @@ impl App {
             self.focus(pane.clone());
         }
         self.notify_focus()?;
+        if origin.is_none()
+            && event_button == MouseButton::Left
+            && action == MouseAction::Press
+            && mouse.modifiers == Modifiers::CTRL
+            && self.pane_content(*rect).contains(mouse.x, mouse.y)
+        {
+            return self.begin_pane_move(pane.clone(), size);
+        }
         if !(self.input_enabled(pane) || origin.is_some() && action == MouseAction::Release) {
             return Ok(());
         }
@@ -5414,6 +5461,7 @@ impl App {
             button_pointer: None,
             popover_button: None,
             resizing: resizing::State::default(),
+            pane_move: pane_move::State::default(),
             search: search::State::default(),
             finder: None,
             theme: crate::themes::ThemeId::default(),
@@ -5606,6 +5654,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             }
             app.validate_sidebar_resize(size);
             app.validate_resize(size);
+            app.validate_pane_move(size);
             let rects = app.rects(size);
             if resource_namespace != Some((attachment, generation))
                 || scoped_panes.len() != rects.len()
@@ -6420,6 +6469,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     width: u16::from(sidebar.width > 0),
                     height: size.rows,
                 }]
+            } else if app.pane_moving() {
+                app.pane_move_feedback()
             } else {
                 app.resize_feedback(size)
             };
@@ -7690,6 +7741,7 @@ pub(super) mod tests {
                 button_pointer: None,
                 popover_button: None,
                 resizing: resizing::State::default(),
+                pane_move: pane_move::State::default(),
                 search: search::State::default(),
                 finder: None,
                 theme: crate::themes::ThemeId::default(),
@@ -11611,6 +11663,130 @@ pub(super) mod tests {
         assert!(!app.resize_capturing());
         pointer.send(&mut app, 0, divider.x + 3, 5, true);
         assert!(capture.try_recv().is_err());
+    }
+
+    fn pane_move_centre(app: &App, size: Size, pane: &str) -> (u16, u16) {
+        let rect = app
+            .rects(size)
+            .into_iter()
+            .find(|(id, _)| id == pane)
+            .unwrap()
+            .1;
+        let body = app.pane_content(rect);
+        (body.x + body.width / 2, body.y + body.height / 2)
+    }
+
+    #[test]
+    fn ctrl_drag_swaps_panes_in_one_revision_guarded_layout_without_app_input() {
+        use std::{os::unix::net::UnixListener, thread};
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("pane-move.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (mut app, capture) = fixture();
+        app.socket = Endpoint::unmanaged(&socket);
+        let pointer = resize_fixture(&mut app);
+        let (ax, ay) = pane_move_centre(&app, pointer.size, "focused-pane");
+        let (bx, by) = pane_move_centre(&app, pointer.size, "beta");
+        pointer.send(&mut app, 16, ax, ay, false);
+        assert!(app.pane_moving());
+        pointer.send(&mut app, 48, ax + 2, ay, false);
+        assert!(app.pane_move_feedback().is_empty());
+        pointer.send(&mut app, 48, bx, by, false);
+        let beta = app.rects(pointer.size)[1].1;
+        assert_eq!(
+            app.pane_move_feedback(),
+            crate::tiling::outline(beta).to_vec()
+        );
+        let mut registry = app.registry.clone();
+        let (observed, requests) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let operation = read_resize_request(&mut stream);
+            accept_resize_request(&mut registry, &operation);
+            observed.send(operation).unwrap();
+            resize_reply(&mut stream, &registry);
+        });
+        pointer.send(&mut app, 16, bx, by, true);
+        let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
+        let Operation::LayoutUpdate {
+            expected_revision: 7,
+            layout: Some(layout),
+            ..
+        } = request
+        else {
+            panic!("expected a revision-guarded layout update, got {request:?}");
+        };
+        assert_eq!(
+            layout,
+            LayoutNode::Split {
+                axis: Axis::Horizontal,
+                ratio: 500,
+                first: Box::new(LayoutNode::Leaf {
+                    pane_id: "beta".into(),
+                }),
+                second: Box::new(LayoutNode::Leaf {
+                    pane_id: "focused-pane".into(),
+                }),
+            }
+        );
+        wait_background(&mut app, "manage:window:resize-window");
+        server.join().unwrap();
+        assert!(!app.pane_moving());
+        assert!(app.pointer_capture.is_none());
+        assert_eq!(app.state.focused.as_deref(), Some("focused-pane"));
+        assert!(
+            capture.try_recv().is_err(),
+            "pane move leaked application mouse input"
+        );
+    }
+
+    #[test]
+    fn pane_move_escape_foreign_change_and_read_only_never_mutate_or_reach_the_app() {
+        for case in ["escape", "foreign", "read-only", "self"] {
+            let (mut app, capture) = fixture();
+            let pointer = resize_fixture(&mut app);
+            app.options.read_only = case == "read-only";
+            let (ax, ay) = pane_move_centre(&app, pointer.size, "focused-pane");
+            let (bx, by) = pane_move_centre(&app, pointer.size, "beta");
+            let before = serde_json::to_value(&app.registry).unwrap();
+            let started = pointer.try_send(&mut app, 16, ax, ay, false);
+            assert_eq!(started.is_err(), case == "read-only", "{case}");
+            assert_eq!(app.pane_moving(), case != "read-only", "{case}");
+            match case {
+                "escape" => {
+                    app.key(key("Escape"), &mut Vec::new(), pointer.size, &pointer.rects)
+                        .unwrap();
+                    let mut release = key("Escape");
+                    release.action = KeyAction::Release;
+                    app.key(release, &mut Vec::new(), pointer.size, &pointer.rects)
+                        .unwrap();
+                }
+                "foreign" => {
+                    app.registry.workspaces[0].windows[0].revision += 1;
+                }
+                _ => {}
+            }
+            let (x, y) = if case == "self" {
+                (ax + 1, ay)
+            } else {
+                (bx, by)
+            };
+            pointer.send(&mut app, 48, x, y, false);
+            pointer.send(&mut app, 16, x, y, true);
+            assert!(!app.pane_moving(), "{case}");
+            assert!(app.pointer_capture.is_none(), "{case}");
+            assert!(
+                !app.jobs.contains("manage:window:resize-window"),
+                "{case} submitted a layout"
+            );
+            if case != "foreign" {
+                assert_eq!(serde_json::to_value(&app.registry).unwrap(), before);
+            }
+            assert!(
+                capture.try_recv().is_err(),
+                "{case} reached the application"
+            );
+        }
     }
 
     #[test]

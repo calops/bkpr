@@ -506,15 +506,35 @@ pub fn split_leaf(
     pane: &str,
     axis: Axis,
 ) -> Option<LayoutNode> {
+    split_leaf_beside(layout, target, pane, axis, false)
+}
+/// Like [`split_leaf`], placing `pane` before `target` (left or above) when
+/// `before` is set and after it otherwise.
+pub fn split_leaf_beside(
+    layout: Option<LayoutNode>,
+    target: &str,
+    pane: &str,
+    axis: Axis,
+    before: bool,
+) -> Option<LayoutNode> {
     match layout {
-        Some(LayoutNode::Leaf { pane_id }) if pane_id == target => Some(LayoutNode::Split {
-            axis,
-            ratio: 500,
-            first: Box::new(LayoutNode::Leaf { pane_id }),
-            second: Box::new(LayoutNode::Leaf {
+        Some(LayoutNode::Leaf { pane_id }) if pane_id == target => {
+            let target = Box::new(LayoutNode::Leaf { pane_id });
+            let pane = Box::new(LayoutNode::Leaf {
                 pane_id: pane.into(),
-            }),
-        }),
+            });
+            let (first, second) = if before {
+                (pane, target)
+            } else {
+                (target, pane)
+            };
+            Some(LayoutNode::Split {
+                axis,
+                ratio: 500,
+                first,
+                second,
+            })
+        }
         Some(LayoutNode::Split {
             axis: old,
             ratio,
@@ -523,8 +543,14 @@ pub fn split_leaf(
         }) => Some(LayoutNode::Split {
             axis: old,
             ratio,
-            first: Box::new(split_leaf(Some(*first), target, pane, axis)?),
-            second: Box::new(split_leaf(Some(*second), target, pane, axis)?),
+            first: Box::new(split_leaf_beside(Some(*first), target, pane, axis, before)?),
+            second: Box::new(split_leaf_beside(
+                Some(*second),
+                target,
+                pane,
+                axis,
+                before,
+            )?),
         }),
         None => Some(LayoutNode::Leaf {
             pane_id: pane.into(),

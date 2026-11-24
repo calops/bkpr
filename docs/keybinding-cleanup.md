@@ -158,7 +158,7 @@ Sources: `keyguide.rs:450-565`; `app.rs:3511-3516,3671-3830`.
 
 Sources: `keyguide.rs` sidebar/session/history/search/resize rows; `sidebar.rs`, `tree.rs:360-570`, `sessions.rs:918-1005`, `scrollback.rs:3-112`, `search.rs:145-210`, `selection.rs:123-250,303-543`, `resizing.rs:120-332`.
 
-Pointer behavior is part of the action surface: tree wheel scrolls three rows; a matching press/release activates a tree target; double click also toggles folding; hover is passive. Pane wheel becomes history navigation with Shift, primary-screen search, or appropriate native non-mouse-reporting state. Divider drag changes backend layout; sidebar-boundary drag changes client-local width. Captured gestures, overlays and toasts precede ordinary pane routing. Preserve capture and late-release tombstones during cleanup.
+Pointer behavior is part of the action surface: tree wheel scrolls three rows; a matching press/release activates a tree target; double click also toggles folding; hover is passive. Pane wheel becomes history navigation with Shift, primary-screen search, or appropriate native non-mouse-reporting state. Divider drag changes backend layout; Ctrl+left-drag inside a pane body moves that pane within its window (centre swaps, edge splits; Esc cancels) through the same revision-checked layout update as `Ctrl-b Shift+Arrow`; sidebar-boundary drag changes client-local width. Captured gestures, overlays and toasts precede ordinary pane routing. Preserve capture and late-release tombstones during cleanup.
 
 ## Historical modals and editing
 

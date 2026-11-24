@@ -151,6 +151,10 @@ impl App {
         self.resizing.capturing()
     }
 
+    pub(super) fn resize_pending(&self) -> bool {
+        self.resizing.gesture.is_some() || self.resizing.flight.is_some()
+    }
+
     pub(super) fn retire_resize(&mut self) {
         self.resizing.hover = None;
         self.resizing.click = None;

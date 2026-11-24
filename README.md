@@ -225,7 +225,8 @@ shows the keys for the current mode. Run `bkpr keys` for the full list.
 | `Ctrl-b d` | Detach without stopping programs |
 | `Ctrl-b Ctrl-b` | Send literal Ctrl-b to the live application |
 
-Mouse users can activate sidebar items, drag dividers and select terminal text.
+Mouse users can activate sidebar items, drag dividers, Ctrl+drag panes to
+rearrange them and select terminal text.
 Double-click a divider to balance its two sides. Mouse-aware applications retain
 their own gestures; host terminals may reserve selection shortcuts.
 See [copy and selection](docs/reference.md#selection-and-copy).

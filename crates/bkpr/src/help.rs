@@ -33,6 +33,7 @@ History and presentation: Ctrl-b, then
 In history: arrows scroll; PgUp/PgDn page; Esc/Enter/End return live.
 In search: type a query; Enter/Shift-Enter next/previous match; Esc closes.
 Drag to select and copy; hold Shift to override application mouse tracking.
+Ctrl-drag a pane onto another to swap them, or onto its edge to split there.
 Forms: Enter applies, Esc cancels. Clipboard requests: y allows, n denies.
 "#;
 

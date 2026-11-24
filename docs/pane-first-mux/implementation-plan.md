@@ -178,6 +178,8 @@ Main `9ad93bd` delegates native resizing. Fork `d7b40a37`'s `zellij-server/src/p
 
 Main `9ad93bd809f8fb0dbd0c28bcbc267a682a21430b`, `crates/bkpr-zellij/src/keyguide.rs::native_hint`, exposes native `MovePane`/`MovePaneBackwards`. The replacement TUI now uses `Ctrl-b Shift+Arrow` to exchange its focused leaf with the same nearest-center directional target used by focus navigation. Split axes, ratios, unrelated leaves, execution membership and focused identity are preserved. The revision-checked `LayoutUpdate` and existing bounded management worker own admission/conflict handling; pending workspace work rejects an additional move instead of buffering stale intent.
 
+Ctrl+left-drag inside a pane body uses the same submission path: the dragged leaf is exchanged with the target on a centre drop, or removed and inserted beside the target in an equal split on an edge drop. Ctrl is the only pointer modifier left, since Shift forces selection and Alt selects rectangles. Kitty proof is retained under `target/smoke/pane-drag/`; Ghostty delivery of Ctrl+press is untested.
+
 This is small Bkpr-specific integration over the existing layout tree, not a new terminal/layout subsystem: no new dependency, generic solver or copied fork implementation is introduced. Read-only mutation is denied; shared layout publication does not overwrite another client's local focus. Actual Kitty proof at 100×36 and 200×60 with styled full-grid redraws, original view/process identities and isolated input logs is retained under `target/smoke/rearrangement/`.
 
 ### Terminal-search dependency decision
