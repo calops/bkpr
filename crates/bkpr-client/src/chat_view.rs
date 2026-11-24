@@ -534,21 +534,27 @@ impl Chat {
             return;
         }
         paint.inlay_mask = Some(mask);
-        for index in 0..paint.inlays.len() {
-            let outer = paint.inlays[index].0;
-            for (mut rect, label, _) in window::border_rows(
-                outer.size(paint.surface.frame.size),
-                "",
-                window::Border::Rounded,
-            ) {
-                rect.x += outer.x;
-                rect.y += outer.y;
-                if mask & (1 << index) != 0 {
-                    clear(&mut paint.surface.frame, rect);
-                } else {
-                    paint.line(theme, rect, &label, Role::Border, false);
-                }
+        let mut plain = [Rect::default(); 3];
+        let mut count = 0;
+        for (index, &(outer, _, _)) in paint.inlays.iter().enumerate() {
+            if mask & (1 << index) == 0 {
+                plain[count] = outer;
+                count += 1;
             }
+            let frame = &mut paint.surface.frame;
+            let bottom = outer.y + outer.height - 1;
+            let right = outer.x + outer.width - 1;
+            clear(frame, row(outer.x, outer.y, outer.width));
+            clear(frame, row(outer.x, bottom, outer.width));
+            for y in outer.y + 1..bottom {
+                clear(frame, row(outer.x, y, 1));
+                clear(frame, row(right, y, 1));
+            }
+        }
+        let mut lines = Vec::new();
+        window::tiled_border_rows(paint.surface.frame.size, &plain[..count], None, &mut lines);
+        for (rect, label, _) in lines {
+            paint.line(theme, rect, &label, Role::Border, false);
         }
     }
     pub(in crate::app) fn redraw(&mut self) {
@@ -798,28 +804,34 @@ impl Chat {
         if outer.width == 0 || outer.height == 0 {
             return;
         }
-        let channels_wide = size.cols >= LIST_MIN_WIDTH;
-        let list_only = !channels_wide && self.focus == Some(Focus::Channels);
-        let list_width = if channels_wide {
-            (size.cols / 4).clamp(15, 24)
-        } else if list_only {
-            size.cols
-        } else {
-            0
+        let full = Rect {
+            x: 0,
+            y: 0,
+            width: size.cols,
+            height: size.rows,
         };
+        let split = (size.cols >= LIST_MIN_WIDTH)
+            .then(|| {
+                crate::tiling::partition_at(
+                    full,
+                    bkpr_protocol::Axis::Horizontal,
+                    (size.cols / 4).clamp(15, 24) - 1,
+                )
+            })
+            .flatten();
+        let channels_wide = split.is_some();
+        let list_only = !channels_wide && self.focus == Some(Focus::Channels);
+        let (list, thread_column) = split
+            .map_or((list_only.then_some(full), full), |(list, _, right)| {
+                (Some(list), right)
+            });
         let summary = self
             .active
             .as_ref()
             .and_then(|active| self.catalog.get(&active.id));
         let writing = !read_only && summary.is_some_and(|summary| !summary.direct);
         let can_create = !read_only && self.catalog_ready && self.catalog_error.is_none();
-        if list_width > 0 {
-            let outer = Rect {
-                x: 0,
-                y: 0,
-                width: list_width,
-                height: size.rows,
-            };
+        if let Some(outer) = list {
             let body = paint.inlay(theme, outer, list_background, None);
             paint.target(outer, Hit::List);
             paint.channel_controls(theme, body, list_background, writing, can_create);
@@ -862,8 +874,8 @@ impl Chat {
         if list_only {
             return;
         }
-        let left = list_width + u16::from(channels_wide);
-        let columns = size.cols.saturating_sub(left);
+        let left = thread_column.x;
+        let columns = thread_column.width;
         let (Some(active), Some(summary)) = (&mut self.active, summary) else {
             let thread = paint.inlay(
                 theme,
@@ -966,7 +978,7 @@ impl Chat {
         let composer_rows = if has_composer {
             (draft_lines.len().max(1) as u16)
                 .min(4)
-                .min(size.rows - 1 - status_rows - 2 * inset - 2 * history_inset)
+                .min(size.rows - 1 - status_rows - 2 * inset - history_inset)
         } else {
             0
         };
@@ -983,11 +995,26 @@ impl Chat {
             } else {
                 0
             };
-        let thread_outer = Rect {
-            x: left,
-            y: 0,
-            width: columns,
-            height: composer_at,
+        let (thread_outer, composer_outer) = if inset != 0 {
+            let (thread, _, composer) = crate::tiling::partition_at(
+                thread_column,
+                bkpr_protocol::Axis::Vertical,
+                composer_at,
+            )
+            .expect("representable composer split");
+            (thread, composer)
+        } else {
+            (
+                Rect {
+                    height: composer_at,
+                    ..thread_column
+                },
+                Rect {
+                    y: composer_at,
+                    height: composer_rows,
+                    ..thread_column
+                },
+            )
         };
         let thread = if history_inset != 0 {
             paint.inlay(theme, thread_outer, list_background, None)
@@ -1110,12 +1137,7 @@ impl Chat {
             }
         }
         if composer_rows > 0 {
-            let outer = Rect {
-                x: left,
-                y: composer_at,
-                width: columns,
-                height: composer_rows + 2 * inset,
-            };
+            let outer = composer_outer;
             let body = if inset != 0 {
                 paint.inlay(theme, outer, composer_background, Some(6))
             } else {
@@ -1214,21 +1236,6 @@ fn paint_history(
     let (nick, gutter) = history_columns(area.width);
     let compact = gutter == 0;
     let width = area.width - gutter;
-    if !compact {
-        let x = area.x + nick + 7;
-        for y in area.y..area.y + area.height {
-            draw(
-                &mut paint.surface.frame,
-                theme,
-                x,
-                y,
-                "│",
-                Role::Border,
-                false,
-                None,
-            );
-        }
-    }
     let mut total = 0;
     let mut duplicates = HashMap::<&str, Option<&ParticipantId>>::new();
     let entry_count = entries.len();
@@ -1703,8 +1710,14 @@ mod tests {
         assert_eq!(chat.paint.history, thread_body);
         assert_eq!(list.y, thread.y);
         assert_eq!((composer.x, composer.width), (thread.x, thread.width));
-        assert_eq!(composer.y, thread.y + thread.height);
+        assert_eq!(composer.y + 1, thread.y + thread.height);
+        assert_eq!(thread.x + 1, list.x + list.width);
         assert_eq!(composer.y + composer.height, list.y + list.height);
+        chat.set_graphical_inlays(0, &theme);
+        assert_eq!(
+            chat.surface().frame.rows[usize::from(composer.y)].cells[usize::from(thread.x)].text,
+            "├"
+        );
         let frame = &chat.surface().frame;
         for (body, background) in [
             (list_body, BACKGROUNDS[0]),
@@ -1756,7 +1769,7 @@ mod tests {
             panic!("expected stacked thread and composer on a narrow terminal");
         };
         assert_eq!(chat.paint.history, thread_body);
-        assert_eq!(thread.y + thread.height, composer.y);
+        assert_eq!(thread.y + thread.height, composer.y + 1);
         assert!(matches!(chat.paint.hit(body.x, body.y), Some(Hit::List)));
         assert_eq!(chat.surface().frame.cursor.y, body.y);
 
@@ -1833,7 +1846,7 @@ mod tests {
         );
         let size = size();
         let theme = Theme::default();
-        let outer = app.pane_content(app.screen_geometry(size).1);
+        let outer = app.chat_content(app.screen_geometry(size).1);
         app.chat
             .paint(outer, size, &theme, false, false, true, BACKGROUNDS);
         let frame = &app.chat.surface().frame;
@@ -1868,7 +1881,7 @@ mod tests {
         let to = (outer.x + first_x as u16 + 1, outer.y + first_y as u16);
         let from = (outer.x + last_x as u16 + 1, outer.y + last_y as u16);
         let blank = &frame.rows[last_y - 1].cells;
-        assert_eq!(blank[first_x - 2].text, "│");
+        assert_eq!(blank[first_x - 2].text, " ");
         assert!(
             blank[first_x..first_x + 4]
                 .iter()
@@ -1922,7 +1935,7 @@ mod tests {
             cols: size.cols - 4,
             ..size
         };
-        let outer = app.pane_content(app.screen_geometry(resized).1);
+        let outer = app.chat_content(app.screen_geometry(resized).1);
         app.chat
             .paint(outer, resized, &theme, false, false, true, BACKGROUNDS);
         pointer(&mut app, resized, &hits, to, 0, 'm');

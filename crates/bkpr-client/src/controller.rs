@@ -1103,6 +1103,19 @@ pub(crate) struct GuideProjection {
     pub rows: Vec<GuideRow>,
 }
 
+fn sidebar_status_column(row_width: u16) -> u16 {
+    row_width.saturating_sub(1)
+}
+
+fn workspace_chat_column(kind: crate::tree::Kind, row_width: u16) -> Option<u16> {
+    (row_width >= 4
+        && matches!(
+            kind,
+            crate::tree::Kind::Native(SidebarRowKind::Workspace { .. })
+        ))
+    .then(|| sidebar_status_column(row_width))
+}
+
 /// Shared native formatting: the registry and row list always belong to one owner.
 fn native_row_label(
     kind: SidebarRowKind,
@@ -1298,18 +1311,13 @@ pub(crate) fn tree_artwork_rows(
         .flat_map(move |(index, row)| {
             use crate::chrome_graphics::Artwork;
             let y = index as u16 + 2;
-            let chat = (row_width >= 4
-                && matches!(
-                    row.kind,
-                    crate::tree::Kind::Native(SidebarRowKind::Workspace { .. })
-                ))
-            .then(|| {
+            let chat = workspace_chat_column(row.kind, row_width).map(|column| {
                 let icon = if tree.channel_attention(row) {
                     Artwork::ChatAlert
                 } else {
                     Artwork::Chat
                 };
-                (row.owner, icon, row_width - 2, y)
+                (row.owner, icon, column, y)
             });
             let artwork = match row.kind {
                 crate::tree::Kind::Native(SidebarRowKind::Workspace { .. }) => {
@@ -1407,11 +1415,7 @@ fn render_chrome(
         let plate = highlighted
             && tree_popup.is_some_and(|(_, background)| matches!(background, ColorSource::Rgb(_)));
         let selected = tree.active && entry.target.is_some() && entry.target == tree.cursor;
-        let chat = row_width >= 4
-            && matches!(
-                entry.kind,
-                crate::tree::Kind::Native(SidebarRowKind::Workspace { .. })
-            );
+        let chat_column = workspace_chat_column(entry.kind, row_width);
         let (mut label, marker_x) = match entry.kind {
             crate::tree::Kind::Session => (
                 session_caption(
@@ -1435,7 +1439,7 @@ fn render_chrome(
                         projects: tree.project_slots(entry.owner),
                         entry,
                         known,
-                        width: row_width.saturating_sub(u16::from(chat) * 3),
+                        width: chat_column.map_or(row_width, |column| column - 1),
                         row,
                         highlighted,
                     },
@@ -1474,13 +1478,13 @@ fn render_chrome(
             label,
             row_selected,
         ));
-        if chat {
+        if let Some(column) = chat_column {
             let glyph = if tree.channel_attention(entry) {
-                "! "
+                "!"
             } else {
-                "◇ "
+                "◇"
             };
-            lines.push(line(row_width - 2, row, 2, glyph, row_selected));
+            lines.push(line(column, row, 1, glyph, row_selected));
         }
         if let Some(thumb) = &rows.scrollbar {
             let glyph = if thumb.contains(&(index as u16)) {
@@ -1684,12 +1688,14 @@ pub(crate) fn theme_tree_chrome(
             rect: row_rect,
             role,
         });
-        if row_width >= 4 && tree.channel_attention(entry) {
+        if let Some(column) = workspace_chat_column(entry.kind, row_width)
+            && tree.channel_attention(entry)
+        {
             spans.push(RoleSpan {
                 rect: Rect {
-                    x: row_width - 2,
+                    x: column,
                     y: row,
-                    width: 2,
+                    width: 1,
                     height: 1,
                 },
                 role: Role::Warning,
@@ -1858,7 +1864,7 @@ pub(crate) fn theme_tree_chrome(
             if let Some(status) = harness_status(pane, known) {
                 spans.push(RoleSpan {
                     rect: Rect {
-                        x: sidebar.width.saturating_sub(1),
+                        x: sidebar_status_column(row_width),
                         y: row,
                         width: 1,
                         height: 1,
@@ -2623,6 +2629,72 @@ mod tests {
             ColorSource::Rgb([40, 50, 60])
         );
     }
+
+    #[test]
+    fn workspace_badge_shares_the_pane_status_column_with_or_without_scrollbar() {
+        use crate::{chrome_graphics::Artwork, tree::Tree};
+        use std::sync::Arc;
+
+        let mut session = session_fixture(FIXTURE_OWNER, "local");
+        let model = Arc::get_mut(&mut session).unwrap();
+        Arc::get_mut(&mut model.registry).unwrap().panes[0].harness_status =
+            Some(working_record(None));
+        let workspace_id = model.registry.workspaces[0].id.clone();
+        let state = Controller::new(&session.registry);
+        let mut tree = Tree::new();
+        tree.reconcile(vec![session], FIXTURE_OWNER);
+        let mut surface = capture_surface();
+        let size = surface.frame.size;
+        let sidebar = screen_geometry(size, tree.preferred_columns).0;
+        let scroll_guide_rows = size.rows - tree.rows.len() as u16 - 1;
+        for (guide_rows, scrolled, artwork, glyph) in [
+            (0, false, Artwork::Chat, "◇"),
+            (scroll_guide_rows, true, Artwork::ChatAlert, "!"),
+        ] {
+            let available = sidebar_content_rows(sidebar, guide_rows);
+            tree.viewport(available);
+            tree.scroll = 0;
+            assert_eq!(
+                super::sidebar_scrollbar(&tree, available).is_some(),
+                scrolled
+            );
+            tree.set_channel_attention(
+                FIXTURE_OWNER,
+                scrolled.then(|| workspace_id.clone()).into_iter().collect(),
+            );
+            super::tree_chrome(
+                &mut surface,
+                super::TreeChromeContext {
+                    native: ChromeContext {
+                        size,
+                        state: &state,
+                        rects: &[],
+                        chat_frame: None,
+                        pane_graphics: &[],
+                        guide_rows,
+                    },
+                    tree: &tree,
+                    active: FIXTURE_OWNER,
+                    popup: None,
+                },
+                &mut Vec::new(),
+                &mut Vec::new(),
+            );
+            let cells = &surface.frame.rows;
+            let (_, _, col, row) = super::tree_artwork_rows(&tree, size, guide_rows)
+                .find(|(_, icon, _, _)| *icon == artwork)
+                .unwrap();
+            let col = usize::from(col);
+            let row = usize::from(row);
+            assert_eq!(col + 1 + usize::from(scrolled), usize::from(sidebar.width));
+            assert_eq!(cells[row].cells[col].text, glyph);
+            assert!(cells.iter().any(|pane| pane.cells[col].text == "\u{f0150}"));
+            if scrolled {
+                assert!(matches!(cells[row].cells[col + 1].text.as_str(), "┃" | "│"));
+            }
+        }
+    }
+
     fn caption_group(name: &str, host: Option<&str>, status: SessionStatus) -> SessionGroup {
         SessionGroup {
             name: name.into(),
@@ -2816,7 +2888,7 @@ mod tests {
                 let start = entry.content_column();
                 let width = start + budget;
                 let workspace_marker = if matches!(target, SidebarTarget::Workspace(_)) {
-                    3
+                    2
                 } else {
                     0
                 };

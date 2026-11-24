@@ -390,6 +390,16 @@ pub(crate) fn guide_background(host: &ColorProbe, accent: Option<u8>) -> Option<
     )
 }
 
+/// Chat recesses match the pane interior; only the input has a subdued accent.
+pub(crate) fn chat_background(host: &ColorProbe, accent: Option<u8>) -> Option<[u8; 3]> {
+    let background = guide_background(host, None)?;
+    Some(
+        accent
+            .and_then(|index| host.palette.get(&usize::from(index)))
+            .map_or(background, |&color| mode_tint(background, color, 0.16)),
+    )
+}
+
 fn theme_styles(evidence: &ColorProbe) -> ThemeStyles {
     let mut recipe = Recipe {
         evidence,

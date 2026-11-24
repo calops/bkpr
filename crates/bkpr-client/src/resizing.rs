@@ -393,6 +393,7 @@ impl App {
     pub(super) fn update_resize_hover(&mut self, size: Size, position: Option<(u16, u16)>) -> bool {
         let position = position.filter(|_| {
             !self.options.read_only
+                && !self.chat.visible()
                 && self.host_focused
                 && self.state.form.is_none()
                 && !self.picker_open()

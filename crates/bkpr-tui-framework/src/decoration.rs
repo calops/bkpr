@@ -33,7 +33,7 @@ use std::sync::Arc;
 pub enum DecorationKind {
     /// Inward shadow with an opaque exterior and cell gutter.
     Recessed,
-    /// Recessed material with a transparent left straight gutter.
+    /// Recessed material with a transparent left gutter outside the bevel.
     RecessedTransparentLeftGutter,
     /// Exterior shadow with a transparent interior.
     Raised,
@@ -531,7 +531,7 @@ impl Material {
         };
         let opacity = f64::from(self.style.shadow_opacity_milli) / 1000.0;
         if self.style.kind == DecorationKind::RecessedTransparentLeftGutter
-            && tile == 3
+            && (tile == 3 || matches!(tile, 0 | 5) && lx < f64::from(self.cell[0]))
             && distance < -f64::from(self.style.lip_width_milli) / 1000.0
         {
             return [0.0; 4];
@@ -724,6 +724,27 @@ mod tests {
                 normal.sample(3, x, 20.0),
                 "bevel and inner shadow must survive at {x}"
             );
+        }
+        for (left, right, exterior_y, straight_y) in [
+            (0, 2, 1.0, 20.0),
+            (
+                5,
+                7,
+                f64::from(normal.tile[1]) - 1.0,
+                f64::from(normal.tile[1]) - 20.0,
+            ),
+        ] {
+            assert_eq!(normal.sample(left, 0.5, straight_y)[3], 255.0);
+            assert_eq!(transparent.sample(left, 0.5, straight_y), [0.0; 4]);
+            assert_eq!(transparent.sample(left, 0.5, exterior_y), [0.0; 4]);
+            for (tile, x, y) in [
+                (left, inset - lip / 2.0, straight_y),
+                (left, inset + 1.0, straight_y),
+                (left, f64::from(cell[0]) + 0.5, exterior_y),
+                (right, f64::from(normal.tile[0]) - 0.5, exterior_y),
+            ] {
+                assert_eq!(transparent.sample(tile, x, y), normal.sample(tile, x, y));
+            }
         }
     }
     #[test]
