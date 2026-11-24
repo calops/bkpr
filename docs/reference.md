@@ -770,19 +770,27 @@ explicit passthrough invocations remain unchanged.
 | `whoami` | Compact launch/binding/ownership/readiness facts and serving daemon `protocol_version` (native wire family); `detail:true` adds context/project |
 | `set_title` | Discoverable agent label, separate from the pane name |
 | `discover_agents` | Current-workspace peers with IDs, label, status and cached CWD/project name/branch; exact filters and cursor pagination |
-| `send_message` | Compact durable receipt; every direct message requests a native wake, with no sender opt-out |
+| `send_message` | Send a 1:1 message and get a compact durable receipt; each direct message requests a native wake |
 | `read_inbox` | Unread summaries; `include_read:true` revisits unacknowledged reads |
 | `read_message` | Recipient-only UTF-8 body pages, without processed acknowledgement |
 | `ack_message` | Explicit processed acknowledgement |
 | `inspect_outbox` | Sender-only delivery/read/ack/expiry metadata, never bodies |
 | `channel_list`, `channel_members` | Paged workspace discovery, effective policy and exact participant IDs |
-| `channel_create`, `channel_post` | Create a workspace channel or commit one post; post to `#desk` or `#team` without discovery |
+| `channel_create`, `channel_post` | Create a named group channel or post to `#team`, `#desk` or an exact channel ID |
 | `channel_history`, `channel_read` | Up to ten body-free summaries, or an exact message in UTF-8 byte pages |
 | `channel_upload`, `channel_fetch` | Upload a local PNG to a channel or save an exact readable channel attachment to a new local file; both return metadata only |
 | `channel_wake` | Look up a native wake batch for this launch, without reading or acknowledging its posts |
 | `control` | Discover help/schema; inspect and manage native workspaces, windows, panes, layouts and recovery |
 | `terminal_input` | Explicit literal text, bracketed paste, key events or raw bytes against an exact pane |
 | `read_result` | Temporary, authenticated pages for an explicitly oversized result |
+
+Use `channel_post` with `channel_id: "#team"` for workspace coordination; no
+channel discovery is needed. Use an explicit-membership channel for a subset
+and `send_message` for true 1:1. Keep `#desk` for user-facing questions,
+outcomes and blockers, and agree on one reporter. A wake's `post.reply_target`
+is where to send a final response, not where to deliberate. In a different
+channel, refer to the original post by its exact channel and message IDs;
+peers can read it and verify its user author. `reply_to` stays in one channel.
 
 `channel_upload` takes `{channel_id,path,alt_text?}` and returns `attachment.id`.
 To share it, pass that ID in `channel_post.attachments` for the same channel.
@@ -869,9 +877,9 @@ authorization on expansion. Eviction/expiry is never permission to repeat a
 mutation. Uncacheable output reports presentation failure and its known native
 outcome separately. Compatible text and structured MCP representations remain.
 
-Claude marks only send/read/ack tools `anthropic/alwaysLoad`; other tools remain
-searchable through the native client's tool mechanism. No persistent settings
-change. Body-free first-prompt facts come from supported Claude, Omp, Codex and
+Claude eagerly loads `channel_post`, `channel_wake`, `send_message`,
+`read_inbox` and `ack_message`; other tools remain searchable. No persistent
+settings change. Body-free first-prompt facts come from Claude, Omp, Codex and
 Pi hooks; AGY is unknown. The first observation belongs to the live launch,
 not each conversation selection; absence means unknown. Submission is neither
 durable queue acceptance nor model acceptance. Semantic status and its change
