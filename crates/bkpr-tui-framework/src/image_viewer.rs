@@ -34,12 +34,13 @@ impl ImageViewer {
     /// upscaling. Subpixel dimensions round down to at least one pixel.
     /// Below 3×3 cells the border and labels are omitted, except the close button.
     /// Empty images or zero-sized physical content produce no image placement.
-    /// The caller can place close-button material; `false` selects brackets.
+    /// Place close-button material in a separate graphics frame so it does not
+    /// share the viewed image's budget. Returning `false` selects brackets.
     pub fn paint(
         &self,
         surface: &mut UiSurface,
         theme: &Theme,
-        mut place: impl FnMut(&mut Frame, Rect, State) -> bool,
+        mut place: impl FnMut(Rect, State) -> bool,
     ) {
         let size = surface.frame.size;
         let close = close_rect(size);
@@ -69,7 +70,7 @@ impl ImageViewer {
         }
         if let Some(rect) = close {
             let state = State::at(rect, self.pointer, self.close_press == Some(rect));
-            let graphical = place(&mut surface.frame, rect, state);
+            let graphical = place(rect, state);
             Button::new("×").paint(
                 &mut surface.frame,
                 rect,
@@ -273,7 +274,7 @@ mod tests {
             let image = image(1, format);
             let viewer = ImageViewer::new(Arc::clone(&image));
             let mut surface = UiSurface::new(size());
-            viewer.paint(&mut surface, &Theme::default(), |_, _, _| false);
+            viewer.paint(&mut surface, &Theme::default(), |_, _| false);
             assert!(Arc::ptr_eq(&surface.frame.images[0], &image));
             let p = &surface.frame.placements[0];
             assert_eq!((p.width, p.height), (100, 50));
@@ -299,7 +300,7 @@ mod tests {
                 };
                 let mut surface = UiSurface::new(size);
                 let mut placed = None;
-                viewer.paint(&mut surface, &Theme::default(), |_, rect, _| {
+                viewer.paint(&mut surface, &Theme::default(), |rect, _| {
                     assert!(placed.replace(rect).is_none());
                     false
                 });

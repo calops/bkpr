@@ -6192,16 +6192,16 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 }
                 let mut close = None;
                 let mut place = graphics.button_painter(true);
-                viewer.paint(&mut image_surface, &theme, |frame, rect, state| {
+                viewer.paint(&mut image_surface, &theme, |rect, state| {
                     close = Some(rect);
-                    place(frame, rect, state)
+                    place(&mut image_effects, rect, state)
                 });
                 raised_material(
                     &graphics,
                     &mut image_surface.frame,
                     &mut image_effects,
                     outer,
-                    1,
+                    65,
                     close,
                 );
                 app.overlays.present(
