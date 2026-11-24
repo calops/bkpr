@@ -27,6 +27,7 @@ pub(in crate::app) struct Entry {
 struct Run {
     text: String,
     style: markdown::Style,
+    mention_role: Option<Role>,
 }
 
 struct WrappedRow {
@@ -73,17 +74,16 @@ impl Entry {
             .document
             .wrap(width.into())
             .into_iter()
-            .map(|row| WrappedRow {
-                runs: row
-                    .runs
-                    .into_iter()
-                    .map(|run| Run {
-                        text: run.text.to_owned(),
-                        style: run.style,
-                    })
-                    .collect(),
-                continuation_prefix: row.continuation_prefix as u16,
-                join_spaces: row.join_spaces,
+            .map(|row| {
+                let mut runs = Vec::with_capacity(row.runs.len());
+                for run in row.runs {
+                    wrap_run(&mut runs, run, &self.message.message.mention_spans);
+                }
+                WrappedRow {
+                    runs,
+                    continuation_prefix: row.continuation_prefix as u16,
+                    join_spaces: row.join_spaces,
+                }
             })
             .collect();
     }
@@ -106,6 +106,59 @@ impl Entry {
                     0
                 })
     }
+}
+
+fn wrap_run(runs: &mut Vec<Run>, run: markdown::Run<'_>, spans: &[ChannelResolvedMentionSpan]) {
+    let mut push = |text: &str, mention_role| {
+        runs.push(Run {
+            text: text.to_owned(),
+            style: run.style,
+            mention_role,
+        });
+    };
+    let Some(source) = run.source.filter(|_| {
+        !run.style.inline_code && !run.style.fenced_code && !run.style.quote && !run.style.link
+    }) else {
+        push(run.text, None);
+        return;
+    };
+    let first = spans.partition_point(|span| span.end as usize <= source.start);
+    let spans = &spans[first..];
+    if spans
+        .first()
+        .is_none_or(|span| span.start as usize >= source.end)
+    {
+        push(run.text, None);
+        return;
+    }
+
+    let mut range_start = 0;
+    let mut active_role = None;
+    let span_role = |span: &ChannelResolvedMentionSpan| {
+        (span.participant.kind == ParticipantKind::Agent).then(|| sender_role(&span.participant))
+    };
+    let mut spans = spans.iter();
+    let mut span = spans.next();
+    let mut ink = span.and_then(span_role);
+    for (at, glyph) in run.text.grapheme_indices(true) {
+        let start = source.start + at;
+        let end = start + glyph.len();
+        while span.is_some_and(|span| span.end as usize <= start) {
+            span = spans.next();
+            ink = span.and_then(span_role);
+        }
+        let role = ink.filter(|_| {
+            span.is_some_and(|span| span.start as usize <= start && end <= span.end as usize)
+        });
+        if role != active_role {
+            if at > range_start {
+                push(&run.text[range_start..at], active_role);
+            }
+            range_start = at;
+            active_role = role;
+        }
+    }
+    push(&run.text[range_start..], active_role);
 }
 
 #[derive(Clone, Copy)]
@@ -235,7 +288,6 @@ impl Default for Paint {
 impl Paint {
     pub(super) fn invalidate_hits(&mut self) {
         self.hits.clear();
-        self.hovered_channel = None;
         self.rendered.clear();
         self.ranges.clear();
         self.rows.clear();
@@ -895,12 +947,7 @@ impl Chat {
                 .enumerate()
             {
                 let summary = &self.catalog[id];
-                let lead = match (selected == Some(id), summary.unread_attention) {
-                    (true, true) => "•!",
-                    (true, false) => "• ",
-                    (false, true) => "! ",
-                    (false, false) => "  ",
-                };
+                let lead = if summary.unread_attention { "! " } else { "  " };
                 let name = channel_name(summary);
                 let full = format!("{lead}{name}");
                 let bounds = row(body.x, body.y + line as u16 + 1, body.width);
@@ -1019,7 +1066,13 @@ impl Chat {
         } else if has_composer {
             narrow_channels_button(composer_columns - composer_padding, 8)
         } else {
-            narrow_channels_button(columns.saturating_sub(2 * history_inset), 34)
+            let thread_columns = Rect {
+                width: columns.saturating_sub(2 * history_inset),
+                ..thread_column
+            }
+            .inset_horizontal(crate::appearance::FANCY_PANE_PADDING * history_inset)
+            .width;
+            narrow_channels_button(thread_columns, 34)
         };
         let history_indent = if has_composer { 0 } else { button_width };
         let (draft_lines, caret_line) = if has_composer {
@@ -1075,7 +1128,8 @@ impl Chat {
             )
         };
         let thread = if history_inset != 0 {
-            paint.inlay(theme, thread_outer, list_background, None)
+            paint.inlay(theme, thread_outer, list_background, None);
+            crate::controller::padded_content(thread_outer, crate::appearance::FANCY_PANE_PADDING)
         } else {
             paint.fill_card(theme, thread_outer, list_background);
             thread_outer
@@ -1169,34 +1223,60 @@ impl Chat {
                     .enumerate()
                 {
                     let bounds = row(thread.x, completion_at + i as u16, thread.width);
-                    let mut label = Draft::selection_label(entry, index);
+                    let (label, mut hint) = Draft::selection_label(entry, index);
+                    let label_width = text_width(&label).min(usize::from(bounds.width)) as u16;
                     if chosen
                         && let Some(scope) =
                             draft.completion_wake_preview(summary.settings.user_wake)
-                        && text_width(&label) + text_width(scope) + 3 <= usize::from(thread.width)
+                        && usize::from(label_width) + text_width(&hint) + text_width(scope) + 3
+                            <= usize::from(bounds.width)
                     {
-                        label.push_str(" · ");
-                        label.push_str(scope);
+                        hint.push_str(" · ");
+                        hint.push_str(scope);
                     }
+                    let background = if chosen {
+                        paint.row_highlights[1] = Some(bounds);
+                        let background = theme.background(Role::Selected, false);
+                        paint.fill_card(theme, bounds, background);
+                        background
+                    } else {
+                        list_background
+                    };
+                    let mut style = card_style(theme, sender_role(&entry.participant), background);
+                    style.bold |= chosen;
+                    paint.styled_line(row(bounds.x, bounds.y, label_width), &label, &style, false);
                     paint.card_line(
                         theme,
-                        bounds,
-                        &label,
-                        Role::Secondary,
-                        chosen,
-                        list_background,
+                        row(bounds.x + label_width, bounds.y, bounds.width - label_width),
+                        &hint,
+                        Role::Muted,
+                        false,
+                        background,
                     );
                     paint.target(bounds, Hit::Mention(index));
                 }
             }
         }
         let background = card_style(theme, Role::Base, list_background);
+        let (_, gutter) = history_columns(history_rect.width);
+        let divider = (gutter != 0 && !history.entries.is_empty()).then(|| {
+            let mut style = card_style(theme, Role::Border, list_background);
+            if let ColorSource::Rgb(fill) = list_background {
+                style.foreground = crate::appearance::blend([0; 3], fill, 14);
+                style.foreground_source = ColorSource::Rgb(style.foreground);
+            }
+            (history_rect.x + gutter - 2, style)
+        });
         for y in history_rect.y..status_at {
             let cells = &mut paint.surface.frame.rows[usize::from(y)].cells;
             let x = usize::from(history_rect.x);
             for cell in &mut cells[x..x + usize::from(history_rect.width)] {
                 cell.style.background_source = background.background_source;
                 cell.style.background = background.background;
+            }
+            if let Some((column, style)) = &divider {
+                text(&mut paint.surface.frame, *column, y, "│", false);
+                style_cells(&mut paint.surface.frame, *column, y, 1, style, None);
             }
         }
         if composer_rows > 0 {
@@ -1499,7 +1579,9 @@ fn paint_history(
             let mut col = x;
             for run in &wrapped.runs {
                 let style = run.style;
-                let role = if style.link {
+                let role = if let Some(mention) = run.mention_role {
+                    mention
+                } else if style.link {
                     Role::Info
                 } else if style.inline_code || style.fenced_code {
                     Role::Secondary
@@ -1767,6 +1849,63 @@ mod tests {
     }
 
     #[test]
+    fn exact_mentions_keep_identity_across_markdown_reflow_without_changing_text() {
+        let first = Participant {
+            id: ParticipantId("agent-one".into()),
+            kind: ParticipantKind::Agent,
+            display_name: "Équipe 界".into(),
+        };
+        let second = (0..32)
+            .map(|index| Participant {
+                id: ParticipantId(format!("other-{index}")),
+                ..first.clone()
+            })
+            .find(|participant| sender_role(participant) != sender_role(&first))
+            .unwrap();
+        let text = "例 @Équipe 界 **@Équipe 界** `@Équipe 界` @Équipe 界";
+        let marked = text
+            .match_indices("@Équipe 界")
+            .zip([&first, &second, &first])
+            .map(|((start, label), participant)| ChannelResolvedMentionSpan {
+                start: start as u32,
+                end: (start + label.len()) as u32,
+                participant: participant.clone(),
+            })
+            .collect::<Vec<_>>();
+        let document = markdown::Document::parse(text);
+        for width in [8, 80] {
+            let mut colored = [String::new(), String::new()];
+            for row in document.wrap(width) {
+                let original: String = row.runs.iter().map(|run| run.text).collect();
+                let mut wrapped = Vec::new();
+                for run in row.runs {
+                    wrap_run(&mut wrapped, run, &marked);
+                }
+                assert_eq!(
+                    wrapped
+                        .iter()
+                        .map(|run| run.text.as_str())
+                        .collect::<String>(),
+                    original
+                );
+                for run in wrapped {
+                    if let Some(role) = run.mention_role {
+                        assert!(!run.style.inline_code);
+                        assert_eq!(run.style.bold, role == sender_role(&second));
+                        colored[usize::from(role == sender_role(&second))].push_str(&run.text);
+                    }
+                }
+            }
+            let token = if width == 8 {
+                "@Équipe界"
+            } else {
+                "@Équipe 界"
+            };
+            assert_eq!(colored, [token, token]);
+        }
+    }
+
+    #[test]
     fn three_aligned_channel_cards_keep_controls_reachable() {
         let mut chat = Chat::default();
         open_channel(&mut chat, 0);
@@ -1787,7 +1926,10 @@ mod tests {
         else {
             panic!("expected neutral list and thread cards plus an accented composer");
         };
-        assert_eq!(chat.paint.history, thread_body);
+        assert_eq!(
+            chat.paint.history,
+            crate::controller::padded_content(thread, crate::appearance::FANCY_PANE_PADDING)
+        );
         chat.active.as_mut().unwrap().history.loaded = true;
         chat.redraw();
         chat.paint(area(wide), wide, &theme, false, false, true, BACKGROUNDS);
@@ -1853,7 +1995,7 @@ mod tests {
         assert_eq!(chat.inlays()[2].0, composer);
         assert!(matches!(
             chat.paint
-                .hit(thread_body.x, thread_body.y + thread_body.height - 1),
+                .hit(chat.paint.history.x, thread_body.y + thread_body.height - 1),
             Some(Hit::Latest)
         ));
         chat.live_tail();
@@ -1869,10 +2011,13 @@ mod tests {
             true,
             BACKGROUNDS,
         );
-        let &[(thread, thread_body, None), (composer, body, Some(6))] = chat.inlays() else {
+        let &[(thread, _, None), (composer, body, Some(6))] = chat.inlays() else {
             panic!("expected stacked thread and composer on a narrow terminal");
         };
-        assert_eq!(chat.paint.history, thread_body);
+        assert_eq!(
+            chat.paint.history,
+            crate::controller::padded_content(thread, crate::appearance::FANCY_PANE_PADDING)
+        );
         assert_eq!(thread.y + thread.height, composer.y + 1);
         assert!(matches!(
             chat.paint.hit(body.x, body.y),
@@ -1936,6 +2081,7 @@ mod tests {
                     posted_at_ms: 0,
                     intent: PostIntent::Note,
                     mentions: Vec::new(),
+                    mention_spans: Vec::new(),
                     reply_to: None,
                     attachments: Vec::new(),
                 },
@@ -1992,8 +2138,14 @@ mod tests {
         let (last_x, last_y) = locate("終");
         let to = (outer.x + first_x as u16 + 1, outer.y + first_y as u16);
         let from = (outer.x + last_x as u16 + 1, outer.y + last_y as u16);
+        let divider = first_x - 2;
+        assert!(
+            frame.rows[app.chat.paint.history.y as usize
+                ..usize::from(app.chat.paint.history.y + app.chat.paint.history.height)]
+                .iter()
+                .all(|row| row.cells[divider].text == "│")
+        );
         let blank = &frame.rows[last_y - 1].cells;
-        assert_eq!(blank[first_x - 2].text, " ");
         assert!(
             blank[first_x..first_x + 4]
                 .iter()

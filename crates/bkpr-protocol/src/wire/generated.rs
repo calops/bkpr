@@ -40702,6 +40702,8 @@ pub struct ChannelPost{
         pub reply_to: ::core::option::Option<::planus::alloc::string::String>,
         /// The field `attachments` in the table `ChannelPost`
         pub attachments: ::planus::alloc::vec::Vec<::planus::alloc::string::String>,
+        /// The field `mention_spans` in the table `ChannelPost`
+        pub mention_spans: ::core::option::Option<::planus::alloc::vec::Vec<self::ChannelMentionSpan>>,
         /// The field `source` in the table `ChannelPost`
         pub source: ::core::option::Option<::planus::alloc::boxed::Box<self::ChannelSource>>,}
 
@@ -40716,6 +40718,7 @@ impl ::core::default::Default for ChannelPost {
         mentions: ::core::default::Default::default(),
         reply_to: ::core::default::Default::default(),
         attachments: ::core::default::Default::default(),
+        mention_spans: ::core::default::Default::default(),
         source: ::core::default::Default::default(),
         
         }
@@ -40739,15 +40742,16 @@ impl ChannelPost {
         field_mentions: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
         field_reply_to: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
         field_attachments: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
+        field_mention_spans: impl ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelMentionSpan>]>>,
         field_source: impl ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_idempotency_key = field_idempotency_key.prepare(builder);let prepared_text = field_text.prepare(builder);let prepared_intent = field_intent.prepare(builder, &self::PostIntent::Note);let prepared_mentions = field_mentions.prepare(builder);let prepared_reply_to = field_reply_to.prepare(builder);let prepared_attachments = field_attachments.prepare(builder);let prepared_source = field_source.prepare(builder);
+    ) -> ::planus::Offset<Self> {let prepared_idempotency_key = field_idempotency_key.prepare(builder);let prepared_text = field_text.prepare(builder);let prepared_intent = field_intent.prepare(builder, &self::PostIntent::Note);let prepared_mentions = field_mentions.prepare(builder);let prepared_reply_to = field_reply_to.prepare(builder);let prepared_attachments = field_attachments.prepare(builder);let prepared_mention_spans = field_mention_spans.prepare(builder);let prepared_source = field_source.prepare(builder);
 
         let mut table_writer: ::planus::table_writer::TableWriter::<20> = ::core::default::Default::default();
-        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(3);if prepared_reply_to.is_some() {table_writer.write_entry::<::planus::Offset<str>>(4);}table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(5);if prepared_source.is_some() {table_writer.write_entry::<::planus::Offset<self::ChannelSource>>(7);}if prepared_intent.is_some() {table_writer.write_entry::<self::PostIntent>(2);}
+        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(3);if prepared_reply_to.is_some() {table_writer.write_entry::<::planus::Offset<str>>(4);}table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(5);if prepared_mention_spans.is_some() {table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::ChannelMentionSpan>]>>(6);}if prepared_source.is_some() {table_writer.write_entry::<::planus::Offset<self::ChannelSource>>(7);}if prepared_intent.is_some() {table_writer.write_entry::<self::PostIntent>(2);}
 
         unsafe {
-            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_idempotency_key);object_writer.write::<_, _, 4>(&prepared_text);object_writer.write::<_, _, 4>(&prepared_mentions);if let ::core::option::Option::Some(prepared_reply_to) = prepared_reply_to {object_writer.write::<_, _, 4>(&prepared_reply_to);}object_writer.write::<_, _, 4>(&prepared_attachments);if let ::core::option::Option::Some(prepared_source) = prepared_source {object_writer.write::<_, _, 4>(&prepared_source);}if let ::core::option::Option::Some(prepared_intent) = prepared_intent {object_writer.write::<_, _, 1>(&prepared_intent);}
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_idempotency_key);object_writer.write::<_, _, 4>(&prepared_text);object_writer.write::<_, _, 4>(&prepared_mentions);if let ::core::option::Option::Some(prepared_reply_to) = prepared_reply_to {object_writer.write::<_, _, 4>(&prepared_reply_to);}object_writer.write::<_, _, 4>(&prepared_attachments);if let ::core::option::Option::Some(prepared_mention_spans) = prepared_mention_spans {object_writer.write::<_, _, 4>(&prepared_mention_spans);}if let ::core::option::Option::Some(prepared_source) = prepared_source {object_writer.write::<_, _, 4>(&prepared_source);}if let ::core::option::Option::Some(prepared_intent) = prepared_intent {object_writer.write::<_, _, 1>(&prepared_intent);}
                 
             });
         }builder.current_offset()
@@ -40800,6 +40804,10 @@ impl ::planus::WriteAsOffset<ChannelPost> for ChannelPost {
         
             
             &self.attachments,
+            
+        
+            
+            &self.mention_spans,
             
         
             
@@ -41229,10 +41237,10 @@ impl<
     )
 >
 {
-    /// Setter for the [`source` field](ChannelPost#structfield.source).
+    /// Setter for the [`mention_spans` field](ChannelPost#structfield.mention_spans).
     #[inline]
     #[allow(clippy::type_complexity)]
-    pub fn source<T6>(self, value: T6) -> ChannelPostBuilder<(
+    pub fn mention_spans<T6>(self, value: T6) -> ChannelPostBuilder<(
     
         T0,
     
@@ -41249,7 +41257,7 @@ impl<
         T6,
     
     )>
-    where T6: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>
+    where T6: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelMentionSpan>]>>
     {
         
         let (
@@ -41287,6 +41295,132 @@ impl<
     
 
     
+    /// Sets the [`mention_spans` field](ChannelPost#structfield.mention_spans) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn mention_spans_as_null(self) -> ChannelPostBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+            T5,
+        
+        (),
+    )>
+    {
+        self.mention_spans(())
+    }
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+> ChannelPostBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+    )
+>
+{
+    /// Setter for the [`source` field](ChannelPost#structfield.source).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn source<T7>(self, value: T7) -> ChannelPostBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+    )>
+    where T7: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+        ) = self.0;ChannelPostBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+            value,
+        ))
+    }
+
+    
+
+    
     /// Sets the [`source` field](ChannelPost#structfield.source) to null.
     #[inline]
     #[allow(clippy::type_complexity)]
@@ -41303,6 +41437,8 @@ impl<
             T4,
         
             T5,
+        
+            T6,
         
         (),
     )>
@@ -41330,6 +41466,8 @@ impl<
     
         T6,
     
+        T7,
+    
 > ChannelPostBuilder<(
     
         T0,
@@ -41345,6 +41483,8 @@ impl<
         T5,
     
         T6,
+    
+        T7,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelPost].
@@ -41370,7 +41510,9 @@ impl<
     
         T5: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
     
-        T6: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
+        T6: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelMentionSpan>]>>,
+    
+        T7: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
     
 > ::planus::WriteAs<::planus::Offset<ChannelPost>> for ChannelPostBuilder<(
     
@@ -41387,6 +41529,8 @@ impl<
         T5,
     
         T6,
+    
+        T7,
     
 )> {
     type Prepared = ::planus::Offset<ChannelPost>;
@@ -41411,7 +41555,9 @@ impl<
     
         T5: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
     
-        T6: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
+        T6: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelMentionSpan>]>>,
+    
+        T7: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
     
 > ::planus::WriteAsOptional<::planus::Offset<ChannelPost>> for ChannelPostBuilder<(
     
@@ -41428,6 +41574,8 @@ impl<
         T5,
     
         T6,
+    
+        T7,
     
 )> {
     type Prepared = ::planus::Offset<ChannelPost>;
@@ -41452,7 +41600,9 @@ impl<
     
         T5: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
     
-        T6: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
+        T6: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelMentionSpan>]>>,
+    
+        T7: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
     
 > ::planus::WriteAsOffset<ChannelPost> for ChannelPostBuilder<(
     
@@ -41469,6 +41619,8 @@ impl<
         T5,
     
         T6,
+    
+        T7,
     
 )> {
     #[inline]
@@ -41490,6 +41642,8 @@ impl<
             
                 v6,
             
+                v7,
+            
         ) = &self.0;ChannelPost::create(
             builder,
             
@@ -41506,6 +41660,8 @@ impl<
                 v5,
             
                 v6,
+            
+                v7,
             
         )
     }
@@ -41598,6 +41754,19 @@ impl<'a> ChannelPostRef<'a> {
             
         }
     
+        /// Getter for the [`mention_spans` field](ChannelPost#structfield.mention_spans).
+        #[inline]
+        pub fn mention_spans(&self) -> ::planus::Result<::core::option::Option<::planus::Vector<'a, ::planus::Result<self::ChannelMentionSpanRef<'a>>>>> {
+            
+            
+              
+              self.0.access(6, "ChannelPost", "mention_spans")
+              
+            
+            
+            
+        }
+    
         /// Getter for the [`source` field](ChannelPost#structfield.source).
         #[inline]
         pub fn source(&self) -> ::planus::Result<::core::option::Option<self::ChannelSourceRef<'a>>> {
@@ -41618,7 +41787,9 @@ impl<'a> ::core::fmt::Debug for ChannelPostRef<'a> {
         let mut f = f.debug_struct("ChannelPostRef");
         f.field("idempotency_key", &self.idempotency_key());f.field("text", &self.text());f.field("intent", &self.intent());f.field("mentions", &self.mentions());if let ::core::option::Option::Some(field_reply_to) = self.reply_to().transpose() {
                 f.field("reply_to", &field_reply_to);
-            }f.field("attachments", &self.attachments());if let ::core::option::Option::Some(field_source) = self.source().transpose() {
+            }f.field("attachments", &self.attachments());if let ::core::option::Option::Some(field_mention_spans) = self.mention_spans().transpose() {
+                f.field("mention_spans", &field_mention_spans);
+            }if let ::core::option::Option::Some(field_source) = self.source().transpose() {
                 f.field("source", &field_source);
             }
         f.finish()
@@ -41635,7 +41806,13 @@ impl<'a> ::core::convert::TryFrom<ChannelPostRef<'a>> for ChannelPost {
         ::core::result::Result::Ok(Self {
             idempotency_key: ::core::convert::Into::into(value.idempotency_key()?),text: ::core::convert::Into::into(value.text()?),intent: ::core::convert::TryInto::try_into(value.intent()?)?,mentions: value.mentions()?.to_vec_result()?,reply_to: 
                                 value.reply_to()?.map(::core::convert::Into::into)
-                            ,attachments: value.attachments()?.to_vec_result()?,source: 
+                            ,attachments: value.attachments()?.to_vec_result()?,mention_spans: 
+                            if let ::core::option::Option::Some(mention_spans) = value.mention_spans()? {
+                                ::core::option::Option::Some(mention_spans.to_vec_result()?)
+                            } else {
+                                ::core::option::Option::None
+                            }
+                        ,source: 
                                 if let ::core::option::Option::Some(source) = value.source()? {
                                     ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(source)?))
                                 } else {
@@ -95445,6 +95622,8 @@ pub struct ChannelMessageSummary{
         pub reply_to: ::core::option::Option<::planus::alloc::string::String>,
         /// The field `attachments` in the table `ChannelMessageSummary`
         pub attachments: ::planus::alloc::vec::Vec<::planus::alloc::string::String>,
+        /// The field `mention_spans` in the table `ChannelMessageSummary`
+        pub mention_spans: ::core::option::Option<::planus::alloc::vec::Vec<self::ChannelResolvedMentionSpan>>,
         /// The field `source` in the table `ChannelMessageSummary`
         pub source: ::core::option::Option<::planus::alloc::boxed::Box<self::ChannelSource>>,}
 
@@ -95461,6 +95640,7 @@ impl ::core::default::Default for ChannelMessageSummary {
         mentions: ::core::default::Default::default(),
         reply_to: ::core::default::Default::default(),
         attachments: ::core::default::Default::default(),
+        mention_spans: ::core::default::Default::default(),
         source: ::core::default::Default::default(),
         
         }
@@ -95486,15 +95666,16 @@ impl ChannelMessageSummary {
         field_mentions: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
         field_reply_to: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
         field_attachments: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
+        field_mention_spans: impl ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelResolvedMentionSpan>]>>,
         field_source: impl ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_id = field_id.prepare(builder);let prepared_sequence = field_sequence.prepare(builder, &0);let prepared_author = field_author.prepare(builder);let prepared_posted_at_ms = field_posted_at_ms.prepare(builder, &0);let prepared_intent = field_intent.prepare(builder, &self::PostIntent::Note);let prepared_mentions = field_mentions.prepare(builder);let prepared_reply_to = field_reply_to.prepare(builder);let prepared_attachments = field_attachments.prepare(builder);let prepared_source = field_source.prepare(builder);
+    ) -> ::planus::Offset<Self> {let prepared_id = field_id.prepare(builder);let prepared_sequence = field_sequence.prepare(builder, &0);let prepared_author = field_author.prepare(builder);let prepared_posted_at_ms = field_posted_at_ms.prepare(builder, &0);let prepared_intent = field_intent.prepare(builder, &self::PostIntent::Note);let prepared_mentions = field_mentions.prepare(builder);let prepared_reply_to = field_reply_to.prepare(builder);let prepared_attachments = field_attachments.prepare(builder);let prepared_mention_spans = field_mention_spans.prepare(builder);let prepared_source = field_source.prepare(builder);
 
         let mut table_writer: ::planus::table_writer::TableWriter::<24> = ::core::default::Default::default();
-        if prepared_sequence.is_some() {table_writer.write_entry::<u64>(1);}if prepared_posted_at_ms.is_some() {table_writer.write_entry::<u64>(3);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<self::ChannelParticipant>>(2);table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(5);if prepared_reply_to.is_some() {table_writer.write_entry::<::planus::Offset<str>>(6);}table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(7);if prepared_source.is_some() {table_writer.write_entry::<::planus::Offset<self::ChannelSource>>(9);}if prepared_intent.is_some() {table_writer.write_entry::<self::PostIntent>(4);}
+        if prepared_sequence.is_some() {table_writer.write_entry::<u64>(1);}if prepared_posted_at_ms.is_some() {table_writer.write_entry::<u64>(3);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<self::ChannelParticipant>>(2);table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(5);if prepared_reply_to.is_some() {table_writer.write_entry::<::planus::Offset<str>>(6);}table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(7);if prepared_mention_spans.is_some() {table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::ChannelResolvedMentionSpan>]>>(8);}if prepared_source.is_some() {table_writer.write_entry::<::planus::Offset<self::ChannelSource>>(9);}if prepared_intent.is_some() {table_writer.write_entry::<self::PostIntent>(4);}
 
         unsafe {
-            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_sequence) = prepared_sequence {object_writer.write::<_, _, 8>(&prepared_sequence);}if let ::core::option::Option::Some(prepared_posted_at_ms) = prepared_posted_at_ms {object_writer.write::<_, _, 8>(&prepared_posted_at_ms);}object_writer.write::<_, _, 4>(&prepared_id);object_writer.write::<_, _, 4>(&prepared_author);object_writer.write::<_, _, 4>(&prepared_mentions);if let ::core::option::Option::Some(prepared_reply_to) = prepared_reply_to {object_writer.write::<_, _, 4>(&prepared_reply_to);}object_writer.write::<_, _, 4>(&prepared_attachments);if let ::core::option::Option::Some(prepared_source) = prepared_source {object_writer.write::<_, _, 4>(&prepared_source);}if let ::core::option::Option::Some(prepared_intent) = prepared_intent {object_writer.write::<_, _, 1>(&prepared_intent);}
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_sequence) = prepared_sequence {object_writer.write::<_, _, 8>(&prepared_sequence);}if let ::core::option::Option::Some(prepared_posted_at_ms) = prepared_posted_at_ms {object_writer.write::<_, _, 8>(&prepared_posted_at_ms);}object_writer.write::<_, _, 4>(&prepared_id);object_writer.write::<_, _, 4>(&prepared_author);object_writer.write::<_, _, 4>(&prepared_mentions);if let ::core::option::Option::Some(prepared_reply_to) = prepared_reply_to {object_writer.write::<_, _, 4>(&prepared_reply_to);}object_writer.write::<_, _, 4>(&prepared_attachments);if let ::core::option::Option::Some(prepared_mention_spans) = prepared_mention_spans {object_writer.write::<_, _, 4>(&prepared_mention_spans);}if let ::core::option::Option::Some(prepared_source) = prepared_source {object_writer.write::<_, _, 4>(&prepared_source);}if let ::core::option::Option::Some(prepared_intent) = prepared_intent {object_writer.write::<_, _, 1>(&prepared_intent);}
                 
             });
         }builder.current_offset()
@@ -95555,6 +95736,10 @@ impl ::planus::WriteAsOffset<ChannelMessageSummary> for ChannelMessageSummary {
         
             
             &self.attachments,
+            
+        
+            
+            &self.mention_spans,
             
         
             
@@ -96226,10 +96411,10 @@ impl<
     )
 >
 {
-    /// Setter for the [`source` field](ChannelMessageSummary#structfield.source).
+    /// Setter for the [`mention_spans` field](ChannelMessageSummary#structfield.mention_spans).
     #[inline]
     #[allow(clippy::type_complexity)]
-    pub fn source<T8>(self, value: T8) -> ChannelMessageSummaryBuilder<(
+    pub fn mention_spans<T8>(self, value: T8) -> ChannelMessageSummaryBuilder<(
     
         T0,
     
@@ -96250,7 +96435,7 @@ impl<
         T8,
     
     )>
-    where T8: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>
+    where T8: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelResolvedMentionSpan>]>>
     {
         
         let (
@@ -96296,6 +96481,156 @@ impl<
     
 
     
+    /// Sets the [`mention_spans` field](ChannelMessageSummary#structfield.mention_spans) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn mention_spans_as_null(self) -> ChannelMessageSummaryBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+            T5,
+        
+            T6,
+        
+            T7,
+        
+        (),
+    )>
+    {
+        self.mention_spans(())
+    }
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+> ChannelMessageSummaryBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+    )
+>
+{
+    /// Setter for the [`source` field](ChannelMessageSummary#structfield.source).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn source<T9>(self, value: T9) -> ChannelMessageSummaryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+        T9,
+    
+    )>
+    where T9: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+                v8,
+            
+        ) = self.0;ChannelMessageSummaryBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+                v8,
+            
+            value,
+        ))
+    }
+
+    
+
+    
     /// Sets the [`source` field](ChannelMessageSummary#structfield.source) to null.
     #[inline]
     #[allow(clippy::type_complexity)]
@@ -96316,6 +96651,8 @@ impl<
             T6,
         
             T7,
+        
+            T8,
         
         (),
     )>
@@ -96347,6 +96684,8 @@ impl<
     
         T8,
     
+        T9,
+    
 > ChannelMessageSummaryBuilder<(
     
         T0,
@@ -96366,6 +96705,8 @@ impl<
         T7,
     
         T8,
+    
+        T9,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelMessageSummary].
@@ -96395,7 +96736,9 @@ impl<
     
         T7: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
     
-        T8: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
+        T8: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelResolvedMentionSpan>]>>,
+    
+        T9: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
     
 > ::planus::WriteAs<::planus::Offset<ChannelMessageSummary>> for ChannelMessageSummaryBuilder<(
     
@@ -96416,6 +96759,8 @@ impl<
         T7,
     
         T8,
+    
+        T9,
     
 )> {
     type Prepared = ::planus::Offset<ChannelMessageSummary>;
@@ -96444,7 +96789,9 @@ impl<
     
         T7: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
     
-        T8: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
+        T8: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelResolvedMentionSpan>]>>,
+    
+        T9: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
     
 > ::planus::WriteAsOptional<::planus::Offset<ChannelMessageSummary>> for ChannelMessageSummaryBuilder<(
     
@@ -96465,6 +96812,8 @@ impl<
         T7,
     
         T8,
+    
+        T9,
     
 )> {
     type Prepared = ::planus::Offset<ChannelMessageSummary>;
@@ -96493,7 +96842,9 @@ impl<
     
         T7: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
     
-        T8: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
+        T8: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelResolvedMentionSpan>]>>,
+    
+        T9: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
     
 > ::planus::WriteAsOffset<ChannelMessageSummary> for ChannelMessageSummaryBuilder<(
     
@@ -96514,6 +96865,8 @@ impl<
         T7,
     
         T8,
+    
+        T9,
     
 )> {
     #[inline]
@@ -96539,6 +96892,8 @@ impl<
             
                 v8,
             
+                v9,
+            
         ) = &self.0;ChannelMessageSummary::create(
             builder,
             
@@ -96559,6 +96914,8 @@ impl<
                 v7,
             
                 v8,
+            
+                v9,
             
         )
     }
@@ -96677,6 +97034,19 @@ impl<'a> ChannelMessageSummaryRef<'a> {
             
         }
     
+        /// Getter for the [`mention_spans` field](ChannelMessageSummary#structfield.mention_spans).
+        #[inline]
+        pub fn mention_spans(&self) -> ::planus::Result<::core::option::Option<::planus::Vector<'a, ::planus::Result<self::ChannelResolvedMentionSpanRef<'a>>>>> {
+            
+            
+              
+              self.0.access(8, "ChannelMessageSummary", "mention_spans")
+              
+            
+            
+            
+        }
+    
         /// Getter for the [`source` field](ChannelMessageSummary#structfield.source).
         #[inline]
         pub fn source(&self) -> ::planus::Result<::core::option::Option<self::ChannelSourceRef<'a>>> {
@@ -96697,7 +97067,9 @@ impl<'a> ::core::fmt::Debug for ChannelMessageSummaryRef<'a> {
         let mut f = f.debug_struct("ChannelMessageSummaryRef");
         f.field("id", &self.id());f.field("sequence", &self.sequence());f.field("author", &self.author());f.field("posted_at_ms", &self.posted_at_ms());f.field("intent", &self.intent());f.field("mentions", &self.mentions());if let ::core::option::Option::Some(field_reply_to) = self.reply_to().transpose() {
                 f.field("reply_to", &field_reply_to);
-            }f.field("attachments", &self.attachments());if let ::core::option::Option::Some(field_source) = self.source().transpose() {
+            }f.field("attachments", &self.attachments());if let ::core::option::Option::Some(field_mention_spans) = self.mention_spans().transpose() {
+                f.field("mention_spans", &field_mention_spans);
+            }if let ::core::option::Option::Some(field_source) = self.source().transpose() {
                 f.field("source", &field_source);
             }
         f.finish()
@@ -96714,7 +97086,13 @@ impl<'a> ::core::convert::TryFrom<ChannelMessageSummaryRef<'a>> for ChannelMessa
         ::core::result::Result::Ok(Self {
             id: ::core::convert::Into::into(value.id()?),sequence: ::core::convert::TryInto::try_into(value.sequence()?)?,author: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.author()?)?),posted_at_ms: ::core::convert::TryInto::try_into(value.posted_at_ms()?)?,intent: ::core::convert::TryInto::try_into(value.intent()?)?,mentions: value.mentions()?.to_vec_result()?,reply_to: 
                                 value.reply_to()?.map(::core::convert::Into::into)
-                            ,attachments: value.attachments()?.to_vec_result()?,source: 
+                            ,attachments: value.attachments()?.to_vec_result()?,mention_spans: 
+                            if let ::core::option::Option::Some(mention_spans) = value.mention_spans()? {
+                                ::core::option::Option::Some(mention_spans.to_vec_result()?)
+                            } else {
+                                ::core::option::Option::None
+                            }
+                        ,source: 
                                 if let ::core::option::Option::Some(source) = value.source()? {
                                     ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(source)?))
                                 } else {
@@ -110443,6 +110821,1020 @@ impl<'a> ::planus::ReadAsRoot<'a> for ResponseRef<'a> {
             offset_from_start: 0,
         }, 0).map_err(|error_kind| error_kind.with_error_location(
             "[ResponseRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `ChannelMentionSpan` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ChannelMentionSpan` in the file `crates/bkpr-protocol/src/wire/native.fbs:1007`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ChannelMentionSpan{
+    
+        /// The field `start` in the table `ChannelMentionSpan`
+        pub start: u32,
+        /// The field `end` in the table `ChannelMentionSpan`
+        pub end: u32,
+        /// The field `participant_id` in the table `ChannelMentionSpan`
+        pub participant_id: ::planus::alloc::string::String,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ChannelMentionSpan {
+    fn default() -> Self {
+        Self {
+        start: 0,
+        end: 0,
+        participant_id: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl ChannelMentionSpan {
+    /// Creates a [ChannelMentionSpanBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ChannelMentionSpanBuilder<()> {
+        ChannelMentionSpanBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_start: impl ::planus::WriteAsDefault<u32, u32>,
+        field_end: impl ::planus::WriteAsDefault<u32, u32>,
+        field_participant_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_start = field_start.prepare(builder, &0);let prepared_end = field_end.prepare(builder, &0);let prepared_participant_id = field_participant_id.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        if prepared_start.is_some() {table_writer.write_entry::<u32>(0);}if prepared_end.is_some() {table_writer.write_entry::<u32>(1);}table_writer.write_entry::<::planus::Offset<str>>(2);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_start) = prepared_start {object_writer.write::<_, _, 4>(&prepared_start);}if let ::core::option::Option::Some(prepared_end) = prepared_end {object_writer.write::<_, _, 4>(&prepared_end);}object_writer.write::<_, _, 4>(&prepared_participant_id);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ChannelMentionSpan>> for ChannelMentionSpan {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelMentionSpan> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ChannelMentionSpan>> for ChannelMentionSpan {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelMentionSpan>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ChannelMentionSpan> for ChannelMentionSpan {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelMentionSpan> {
+        ChannelMentionSpan::create(
+            builder,
+        
+            
+            self.start,
+            
+        
+            
+            self.end,
+            
+        
+            
+            &self.participant_id,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ChannelMentionSpan] type.
+///
+/// Can be created using the [ChannelMentionSpan::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ChannelMentionSpanBuilder<State>(State);
+
+impl<
+    
+> ChannelMentionSpanBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`start` field](ChannelMentionSpan#structfield.start).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn start<T0>(self, value: T0) -> ChannelMentionSpanBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsDefault<u32, u32>
+    {
+        ChannelMentionSpanBuilder((
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`start` field](ChannelMentionSpan#structfield.start) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn start_as_default(self) -> ChannelMentionSpanBuilder<(
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.start(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> ChannelMentionSpanBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`end` field](ChannelMentionSpan#structfield.end).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn end<T1>(self, value: T1) -> ChannelMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsDefault<u32, u32>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;ChannelMentionSpanBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`end` field](ChannelMentionSpan#structfield.end) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn end_as_default(self) -> ChannelMentionSpanBuilder<(
+        
+            T0,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.end(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ChannelMentionSpanBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`participant_id` field](ChannelMentionSpan#structfield.participant_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn participant_id<T2>(self, value: T2) -> ChannelMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;ChannelMentionSpanBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> ChannelMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelMentionSpan].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelMentionSpan>
+        where Self: ::planus::WriteAsOffset<ChannelMentionSpan>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u32, u32>,
+    
+        T1: ::planus::WriteAsDefault<u32, u32>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAs<::planus::Offset<ChannelMentionSpan>> for ChannelMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelMentionSpan>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelMentionSpan> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u32, u32>,
+    
+        T1: ::planus::WriteAsDefault<u32, u32>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ChannelMentionSpan>> for ChannelMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelMentionSpan>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelMentionSpan>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u32, u32>,
+    
+        T1: ::planus::WriteAsDefault<u32, u32>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOffset<ChannelMentionSpan> for ChannelMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelMentionSpan> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;ChannelMentionSpan::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ChannelMentionSpan].
+#[derive(Copy, Clone)]
+pub struct ChannelMentionSpanRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ChannelMentionSpanRef<'a> {
+    
+        /// Getter for the [`start` field](ChannelMentionSpan#structfield.start).
+        #[inline]
+        pub fn start(&self) -> ::planus::Result<u32> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(0, "ChannelMentionSpan", "start")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`end` field](ChannelMentionSpan#structfield.end).
+        #[inline]
+        pub fn end(&self) -> ::planus::Result<u32> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(1, "ChannelMentionSpan", "end")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`participant_id` field](ChannelMentionSpan#structfield.participant_id).
+        #[inline]
+        pub fn participant_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(2, "ChannelMentionSpan", "participant_id")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ChannelMentionSpanRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ChannelMentionSpanRef");
+        f.field("start", &self.start());f.field("end", &self.end());f.field("participant_id", &self.participant_id());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ChannelMentionSpanRef<'a>> for ChannelMentionSpan {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ChannelMentionSpanRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            start: ::core::convert::TryInto::try_into(value.start()?)?,end: ::core::convert::TryInto::try_into(value.end()?)?,participant_id: ::core::convert::Into::into(value.participant_id()?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ChannelMentionSpanRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ChannelMentionSpanRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelMentionSpanRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ChannelMentionSpan>> for ChannelMentionSpan {
+    type Value = ::planus::Offset<ChannelMentionSpan>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ChannelMentionSpan>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ChannelMentionSpanRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelMentionSpanRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `ChannelResolvedMentionSpan` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ChannelResolvedMentionSpan` in the file `crates/bkpr-protocol/src/wire/native.fbs:1012`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ChannelResolvedMentionSpan{
+    
+        /// The field `start` in the table `ChannelResolvedMentionSpan`
+        pub start: u32,
+        /// The field `end` in the table `ChannelResolvedMentionSpan`
+        pub end: u32,
+        /// The field `participant` in the table `ChannelResolvedMentionSpan`
+        pub participant: ::planus::alloc::boxed::Box<self::ChannelParticipant>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ChannelResolvedMentionSpan {
+    fn default() -> Self {
+        Self {
+        start: 0,
+        end: 0,
+        participant: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl ChannelResolvedMentionSpan {
+    /// Creates a [ChannelResolvedMentionSpanBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ChannelResolvedMentionSpanBuilder<()> {
+        ChannelResolvedMentionSpanBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_start: impl ::planus::WriteAsDefault<u32, u32>,
+        field_end: impl ::planus::WriteAsDefault<u32, u32>,
+        field_participant: impl ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_start = field_start.prepare(builder, &0);let prepared_end = field_end.prepare(builder, &0);let prepared_participant = field_participant.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        if prepared_start.is_some() {table_writer.write_entry::<u32>(0);}if prepared_end.is_some() {table_writer.write_entry::<u32>(1);}table_writer.write_entry::<::planus::Offset<self::ChannelParticipant>>(2);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_start) = prepared_start {object_writer.write::<_, _, 4>(&prepared_start);}if let ::core::option::Option::Some(prepared_end) = prepared_end {object_writer.write::<_, _, 4>(&prepared_end);}object_writer.write::<_, _, 4>(&prepared_participant);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ChannelResolvedMentionSpan>> for ChannelResolvedMentionSpan {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelResolvedMentionSpan> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ChannelResolvedMentionSpan>> for ChannelResolvedMentionSpan {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelResolvedMentionSpan>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ChannelResolvedMentionSpan> for ChannelResolvedMentionSpan {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelResolvedMentionSpan> {
+        ChannelResolvedMentionSpan::create(
+            builder,
+        
+            
+            self.start,
+            
+        
+            
+            self.end,
+            
+        
+            
+            &self.participant,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ChannelResolvedMentionSpan] type.
+///
+/// Can be created using the [ChannelResolvedMentionSpan::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ChannelResolvedMentionSpanBuilder<State>(State);
+
+impl<
+    
+> ChannelResolvedMentionSpanBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`start` field](ChannelResolvedMentionSpan#structfield.start).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn start<T0>(self, value: T0) -> ChannelResolvedMentionSpanBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsDefault<u32, u32>
+    {
+        ChannelResolvedMentionSpanBuilder((
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`start` field](ChannelResolvedMentionSpan#structfield.start) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn start_as_default(self) -> ChannelResolvedMentionSpanBuilder<(
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.start(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> ChannelResolvedMentionSpanBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`end` field](ChannelResolvedMentionSpan#structfield.end).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn end<T1>(self, value: T1) -> ChannelResolvedMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsDefault<u32, u32>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;ChannelResolvedMentionSpanBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`end` field](ChannelResolvedMentionSpan#structfield.end) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn end_as_default(self) -> ChannelResolvedMentionSpanBuilder<(
+        
+            T0,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.end(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ChannelResolvedMentionSpanBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`participant` field](ChannelResolvedMentionSpan#structfield.participant).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn participant<T2>(self, value: T2) -> ChannelResolvedMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;ChannelResolvedMentionSpanBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> ChannelResolvedMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelResolvedMentionSpan].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelResolvedMentionSpan>
+        where Self: ::planus::WriteAsOffset<ChannelResolvedMentionSpan>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u32, u32>,
+    
+        T1: ::planus::WriteAsDefault<u32, u32>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
+    
+> ::planus::WriteAs<::planus::Offset<ChannelResolvedMentionSpan>> for ChannelResolvedMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelResolvedMentionSpan>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelResolvedMentionSpan> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u32, u32>,
+    
+        T1: ::planus::WriteAsDefault<u32, u32>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ChannelResolvedMentionSpan>> for ChannelResolvedMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelResolvedMentionSpan>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelResolvedMentionSpan>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u32, u32>,
+    
+        T1: ::planus::WriteAsDefault<u32, u32>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
+    
+> ::planus::WriteAsOffset<ChannelResolvedMentionSpan> for ChannelResolvedMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelResolvedMentionSpan> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;ChannelResolvedMentionSpan::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ChannelResolvedMentionSpan].
+#[derive(Copy, Clone)]
+pub struct ChannelResolvedMentionSpanRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ChannelResolvedMentionSpanRef<'a> {
+    
+        /// Getter for the [`start` field](ChannelResolvedMentionSpan#structfield.start).
+        #[inline]
+        pub fn start(&self) -> ::planus::Result<u32> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(0, "ChannelResolvedMentionSpan", "start")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`end` field](ChannelResolvedMentionSpan#structfield.end).
+        #[inline]
+        pub fn end(&self) -> ::planus::Result<u32> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(1, "ChannelResolvedMentionSpan", "end")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`participant` field](ChannelResolvedMentionSpan#structfield.participant).
+        #[inline]
+        pub fn participant(&self) -> ::planus::Result<self::ChannelParticipantRef<'a>> {
+            
+            
+              
+              self.0.access_required(2, "ChannelResolvedMentionSpan", "participant")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ChannelResolvedMentionSpanRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ChannelResolvedMentionSpanRef");
+        f.field("start", &self.start());f.field("end", &self.end());f.field("participant", &self.participant());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ChannelResolvedMentionSpanRef<'a>> for ChannelResolvedMentionSpan {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ChannelResolvedMentionSpanRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            start: ::core::convert::TryInto::try_into(value.start()?)?,end: ::core::convert::TryInto::try_into(value.end()?)?,participant: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.participant()?)?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ChannelResolvedMentionSpanRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ChannelResolvedMentionSpanRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelResolvedMentionSpanRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ChannelResolvedMentionSpan>> for ChannelResolvedMentionSpan {
+    type Value = ::planus::Offset<ChannelResolvedMentionSpan>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ChannelResolvedMentionSpan>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ChannelResolvedMentionSpanRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelResolvedMentionSpanRef]",
             "read_as_root",
             0,
         ))

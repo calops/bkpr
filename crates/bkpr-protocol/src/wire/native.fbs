@@ -385,7 +385,7 @@ table ChannelPost {
   mentions:[string] (required);
   reply_to:string;
   attachments:[string] (required);
-  reserved_mention_spans:ubyte (deprecated);
+  mention_spans:[ChannelMentionSpan];
   source:ChannelSource;
 }
 table ChannelCursor { channel_id:string (required); sequence:ulong; }
@@ -899,7 +899,7 @@ table ChannelMessageSummary {
   mentions:[string] (required);
   reply_to:string;
   attachments:[string] (required);
-  reserved_mention_spans:ubyte (deprecated);
+  mention_spans:[ChannelResolvedMentionSpan];
   source:ChannelSource;
 }
 table ChannelChange { sequence:ulong; kind:ChannelChangeKind; }
@@ -1014,3 +1014,14 @@ table Request { version:uint; operation:Operation (required); }
 table OptionalPayload { value:Payload (required); }
 table OptionalFailure { value:RequestFailure (required); }
 table Response { version:uint; ok:bool; result:OptionalPayload; error:string; failure:OptionalFailure; }
+
+table ChannelMentionSpan {
+  start:uint;
+  end:uint;
+  participant_id:string (required);
+}
+table ChannelResolvedMentionSpan {
+  start:uint;
+  end:uint;
+  participant:ChannelParticipant (required);
+}

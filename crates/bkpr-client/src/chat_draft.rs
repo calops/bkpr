@@ -201,19 +201,15 @@ impl Draft {
         self.error = None;
     }
 
-    pub(super) fn selection_label(entry: &ChannelRosterEntry, index: usize) -> String {
-        let identity = entry
-            .binding
-            .as_ref()
-            .map_or(entry.participant.id.as_ref(), |binding| {
-                binding.launch_id.as_str()
-            });
-        let short: String = identity.chars().take(8).collect();
-        format!(
-            "{} @{} · {}",
-            index + 1,
-            safe_text(&entry.participant.display_name),
-            safe_text(&short)
+    pub(super) fn selection_label(entry: &ChannelRosterEntry, index: usize) -> (String, String) {
+        let short: String = entry.participant.id.as_ref().chars().take(8).collect();
+        (
+            format!(
+                "{} @{}",
+                index + 1,
+                safe_text(&entry.participant.display_name)
+            ),
+            format!(" · {}", safe_text(&short)),
         )
     }
 
@@ -231,6 +227,7 @@ impl Draft {
             return Err("Write a message first");
         }
         let mut bindings = Vec::<ChannelMentionBinding>::new();
+        let mut mention_spans = Vec::with_capacity(self.mentions.len());
         if !self.mentions.is_empty() {
             let document = markdown::Document::parse(&self.input.value);
             let rows = document.wrap(MAX_POST_BYTES);
@@ -252,8 +249,14 @@ impl Draft {
                 } else {
                     bindings.push(mention.binding.clone());
                 }
+                mention_spans.push(ChannelMentionSpan {
+                    start: mention.bytes.start as u32,
+                    end: mention.bytes.end as u32,
+                    participant_id: mention.binding.participant_id.clone(),
+                });
             }
         }
+        mention_spans.sort_unstable_by_key(|span| span.start);
         Ok(ChannelRequest::PostUser {
             channel_id,
             post: ChannelPost {
@@ -264,6 +267,7 @@ impl Draft {
                     .iter()
                     .map(|binding| binding.participant_id.clone())
                     .collect(),
+                mention_spans,
                 reply_to: self.reply_to.clone(),
                 attachments: Vec::new(),
                 source: None,
@@ -431,6 +435,14 @@ mod tests {
             panic!("expected user post")
         };
         assert_eq!(post.mentions, [roster[1].participant.id.clone()]);
+        assert_eq!(
+            post.mention_spans,
+            [ChannelMentionSpan {
+                start: 0,
+                end: "@Twin".len() as u32,
+                participant_id: roster[1].participant.id.clone(),
+            }]
+        );
         assert_eq!(bindings.first(), roster[1].binding.as_ref());
         draft.edit(EditAction::Backspace);
         draft.edit(EditAction::Backspace);

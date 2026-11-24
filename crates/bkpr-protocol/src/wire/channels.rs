@@ -436,7 +436,7 @@ pub(super) fn write_response(
             wake_count,
             attention,
         } => {
-            let message = write_message(b, message, budget, 1)?;
+            let message = write_message(b, message, None, budget, 1)?;
             let channel_id = write_reply_id(b, channel_id.as_ref(), budget)?;
             let offset =
                 g::ChannelResponsePosted::create(b, message, *wake_count, *attention, channel_id);
@@ -580,7 +580,7 @@ pub(super) fn read_response(
         },
         R::ChannelResponsePosted(v) => ChannelResponse::Posted {
             channel_id: read_optional_id(v.channel_id()?, ChannelId, budget)?,
-            message: read_message(v.message()?, budget, 1)?,
+            message: read_message(v.message()?, None, budget, 1)?,
             wake_count: v.wake_count()?,
             attention: v.attention()?,
         },
@@ -683,6 +683,20 @@ pub(super) fn write_post(
     let reply_to = write_optional_id(b, value.reply_to.as_ref(), budget)?;
     let attachments = write_ids(b, &value.attachments, budget)?;
     let source = write_source(b, value.source.as_deref(), budget, depth + 1)?;
+    let mention_spans = (!value.mention_spans.is_empty())
+        .then(|| {
+            write_vector(b, &value.mention_spans, budget, |b, span, budget| {
+                budget.node(depth + 1)?;
+                let participant_id = write_text(b, span.participant_id.as_ref(), budget)?;
+                Ok(g::ChannelMentionSpan::create(
+                    b,
+                    span.start,
+                    span.end,
+                    participant_id,
+                ))
+            })
+        })
+        .transpose()?;
     Ok(g::ChannelPost::create(
         b,
         key,
@@ -691,6 +705,7 @@ pub(super) fn write_post(
         mentions,
         reply_to,
         attachments,
+        mention_spans,
         source,
     ))
 }
@@ -709,6 +724,20 @@ pub(super) fn read_post(
         reply_to: read_optional_id(v.reply_to()?, MessageId, budget)?,
         attachments: read_ids(v.attachments()?, MAX_ATTACHMENTS, AttachmentId, budget)?,
         source: read_source(v.source()?, budget, depth + 1)?,
+        mention_spans: v
+            .mention_spans()?
+            .map(|spans| {
+                read_vector(spans, MAX_MENTIONS, budget, |span, budget| {
+                    budget.node(depth + 1)?;
+                    Ok(ChannelMentionSpan {
+                        start: span.start()?,
+                        end: span.end()?,
+                        participant_id: ParticipantId(read_id(span.participant_id()?, budget)?),
+                    })
+                })
+            })
+            .transpose()?
+            .unwrap_or_default(),
     })
 }
 
@@ -805,6 +834,7 @@ fn read_summary(
 fn write_message(
     b: &mut Builder,
     value: &MessageSummary,
+    text: Option<&str>,
     budget: &mut Budget,
     depth: usize,
 ) -> Result<Offset<g::ChannelMessageSummary>> {
@@ -815,12 +845,27 @@ fn write_message(
     if let Some(source) = &value.source {
         valid_source_ids(source.channel_id.as_ref(), source.message_id.as_ref())?;
     }
+    value.validate_mention_spans(text)?;
     let id = write_text(b, value.id.as_ref(), budget)?;
     let author = write_participant(b, &value.author, budget, depth + 1)?;
     let mentions = write_ids(b, &value.mentions, budget)?;
     let reply = write_optional_id(b, value.reply_to.as_ref(), budget)?;
     let attachments = write_ids(b, &value.attachments, budget)?;
     let source = write_source(b, value.source.as_deref(), budget, depth + 1)?;
+    let mention_spans = (!value.mention_spans.is_empty())
+        .then(|| {
+            write_vector(b, &value.mention_spans, budget, |b, span, budget| {
+                budget.node(depth + 1)?;
+                let participant = write_participant(b, &span.participant, budget, depth + 2)?;
+                Ok(g::ChannelResolvedMentionSpan::create(
+                    b,
+                    span.start,
+                    span.end,
+                    participant,
+                ))
+            })
+        })
+        .transpose()?;
     Ok(g::ChannelMessageSummary::create(
         b,
         id,
@@ -831,12 +876,14 @@ fn write_message(
         mentions,
         reply,
         attachments,
+        mention_spans,
         source,
     ))
 }
 
 fn read_message(
     v: g::ChannelMessageSummaryRef<'_>,
+    text: Option<&str>,
     budget: &mut Budget,
     depth: usize,
 ) -> Result<MessageSummary> {
@@ -847,7 +894,7 @@ fn read_message(
     let reply_to = read_optional_id(v.reply_to()?, MessageId, budget)?;
     let attachments = read_ids(v.attachments()?, MAX_ATTACHMENTS, AttachmentId, budget)?;
     valid_references(&mentions, reply_to.as_ref(), &attachments)?;
-    Ok(MessageSummary {
+    let message = MessageSummary {
         id: MessageId(read_id(v.id()?, budget)?),
         sequence,
         author: read_participant(v.author()?, budget, depth + 1)?,
@@ -856,8 +903,24 @@ fn read_message(
         mentions,
         reply_to,
         attachments,
+        mention_spans: v
+            .mention_spans()?
+            .map(|spans| {
+                read_vector(spans, MAX_MENTIONS, budget, |span, budget| {
+                    budget.node(depth + 1)?;
+                    Ok(ChannelResolvedMentionSpan {
+                        start: span.start()?,
+                        end: span.end()?,
+                        participant: read_participant(span.participant()?, budget, depth + 2)?,
+                    })
+                })
+            })
+            .transpose()?
+            .unwrap_or_default(),
         source: read_source(v.source()?, budget, depth + 1)?,
-    })
+    };
+    message.validate_mention_spans(text)?;
+    Ok(message)
 }
 
 fn write_renderable_message(
@@ -869,7 +932,7 @@ fn write_renderable_message(
     budget.node(depth)?;
     value.validate_attachments()?;
     validate_retained_body(&value.text)?;
-    let message = write_message(b, &value.message, budget, depth + 1)?;
+    let message = write_message(b, &value.message, Some(&value.text), budget, depth + 1)?;
     let text = write_text(b, &value.text, budget)?;
     let attachments = write_vector(b, &value.attachments, budget, |b, value, budget| {
         write_descriptor(b, value, budget, depth + 1)
@@ -886,7 +949,7 @@ fn read_renderable_message(
     let text = v.text()?;
     validate_retained_body(text)?;
     let message = ChannelMessage {
-        message: read_message(v.message()?, budget, depth + 1)?,
+        message: read_message(v.message()?, Some(text), budget, depth + 1)?,
         text: read_text(text, budget)?,
         attachments: read_vector(v.attachments()?, MAX_ATTACHMENTS, budget, |v, b| {
             read_descriptor(v, b, depth + 1)

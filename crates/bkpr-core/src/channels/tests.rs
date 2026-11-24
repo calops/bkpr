@@ -345,6 +345,7 @@ fn post(key: &str) -> ChannelPost {
         text: "a post quoting @Coordinator".into(),
         intent: PostIntent::Note,
         mentions: Vec::new(),
+        mention_spans: Vec::new(),
         reply_to: None,
         attachments: Vec::new(),
         source: None,
@@ -1288,6 +1289,119 @@ fn retry_conflicts_are_scoped_to_authenticated_sender_and_exact_request() {
 }
 
 #[test]
+fn unannotated_posts_keep_legacy_fingerprints_and_receipts() {
+    use sha2::{Digest, Sha256};
+
+    let mut f = Fixture::new();
+    let id = f.wide(quiet());
+    let legacy = concat!(
+        r#"{"idempotency_key":"legacy","text":"a post quoting @Coordinator","#,
+        r#""intent":"note","mentions":[],"reply_to":null,"attachments":[]}"#
+    );
+    let accepted = f.request(send(&id, post("legacy"))).unwrap();
+    let (fingerprint, span_type): (Vec<u8>, Option<String>) = f
+        .engine
+        .with_store(|store| {
+            Ok(store.connection.query_row(
+                "SELECT fingerprint,json_type(summary,'$.mention_spans') FROM posts WHERE id=?1",
+                [posted(accepted.clone()).id.as_ref()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    let expected: [u8; 32] = Sha256::digest(legacy.as_bytes()).into();
+    assert_eq!(fingerprint.as_slice(), expected.as_slice());
+    assert_eq!(span_type, None);
+
+    f.engine = ChannelEngine::new(f.root.path().to_owned());
+    let old_post = serde_json::from_str(legacy).unwrap();
+    assert_eq!(f.request(send(&id, old_post)).unwrap(), accepted);
+}
+
+#[test]
+fn user_mention_spans_require_targets_and_retain_ordered_snapshots() {
+    let mut f = Fixture::new();
+    let id = f.create(
+        &f.user,
+        WORKSPACE,
+        MembershipMode::Explicit,
+        vec![f.b.id.clone()],
+        ChannelSettings {
+            user_wake: WakePolicy::AddressedOnly,
+            ..quiet()
+        },
+    );
+    let binding = ChannelMentionBinding {
+        participant_id: f.b.id.clone(),
+        launch_id: "launch-b".into(),
+        binding_generation: 1,
+    };
+    let text = "é @東京 + @user + @東京";
+    let targets = [(3, 10, &f.b), (13, 18, &f.user), (21, 28, &f.b)];
+    let post = ChannelPost {
+        text: text.into(),
+        mentions: vec![f.user.id.clone(), f.b.id.clone()],
+        mention_spans: targets
+            .iter()
+            .map(|&(start, end, target)| ChannelMentionSpan {
+                start,
+                end,
+                participant_id: target.id.clone(),
+            })
+            .collect(),
+        ..post("annotated")
+    };
+    let request = |post| send_user(&id, post, vec![binding.clone()]);
+    let mut invalid = post.clone();
+    invalid.mention_spans[0].participant_id = f.a.id.clone();
+    let error = f.request(request(invalid)).unwrap_err().to_string();
+    assert!(error.contains("does not reference an addressed participant"));
+    let mut invalid = post.clone();
+    invalid.mention_spans[0].start = 1;
+    let error = f.request(request(invalid)).unwrap_err().to_string();
+    assert!(error.contains("splits a UTF-8 character"));
+
+    let accepted = f.request(request(post.clone())).unwrap();
+    let summary = posted(accepted.clone());
+    assert_eq!(summary.sequence, 1);
+    assert_eq!(
+        summary.mention_spans,
+        targets.map(|(start, end, target)| ChannelResolvedMentionSpan {
+            start,
+            end,
+            participant: target.clone(),
+        })
+    );
+    assert_eq!(
+        f.work(&summary.id),
+        [(f.b.id.0.clone(), Some("launch-b".into()), true, true)]
+    );
+
+    let mut conflict = post.clone();
+    conflict.mention_spans[0].start = 4;
+    let error = f.request(request(conflict)).unwrap_err().to_string();
+    assert!(error.contains("conflicts with an existing retry key"));
+    f.b.display_name = "Renamed after commit".into();
+    f.request(ChannelRequest::SetMembership {
+        channel_id: id.clone(),
+        membership: MembershipMode::Explicit,
+        members: Vec::new(),
+    })
+    .unwrap();
+    f.engine = ChannelEngine::new(f.root.path().to_owned());
+
+    assert_eq!(f.request(request(post.clone())).unwrap(), accepted);
+    let mut stale = post;
+    stale.idempotency_key = "fresh-key".into();
+    let error = f.request(request(stale)).unwrap_err().to_string();
+    assert_eq!(error, super::STALE_USER_MENTION);
+    assert!(
+        matches!(f.request(messages(&id, None, 8)).unwrap(), ChannelResponse::History { messages, .. }
+            if messages.len() == 1 && messages[0].message == summary && messages[0].text == text)
+    );
+}
+
+#[test]
 fn attachments_are_validated_immutable_channel_resources_in_archives() {
     let f = Fixture::new();
     let id = f.create(
@@ -1988,6 +2102,82 @@ fn body_budget_and_cursor_allow_contiguous_forward_catch_up() {
             status: ChannelSubscriptionStatus::Active,
         }
     );
+}
+
+#[test]
+fn compact_history_pages_bound_serialized_mention_metadata() {
+    let mut f = Fixture::new();
+    f.b.display_name = "\\".repeat(MAX_NAME_BYTES);
+    let id = f.wide(quiet());
+    let count = u64::from(MAX_PAGE_LIMIT);
+    for index in 0..count {
+        f.as_actor(
+            &f.a,
+            send(
+                &id,
+                ChannelPost {
+                    text: "x".repeat(MAX_MENTIONS),
+                    mentions: vec![f.b.id.clone()],
+                    mention_spans: (0..MAX_MENTIONS as u32)
+                        .map(|start| ChannelMentionSpan {
+                            start,
+                            end: start + 1,
+                            participant_id: f.b.id.clone(),
+                        })
+                        .collect(),
+                    ..post(&format!("dense-{index}"))
+                },
+            ),
+        )
+        .unwrap();
+    }
+
+    let mut bound = 0;
+    let mut pages = 0;
+    loop {
+        let page = f
+            .engine
+            .with_store(|store| {
+                store.compact_history(
+                    ChannelRequest::History {
+                        channel_id: id.clone(),
+                        before: None,
+                        after: Some(bound),
+                        limit: MAX_PAGE_LIMIT,
+                    },
+                    &|workspace| f.authority(&f.a, workspace),
+                    Some(WORKSPACE),
+                )
+            })
+            .unwrap();
+        pages += 1;
+        let summaries = page["messages"].as_array().unwrap();
+        assert!(!summaries.is_empty());
+        assert!(
+            summaries
+                .iter()
+                .map(|summary| serde_json::to_vec(summary).unwrap().len())
+                .sum::<usize>()
+                <= MAX_HISTORY_BYTES
+        );
+        for summary in summaries {
+            bound += 1;
+            assert_eq!(summary["sequence"], bound);
+            assert_eq!(
+                summary["mention_spans"].as_array().unwrap().len(),
+                MAX_MENTIONS
+            );
+        }
+        assert_eq!(
+            page["next_after"].as_u64(),
+            (bound < count).then_some(bound)
+        );
+        if page["next_after"].is_null() {
+            break;
+        }
+    }
+    assert_eq!(bound, count);
+    assert!(pages > 1);
 }
 
 #[test]

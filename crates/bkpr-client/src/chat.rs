@@ -105,6 +105,10 @@ pub(super) enum Job {
     Image(ChannelId, AttachmentId),
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "bounded job results move the decoded response without a second allocation"
+)]
 pub(super) enum Completion {
     Response(ChannelResponse),
     Image(chat_images::Loaded),
@@ -236,6 +240,7 @@ impl Chat {
         self.images_wanted.clear();
         self.mark = None;
         self.notice = None;
+        self.hover_channel(None);
         self.paint.invalidate_hits();
         self.epoch = self.epoch.wrapping_add(1);
     }
@@ -445,6 +450,7 @@ impl Chat {
             return;
         }
         self.channel_chooser = open;
+        self.hover_channel(None);
         if open {
             self.list_cursor = self
                 .active
@@ -791,7 +797,11 @@ impl Chat {
             }
             (B::Left, A::Press, Some(Hit::Channel(index))) => {
                 if let Some(id) = self.ids.get(index).cloned() {
+                    let viewport = self.list_cursor;
                     self.select(id);
+                    if !self.channel_chooser {
+                        self.list_cursor = viewport;
+                    }
                 }
                 self.set_channel_chooser(false);
             }

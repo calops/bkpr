@@ -23,14 +23,6 @@ static ASSETS: &[SvgAsset] = &[
         id: 2,
         svg: include_str!("../assets/hive.svg"),
     },
-    SvgAsset {
-        id: 3,
-        svg: include_str!("../assets/chat-outline.svg"),
-    },
-    SvgAsset {
-        id: 4,
-        svg: include_str!("../assets/chat-alert.svg"),
-    },
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,8 +30,6 @@ pub(crate) enum Artwork {
     Bee,
     BeeHidden,
     Hive,
-    Chat,
-    ChatAlert,
 }
 
 type DecorationEvidence = (
@@ -594,24 +584,11 @@ impl ChromeGraphics {
         placement_id: u32,
     ) -> bool {
         let [col, row] = position;
-        let (start, marker): (u16, &[&str]) = match artwork {
-            Artwork::Bee | Artwork::Hive => (col, &["●", " "]),
-            Artwork::BeeHidden => (col, &["◌", " "]),
-            Artwork::Chat | Artwork::ChatAlert => {
-                // The trailing cell anchors the status and its fallback glyph.
-                // Grow toward the reserved blank, never toward the scrollbar.
-                let Some(start) = col.checked_sub(1) else {
-                    return false;
-                };
-                let marker = if artwork == Artwork::Chat {
-                    &[" ", "◇"]
-                } else {
-                    &[" ", "!"]
-                };
-                (start, marker)
-            }
+        let marker = match artwork {
+            Artwork::Bee | Artwork::Hive => ["●", " "],
+            Artwork::BeeHidden => ["◌", " "],
         };
-        let range = usize::from(start)..usize::from(start) + marker.len();
+        let range = usize::from(col)..usize::from(col) + marker.len();
         if artwork_frame.size != frame.size
             || range.end > usize::from(frame.size.cols)
             || row >= frame.size.rows
@@ -632,7 +609,7 @@ impl ChromeGraphics {
         if !cells
             .iter()
             .zip(marker)
-            .all(|(cell, marker)| cell.text == *marker)
+            .all(|(cell, marker)| cell.text == marker)
             && !cells.iter().all(|cell| cell.text == " ")
         {
             return false;
@@ -651,8 +628,6 @@ impl ChromeGraphics {
             Artwork::Bee | Artwork::BeeHidden => (1, i32::from(col), 0),
             // MAIN positions the hive half a cell left into its tree gutter.
             Artwork::Hive => (2, i32::from(col) - 1, frame.size.cell_width / 2),
-            Artwork::Chat => (3, i32::from(start), 0),
-            Artwork::ChatAlert => (4, i32::from(start), 0),
         };
         if !self.0.place(
             artwork_frame,
@@ -757,97 +732,6 @@ mod tests {
                         (index % image.width as usize) < gutter_width as usize && pixel[3] != 0
                     })
             );
-        }
-    }
-
-    #[test]
-    fn chat_artwork_fills_its_status_slot_without_overwriting_neighbors() {
-        for cell_width in [9, 10] {
-            let mut host = ColorProbe::default();
-            let query = host.graphics.begin();
-            let query = std::str::from_utf8(&query).unwrap();
-            let id = query.split("i=").nth(1).unwrap().split(',').next().unwrap();
-            host.feed(format!("graphics;Gi={id};OK").as_bytes());
-            host.feed(b"10;rgb:ffff/ffff/ffff");
-            host.feed(b"11;rgb:2222/2222/2222");
-            host.truecolor = true;
-            let size = Size {
-                cols: 8,
-                rows: 2,
-                cell_width,
-                cell_height: 20,
-            };
-            let mut chrome = ChromeGraphics::new(None).unwrap();
-            chrome.prepare(&host, size, &[]);
-            let mut poll = libc::pollfd {
-                fd: chrome.wake_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
-            assert!(chrome.drain().unwrap());
-            for (artwork, marker) in [(Artwork::Chat, "◇"), (Artwork::ChatAlert, "!")] {
-                let mut frame = bkpr_tui_framework::blank(size);
-                let mut effects = bkpr_tui_framework::graphics_frame(size);
-                bkpr_tui_framework::text(&mut frame, 4, 1, "… ", true);
-                bkpr_tui_framework::text(&mut frame, 6, 1, marker, true);
-                bkpr_tui_framework::text(&mut frame, 7, 1, "┃", false);
-                let original = frame.clone();
-                let mut expected = original.clone();
-                expected.rows[1].cells[6].text = " ".into();
-                assert!(chrome.decorate(
-                    &mut frame,
-                    &mut effects,
-                    artwork,
-                    [6, 1],
-                    Some(ColorSource::Default),
-                    2,
-                ));
-                assert_eq!(frame, expected);
-                let [placement] = effects.placements.as_slice() else {
-                    panic!("expected one badge placement");
-                };
-                assert_eq!(placement.col, 5);
-                assert_eq!(placement.row, 1);
-                assert_eq!(placement.offset_x, 0);
-                assert_eq!(placement.width, 2 * cell_width);
-                assert_eq!(placement.height, size.cell_height);
-                assert_eq!(placement.source_x, 0);
-                assert_eq!(placement.source_y, 0);
-                assert_eq!(placement.source_width, placement.width);
-                assert_eq!(placement.source_height, placement.height);
-                let image = &effects.images[0];
-                let [mut left, mut top, mut right, mut bottom] = [image.width, image.height, 0, 0];
-                for (index, pixel) in image.pixels.chunks_exact(4).enumerate() {
-                    if pixel[3] != 0 {
-                        let x = index as u32 % image.width;
-                        let y = index as u32 / image.width;
-                        left = left.min(x);
-                        top = top.min(y);
-                        right = right.max(x + 1);
-                        bottom = bottom.max(y + 1);
-                    }
-                }
-                assert!(left < cell_width && right > cell_width);
-                assert!(left > 0 && right < image.width && top > 0 && bottom < image.height);
-                assert!(right - left >= 3 * cell_width / 2 && bottom - top >= 3 * cell_width / 2);
-
-                let mut fallback = bkpr_tui_framework::graphics_frame(size);
-                assert!(!chrome.decorate(&mut frame, &mut fallback, artwork, [6, 1], None, 2));
-                assert_eq!(frame, original);
-                bkpr_tui_framework::text(&mut frame, 5, 1, "x", true);
-                let occupied = frame.clone();
-                assert!(!chrome.decorate(
-                    &mut frame,
-                    &mut fallback,
-                    artwork,
-                    [6, 1],
-                    Some(ColorSource::Default),
-                    2,
-                ));
-                assert_eq!(frame, occupied);
-                assert!(fallback.placements.is_empty());
-            }
         }
     }
 

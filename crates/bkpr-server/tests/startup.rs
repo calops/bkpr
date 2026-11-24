@@ -2145,6 +2145,7 @@ fn channel_history_reopens_on_the_same_session_only() {
             text: "Ready for review.".into(),
             intent: Default::default(),
             mentions: vec![],
+            mention_spans: vec![],
             reply_to: None,
             attachments: vec![],
             source: None,

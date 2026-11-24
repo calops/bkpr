@@ -218,6 +218,30 @@ pub struct ChannelSource {
     pub message_id: MessageId,
 }
 
+/// Display annotation for an explicitly addressed recipient in the original post.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelMentionSpan {
+    /// Inclusive UTF-8 byte offset.
+    pub start: u32,
+    /// Exclusive UTF-8 byte offset.
+    pub end: u32,
+    /// An exact reference from [`ChannelPost::mentions`], not routing authority.
+    pub participant_id: ParticipantId,
+}
+
+/// Display annotation with the backend-resolved participant at commit time.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelResolvedMentionSpan {
+    /// Inclusive UTF-8 byte offset in the original post.
+    pub start: u32,
+    /// Exclusive UTF-8 byte offset in the original post.
+    pub end: u32,
+    /// Participant snapshot for rendering only; never used to route a wake.
+    pub participant: Participant,
+}
+
 /// A post retry is equivalent only when its authenticated author, channel and every field match.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -229,7 +253,8 @@ pub struct ChannelPost {
     /// Optional semantic attention signal; ordinary posts use [`PostIntent::Note`].
     #[serde(default)]
     pub intent: PostIntent,
-    /// Explicit stable participant references resolved by the backend at admission.
+    /// Explicit recipient references resolved by the backend at admission.
+    /// User posts use stable participant IDs; agent posts use exact mention handles.
     #[serde(default)]
     pub mentions: Vec<ParticipantId>,
     /// One existing message in the same channel, not a separate thread.
@@ -237,6 +262,9 @@ pub struct ChannelPost {
     /// Immutable resources uploaded into the same channel.
     #[serde(default)]
     pub attachments: Vec<AttachmentId>,
+    /// Sorted nonoverlapping display annotations for entries in `mentions`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mention_spans: Vec<ChannelMentionSpan>,
     /// Optional context link; posting does not resolve or verify the target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<Box<ChannelSource>>,
@@ -254,7 +282,14 @@ impl ChannelPost {
         if let Some(source) = &self.source {
             valid_source_ids(source.channel_id.as_ref(), source.message_id.as_ref())?;
         }
-        valid_references(&self.mentions, self.reply_to.as_ref(), &self.attachments)
+        valid_references(&self.mentions, self.reply_to.as_ref(), &self.attachments)?;
+        valid_mention_spans(
+            self.mention_spans
+                .iter()
+                .map(|span| (span.start, span.end, &span.participant_id)),
+            &self.mentions,
+            Some(&self.text),
+        )
     }
 }
 
@@ -444,9 +479,24 @@ pub struct MessageSummary {
     pub reply_to: Option<MessageId>,
     /// Channel-scoped immutable attachment references.
     pub attachments: Vec<AttachmentId>,
+    /// Sorted nonoverlapping presentation spans for resolved entries in `mentions`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mention_spans: Vec<ChannelResolvedMentionSpan>,
     /// Optional author-supplied context link, independent of read access to its target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<Box<ChannelSource>>,
+}
+
+impl MessageSummary {
+    pub(crate) fn validate_mention_spans(&self, text: Option<&str>) -> Result<()> {
+        valid_mention_spans(
+            self.mention_spans
+                .iter()
+                .map(|span| (span.start, span.end, &span.participant.id)),
+            &self.mentions,
+            text,
+        )
+    }
 }
 
 /// One retained post ready to render without fetching its body or attachment metadata.
@@ -462,8 +512,8 @@ pub struct ChannelMessage {
 }
 
 impl ChannelMessage {
-    /// Count UTF-8 bytes of the body and variable-size metadata, including reference
-    /// identities. Raster bytes are fetched separately and do not count toward this budget.
+    /// Count UTF-8 bytes of the body and variable-size metadata, reference identities
+    /// and mention offsets. Raster bytes are fetched separately and do not count.
     pub fn content_bytes(&self) -> usize {
         let message = &self.message;
         self.text.len()
@@ -474,6 +524,15 @@ impl ChannelMessage {
                 .mentions
                 .iter()
                 .map(|id| id.as_ref().len())
+                .sum::<usize>()
+            + message
+                .mention_spans
+                .iter()
+                .map(|span| {
+                    size_of::<u32>() * 2
+                        + span.participant.id.as_ref().len()
+                        + span.participant.display_name.len()
+                })
                 .sum::<usize>()
             + message.reply_to.as_ref().map_or(0, |id| id.as_ref().len())
             + message.source.as_ref().map_or(0, |source| {
@@ -1061,6 +1120,36 @@ impl ChannelRequest {
             }
         }
     }
+}
+
+fn valid_mention_spans<'a>(
+    spans: impl ExactSizeIterator<Item = (u32, u32, &'a ParticipantId)>,
+    mentions: &[ParticipantId],
+    text: Option<&str>,
+) -> Result<()> {
+    ensure!(
+        spans.len() <= MAX_MENTIONS,
+        "channel mention span count exceeds limit"
+    );
+    let mut previous_end = 0;
+    for (start, end, participant_id) in spans {
+        ensure!(
+            previous_end <= start && start < end && end as usize <= MAX_POST_BYTES,
+            "invalid channel mention span interval"
+        );
+        ensure!(
+            text.is_none_or(|text| {
+                text.is_char_boundary(start as usize) && text.is_char_boundary(end as usize)
+            }),
+            "channel mention span is outside the body or splits a UTF-8 character"
+        );
+        ensure!(
+            mentions.contains(participant_id),
+            "channel mention span does not reference an addressed participant"
+        );
+        previous_end = end;
+    }
+    Ok(())
 }
 
 pub(crate) fn valid_id(value: &str) -> Result<()> {

@@ -1,7 +1,7 @@
 use super::*;
 use bkpr_protocol::channels::{
-    ChannelId, ChannelMentionBinding, ChannelPost, ChannelRequest, ChannelResponse, ChannelSource,
-    MembershipMode, MessageId, ParticipantId, PostIntent,
+    ChannelId, ChannelMentionBinding, ChannelMentionSpan, ChannelPost, ChannelRequest,
+    ChannelResponse, ChannelSource, MembershipMode, MessageId, ParticipantId, PostIntent,
 };
 use bkpr_protocol::{AgentReceiverMode, AgentWakeOutcome, LayoutNode, Window, Workspace};
 
@@ -297,6 +297,7 @@ fn post(id: &ChannelId, text: &str, intent: PostIntent) -> ChannelRequest {
             text: text.into(),
             intent,
             mentions: Vec::new(),
+            mention_spans: Vec::new(),
             reply_to: None,
             attachments: Vec::new(),
             source: None,
@@ -342,6 +343,15 @@ fn mention_as_user(id: &ChannelId, text: &str, binding: ChannelMentionBinding) -
         unreachable!()
     };
     post.mentions.push(binding.participant_id.clone());
+    post.mention_spans
+        .extend(
+            text.match_indices("@Same label")
+                .map(|(start, label)| ChannelMentionSpan {
+                    start: start as u32,
+                    end: (start + label.len()) as u32,
+                    participant_id: binding.participant_id.clone(),
+                }),
+        );
     ChannelRequest::PostUser {
         channel_id,
         post,
@@ -925,9 +935,20 @@ fn workspace_presets_repair_without_resetting_existing_channel() {
         ["#desk", "#team"]
     );
     let desk = &created["#desk"];
+    let persisted_settings: String = db
+        .query_row(
+            "SELECT settings FROM channels WHERE id=?1",
+            [desk.as_ref()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let defaults: ChannelSettings = serde_json::from_str(&persisted_settings).unwrap();
+    assert_eq!(defaults.user_wake, WakePolicy::AddressedOrAll);
+    assert_eq!(defaults.agent_wake, WakePolicy::AddressedOnly);
     let custom = ChannelSettings {
         user_wake: WakePolicy::None,
-        ..Default::default()
+        agent_wake: WakePolicy::None,
+        ..defaults
     };
     channel(
         &registry,
@@ -1281,42 +1302,36 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     };
     assert_eq!(denial(history(&foreign_channels[0].id)), denial(missing));
 
-    let desk = ChannelId("#desk".into());
+    let desk_alias = ChannelId("#desk".into());
     let team = ChannelId("#team".into());
-    let team_id = ChannelId(
-        listed["channels"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|entry| entry["name"] == "#team")
-            .unwrap()["id"]
-            .as_str()
-            .unwrap()
-            .into(),
-    );
-    let desk_id: ChannelId = serde_json::from_value(
-        listed["channels"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|entry| entry["name"] == "#desk")
-            .unwrap()["id"]
-            .clone(),
-    )
-    .unwrap();
+    let preset = |name: &str| {
+        ChannelId(
+            listed["channels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["name"] == name)
+                .unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .into(),
+        )
+    };
+    let desk = preset("#desk");
+    let team_id = preset("#team");
     let (a_mention, a_selector) = mention_and_launch(&registry, &sender, &team_id, &a_actor);
     assert_eq!(a_selector, a.grant.launch_id);
     let ChannelRequest::Post {
         channel_id,
         post: mut passive_post,
-    } = post(&desk, "passive desk", PostIntent::Note)
+    } = post(&desk_alias, "passive desk", PostIntent::Note)
     else {
         unreachable!()
     };
     let source_body = "東京".repeat(400);
     passive_post.text.clone_from(&source_body);
     passive_post.source = Some(Box::new(ChannelSource {
-        channel_id: desk_id.clone(),
+        channel_id: desk.clone(),
         message_id: MessageId("nested-dangling".into()),
     }));
     let passive = agent_channel(
@@ -1335,7 +1350,7 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
             message_id: MessageId("ordinary-dangling".into()),
         },
         ChannelSource {
-            channel_id: desk_id.clone(),
+            channel_id: desk.clone(),
             message_id: MessageId(sender.grant.token.clone()),
         },
     ] {
@@ -1364,6 +1379,73 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         agent_channel(&registry, &sender, history(&desk)).unwrap()["messages"],
         json!([passive["message"]])
     );
+    assert!(passive["message"].get("mention_spans").is_none());
+    let a_receiver = receiver(&registry, &a);
+    let b_receiver = receiver(&registry, &b);
+    assert!(subscribe(&registry, &a, &a_receiver).is_null());
+    assert!(subscribe(&registry, &b, &b_receiver).is_null());
+
+    let (b_mention, _) = mention_and_launch(&registry, &sender, &desk, &b_actor);
+    let text = "é @東京 + @東京";
+    let ChannelRequest::Post {
+        channel_id,
+        post: mut desk_post,
+    } = post(&desk_alias, text, PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    desk_post.mentions.push(b_mention.clone());
+    desk_post.mention_spans = text
+        .match_indices("@東京")
+        .map(|(start, label)| ChannelMentionSpan {
+            start: start as u32,
+            end: (start + label.len()) as u32,
+            participant_id: b_mention.clone(),
+        })
+        .collect();
+    let addressed = agent_channel(
+        &registry,
+        &sender,
+        ChannelRequest::Post {
+            channel_id,
+            post: desk_post,
+        },
+    )
+    .unwrap();
+    assert_eq!(addressed["wake_count"], 1);
+    assert_eq!(addressed["message"]["mentions"], json!([b_actor]));
+    assert_eq!(
+        addressed["message"]["mention_spans"],
+        json!([
+            {"start": 3, "end": 10, "participant": {"id": b_actor, "kind": "agent", "display_name": "Same label"}},
+            {"start": 13, "end": 20, "participant": {"id": b_actor, "kind": "agent", "display_name": "Same label"}}
+        ])
+    );
+    assert!(subscribe(&registry, &a, &a_receiver).is_null());
+    let targeted = subscribe(&registry, &b, &b_receiver);
+    let pointer = &targeted["channel_wake"];
+    assert_eq!(pointer["pending_count"], 1);
+    assert_eq!(pointer["addressed_message_id"], addressed["message"]["id"]);
+    assert!(pointer.get("mention_spans").is_none());
+    let desk_lookup = agent(
+        &registry,
+        &b,
+        AgentRequest::ChannelWake {
+            batch_id: pointer["batch_id"].as_str().unwrap().into(),
+            max_body_bytes: Some(4096),
+            include_source: false,
+        },
+    );
+    assert_eq!(desk_lookup["post"]["message"], addressed["message"]);
+    assert_eq!(desk_lookup["post"]["text"], text);
+    assert!(desk_lookup["messages"][0].get("mention_spans").is_none());
+    assert_eq!(
+        settle_wake(&registry, &b, &b_receiver, &targeted)["recorded"],
+        true
+    );
+    let retained = agent_channel(&registry, &b, history(&desk)).unwrap();
+    assert_eq!(retained["messages"][1], addressed["message"]);
+
     let addressed_post = |text| {
         let ChannelRequest::Post {
             channel_id,
@@ -1384,7 +1466,7 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         unreachable!()
     };
     let source = Box::new(ChannelSource {
-        channel_id: desk_id.clone(),
+        channel_id: desk.clone(),
         message_id: serde_json::from_value(passive["message"]["id"].clone()).unwrap(),
     });
     newest_post.source = Some(source.clone());
@@ -1440,8 +1522,6 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     )
     .unwrap();
     assert_eq!(next_broadcast["wake_count"], 2);
-    let a_receiver = receiver(&registry, &a);
-    let b_receiver = receiver(&registry, &b);
     registry
         .inner
         .channels
@@ -1521,7 +1601,7 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     assert_eq!(source_page["next_offset"], 3);
     assert_eq!(
         source_page["reply_target"],
-        json!({ "channel_id": desk_id, "reply_to": source.message_id }),
+        json!({ "channel_id": desk, "reply_to": source.message_id }),
     );
     assert!(source_page.get("source").is_none());
     let next_page = agent(
@@ -1661,7 +1741,6 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         true
     );
 
-    let desk = desk_id;
     let ChannelResponse::UserRoster { participants, .. } = channel(
         &registry,
         None,
@@ -1749,6 +1828,7 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
                 idempotency_key: "singleton-reply".into(),
                 intent: PostIntent::Report,
                 mentions: Vec::new(),
+                mention_spans: Vec::new(),
                 attachments: Vec::new(),
                 reply_to: Some(
                     serde_json::from_value(user["post"]["reply_target"]["reply_to"].clone())
@@ -1825,8 +1905,11 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     );
 
     let stale_binding = user_binding(&registry, &workspace, &team_id, &b);
-    let accepted_request =
-        mention_as_user(&team_id, "prior selected user post", stale_binding.clone());
+    let accepted_request = mention_as_user(
+        &team_id,
+        "prior @Same label user post",
+        stale_binding.clone(),
+    );
     let accepted = channel(&registry, None, accepted_request.clone()).unwrap();
     let racing = mention_as_user(
         &team_id,
@@ -1886,7 +1969,7 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     );
     let conflict = mention_as_user(
         &team_id,
-        "prior selected user post",
+        "prior @Same label user post",
         user_binding(&registry, &workspace, &team_id, &current),
     );
     let error = channel(&registry, None, conflict).unwrap_err().to_string();
@@ -1899,7 +1982,7 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     else {
         panic!("expected team history");
     };
-    assert_eq!(messages.last().unwrap().text, "prior selected user post");
+    assert_eq!(messages.last().unwrap().text, "prior @Same label user post");
     let current_receiver = receiver(&registry, &current);
     assert!(subscribe(&registry, &current, &current_receiver).is_null());
 }
@@ -2692,6 +2775,7 @@ fn concurrent_direct_sends_share_one_private_thread_and_keep_exact_receipts() {
         panic!("expected direct history");
     };
     assert_eq!(messages.len(), 2);
+    assert!(messages.iter().all(|m| m.message.mention_spans.is_empty()));
     for (receipt, body) in [(&a_post, "from A"), (&b_post, "from B")] {
         assert!(
             messages

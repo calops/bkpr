@@ -15,6 +15,7 @@
 * **channels:** expose a resumable session catalog and unread attention for local and SSH attachments ([#79](https://github.com/calops/bkpr/issues/79))
 * **channels:** route questions and reports through host notifications without sending chat bodies
 * **tui:** open workspace channels with drafts, exact mentions and unread attention without replacing native panes ([#77](https://github.com/calops/bkpr/issues/77))
+* **channels:** color exact inline agent mentions in newly authored posts and in the picker using the participant's transcript color.
 
 ### Bug Fixes
 
@@ -32,6 +33,7 @@
 * **tui:** keep chat in one pane with recessed sections. Use slightly lighter section interiors, tint the full composer, and match the edge materials to the pane and section fills.
 * **tui:** align workspace chat badges with pane status icons and extend selected sidebar highlights cleanly to the pane edge.
 * **tui:** center the empty chat, highlight channel rows on hover, and keep typing in the composer after channel or history clicks. Tab opens a separate channel chooser.
+* **channels:** new `#desk` channels wake only explicitly mentioned agents for agent-authored posts; existing settings are unchanged.
 
 ## [0.11.0](https://github.com/calops/bkpr/compare/v0.10.0...v0.11.0) (2026-11-23)
 

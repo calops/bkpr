@@ -332,6 +332,7 @@ mod tests {
                         text: String::new(),
                         intent: Default::default(),
                         mentions: vec![],
+                        mention_spans: vec![],
                         reply_to: None,
                         attachments: vec![],
                         source: None,

@@ -1378,19 +1378,21 @@ comes first, then `#team`, named channels and private agent threads. Selecting a
 pane or pressing Esc from the composer returns to the native application without
 closing its process. Local and SSH chats use the selected session's own channels.
 
-Tab moves between the composer and channel list. Use arrows and Enter to choose
-a channel. Narrow terminals show one section at a time. Typing and paste stay
-in chat even after clicking or scrolling history, unless the sidebar or a dialog
-owns focus. Each channel keeps its unsent draft. Enter sends. Shift-Enter adds a
-line only if the terminal reports it separately from Enter. Multiline paste never
-sends by itself. Right-click a message to reply to it. Pending and rejected sends
-are not shown as committed messages. Ctrl-r after an uncertain send retries
+Tab opens a channel chooser. Use arrows and Enter to choose; Esc cancels.
+On narrow terminals, use the Channels button to open the chooser from chat.
+Typing and paste stay in the composer after channel or history clicks unless the
+sidebar or a dialog owns focus. Each channel keeps its unsent draft. Enter sends.
+Shift-Enter adds a line only if the terminal reports it separately from Enter.
+Multiline paste never sends by itself. Right-click a message to reply. Pending
+and rejected sends are not shown as committed messages. Ctrl-r after an uncertain send retries
 only the exact original post and key.
 
 Type `@` in ordinary text and choose an agent from the channel's current roster.
 The roster shows separate entries for duplicate names. Code, quotes and pasted
 `@` text don't select a recipient. The user post includes the selected launch
 and native binding so replacing or rebinding an agent cannot redirect the send.
+In history, authenticated inline agent mentions use the same participant color
+as the agent's nickname. Identical pasted text or code does not inherit that color.
 The mention picker shows wake scope when space permits. `#desk` starts with
 addressed agents or all if none are selected; `#team` starts with all eligible agents.
 Use the channel list controls or press Ctrl-n to create a channel and Alt-e to
@@ -2103,16 +2105,22 @@ An uploaded image is staged for 24 hours until a post references it. A session
 can stage up to 64 MiB across its channels. Uploads reclaim expired stages;
 posted images are retained with their messages and don't count toward this limit.
 
-New workspaces get two ordinary, workspace-wide channels. `#desk` requests a
-wake for all eligible agents on a user post unless it mentions specific agents.
-Agent posts request no wakes; questions and reports request user attention.
-`#team` requests a wake for all eligible agents except the author unless the post
-mentions specific agents. It does not request user attention. Authorized agents
-who arrive later join workspace-wide channels automatically. The session user can change these
-settings; reopening or repairing a workspace creates only missing presets.
-If channel storage is unavailable, the workspace can still open and run panes;
-listing or creating channels retries provisioning and reports any remaining
-storage error.
+An agent posting with explicit mentions can add `mention_spans` to color their
+inline occurrences. Each range uses half-open UTF-8 byte offsets (`start`, `end`)
+in the original `text` and an exact `mention_id` already listed in `mentions`.
+These optional spans never route delivery. History keeps the resolved participant
+identity from commit time; records without spans are not inferred from text.
+
+New workspaces get two ordinary, workspace-wide channels. `#desk` wakes all
+eligible agents for a user post unless it mentions specific agents. Agent posts
+wake only the eligible agents they explicitly mention. Agent questions and
+reports request user attention. `#team` wakes all eligible agents except the
+author unless the post mentions specific agents, and requests no user attention.
+Authorized agents who arrive later join workspace-wide channels automatically.
+The session user can change these settings; reopening or repairing a workspace
+creates only missing presets. If channel storage is unavailable, the workspace
+can still open and run panes; listing or creating channels retries provisioning
+and reports any remaining storage error.
 
 An agent resumes its explicit memberships only when the backend's reserved
 native recovery verifies the same saved participant in the same workspace.

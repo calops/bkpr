@@ -4662,7 +4662,7 @@ impl App {
             (event_button, action)
         });
         let chat_target = self.chat.visible() && hits.hit_test(mouse.x, mouse.y) == Some("ui:chat");
-        if !chat_target || action != MouseAction::Motion || event_button != MouseButton::None {
+        if !chat_target || wheel {
             self.chat.hover_channel(None);
         }
         if matches!(self.pointer_capture, Some(PointerCapture::ChatSelection)) {
@@ -5090,7 +5090,8 @@ impl App {
                     {
                         let workspace =
                             matches!(&target.node, TreeNode::Native(SidebarTarget::Workspace(_)));
-                        let released_disclosure = workspace && mouse.x == row.icon_column() + 1;
+                        let released_disclosure = workspace
+                            && (row.icon_column()..row.content_column()).contains(&mouse.x);
                         if disclosure != released_disclosure {
                             false
                         } else if disclosure {
@@ -5174,7 +5175,8 @@ impl App {
                                 .get(tree.scroll + usize::from(mouse.y.saturating_sub(2)))
                                 .is_some_and(|row| {
                                     row.target.as_ref() == Some(target)
-                                        && mouse.x == row.icon_column() + 1
+                                        && (row.icon_column()..row.content_column())
+                                            .contains(&mouse.x)
                                 });
                     (target.clone(), disclosure)
                 });
@@ -5188,9 +5190,12 @@ impl App {
         if origin.is_none() && chat_target {
             let rect = self.chat_content(self.screen_geometry(size).1);
             if self.chat.geometry() == rect && rect.contains(mouse.x, mouse.y) {
-                if action == MouseAction::Motion
-                    && event_button == MouseButton::None
-                    && captured.is_none()
+                if captured.is_none()
+                    && matches!(
+                        (action, event_button),
+                        (MouseAction::Motion, MouseButton::None)
+                            | (MouseAction::Press, MouseButton::Left)
+                    )
                 {
                     self.chat.hover_channel(Some((mouse.x, mouse.y)));
                 }

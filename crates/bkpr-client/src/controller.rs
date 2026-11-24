@@ -1019,6 +1019,7 @@ struct NativeRowContext<'a> {
     projects: &'a crate::project_colors::ProjectSlots,
     known: Option<&'a PaneSnapshot>,
     width: u16,
+    workspace_chat: Option<char>,
     row: u16,
     highlighted: bool,
 }
@@ -1129,6 +1130,7 @@ fn native_row_label(
         projects,
         known,
         width,
+        workspace_chat,
         row,
         highlighted,
     } = context;
@@ -1144,24 +1146,35 @@ fn native_row_label(
                 .filter(|pane| pane.workspace_id.as_ref() == Some(&workspace.id))
                 .filter_map(|pane| pane.project.as_ref())
                 .filter_map(|project| project.ci.as_ref());
-            let badge = collapsed
-                && sources.count() > 0
-                && width.saturating_sub(entry.content_column()) >= 6;
             let available = width.saturating_sub(entry.content_column());
+            let caption_width = if workspace_chat.is_some() {
+                // Leave a word gap before the glyph when there is room. The
+                // glyph itself ends the text row, just like a pane status.
+                available.saturating_sub(2)
+            } else {
+                available
+            };
+            let badge = collapsed && sources.count() > 0 && caption_width >= 6;
             let suffix = if badge {
                 3
-            } else if collapsed && available >= 5 {
+            } else if collapsed && caption_width >= 5 {
                 4
             } else {
                 0
             };
-            label.push_str(if collapsed { "●▸" } else { "●▾" });
-            SidebarCaptionPart::fit(&workspace.name, available.saturating_sub(suffix))
-                .push_to(&mut label);
+            label.push_str("● ");
+            let name =
+                SidebarCaptionPart::fit(&workspace.name, caption_width.saturating_sub(suffix));
+            name.push_to(&mut label);
             if badge {
                 write!(label, " {} ", crate::ci::WORKFLOW).unwrap();
             } else if suffix > 0 {
                 label.push_str(" ···");
+            }
+            if let Some(glyph) = workspace_chat {
+                let padding = available - 1 - name.width - suffix;
+                label.extend(std::iter::repeat_n(' ', usize::from(padding)));
+                label.push(glyph);
             }
         }
         SidebarRowKind::Projects { index } => {
@@ -1308,42 +1321,26 @@ pub(crate) fn tree_artwork_rows(
         .skip(tree.scroll)
         .take(available)
         .enumerate()
-        .flat_map(move |(index, row)| {
+        .filter_map(move |(index, row)| {
             use crate::chrome_graphics::Artwork;
-            let y = index as u16 + 2;
-            let chat = workspace_chat_column(row, row_width)
-                // The SVG takes this column and the cell immediately to its left.
-                // At minimum width keep the text marker instead of the image.
-                .filter(|&column| row.content_column() < column)
-                .map(|column| {
-                    let icon = if tree.channel_attention(row) {
-                        Artwork::ChatAlert
-                    } else {
-                        Artwork::Chat
-                    };
-                    (row.owner, icon, column, y)
-                });
             let artwork = match row.kind {
-                crate::tree::Kind::Native(SidebarRowKind::Workspace { .. }) => {
-                    crate::chrome_graphics::Artwork::Hive
-                }
+                crate::tree::Kind::Native(SidebarRowKind::Workspace { .. }) => Artwork::Hive,
                 crate::tree::Kind::Native(SidebarRowKind::Pane { projected, .. }) => {
                     if projected {
-                        crate::chrome_graphics::Artwork::Bee
+                        Artwork::Bee
                     } else {
-                        crate::chrome_graphics::Artwork::BeeHidden
+                        Artwork::BeeHidden
                     }
                 }
-                _ => return [None, chat].into_iter().flatten(),
+                _ => return None,
             };
             let column = row.icon_column();
-            [
-                (column + 2 <= row_width.saturating_sub(1))
-                    .then_some((row.owner, artwork, column, y)),
-                chat,
-            ]
-            .into_iter()
-            .flatten()
+            (column + 2 <= row_width.saturating_sub(1)).then_some((
+                row.owner,
+                artwork,
+                column,
+                index as u16 + 2,
+            ))
         })
 }
 fn render_chrome(
@@ -1443,10 +1440,13 @@ fn render_chrome(
                         projects: tree.project_slots(entry.owner),
                         entry,
                         known,
-                        width: chat_column.map_or(row_width, |column| {
-                            let content = entry.content_column();
-                            let gap = u16::from(column.saturating_sub(content) >= 3);
-                            (column - 1 - gap).max(content)
+                        width: row_width,
+                        workspace_chat: chat_column.map(|_| {
+                            if tree.channel_attention(entry) {
+                                '\u{f0b7a}'
+                            } else {
+                                '\u{f0ede}'
+                            }
                         }),
                         row,
                         highlighted,
@@ -1472,7 +1472,7 @@ fn render_chrome(
             cursor.y = row;
         }
         let row_selected = selected_tree_row(entry, tree, session, active) && !plate;
-        if row_selected {
+        if row_selected && chat_column.is_none() {
             let columns = unicode_width::UnicodeWidthStr::width(label.as_str());
             label.extend(std::iter::repeat_n(
                 ' ',
@@ -1486,14 +1486,6 @@ fn render_chrome(
             label,
             row_selected,
         ));
-        if let Some(column) = chat_column {
-            let glyph = if tree.channel_attention(entry) {
-                "!"
-            } else {
-                "◇"
-            };
-            lines.push(line(column, row, 1, glyph, row_selected));
-        }
         if let Some(thumb) = &rows.scrollbar {
             let glyph = if thumb.contains(&(index as u16)) {
                 "┃"
@@ -2640,7 +2632,7 @@ mod tests {
 
     #[test]
     fn workspace_badge_shares_the_pane_status_column_with_or_without_scrollbar() {
-        use crate::{chrome_graphics::Artwork, tree::Tree};
+        use crate::tree::Tree;
         use std::sync::Arc;
 
         let mut session = session_fixture(FIXTURE_OWNER, "local");
@@ -2667,10 +2659,12 @@ mod tests {
             .content_column()
             + 1;
         let scroll_guide_rows = size.rows - tree.rows.len() as u16 - 1;
-        for (columns, guide_rows, scrolled, artwork, glyph) in [
-            (None, 0, false, Some(Artwork::Chat), "◇"),
-            (None, scroll_guide_rows, true, Some(Artwork::ChatAlert), "!"),
-            (Some(narrow), 0, false, None, "◇"),
+        for (columns, guide_rows, scrolled, attention, glyph) in [
+            (None, 0, false, false, "\u{f0ede}"),
+            (None, 0, false, true, "\u{f0b7a}"),
+            (None, scroll_guide_rows, true, false, "\u{f0ede}"),
+            (None, scroll_guide_rows, true, true, "\u{f0b7a}"),
+            (Some(narrow), 0, false, false, "\u{f0ede}"),
         ] {
             tree.preferred_columns = columns;
             let sidebar = screen_geometry(size, columns).0;
@@ -2683,7 +2677,10 @@ mod tests {
             );
             tree.set_channel_attention(
                 FIXTURE_OWNER,
-                scrolled.then(|| workspace_id.clone()).into_iter().collect(),
+                attention
+                    .then(|| workspace_id.clone())
+                    .into_iter()
+                    .collect(),
             );
             let hits = super::tree_chrome(
                 &mut surface,
@@ -2709,24 +2706,33 @@ mod tests {
                 .unwrap()
                 .1;
             let col = sidebar.width - 1 - u16::from(scrolled);
-            let badge = super::tree_artwork_rows(&tree, size, guide_rows)
-                .find(|(_, icon, _, _)| matches!(icon, Artwork::Chat | Artwork::ChatAlert))
-                .map(|(_, icon, col, row)| (icon, col, row));
-            assert_eq!(badge, artwork.map(|icon| (icon, col, row)));
             let col = usize::from(col);
             let row = usize::from(row);
             let cells = &surface.frame.rows;
             assert_eq!(cells[row].cells[col].text, glyph);
-            if artwork.is_some() {
+            assert_eq!(cells[row].cells[col].width, 1);
+            let right = &cells[row].cells[col + 1];
+            if columns.is_none() {
                 assert_eq!(cells[row].cells[col - 1].text, " ");
-                assert_eq!(cells[row].cells[col - 2].text, " ");
-                assert_eq!(cells[row].cells[col - 3].text, "…");
-                assert!(cells.iter().any(|pane| pane.cells[col].text == "\u{f0150}"));
+                assert_eq!(cells[row].cells[col - 2].text, "…");
+                let pane = cells
+                    .iter()
+                    .find(|pane| pane.cells[col].text == "\u{f0150}")
+                    .expect("visible pane uses the same status column");
+                assert_eq!(pane.cells[col].width, 1);
+                if scrolled {
+                    assert!(matches!(pane.cells[col + 1].text.as_str(), "┃" | "│"));
+                } else {
+                    assert_eq!(pane.cells[col + 1].text, right.text);
+                }
             } else {
-                assert!(matches!(cells[row].cells[col - 1].text.as_str(), "▾" | "▸"));
+                assert_eq!(cells[row].cells[col - 2].text, "●");
+                assert_eq!(cells[row].cells[col - 1].text, " ");
             }
             if scrolled {
-                assert!(matches!(cells[row].cells[col + 1].text.as_str(), "┃" | "│"));
+                assert!(matches!(right.text.as_str(), "┃" | "│"));
+            } else {
+                assert_eq!(right.text, " ");
             }
         }
     }
@@ -2924,7 +2930,7 @@ mod tests {
                 let start = entry.content_column();
                 let width = start + budget;
                 let workspace_marker = if matches!(target, SidebarTarget::Workspace(_)) {
-                    if budget < 2 { 2 } else { 3 }
+                    2
                 } else {
                     0
                 };

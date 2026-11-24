@@ -7,9 +7,9 @@ use bkpr_protocol::ChannelAttentionKind;
 use bkpr_protocol::channels::{
     AttachmentDescriptor, AttachmentId, AttachmentUpload, ChannelChange, ChannelChangeKind,
     ChannelCursor, ChannelId, ChannelMentionBinding, ChannelMessage, ChannelPost, ChannelRequest,
-    ChannelResponse, ChannelRosterEntry, ChannelSettings, ChannelSummary, MAX_HISTORY_BYTES,
-    MembershipMode, MessageId, MessageSummary, Participant, ParticipantId, ParticipantKind,
-    PostIntent, WakePolicy,
+    ChannelResolvedMentionSpan, ChannelResponse, ChannelRosterEntry, ChannelSettings,
+    ChannelSummary, MAX_HISTORY_BYTES, MAX_MENTIONS, MembershipMode, MessageId, MessageSummary,
+    Participant, ParticipantId, ParticipantKind, PostIntent, WakePolicy,
 };
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior, params,
@@ -50,7 +50,7 @@ const PRESETS: [(&str, ChannelSettings); 2] = [
         "#desk",
         ChannelSettings {
             user_wake: WakePolicy::AddressedOrAll,
-            agent_wake: WakePolicy::None,
+            agent_wake: WakePolicy::AddressedOnly,
             attention_questions: true,
             attention_reports: true,
         },
@@ -1055,6 +1055,7 @@ impl Store {
             None => member(participant, explicit_members),
         };
         let mut addressed_agent = false;
+        let mut span_targets = [None; MAX_MENTIONS];
         for mention in &mut post.mentions {
             let target = if let Some(bindings) = bindings {
                 user_mention(&authority, mention, bindings)
@@ -1073,10 +1074,27 @@ impl Store {
                 "channel mention no longer names a current member; refresh the roster"
             })?;
             addressed_agent |= target.kind == ParticipantKind::Agent;
+            for (span, snapshot) in post.mention_spans.iter().zip(&mut span_targets) {
+                if span.participant_id == *mention {
+                    *snapshot = Some(target);
+                }
+            }
             if *mention != target.id {
                 mention.clone_from(&target.id);
             }
         }
+        let mention_spans = post
+            .mention_spans
+            .into_iter()
+            .zip(&span_targets)
+            .map(|(span, target)| ChannelResolvedMentionSpan {
+                start: span.start,
+                end: span.end,
+                participant: target
+                    .expect("span names a validated routing target")
+                    .clone(),
+            })
+            .collect();
         let mut wakes = Vec::new();
         if may_wake {
             for entry in recipients {
@@ -1118,6 +1136,7 @@ impl Store {
             posted_at_ms: unix_time_ms()?,
             intent: post.intent,
             mentions: post.mentions,
+            mention_spans,
             reply_to: post.reply_to,
             attachments: post.attachments,
             source: post.source,
@@ -1482,11 +1501,21 @@ impl Store {
              ORDER BY sequence DESC LIMIT ?4"
         };
         let mut statement = self.connection.prepare(sql)?;
-        let mut messages = statement
-            .query_map(params![channel_id.as_ref(), lower, upper, limit], |row| {
-                json::<MessageSummary>(row, 0)
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut rows = statement.query(params![channel_id.as_ref(), lower, upper, limit])?;
+        let mut messages = Vec::<MessageSummary>::new();
+        let mut remaining = MAX_HISTORY_BYTES;
+        while let Some(row) = rows.next()? {
+            let summary = row.get_ref(0)?.as_str()?;
+            let Some(bytes_left) = remaining.checked_sub(summary.len()) else {
+                ensure!(
+                    !messages.is_empty(),
+                    "channel message summary exceeds the history page budget"
+                );
+                break;
+            };
+            messages.push(serde_json::from_str(summary)?);
+            remaining = bytes_left;
+        }
         if after.is_none() {
             messages.reverse();
         }
