@@ -2125,6 +2125,7 @@ fn channel_history_reopens_on_the_same_session_only() {
     );
     let custom = ChannelSettings {
         user_wake: WakePolicy::AddressedOnly,
+        agent_wake: WakePolicy::None,
         ..desk.settings
     };
     send(
