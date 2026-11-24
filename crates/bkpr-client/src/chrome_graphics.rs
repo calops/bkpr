@@ -257,7 +257,7 @@ impl ChromeGraphics {
         if self.0.is_enabled()
             && let Some(styles) = &self.1
         {
-            self.0.retain_decoration_sources(frame, &styles[5..6]);
+            self.0.retain_decoration_sources(frame, &styles[5..7]);
         }
     }
 
@@ -441,9 +441,10 @@ impl ChromeGraphics {
         card: Rect,
         text_body: Rect,
         base: u32,
+        accent: Option<u8>,
     ) -> bool {
         let before = frame.placements.len();
-        self.decorate_region_clipped(frame, card, text_body, base, None, Some(card))
+        self.decorate_region_clipped(frame, card, text_body, base, accent, Some(card))
             && frame.placements.len() != before
     }
 
@@ -812,7 +813,7 @@ mod tests {
             assert!(chrome.decorate_guide(&mut rich, guide, body, 256, accent));
         }
         let mut inlay = bkpr_tui_framework::graphics_frame(size);
-        assert!(chrome.decorate_inlay(&mut inlay, guide, body, 1));
+        assert!(chrome.decorate_inlay(&mut inlay, guide, body, 1, None));
         assert!(!inlay.placements.is_empty());
         let edges = |rect: Rect| {
             [

@@ -27,8 +27,9 @@
 * **channels:** keep wakes live under channel-store pressure, fence recipient callbacks at admission, and preserve native receipts through membership removal ([#75](https://github.com/calops/bkpr/issues/75))
 * **channels:** return canonical reply targets on exact reads and reject source-linked writes on older native peers before dispatch ([#75](https://github.com/calops/bkpr/issues/75))
 * **agents:** scope native collaboration approvals to verified managed Claude registrations and fresh, admitted Codex threads
-* **tui:** retain recent channel history when switching and use pane borders with separate channel, thread and composer inlays. Shift-Enter is the only newline shortcut.
+* **tui:** retain recent channel history when switching. Shift-Enter is the only newline shortcut.
 * **tui:** copy a chat history selection without leaving the composer, edit drafts with readline shortcuts, and label new posts and mentions with the effective pane title.
+* **tui:** align chat with native pane padding, tint the composer like overlay inputs, and keep routine hints and wake text out of the thread.
 
 ## [0.11.0](https://github.com/calops/bkpr/compare/v0.10.0...v0.11.0) (2026-11-23)
 

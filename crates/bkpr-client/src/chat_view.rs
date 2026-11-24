@@ -1,10 +1,13 @@
 use super::{Anchor, Chat, Draft, Focus, Send, chat_images};
-use bkpr_protocol::{Cursor, CursorShape, Frame, SelectionSpan, Size, channels::*};
+use bkpr_protocol::{
+    ColorSource, Cursor, CursorShape, Frame, SelectionSpan, Size, Style, channels::*,
+};
 use bkpr_tui_framework::{
     Rect, Role, Theme, UiSurface, clear, graphics_frame, markdown, safe_text, text, text_width,
     window,
 };
 use std::{
+    borrow::Cow,
     collections::{HashMap, VecDeque},
     hash::{DefaultHasher, Hash, Hasher},
 };
@@ -165,11 +168,12 @@ pub(super) struct Paint {
     pub(super) surface: UiSurface,
     pub(super) rendered: Vec<u64>,
     hits: Vec<(Rect, Hit)>,
-    inlays: Vec<(Rect, Rect)>,
+    inlays: Vec<(Rect, Rect, Option<u8>)>,
     inlay_mask: Option<u8>,
     outer: Rect,
     images: Frame,
     history: Rect,
+    composer_width: u16,
     ranges: Vec<Range>,
     start: usize,
     tail: usize,
@@ -189,6 +193,7 @@ struct PaintKey {
     read_only: bool,
     graphics: bool,
     focused: bool,
+    backgrounds: [ColorSource; 2],
 }
 
 impl Default for Paint {
@@ -203,11 +208,12 @@ impl Default for Paint {
             surface: UiSurface::new(initial),
             rendered: Vec::new(),
             hits: Vec::new(),
-            inlays: Vec::with_capacity(3),
+            inlays: Vec::with_capacity(2),
             inlay_mask: None,
             outer: Rect::default(),
             images: graphics_frame(initial),
             history: Rect::default(),
+            composer_width: 1,
             ranges: Vec::new(),
             start: 0,
             tail: 0,
@@ -243,7 +249,7 @@ impl Paint {
         self.history.height.saturating_sub(1)
     }
     pub(super) fn composer_width(&self) -> u16 {
-        self.history.width.saturating_sub(3).max(1)
+        self.composer_width
     }
 
     pub(super) fn scroll(&mut self, delta: isize) -> Option<(Anchor, bool)> {
@@ -275,6 +281,7 @@ impl Paint {
         self.key = Some(key);
         self.outer = key.outer;
         self.history = Rect::default();
+        self.composer_width = 1;
         self.ranges.clear();
         self.rendered.clear();
         self.hits.clear();
@@ -306,28 +313,122 @@ impl Paint {
     }
 
     fn line(&mut self, theme: &Theme, rect: Rect, value: &str, role: Role, selected: bool) {
+        self.styled_line(rect, value, role_style(theme, role, selected), selected);
+    }
+
+    fn card_line(
+        &mut self,
+        theme: &Theme,
+        rect: Rect,
+        value: &str,
+        role: Role,
+        selected: bool,
+        background: ColorSource,
+    ) {
+        if selected {
+            self.styled_line(rect, value, theme.selected_style(role), true);
+        } else {
+            self.styled_line(rect, value, &card_style(theme, role, background), false);
+        }
+    }
+
+    fn styled_line(&mut self, rect: Rect, value: &str, style: &Style, selected: bool) {
         if rect.height > 0 && rect.width > 0 {
-            draw(
-                &mut self.surface.frame,
-                theme,
+            let frame = &mut self.surface.frame;
+            let value = window::fit(value, rect.width);
+            text(frame, rect.x, rect.y, &value, selected);
+            style_cells(
+                frame,
                 rect.x,
                 rect.y,
-                &window::fit(value, rect.width),
-                role,
-                selected,
+                text_width(&value) as u16,
+                style,
                 None,
             );
         }
     }
 
-    fn inlay(&mut self, outer: Rect) -> Rect {
+    fn fill_card(&mut self, theme: &Theme, body: Rect, background: ColorSource) {
+        let style = card_style(theme, Role::Base, background);
+        for y in body.y..body.y + body.height {
+            style_cells(&mut self.surface.frame, body.x, y, body.width, &style, None);
+        }
+    }
+
+    fn inlay(
+        &mut self,
+        theme: &Theme,
+        outer: Rect,
+        background: ColorSource,
+        accent: Option<u8>,
+    ) -> Rect {
         let mut body = window::content(outer.size(self.surface.frame.size));
         body.x += outer.x;
         body.y += outer.y;
         if body != outer {
-            self.inlays.push((outer, body));
+            self.inlays.push((outer, body, accent));
         }
+        self.fill_card(theme, body, background);
         body
+    }
+
+    fn channel_controls(
+        &mut self,
+        theme: &Theme,
+        body: Rect,
+        background: ColorSource,
+        settings: bool,
+        create: bool,
+    ) {
+        let (settings, create) = match (settings, create, body.width) {
+            (true, true, 18..) => ("[Settings]", "[+ New]"),
+            (true, true, 13..) => ("Settings", "+New"),
+            (true, true, 7..) => ("[S]", "[+]"),
+            (true, true, _) => ("S", "+"),
+            (true, false, 10..) => ("[Settings]", ""),
+            (true, false, _) => ("S", ""),
+            (false, true, 7..) => ("", "[+ New]"),
+            (false, true, _) => ("", "+"),
+            (false, false, _) => ("", ""),
+        };
+        let mut remaining = body.width;
+        for (label, hit) in [(create, Hit::Create), (settings, Hit::Manage)] {
+            let width = (label.len() as u16).min(remaining);
+            if width > 0 {
+                remaining -= width;
+                let bounds = row(body.x + remaining, body.y, width);
+                self.card_line(theme, bounds, label, Role::Info, false, background);
+                self.target(bounds, hit);
+                if remaining > settings.len() as u16 || matches!(hit, Hit::Manage) {
+                    remaining = remaining.saturating_sub(1);
+                }
+            }
+        }
+        if remaining >= 8 {
+            self.card_line(
+                theme,
+                row(body.x, body.y, remaining),
+                "Channels",
+                Role::Title,
+                false,
+                background,
+            );
+        }
+    }
+
+    fn channels_button(
+        &mut self,
+        theme: &Theme,
+        bounds: Rect,
+        label: &str,
+        background: Option<ColorSource>,
+    ) {
+        if let Some(background) = background {
+            self.card_line(theme, bounds, label, Role::Info, false, background);
+        } else {
+            self.line(theme, bounds, label, Role::Info, false);
+        }
+        self.target(bounds, Hit::List);
     }
 
     fn target(&mut self, rect: Rect, hit: Hit) {
@@ -423,7 +524,7 @@ impl HistoryRow {
 }
 
 impl Chat {
-    pub(in crate::app) fn inlays(&self) -> &[(Rect, Rect)] {
+    pub(in crate::app) fn inlays(&self) -> &[(Rect, Rect, Option<u8>)] {
         &self.paint.inlays
     }
 
@@ -434,7 +535,7 @@ impl Chat {
         }
         paint.inlay_mask = Some(mask);
         for index in 0..paint.inlays.len() {
-            let (outer, _) = paint.inlays[index];
+            let outer = paint.inlays[index].0;
             for (mut rect, label, _) in window::border_rows(
                 outer.size(paint.surface.frame.size),
                 "",
@@ -636,6 +737,7 @@ impl Chat {
         Ok(Some(result))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::app) fn paint(
         &mut self,
         outer: Rect,
@@ -644,6 +746,7 @@ impl Chat {
         read_only: bool,
         graphics: bool,
         focused: bool,
+        backgrounds: [ColorSource; 2],
     ) {
         let size = outer.size(screen);
         let key = PaintKey {
@@ -653,6 +756,7 @@ impl Chat {
             read_only,
             graphics,
             focused,
+            backgrounds,
         };
         if self.paint.key == Some(key) {
             return;
@@ -676,6 +780,7 @@ impl Chat {
             read_only,
             graphics,
             focused,
+            backgrounds: [list_background, composer_background],
             ..
         } = key;
         self.images.start_frame();
@@ -702,6 +807,12 @@ impl Chat {
         } else {
             0
         };
+        let summary = self
+            .active
+            .as_ref()
+            .and_then(|active| self.catalog.get(&active.id));
+        let writing = !read_only && summary.is_some_and(|summary| !summary.direct);
+        let can_create = !read_only && self.catalog_ready && self.catalog_error.is_none();
         if list_width > 0 {
             let outer = Rect {
                 x: 0,
@@ -709,15 +820,9 @@ impl Chat {
                 width: list_width,
                 height: size.rows,
             };
-            let body = paint.inlay(outer);
-            paint.line(
-                theme,
-                row(body.x, body.y, body.width),
-                "Channels",
-                Role::Title,
-                false,
-            );
+            let body = paint.inlay(theme, outer, list_background, None);
             paint.target(outer, Hit::List);
+            paint.channel_controls(theme, body, list_background, writing, can_create);
             let list_height = body.height.saturating_sub(1);
             let selected = self.active.as_ref().map(|active| &active.id);
             let offset = self
@@ -750,7 +855,7 @@ impl Chat {
                 } else {
                     Role::Base
                 };
-                paint.line(theme, bounds, &full, role, chosen);
+                paint.card_line(theme, bounds, &full, role, chosen, list_background);
                 paint.target(bounds, Hit::Channel(index));
             }
         }
@@ -759,100 +864,118 @@ impl Chat {
         }
         let left = list_width + u16::from(channels_wide);
         let columns = size.cols.saturating_sub(left);
-        let summary = self
-            .active
-            .as_ref()
-            .and_then(|active| self.catalog.get(&active.id));
-        let header = if let Some(summary) = summary {
-            channel_name(summary)
-        } else if self.catalog_error.is_some() {
-            " Channels unavailable".into()
-        } else if self.catalog_ready {
-            " No channels".into()
-        } else {
-            " Loading channels…".into()
-        };
-        let button = if channels_wide { "" } else { "[Channels] " };
-        let button_width = (text_width(button) as u16).min(columns);
-        if button_width > 0 {
-            let bounds = row(left, 0, button_width);
-            paint.line(theme, bounds, button, Role::Info, false);
-            paint.target(bounds, Hit::List);
-        }
-        let mut right = size.cols;
-        if !read_only && columns >= 34 {
-            right -= 8;
-            let target = row(right, 0, 8);
-            paint.line(theme, target, "[+ New]", Role::Info, false);
-            paint.target(target, Hit::Create);
-            if summary.is_some_and(|summary| !summary.direct) {
-                right -= 11;
-                let target = row(right, 0, 11);
-                paint.line(theme, target, "[Settings]", Role::Info, false);
-                paint.target(target, Hit::Manage);
-            }
-        }
-        paint.line(
-            theme,
-            row(
-                left + button_width,
-                0,
-                right.saturating_sub(left + button_width),
-            ),
-            &header,
-            Role::Title,
-            false,
-        );
-        let Some(active) = &mut self.active else {
-            if let Some(error) = &self.catalog_error {
-                paint.line(theme, row(left, 1, columns), error, Role::Error, false);
-            }
-            return;
-        };
-        let Some(summary) = self.catalog.get(&active.id) else {
+        let (Some(active), Some(summary)) = (&mut self.active, summary) else {
+            let reserve = if channels_wide {
+                0
+            } else {
+                let (label, reserve) = narrow_channels_button(columns, 8);
+                paint.channels_button(theme, row(left, 0, text_width(label) as u16), label, None);
+                reserve
+            };
+            let (label, role) = if let Some(error) = &self.catalog_error {
+                (error.as_str(), Role::Error)
+            } else if self.catalog_ready {
+                ("No channels", Role::Muted)
+            } else {
+                ("Loading channels…", Role::Muted)
+            };
+            paint.line(
+                theme,
+                row(left + reserve, 0, columns - reserve),
+                label,
+                role,
+                false,
+            );
             return;
         };
         let draft = self.drafts.get(&active.id);
-        let writing = !read_only && !summary.direct;
-        let inset = u16::from(columns >= 3 && size.rows >= 9);
-        let (draft_lines, caret_line) = draft.map_or_else(
-            || (Vec::new(), 0),
-            |draft| draft.lines(usize::from(columns.saturating_sub(3 + 2 * inset))),
-        );
-        let composer_rows = if writing {
+        let history = &mut active.history;
+        let new = summary
+            .last_sequence
+            .saturating_sub(history.paused_at.unwrap_or_else(|| history.latest()));
+        let status = if let Some(send) = self.sends.get(&active.id) {
+            let (role, label) = match send {
+                Send::Pending(_) => (Role::Info, "Sending…"),
+                Send::Unknown(_) => (
+                    Role::Error,
+                    "Send outcome unknown · Ctrl-r retries the same post",
+                ),
+            };
+            Some((role, Cow::Borrowed(label), None))
+        } else if let Some(error) =
+            draft.and_then(|draft| draft.error.as_deref().or(draft.input.error()))
+        {
+            Some((Role::Error, Cow::Borrowed(error), None))
+        } else if let Some(error) = &history.error {
+            Some((Role::Error, Cow::Borrowed(error.as_str()), None))
+        } else if let Some((role, notice)) = &self.notice {
+            Some((*role, Cow::Borrowed(notice.as_str()), None))
+        } else if history.anchor.is_some() || new > 0 && history.loaded {
+            Some((
+                Role::Info,
+                if new > 0 {
+                    Cow::Owned(format!("{new} new · [Latest]"))
+                } else {
+                    Cow::Borrowed("Reading history · [Latest]")
+                },
+                Some(Hit::Latest),
+            ))
+        } else {
+            None
+        };
+        let status_rows = u16::from(status.is_some() && size.rows > 1);
+        let has_composer = writing && size.rows > 1 + status_rows;
+        let inset = u16::from(has_composer && columns >= 5 && size.rows >= 5);
+        let composer_columns = columns.saturating_sub(2 * inset);
+        let (button, button_width) = if channels_wide {
+            ("", 0)
+        } else if has_composer {
+            narrow_channels_button(composer_columns, 8)
+        } else {
+            narrow_channels_button(columns, 34)
+        };
+        let history_indent = if has_composer { 0 } else { button_width };
+        let (draft_lines, caret_line) = if has_composer {
+            paint.composer_width = composer_columns.saturating_sub(button_width + 3).max(1);
+            draft.map_or_else(
+                || (Vec::new(), 0),
+                |draft| draft.lines(usize::from(paint.composer_width)),
+            )
+        } else {
+            (Vec::new(), 0)
+        };
+        let composer_rows = if has_composer {
             (draft_lines.len().max(1) as u16)
                 .min(4)
-                .min(size.rows.saturating_sub(3 + 4 * inset))
+                .min(size.rows - 1 - status_rows - 2 * inset)
         } else {
             0
         };
+        let composer_at = size.rows - composer_rows - 2 * inset;
         let choices = if active.roster_ready {
             draft.map_or(0, |draft| draft.choices(&active.roster).count())
         } else {
             0
         };
-        let completion_rows = if draft.is_some_and(|draft| draft.completion.is_some()) && writing {
-            (choices.max(1) as u16).min(size.rows.saturating_sub(composer_rows + 4 + 4 * inset))
-        } else {
-            0
+        let completion_rows =
+            if has_composer && draft.is_some_and(|draft| draft.completion.is_some()) {
+                (choices.max(1) as u16).min(composer_at.saturating_sub(1 + status_rows))
+            } else {
+                0
+            };
+        let completion_at = composer_at - completion_rows;
+        let status_at = completion_at - status_rows;
+        let history_rect = Rect {
+            x: left + history_indent,
+            y: 0,
+            width: columns - history_indent,
+            height: status_at,
         };
-        let footer = size.rows.saturating_sub(1);
-        let composer = footer.saturating_sub(composer_rows + inset);
-        let completion_at = composer.saturating_sub(inset + completion_rows);
-        let history_outer = Rect {
-            x: left,
-            y: 1,
-            width: columns,
-            height: completion_at.saturating_sub(1),
-        };
-        let history_rect = if inset != 0 {
-            paint.inlay(history_outer)
-        } else {
-            history_outer
-        };
+        if history_indent != 0 {
+            paint.channels_button(theme, row(left, 0, text_width(button) as u16), button, None);
+        }
         paint.history = history_rect;
         paint.images.size = history_rect.size(screen);
-        let history = &mut active.history;
         paint.target(history_rect, Hit::History(None));
         paint_history(
             paint,
@@ -865,7 +988,7 @@ impl Chat {
             graphics,
         );
         history.visible_through = paint.rendered.last().copied().unwrap_or(0);
-        if history.entries.is_empty() && history_rect.height != 0 {
+        if history.entries.is_empty() && history.error.is_none() && history_rect.height != 0 {
             let (_, gutter) = history_columns(history_rect.width);
             paint.line(
                 theme,
@@ -874,58 +997,21 @@ impl Chat {
                     history_rect.y,
                     history_rect.width - gutter,
                 ),
-                history.error.as_deref().unwrap_or(if history.loaded {
+                if history.loaded {
                     "No messages yet"
                 } else {
                     "Loading history…"
-                }),
+                },
                 Role::Muted,
                 false,
             );
         }
-        let new = summary
-            .last_sequence
-            .saturating_sub(history.paused_at.unwrap_or_else(|| history.latest()));
-        let mut footer_hit = None;
-        let status = if let Some(send) = self.sends.get(&active.id) {
-            match send {
-                Send::Pending(_) => (Role::Info, "Sending…".into()),
-                Send::Unknown(_) => (
-                    Role::Error,
-                    "Send outcome unknown · Ctrl-r retries the same post".into(),
-                ),
-            }
-        } else if let Some(error) =
-            draft.and_then(|draft| draft.error.as_deref().or(draft.input.error()))
+        if status_rows != 0
+            && let Some((role, label, hit)) = status
         {
-            (Role::Error, error.to_owned())
-        } else if let Some(error) = &history.error {
-            (Role::Error, error.clone())
-        } else if let Some((role, notice)) = &self.notice {
-            (*role, notice.clone())
-        } else if history.anchor.is_some() || new > 0 && history.loaded {
-            footer_hit = Some(Hit::Latest);
-            (
-                Role::Info,
-                if new > 0 {
-                    format!("{new} new · [Latest]")
-                } else {
-                    "Reading history · [Latest]".into()
-                },
-            )
-        } else if summary.direct {
-            (Role::Muted, "Private agent conversation · read-only".into())
-        } else if read_only {
-            (Role::Muted, "Read-only attachment".into())
-        } else if let Some(draft) = draft {
-            (Role::Info, draft.wake_preview(summary.settings.user_wake))
-        } else {
-            (Role::Muted, String::new())
-        };
-        if size.rows >= 2 {
-            let bounds = row(left, footer, columns);
-            paint.line(theme, bounds, &status.1, status.0, false);
-            if let Some(hit) = footer_hit {
+            let bounds = row(history_rect.x, status_at, history_rect.width);
+            paint.line(theme, bounds, &label, role, false);
+            if let Some(hit) = hit {
                 paint.target(bounds, hit);
             }
         }
@@ -955,48 +1041,60 @@ impl Chat {
                     .enumerate()
                 {
                     let bounds = row(left, completion_at + i as u16, columns);
-                    paint.line(
-                        theme,
-                        bounds,
-                        &Draft::selection_label(entry, index),
-                        Role::Secondary,
-                        chosen,
-                    );
+                    let mut label = Draft::selection_label(entry, index);
+                    if chosen
+                        && let Some(scope) =
+                            draft.completion_wake_preview(summary.settings.user_wake)
+                        && text_width(&label) + text_width(scope) + 3 <= usize::from(columns)
+                    {
+                        label.push_str(" · ");
+                        label.push_str(scope);
+                    }
+                    paint.line(theme, bounds, &label, Role::Secondary, chosen);
                     paint.target(bounds, Hit::Mention(index));
                 }
             }
         }
-        if inset != 0 && composer_rows != 0 {
-            paint.inlay(Rect {
-                x: left,
-                y: composer - 1,
-                width: columns,
-                height: composer_rows + 2,
-            });
-        }
         if composer_rows > 0 {
-            let left = left + inset;
-            let columns = columns.saturating_sub(2 * inset);
+            let outer = Rect {
+                x: left,
+                y: composer_at,
+                width: columns,
+                height: composer_rows + 2 * inset,
+            };
+            let body = if inset != 0 {
+                paint.inlay(theme, outer, composer_background, Some(6))
+            } else {
+                paint.fill_card(theme, outer, composer_background);
+                outer
+            };
+            let left = body.x + button_width;
+            let columns = body.width - button_width;
+            let composer = body.y;
             let enabled = !self.sends.contains_key(&active.id);
             let has_composer_focus = self.focus == Some(Focus::Composer) && focused && enabled;
             let visible_from = caret_line.saturating_sub(composer_rows.saturating_sub(1) as usize);
-            let bounds = Rect {
-                x: left,
-                y: composer,
-                width: columns,
-                height: composer_rows,
-            };
-            paint.target(bounds, Hit::Composer);
+            paint.target(body, Hit::Composer);
+            if button_width > 0 {
+                paint.channels_button(
+                    theme,
+                    row(body.x, composer, text_width(button) as u16),
+                    button,
+                    Some(composer_background),
+                );
+            }
             let reply = draft.and_then(|draft| draft.reply_to.as_ref());
             let lead = if reply.is_some() { "↪ " } else { "> " };
-            paint.line(
+            paint.card_line(
                 theme,
                 row(left, composer, 2.min(columns)),
                 lead,
                 Role::Accent,
                 false,
+                composer_background,
             );
             if let Some(draft) = draft {
+                let mention_style = card_style(theme, Role::Secondary, composer_background);
                 for (i, line) in draft_lines
                     .iter()
                     .enumerate()
@@ -1005,12 +1103,13 @@ impl Chat {
                 {
                     let y = composer + (i - visible_from) as u16;
                     let bounds = row(left.saturating_add(2), y, columns.saturating_sub(2));
-                    paint.line(
+                    paint.card_line(
                         theme,
                         bounds,
                         &draft.input.value[line.clone()],
                         Role::Base,
                         false,
+                        composer_background,
                     );
                     for span in draft.highlighted(line) {
                         let x = bounds.x
@@ -1018,20 +1117,11 @@ impl Chat {
                                 .min(bounds.width);
                         let width = (text_width(&draft.input.value[span]) as u16)
                             .min(bounds.x.saturating_add(bounds.width).saturating_sub(x));
-                        style_cells(
-                            &mut paint.surface.frame,
-                            theme,
-                            x,
-                            y,
-                            width,
-                            Role::Secondary,
-                            false,
-                            None,
-                        );
+                        style_cells(&mut paint.surface.frame, x, y, width, &mention_style, None);
                     }
                 }
             }
-            if has_composer_focus {
+            if has_composer_focus && columns > 2 {
                 let col = draft
                     .and_then(|draft| {
                         draft_lines.get(caret_line).map(|line| {
@@ -1040,7 +1130,7 @@ impl Chat {
                     })
                     .unwrap_or(0);
                 paint.surface.frame.cursor = Cursor {
-                    x: (left + 2 + col.min(columns.into()) as u16).min(size.cols - 1),
+                    x: left + 2 + col.min(usize::from(columns - 3)) as u16,
                     y: composer + (caret_line - visible_from) as u16,
                     visible: true,
                     blinking: false,
@@ -1369,6 +1459,16 @@ fn row(x: u16, y: u16, width: u16) -> Rect {
     }
 }
 
+fn narrow_channels_button(width: u16, minimum_remaining: u16) -> (&'static str, u16) {
+    if width >= minimum_remaining + 11 {
+        ("[Channels]", 11)
+    } else if width > 0 {
+        ("≡", 1)
+    } else {
+        ("", 0)
+    }
+}
+
 fn check_copy_size(bytes: usize, limit: usize) -> anyhow::Result<()> {
     anyhow::ensure!(
         bytes <= limit,
@@ -1402,6 +1502,24 @@ fn sender_role(participant: &Participant) -> Role {
     ][(hash.finish() % 6) as usize]
 }
 
+fn role_style(theme: &Theme, role: Role, selected: bool) -> &Style {
+    if selected {
+        theme.selected_style(role)
+    } else {
+        theme.style(role)
+    }
+}
+
+fn card_style(theme: &Theme, role: Role, background: ColorSource) -> Style {
+    let mut style = theme.panel_style(role).clone();
+    style.background = match background {
+        ColorSource::Rgb(color) => color,
+        _ => theme.defaults().1,
+    };
+    style.background_source = background;
+    style
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw(
     frame: &mut Frame,
@@ -1418,28 +1536,20 @@ fn draw(
     }
     text(frame, x, y, value, selected);
     let width = text_width(value).min(usize::from(frame.size.cols - x)) as u16;
-    style_cells(frame, theme, x, y, width, role, selected, rich);
+    style_cells(frame, x, y, width, role_style(theme, role, selected), rich);
     width
 }
 
-#[allow(clippy::too_many_arguments)]
 fn style_cells(
     frame: &mut Frame,
-    theme: &Theme,
     x: u16,
     y: u16,
     width: u16,
-    role: Role,
-    selected: bool,
+    style: &Style,
     rich: Option<markdown::Style>,
 ) {
     let Some(row) = frame.rows.get_mut(usize::from(y)) else {
         return;
-    };
-    let style = if selected {
-        theme.selected_style(role)
-    } else {
-        theme.style(role)
     };
     let end = x.saturating_add(width).min(frame.size.cols);
     for cell in &mut row.cells[usize::from(x.min(end))..usize::from(end)] {
@@ -1462,11 +1572,34 @@ mod tests {
         chat::Completion,
         tests::{attach_fixture, fixture, key, size},
     };
-    use crate::controller::content;
     use bkpr_tui_framework::{
         ClientEvent, HitMap, ReplyDemux, Scene, Surface, SurfaceContent, decode_input,
     };
     use termwiz::input::InputParser;
+
+    const BACKGROUNDS: [ColorSource; 2] = [
+        ColorSource::Rgb([14, 15, 16]),
+        ColorSource::Rgb([15, 22, 24]),
+    ];
+
+    fn open_channel(chat: &mut Chat, last_sequence: u64) {
+        let id = ChannelId("fixture-channel".into());
+        chat.open("workspace".into());
+        chat.replace_catalog(HashMap::from([(
+            id.clone(),
+            ChannelSummary {
+                id,
+                workspace_id: "workspace".into(),
+                name: "#desk".into(),
+                membership: MembershipMode::WorkspaceWide,
+                settings: ChannelSettings::default(),
+                last_sequence,
+                read_through: 0,
+                unread_attention: false,
+                direct: false,
+            },
+        )]));
+    }
 
     fn pointer(
         app: &mut App,
@@ -1493,25 +1626,105 @@ mod tests {
     }
 
     #[test]
+    fn channel_materials_reclaim_thread_rows_and_keep_controls_reachable() {
+        let mut chat = Chat::default();
+        open_channel(&mut chat, 0);
+        let theme = Theme::default();
+        let wide = size();
+        let area = |size: Size| Rect {
+            x: 0,
+            y: 0,
+            width: size.cols,
+            height: size.rows,
+        };
+        chat.paint(area(wide), wide, &theme, false, false, true, BACKGROUNDS);
+        let &[(list, list_body, None), (composer, composer_body, Some(6))] = chat.inlays() else {
+            panic!("expected only a neutral list card and an accented composer");
+        };
+        assert_eq!(chat.paint.history.y, 0);
+        assert_eq!(chat.paint.history.height, composer.y);
+        assert_eq!(composer.y + composer.height, wide.rows);
+        assert_eq!(list.y + list.height, wide.rows);
+        let frame = &chat.surface().frame;
+        for (index, body) in [list_body, composer_body].into_iter().enumerate() {
+            assert_eq!(
+                frame.rows[usize::from(body.y)].cells[usize::from(body.x)]
+                    .style
+                    .background_source,
+                BACKGROUNDS[index]
+            );
+        }
+        let has_action = |chat: &Chat, predicate: fn(Hit) -> bool| {
+            chat.paint.hits.iter().any(|(rect, hit)| {
+                predicate(*hit) && chat.paint.hit(rect.x, rect.y).is_some_and(predicate)
+            })
+        };
+        assert!(has_action(&chat, |hit| matches!(hit, Hit::Manage)));
+        assert!(has_action(&chat, |hit| matches!(hit, Hit::Create)));
+
+        chat.active.as_mut().unwrap().history.anchor = Some(Anchor {
+            sequence: 1,
+            line: 0,
+        });
+        chat.redraw();
+        chat.paint(area(wide), wide, &theme, false, false, true, BACKGROUNDS);
+        assert_eq!(chat.paint.history.height + 1, composer.y);
+        assert_eq!(chat.inlays()[1].0, composer);
+        assert!(matches!(
+            chat.paint.hit(chat.paint.history.x, composer.y - 1),
+            Some(Hit::Latest)
+        ));
+        chat.live_tail();
+        chat.redraw();
+
+        let narrow = Size { cols: 40, ..wide };
+        chat.paint(
+            area(narrow),
+            narrow,
+            &theme,
+            false,
+            false,
+            true,
+            BACKGROUNDS,
+        );
+        let &[(composer, body, Some(6))] = chat.inlays() else {
+            panic!("expected only the composer on a narrow thread");
+        };
+        assert_eq!(chat.paint.history.y, 0);
+        assert_eq!(chat.paint.history.height, composer.y);
+        assert!(matches!(chat.paint.hit(body.x, body.y), Some(Hit::List)));
+        assert_eq!(chat.surface().frame.cursor.y, body.y);
+
+        chat.focus = Some(Focus::Channels);
+        chat.redraw();
+        chat.paint(
+            area(narrow),
+            narrow,
+            &theme,
+            false,
+            false,
+            true,
+            BACKGROUNDS,
+        );
+        assert!(has_action(&chat, |hit| matches!(hit, Hit::Manage)));
+        assert!(has_action(&chat, |hit| matches!(hit, Hit::Create)));
+        let [(_, body, None)] = chat.inlays() else {
+            panic!("expected only the list card");
+        };
+        assert_eq!(
+            chat.surface().frame.rows[usize::from(body.y + 1)].cells[usize::from(body.x)]
+                .style
+                .background_source,
+            theme.selected_style(Role::Accent).background_source
+        );
+    }
+
+    #[test]
     fn channel_drag_copies_logical_text_and_retires_at_geometry_change() {
         let (mut app, input) = fixture();
         attach_fixture(&mut app);
-        let id = ChannelId("fixture-channel".into());
-        app.chat.open("workspace".into());
-        app.chat.replace_catalog(HashMap::from([(
-            id.clone(),
-            ChannelSummary {
-                id,
-                workspace_id: "workspace".into(),
-                name: "#desk".into(),
-                membership: MembershipMode::WorkspaceWide,
-                settings: ChannelSettings::default(),
-                last_sequence: 2,
-                read_through: 0,
-                unread_attention: false,
-                direct: false,
-            },
-        )]));
+        app.pane_padding = crate::appearance::FANCY_PANE_PADDING;
+        open_channel(&mut app.chat, 2);
         let job = app.chat.next_job(false).unwrap().0;
         let job = app.chat.track(job);
         let entries = [
@@ -1555,8 +1768,9 @@ mod tests {
         );
         let size = size();
         let theme = Theme::default();
-        let outer = content(app.screen_geometry(size).1);
-        app.chat.paint(outer, size, &theme, false, false, true);
+        let outer = app.pane_content(app.screen_geometry(size).1);
+        app.chat
+            .paint(outer, size, &theme, false, false, true, BACKGROUNDS);
         let frame = &app.chat.surface().frame;
         let hits = Scene {
             size,
@@ -1628,7 +1842,8 @@ mod tests {
         let mut typed = key("KeyX");
         typed.text = "x".into();
         app.key(typed, &mut out, size, &[]).unwrap();
-        app.chat.paint(outer, size, &theme, false, false, true);
+        app.chat
+            .paint(outer, size, &theme, false, false, true, BACKGROUNDS);
         let frame = &app.chat.surface().frame;
         assert_eq!(
             frame.rows[cursor.1 as usize].cells[cursor.0 as usize].text,
@@ -1642,8 +1857,9 @@ mod tests {
             cols: size.cols - 4,
             ..size
         };
-        let outer = content(app.screen_geometry(resized).1);
-        app.chat.paint(outer, resized, &theme, false, false, true);
+        let outer = app.pane_content(app.screen_geometry(resized).1);
+        app.chat
+            .paint(outer, resized, &theme, false, false, true, BACKGROUNDS);
         pointer(&mut app, resized, &hits, to, 0, 'm');
         app.history_clipboard(&mut out).unwrap();
         assert!(out.is_empty());

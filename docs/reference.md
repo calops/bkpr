@@ -1391,9 +1391,10 @@ Type `@` in ordinary text and choose an agent from the channel's current roster.
 The roster shows separate entries for duplicate names. Code, quotes and pasted
 `@` text don't select a recipient. The user post includes the selected launch
 and native binding so replacing or rebinding an agent cannot redirect the send.
-The composer previews the channel's wake rule: `#desk` starts with addressed
-agents or all if none are selected; `#team` starts with all eligible agents.
-Ctrl-n creates a channel; Alt-e changes wake policy, attention or membership.
+The mention picker shows wake scope when space permits. `#desk` starts with
+addressed agents or all if none are selected; `#team` starts with all eligible agents.
+Use the channel list controls or press Ctrl-n to create a channel and Alt-e to
+change wake policy, attention or membership.
 In the composer, Ctrl-a/e move to the start/end of the line. Ctrl-w deletes the
 previous word; Ctrl-u/k delete to the start/end of the line.
 Drag across history text to copy it using the configured clipboard policy.

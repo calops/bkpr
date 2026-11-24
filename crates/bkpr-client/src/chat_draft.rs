@@ -8,7 +8,6 @@ const COMPLETIONS: usize = 5;
 struct Mention {
     bytes: Range<usize>,
     binding: ChannelMentionBinding,
-    label: String,
 }
 
 pub(super) struct Completion {
@@ -186,7 +185,7 @@ impl Draft {
         let Some(entry) = self.matches(roster).nth(selected) else {
             return;
         };
-        let mut value = format!("@{} ", safe_text(&entry.participant.display_name));
+        let value = format!("@{} ", safe_text(&entry.participant.display_name));
         let range = completion.start..self.input.cursor;
         let Some(inserted) = self.input.replace_range(range.clone(), &value) else {
             self.error = Some("Mention would exceed the message size limit".into());
@@ -194,18 +193,9 @@ impl Draft {
         };
         let binding = entry.binding.as_ref().expect("eligible selection").clone();
         self.splice(range, inserted.len());
-        value.pop();
         self.mentions.push(Mention {
             bytes: inserted.start..inserted.end - 1,
             binding,
-            label: if roster.iter().any(|candidate| {
-                candidate.participant.id != entry.participant.id
-                    && candidate.participant.display_name == entry.participant.display_name
-            }) {
-                format!("{value} [{}]", selected + 1)
-            } else {
-                value
-            },
         });
         self.completion = None;
         self.error = None;
@@ -227,27 +217,13 @@ impl Draft {
         )
     }
 
-    pub(super) fn wake_preview(&self, policy: WakePolicy) -> String {
-        let labels = || {
-            self.mentions
-                .iter()
-                .map(|mention| mention.label.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        match policy {
-            WakePolicy::None => "Wakes: nobody".into(),
-            WakePolicy::All if !self.mentions.is_empty() => {
-                format!("Wakes: all eligible · addressed: {}", labels())
-            }
-            WakePolicy::All | WakePolicy::AddressedOrAll if self.mentions.is_empty() => {
-                "Wakes: all eligible".into()
-            }
-            WakePolicy::AddressedOnly if self.mentions.is_empty() => {
-                "Wakes: nobody (no selected mention)".into()
-            }
-            _ => format!("Wakes: {} only", labels()),
-        }
+    pub(super) fn completion_wake_preview(&self, policy: WakePolicy) -> Option<&'static str> {
+        self.completion.as_ref()?;
+        Some(match policy {
+            WakePolicy::None => "No wake",
+            WakePolicy::All => "Wakes all eligible",
+            WakePolicy::AddressedOnly | WakePolicy::AddressedOrAll => "Wakes selected agents",
+        })
     }
 
     pub(super) fn post(&self, channel_id: ChannelId) -> Result<ChannelRequest, &'static str> {
@@ -415,6 +391,26 @@ mod tests {
         code.insert("Twin\n```", false);
         assert!(code.completion.is_none());
         assert_literal(&code);
+    }
+
+    #[test]
+    fn wake_scope_only_previews_an_open_mention_choice() {
+        let mut draft = Draft::default();
+        assert_eq!(draft.completion_wake_preview(WakePolicy::All), None);
+        assert!(draft.insert("@", true));
+        assert_eq!(draft.completion_wake_preview(WakePolicy::None), Some("No wake"));
+        assert_eq!(
+            draft.completion_wake_preview(WakePolicy::All),
+            Some("Wakes all eligible")
+        );
+        for policy in [WakePolicy::AddressedOnly, WakePolicy::AddressedOrAll] {
+            assert_eq!(
+                draft.completion_wake_preview(policy),
+                Some("Wakes selected agents")
+            );
+        }
+        draft.select_mention(&twin_roster(), Some(1));
+        assert_eq!(draft.completion_wake_preview(WakePolicy::AddressedOnly), None);
     }
 
     #[test]

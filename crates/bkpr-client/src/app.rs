@@ -4661,7 +4661,7 @@ impl App {
                     self.pointer_capture = None;
                 }
                 if self.history_selection_owner() {
-                    let rect = content(self.screen_geometry(size).1);
+                    let rect = self.pane_content(self.screen_geometry(size).1);
                     if self
                         .chat
                         .drag_history_selection(rect, size, mouse.x, mouse.y, release)
@@ -5173,7 +5173,7 @@ impl App {
             && self.chat.visible()
             && hits.hit_test(mouse.x, mouse.y) == Some("ui:chat")
         {
-            let rect = content(self.screen_geometry(size).1);
+            let rect = self.pane_content(self.screen_geometry(size).1);
             if self.chat.geometry() == rect && rect.contains(mouse.x, mouse.y) {
                 if !wheel && action == MouseAction::Press && self.state.sidebar.active {
                     self.leave_sidebar();
@@ -5707,6 +5707,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         let mut last_input = Instant::now();
         let mut theme = Theme::default();
         let mut ui_palette = crate::themes::Palette::default();
+        let mut chat_palette = None;
+        let mut chat_backgrounds = [ColorSource::Default; 2];
         let mut project_palette = crate::project_colors::ProjectPalette::default();
         let mut chrome_projects = Vec::new();
         let mut chrome_foregrounds = Vec::new();
@@ -5821,7 +5823,6 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             app.validate_resize(size);
             let rects = app.rects(size);
             let chat_frame = app.chat.visible().then(|| app.screen_geometry(size).1);
-            let chat_rect = chat_frame.map(content);
             if resource_namespace != Some((attachment, generation))
                 || scoped_panes.len() != rects.len()
                 || scoped_panes
@@ -5848,6 +5849,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             } else {
                 0
             };
+            let chat_rect = chat_frame.map(|outer| app.pane_content(outer));
             app.sync_views(size, &rects)?;
             app.poll_views();
             app.sync_pane_feedback(size, &rects);
@@ -6779,6 +6781,19 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 && !app.state.prefix
                 && app.sidebar_menu.is_none();
             if let Some(chat_rect) = chat_rect {
+                let palette = (
+                    ui_colors.truecolor,
+                    ui_colors.foreground,
+                    ui_colors.background,
+                    ui_colors.palette.get(&6).copied(),
+                );
+                if chat_palette != Some(palette) {
+                    chat_palette = Some(palette);
+                    chat_backgrounds = [None, Some(6)].map(|accent| {
+                        crate::appearance::region_background(ui_colors, accent)
+                            .map_or(ColorSource::Default, ColorSource::Rgb)
+                    });
+                }
                 app.chat.paint(
                     chat_rect,
                     size,
@@ -6786,6 +6801,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     app.options.read_only,
                     ui_colors.graphics.supported(),
                     chat_focused,
+                    chat_backgrounds,
                 );
                 let absolute = |rect: Rect| Rect {
                     x: chat_rect.x + rect.x,
@@ -6793,12 +6809,13 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     ..rect
                 };
                 let mut ready = 0;
-                for (index, &(card, body)) in app.chat.inlays().iter().enumerate() {
+                for (index, &(card, body, accent)) in app.chat.inlays().iter().enumerate() {
                     if graphics.decorate_inlay(
                         &mut chat_effects,
                         absolute(card),
                         absolute(body),
                         1 + index as u32 * 64,
+                        accent,
                     ) {
                         ready |= 1 << index;
                     }
@@ -6920,8 +6937,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         && app.sidebar_menu.is_none(),
                     faint: faint_background,
                 }];
-                if let Some(chat_rect) = chat_rect {
-                    surfaces.push(Surface {
+                if let Some((chat_rect, outer)) = chat_rect.zip(chat_frame) {
+                    let surface = Surface {
                         palette: None,
                         id: "ui:chat",
                         content: SurfaceContent::Cells,
@@ -6931,7 +6948,12 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         search: &[],
                         focused: chat_focused,
                         faint: faint_background,
-                    });
+                    };
+                    if let Some(gutters) = surface.horizontal_gutters(content(outer), &gutter_frame)
+                    {
+                        surfaces.extend(gutters);
+                    }
+                    surfaces.push(surface);
                     if let Some((rect, frame)) = app.chat.image_surface() {
                         surfaces.push(Surface {
                             palette: None,

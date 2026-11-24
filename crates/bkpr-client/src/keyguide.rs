@@ -506,6 +506,7 @@ pub struct Binding {
     key: Key,
     selected: bool,
     repeat: bool,
+    discoverable: bool,
     /// Structured display chord; produced-text bindings have no extra modifier.
     pub chord: Chord<'static>,
     pub action: Action,
@@ -555,6 +556,7 @@ const fn physical(
         key: Key::Physical(key, modifiers),
         selected: false,
         repeat,
+        discoverable: true,
         chord: Chord {
             key: keycap,
             modifiers: MODIFIER_LABELS[modifiers as usize],
@@ -570,6 +572,7 @@ const fn text(contexts: u32, key: &'static str, action: Action, priority: u8) ->
         key: Key::Text(key),
         selected: false,
         repeat: false,
+        discoverable: true,
         chord: Chord {
             key,
             modifiers: &[],
@@ -602,7 +605,7 @@ const fn chat_edit(
     edit: EditAction,
     priority: u8,
 ) -> Binding {
-    physical(
+    let mut binding = physical(
         CHAT_COMPOSER,
         key,
         modifiers,
@@ -610,7 +613,9 @@ const fn chat_edit(
         A::Chat(ChatAction::Edit(edit)),
         priority,
         true,
-    )
+    );
+    binding.discoverable = false;
+    binding
 }
 
 // These definitions drive lookup and the contextual popup. Prefix commands are
@@ -1564,7 +1569,7 @@ pub fn hints(context: Context) -> Vec<Hint> {
 
 pub fn hints_with(context: Context, supported: impl Fn(Action) -> bool) -> Vec<Hint> {
     let mut hints: Vec<Hint> = Vec::new();
-    for binding in bindings_with(context, supported) {
+    for binding in bindings_with(context, supported).filter(|binding| binding.discoverable) {
         let group = PRESENTATION_GROUPS.iter().position(|group| {
             group.contexts & context.mask() != 0 && group.actions.contains(&binding.action)
         });
@@ -1963,6 +1968,10 @@ mod tests {
     fn readline_keys_are_composer_only_and_do_not_take_send_or_focus_keys() {
         let without_edits = |action| !matches!(action, A::Chat(ChatAction::Edit(_)));
         for context in [Context::Chat, Context::ChatMention] {
+            assert!(
+                !advertised(context).any(|action| matches!(action, A::Chat(ChatAction::Edit(_))))
+            );
+            assert!(advertised(context).any(|action| action == A::Chat(ChatAction::Newline)));
             for (key, edit) in [
                 ("KeyA", E::Home),
                 ("KeyE", E::End),
@@ -1973,7 +1982,7 @@ mod tests {
                 let action = A::Chat(ChatAction::Edit(edit));
                 let repeat = event(key, "", CTRL, KeyAction::Repeat);
                 assert_eq!(lookup(context, &repeat), Some(action));
-                assert!(advertised(context).any(|shown| shown == action));
+                assert!(!advertised(context).any(|shown| shown == action));
                 assert_eq!(lookup_with(context, &repeat, without_edits), None);
                 assert_eq!(
                     lookup(context, &event(key, "", CTRL, KeyAction::Release)),
