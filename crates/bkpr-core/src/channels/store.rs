@@ -82,6 +82,14 @@ struct StoredChannel {
     last_attention: u64,
 }
 
+#[derive(serde::Serialize)]
+struct MessagePage<'a> {
+    message: MessageSummary,
+    text: &'a str,
+    body_bytes: usize,
+    next_offset: Option<usize>,
+}
+
 impl Store {
     pub(super) fn open(root: &Path) -> Result<Self> {
         let directory = OpenOptions::new()
@@ -932,17 +940,20 @@ impl Store {
         let (entries, next_after) =
             members_page(authority, members.as_deref(), after.as_ref(), limit)?;
         let participants: Vec<_> = entries.into_iter().map(|entry| {
-            let mention_id = if entry.actor.kind == ParticipantKind::Agent {
-                let (launch, generation) = entry.launch_id.as_deref()
-                    .map_or(caller, |launch| (launch, entry.binding_revision));
-                format!("{launch}:{generation}")
-            } else {
-                entry.actor.id.0.clone()
-            };
-            serde_json::json!({
+            let launch = (entry.actor.kind == ParticipantKind::Agent).then(|| {
+                entry.launch_id.as_deref().map_or(caller, |id| (id, entry.binding_revision))
+            });
+            let mention_id = launch.map_or_else(|| entry.actor.id.0.clone(), |(id, generation)| {
+                format!("{id}:{generation}")
+            });
+            let mut member = serde_json::json!({
                 "id":entry.actor.id, "kind":entry.actor.kind, "display_name":entry.actor.display_name,
                 "mention_id":mention_id,
-            })
+            });
+            if let Some((id, _)) = launch {
+                member["launch_id"] = serde_json::Value::String(id.to_owned());
+            }
+            member
         }).collect();
         Ok(
             serde_json::json!({"kind":"members", "participants":participants, "next_after":next_after}),
@@ -1062,6 +1073,31 @@ impl Store {
             unreachable!("compact message requires a read request");
         };
         self.access(&channel_id, admit)?;
+        self.with_message_page(&channel_id, &message_id, offset, maximum, |page| {
+            #[derive(serde::Serialize)]
+            struct Reply<'a> {
+                kind: &'static str,
+                #[serde(flatten)]
+                page: MessagePage<'a>,
+                attachments: Vec<AttachmentDescriptor>,
+            }
+            let attachments = self.message_attachments(&channel_id, &page.message)?;
+            Ok(serde_json::to_value(Reply {
+                kind: "message_page",
+                page,
+                attachments,
+            })?)
+        })
+    }
+
+    fn with_message_page<T>(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        offset: usize,
+        maximum: usize,
+        project: impl FnOnce(MessagePage<'_>) -> Result<T>,
+    ) -> Result<T> {
         let mut statement = self.connection.prepare(READ_POST)?;
         let mut rows = statement.query(params![channel_id.as_ref(), message_id.as_ref()])?;
         let row = rows.next()?.context("channel message unavailable")?;
@@ -1071,13 +1107,12 @@ impl Store {
         while !text.is_char_boundary(end) {
             end -= 1;
         }
-        let message: MessageSummary = json(row, 0)?;
-        let attachments = self.message_attachments(&channel_id, &message)?;
-        Ok(serde_json::json!({
-            "kind":"message_page", "message":message, "attachments": attachments,
-            "text":&text[offset..end], "body_bytes":text.len(),
-            "next_offset":(end < text.len()).then_some(end),
-        }))
+        project(MessagePage {
+            message: json(row, 0)?,
+            text: &text[offset..end],
+            body_bytes: text.len(),
+            next_offset: (end < text.len()).then_some(end),
+        })
     }
 
     fn message(&self, id: &ChannelId, row: &Row<'_>) -> Result<ChannelMessage> {

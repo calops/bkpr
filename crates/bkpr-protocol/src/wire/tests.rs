@@ -364,6 +364,21 @@ fn agent_channel_requests_append_ordinals_and_roundtrip() {
         (
             AgentRequest::ChannelWake {
                 batch_id: "wake:1".into(),
+                max_body_bytes: None,
+            },
+            15,
+        ),
+        (
+            AgentRequest::ChannelWake {
+                batch_id: "wake:1".into(),
+                max_body_bytes: Some(4),
+            },
+            15,
+        ),
+        (
+            AgentRequest::ChannelWake {
+                batch_id: "wake:1".into(),
+                max_body_bytes: Some(4096),
             },
             15,
         ),
@@ -401,6 +416,49 @@ fn agent_channel_requests_append_ordinals_and_roundtrip() {
         assert_eq!(
             serde_json::to_value(framed).unwrap(),
             serde_json::to_value(decoded).unwrap()
+        );
+    }
+}
+
+#[test]
+fn channel_wake_body_limit_is_a_trailing_optional_field() {
+    let operation = |max_body_bytes| Operation::Agent {
+        launch_id: "launch".into(),
+        token: "secret".into(),
+        guard: None,
+        request: AgentRequest::ChannelWake {
+            batch_id: "wake:1".into(),
+            max_body_bytes,
+        },
+    };
+    let mut codec = Codec::new();
+    let encoded = codec
+        .encode_request(&Request::new(operation(Some(4))))
+        .unwrap()
+        .to_vec();
+    let (_, operation_field) = root_field(&encoded, 2);
+    let (_, agent_request_field) = table_field(&encoded, indirect(&encoded, operation_field), 3);
+    let wake = indirect(&encoded, agent_request_field);
+    let (body_limit_entry, body_limit_field) = table_field(&encoded, wake, 1);
+    let (_, limit_value) = table_field(&encoded, indirect(&encoded, body_limit_field), 0);
+
+    // The original vtable ends after batch_id, before the new optional field.
+    let mut old = encoded.clone();
+    let vtable = body_limit_entry - 6;
+    old[vtable..vtable + 2].copy_from_slice(&6u16.to_le_bytes());
+    assert_eq!(
+        serde_json::to_value(decode_request(&old).unwrap()).unwrap(),
+        serde_json::to_value(Request::new(operation(None))).unwrap(),
+    );
+
+    for invalid in [3u32, 4097] {
+        let mut malformed = encoded.clone();
+        malformed[limit_value..limit_value + 4].copy_from_slice(&invalid.to_le_bytes());
+        assert!(decode_request(&malformed).is_err());
+        assert!(
+            codec
+                .encode_request(&Request::new(operation(Some(invalid))))
+                .is_err()
         );
     }
 }

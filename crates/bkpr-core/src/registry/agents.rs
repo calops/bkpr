@@ -1448,9 +1448,10 @@ impl Registry {
                 max_bytes,
                 is_connected,
             ),
-            AgentRequest::ChannelWake { batch_id } => {
-                self.agent_channel_wake_lookup(&launch, batch_id, is_connected)
-            }
+            AgentRequest::ChannelWake {
+                batch_id,
+                max_body_bytes,
+            } => self.agent_channel_wake_lookup(&launch, batch_id, max_body_bytes, is_connected),
             AgentRequest::Control {
                 request,
                 scope,

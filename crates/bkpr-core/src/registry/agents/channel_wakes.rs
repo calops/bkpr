@@ -185,6 +185,7 @@ impl Registry {
         &self,
         launch: &Launch,
         batch_id: String,
+        max_body_bytes: Option<u32>,
         connected: &dyn Fn() -> bool,
     ) -> Result<Value> {
         ensure!(
@@ -193,17 +194,25 @@ impl Registry {
                 .is_some_and(|id| id.len() == 36 && Uuid::parse_str(id).is_ok()),
             "channel wake unavailable"
         );
-        let lookup = self.inner.channels.with_delivery_store(
+        ensure!(
+            max_body_bytes.is_none_or(|maximum| (4..=4096).contains(&maximum)),
+            "channel body page must be between 4 and 4096 bytes"
+        );
+        self.inner.channels.with_delivery_store(
             &|| !connected() || self.session_end_requested(),
             &|workspace| self.delivery_workspace_open(workspace),
             |store| {
-                store.channel_wake_lookup(recipient(launch)?, batch_id, &|workspace| {
-                    ensure!(connected(), "channel request disconnected");
-                    self.channel_authority(workspace, Some(launch), false)
-                })
+                store.channel_wake_lookup(
+                    recipient(launch)?,
+                    batch_id,
+                    max_body_bytes.map(|maximum| maximum as usize),
+                    &|workspace| {
+                        ensure!(connected(), "channel request disconnected");
+                        self.channel_authority(workspace, Some(launch), false)
+                    },
+                )
             },
-        )?;
-        Ok(serde_json::to_value(lookup)?)
+        )
     }
 
     pub(super) fn claim_channel_wake(

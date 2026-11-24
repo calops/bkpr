@@ -237,9 +237,19 @@ pub(super) fn write_agent_request(
             let offset = g::AgentRequestChannels::create(builder, request);
             g::AgentRequest::create_agent_request_channels(builder, offset)
         }
-        AgentRequest::ChannelWake { batch_id } => {
+        AgentRequest::ChannelWake {
+            batch_id,
+            max_body_bytes,
+        } => {
             let batch_id = write_channel_identity(builder, batch_id, budget)?;
-            let offset = g::AgentRequestChannelWake::create(builder, batch_id);
+            let max_body_bytes = max_body_bytes
+                .map(|value| {
+                    budget.node(depth + 1)?;
+                    validate_channel_wake_body_bytes(value)?;
+                    Ok::<_, anyhow::Error>(g::OptionalU32::create(builder, value))
+                })
+                .transpose()?;
+            let offset = g::AgentRequestChannelWake::create(builder, batch_id, max_body_bytes);
             g::AgentRequest::create_agent_request_channel_wake(builder, offset)
         }
         AgentRequest::ChannelRead {
@@ -423,6 +433,15 @@ pub(super) fn read_agent_request(
         },
         g::AgentRequestRef::AgentRequestChannelWake(value) => AgentRequest::ChannelWake {
             batch_id: read_channel_identity(value.batch_id()?, budget)?,
+            max_body_bytes: value
+                .max_body_bytes()?
+                .map(|value| {
+                    budget.node(depth + 1)?;
+                    let bytes = value.value()?;
+                    validate_channel_wake_body_bytes(bytes)?;
+                    Ok::<_, anyhow::Error>(bytes)
+                })
+                .transpose()?,
         },
         g::AgentRequestRef::AgentRequestChannelRead(value) => AgentRequest::ChannelRead {
             channel_id: ChannelId(read_channel_identity(value.channel_id()?, budget)?),
@@ -431,6 +450,14 @@ pub(super) fn read_agent_request(
             max_bytes: value.max_bytes()?,
         },
     })
+}
+
+fn validate_channel_wake_body_bytes(value: u32) -> Result<()> {
+    anyhow::ensure!(
+        (4..=4096).contains(&value),
+        "max_body_bytes must be 4 through 4096"
+    );
+    Ok(())
 }
 
 fn write_channel_identity(

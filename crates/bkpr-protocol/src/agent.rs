@@ -185,10 +185,13 @@ pub enum AgentRequest {
         /// Operation subject to the launch channel allowlist and current membership.
         request: Box<ChannelRequest>,
     },
-    /// Resolve metadata for a channel wake delivered to this launch.
+    /// Resolve a delivered channel wake, optionally including the first page of one post.
     ChannelWake {
         /// Exact opaque batch ID from the native notification.
         batch_id: String,
+        /// Requested body-page limit in UTF-8 bytes (4 through 4096); omitted for metadata only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_body_bytes: Option<u32>,
     },
     /// Read an exact channel message in UTF-8 pages under current membership.
     ChannelRead {

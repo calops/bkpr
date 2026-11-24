@@ -749,6 +749,7 @@ table AgentRequestChannels {
 }
 table AgentRequestChannelWake {
   batch_id:string (required);
+  max_body_bytes:OptionalU32;
 }
 table AgentRequestChannelRead {
   channel_id:string (required);
@@ -774,6 +775,9 @@ table RequestFailureBusy {
   target_id:string (required);
 }
 union RequestFailure { RequestFailureSessionClosing, RequestFailureBusy }
+table OptionalU32 {
+  value:uint;
+}
 table OptionalU64 {
   value:ulong;
 }

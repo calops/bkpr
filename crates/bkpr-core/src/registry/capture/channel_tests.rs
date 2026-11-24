@@ -168,12 +168,12 @@ fn agent_channel(registry: &Registry, launch: &Launch, request: ChannelRequest) 
     )
 }
 
-fn mention_id(
+fn mention_and_launch(
     registry: &Registry,
     launch: &Launch,
     channel: &ChannelId,
     member: &ParticipantId,
-) -> ParticipantId {
+) -> (ParticipantId, String) {
     let roster = agent_channel(
         registry,
         launch,
@@ -184,13 +184,24 @@ fn mention_id(
         },
     )
     .unwrap();
+    assert!(
+        roster["participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["kind"] == "user")
+            .all(|entry| entry.get("launch_id").is_none())
+    );
     let entry = roster["participants"]
         .as_array()
         .unwrap()
         .iter()
         .find(|entry| entry["id"] == member.0)
         .unwrap();
-    ParticipantId(entry["mention_id"].as_str().unwrap().to_owned())
+    (
+        ParticipantId(entry["mention_id"].as_str().unwrap().to_owned()),
+        entry["launch_id"].as_str().unwrap().to_owned(),
+    )
 }
 
 fn receiver(registry: &Registry, launch: &Launch) -> String {
@@ -411,7 +422,8 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
         post(&kept, "prior shared history", PostIntent::Note),
     )
     .unwrap();
-    let stale_mention = mention_id(&registry, &other, &team, &old_id);
+    let (stale_mention, old_selector) = mention_and_launch(&registry, &other, &team, &old_id);
+    assert_eq!(old_selector, old.grant.launch_id);
     let original_receiver = receiver(&registry, &old);
     let interrupted = subscribe(&registry, &old, &original_receiver);
     assert_eq!(interrupted["channel_wake"]["channel_id"], team.0);
@@ -478,7 +490,9 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
         panic!("expected retained history")
     };
     assert_eq!(messages[0].text, "prior shared history");
-    let live_mention = mention_id(&registry, &recovered, &team, &old_id);
+    let (live_mention, recovered_selector) =
+        mention_and_launch(&registry, &recovered, &team, &old_id);
+    assert_eq!(recovered_selector, recovered.grant.launch_id);
     assert_ne!(stale_mention, live_mention);
     let ChannelRequest::Post {
         channel_id,
@@ -514,7 +528,8 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
             &registry,
             &recovered,
             AgentRequest::ChannelWake {
-                batch_id: old_batch
+                batch_id: old_batch,
+                max_body_bytes: Some(4096),
             }
         )
         .is_err()
@@ -885,7 +900,8 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
             .unwrap()
             .into(),
     );
-    let a_mention = mention_id(&registry, &sender, &team_id, &a_actor);
+    let (a_mention, a_selector) = mention_and_launch(&registry, &sender, &team_id, &a_actor);
+    assert_eq!(a_selector, a.grant.launch_id);
     let passive = agent_channel(
         &registry,
         &sender,
@@ -929,11 +945,16 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         validate_wake(&registry, &a, &a_receiver, &a_wake)["current"],
         true
     );
-    let lookup = |pointer: &Value| AgentRequest::ChannelWake {
+    let lookup_with = |pointer: &Value, max_body_bytes| AgentRequest::ChannelWake {
         batch_id: pointer["batch_id"].as_str().unwrap().to_owned(),
+        max_body_bytes,
     };
+    let lookup = |pointer: &Value| lookup_with(pointer, None);
+    let lookup_body = |pointer: &Value, maximum| lookup_with(pointer, Some(maximum));
     assert!(agent_result(&registry, &b, lookup(a_pointer)).is_err());
     assert!(agent_result(&registry, &sender, lookup(a_pointer)).is_err());
+    assert!(agent_result(&registry, &b, lookup_body(a_pointer, 4096)).is_err());
+    assert!(agent_result(&registry, &a, lookup_body(a_pointer, 4097)).is_err());
     let detail = agent(&registry, &a, lookup(a_pointer));
     assert_eq!(
         detail["addressed_message_id"],
@@ -942,6 +963,23 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     assert_eq!(detail["messages"][0]["id"], older["message"]["id"]);
     assert_eq!(detail["messages"][0]["addressed"], true);
     assert_eq!(detail["messages"][2]["addressed"], false);
+    assert!(detail.get("post").is_none());
+    let callout = agent(&registry, &a, lookup_body(a_pointer, 6));
+    assert_eq!(callout["post"]["message"]["id"], newest["message"]["id"]);
+    assert_eq!(callout["post"]["message"]["author"]["kind"], "agent");
+    assert_eq!(callout["post"]["text"], "newest");
+    assert_eq!(callout["post"]["next_offset"], 6);
+    assert_eq!(
+        callout["post"]["reply_target"],
+        json!({
+            "channel_id": a_pointer["channel_id"], "reply_to": newest["message"]["id"],
+        })
+    );
+    assert!(
+        agent(&registry, &b, lookup_body(b_pointer, 4096))
+            .get("post")
+            .is_none()
+    );
 
     agent(
         &registry,
@@ -1021,6 +1059,7 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         false
     );
     assert!(agent_result(&registry, &b, lookup(&revoked["channel_wake"])).is_err());
+    assert!(agent_result(&registry, &b, lookup_body(&revoked["channel_wake"], 4096)).is_err());
     assert!(subscribe(&registry, &b, &b_receiver).is_null());
     assert!(agent_channel(&registry, &b, history(&named)).is_ok());
 
@@ -1066,7 +1105,7 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     let ChannelRequest::Post {
         channel_id,
         post: mut user_post,
-    } = post(&desk, "one user mention", PostIntent::Note)
+    } = post(&desk, "東京 user direction", PostIntent::Note)
     else {
         unreachable!()
     };
@@ -1094,10 +1133,58 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         targeted["channel_wake"]["addressed_message_id"],
         message.id.0
     );
+    let user = agent(&registry, &b, lookup_body(&targeted["channel_wake"], 4));
+    assert_eq!(user["post"]["message"]["author"]["kind"], "user");
+    assert_eq!(user["post"]["text"], "東");
+    assert_eq!(user["post"]["next_offset"], 3);
+    assert_eq!(
+        user["post"]["reply_target"],
+        json!({ "channel_id":desk.0, "reply_to":message.id.0 })
+    );
     assert_eq!(
         settle_wake(&registry, &b, &b_receiver, &targeted)["recorded"],
         true
     );
+    let ChannelResponse::Posted { message, .. } = channel(
+        &registry,
+        None,
+        post(&desk, "broadcast singleton", PostIntent::Note),
+    )
+    .unwrap() else {
+        panic!("expected user post");
+    };
+    let singleton = subscribe(&registry, &b, &b_receiver);
+    assert!(
+        singleton["channel_wake"]
+            .get("addressed_message_id")
+            .is_none()
+    );
+    let user = agent(&registry, &b, lookup_body(&singleton["channel_wake"], 2048));
+    assert_eq!(user["post"]["message"]["id"], message.id.0);
+    assert_eq!(user["post"]["text"], "broadcast singleton");
+    assert!(user["post"]["next_offset"].is_null());
+    let response = agent_channel(
+        &registry,
+        &b,
+        ChannelRequest::Post {
+            channel_id: serde_json::from_value(user["post"]["reply_target"]["channel_id"].clone())
+                .unwrap(),
+            post: ChannelPost {
+                text: "reply sent in one call".into(),
+                idempotency_key: "singleton-reply".into(),
+                intent: PostIntent::Report,
+                mentions: Vec::new(),
+                attachments: Vec::new(),
+                reply_to: Some(
+                    serde_json::from_value(user["post"]["reply_target"]["reply_to"].clone())
+                        .unwrap(),
+                ),
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(response["wake_count"], 0);
+    assert_eq!(response["message"]["reply_to"], message.id.0);
 
     let body = "東京".repeat(2600);
     for index in 0..11 {

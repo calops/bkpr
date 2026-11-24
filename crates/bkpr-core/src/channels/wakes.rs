@@ -1,5 +1,6 @@
 use super::{
-    ChannelAccessLost, ChannelAuthority, ChannelId, MAX_PENDING, MessageId, Store, params,
+    ChannelAccessLost, ChannelAuthority, ChannelId, MAX_PENDING, MessageId, MessagePage, Store,
+    params,
 };
 use crate::channels::{ChannelClaim, ChannelRecipient};
 use anyhow::{Context, Result, ensure};
@@ -10,10 +11,37 @@ use serde::Serialize;
 const MAX_BATCH: u32 = 32;
 
 #[derive(Serialize)]
-pub(crate) struct ChannelWakeLookup {
+struct ChannelWakeLookup<'a> {
     #[serde(flatten)]
-    wake: ChannelWake,
-    messages: Vec<WakeItem>,
+    wake: &'a ChannelWake,
+    messages: &'a [WakeItem],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    post: Option<WakePost<'a>>,
+}
+
+#[derive(Serialize)]
+struct WakePost<'a> {
+    #[serde(flatten)]
+    page: MessagePage<'a>,
+    reply_target: ReplyTarget<'a>,
+}
+
+#[derive(Serialize)]
+struct ReplyTarget<'a> {
+    channel_id: &'a ChannelId,
+    reply_to: &'a MessageId,
+}
+
+fn wake_reply(
+    wake: &ChannelWake,
+    messages: &[WakeItem],
+    post: Option<WakePost<'_>>,
+) -> Result<serde_json::Value> {
+    Ok(serde_json::to_value(ChannelWakeLookup {
+        wake,
+        messages,
+        post,
+    })?)
 }
 
 #[derive(Serialize)]
@@ -209,8 +237,9 @@ impl Store {
         &self,
         recipient: ChannelRecipient<'_>,
         batch_id: String,
+        max_body_bytes: Option<usize>,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
-    ) -> Result<ChannelWakeLookup> {
+    ) -> Result<serde_json::Value> {
         let (channel_id, pending_count, addressed_message_id) = self.connection.query_row(
             "SELECT channel_id,pending_count,addressed_message_id FROM channel_batches
                WHERE id=?1 AND launch_id=?2 AND binding_revision=?3 AND participant_id=?4 AND outcome IS NOT 'revoked'",
@@ -225,14 +254,34 @@ impl Store {
         let messages = statement
             .query_map(params![batch_id, MAX_BATCH], WakeItem::read)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(ChannelWakeLookup {
-            wake: ChannelWake {
-                batch_id,
-                channel_id,
-                pending_count,
-                addressed_message_id,
-            },
-            messages,
-        })
+        let wake = ChannelWake {
+            batch_id,
+            channel_id,
+            pending_count,
+            addressed_message_id,
+        };
+        let selected = wake
+            .addressed_message_id
+            .as_ref()
+            .or(match messages.as_slice() {
+                [only] => Some(&only.id),
+                _ => None,
+            });
+        if let (Some(maximum), Some(id)) = (max_body_bytes, selected) {
+            return self.with_message_page(&wake.channel_id, id, 0, maximum, |page| {
+                wake_reply(
+                    &wake,
+                    &messages,
+                    Some(WakePost {
+                        page,
+                        reply_target: ReplyTarget {
+                            channel_id: &wake.channel_id,
+                            reply_to: id,
+                        },
+                    }),
+                )
+            });
+        }
+        wake_reply(&wake, &messages, None)
     }
 }
