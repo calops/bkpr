@@ -329,6 +329,8 @@ Healthy sessions have no status badge. Windows use the two-cell `` honeycomb
 slot and neutral labels; project colors belong to pane bees. Bright tree guides
 trace only the selected item's path to its ancestors. The active pane's title
 and metadata share one full-width highlight.
+In workspaces with several windows, a window with one sidebar pane is shown
+as that pane directly under the workspace.
 A single online session keeps the compact workspace tree. Hovering or browsing
 another owner's metadata does not activate its panes. Click or Enter activates
 the selected owner. In the sidebar, `S` jumps to the current session's tree

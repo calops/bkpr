@@ -280,30 +280,31 @@ impl Tree {
             Node::Native(SidebarTarget::Pane { workspace, pane }) => {
                 let window = session
                     .registry
-                    .workspaces
+                    .panes
                     .iter()
-                    .find(|entry| entry.id == *workspace)
-                    .filter(|entry| entry.windows.len() > 1)
-                    .and_then(|entry| {
-                        let pane = session
-                            .registry
-                            .panes
+                    .find(|entry| entry.id == *pane)
+                    .and_then(|pane| pane.window_id.as_ref())
+                    .and_then(|id| {
+                        session
+                            .rows
                             .iter()
-                            .find(|entry| entry.id == *pane)?;
-                        entry
-                            .windows
-                            .iter()
-                            .find(|window| Some(&window.id) == pane.window_id.as_ref())
+                            .find_map(|row| match row.target.as_ref() {
+                                Some(
+                                    target @ SidebarTarget::Window {
+                                        workspace: owner,
+                                        window,
+                                    },
+                                ) if owner == workspace && window == id => Some(target),
+                                _ => None,
+                            })
                     });
                 Some(Target {
                     owner: target.owner,
-                    node: Node::Native(match window {
-                        Some(window) => SidebarTarget::Window {
-                            workspace: workspace.clone(),
-                            window: window.id.clone(),
-                        },
-                        None => SidebarTarget::Workspace(workspace.clone()),
-                    }),
+                    node: Node::Native(
+                        window
+                            .cloned()
+                            .unwrap_or_else(|| SidebarTarget::Workspace(workspace.clone())),
+                    ),
                 })
             }
         }
@@ -700,6 +701,7 @@ mod tests {
         if grouped {
             windows.push(window("two", "second"));
             panes.push(pane("second", "two"));
+            panes.push(pane("first-sibling", "one"));
         }
         let registry = Arc::new(RegistrySnapshot {
             revision: 1,
@@ -810,6 +812,20 @@ mod tests {
         assert_eq!(second.parent, Some(workspace(owner(1))));
         assert_eq!(second.depth, 2);
         assert_ne!(first.target, second.target);
+        let singleton = native(
+            owner(0),
+            SidebarTarget::Pane {
+                workspace: "workspace".into(),
+                pane: "second".into(),
+            },
+        );
+        let row = tree
+            .rows
+            .iter()
+            .find(|row| row.target.as_ref() == Some(&singleton))
+            .unwrap();
+        assert_eq!(row.parent, Some(workspace(owner(0))));
+        assert_eq!(row.depth, 2);
     }
 
     #[test]
