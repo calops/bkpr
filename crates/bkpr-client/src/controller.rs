@@ -2658,6 +2658,9 @@ mod tests {
             registry.workspaces[0].name = name.into();
             registry.workspaces[0].windows[0].name = name.into();
             registry.workspaces[0].windows.push(window("other", None));
+            let mut sibling = pane.clone();
+            sibling.id = "sibling".into();
+            registry.panes.push(sibling);
             for target in [
                 SidebarTarget::Workspace("work".into()),
                 SidebarTarget::Window {
@@ -2792,6 +2795,9 @@ mod tests {
         registry.workspaces[0]
             .windows
             .push(window("other-window", None));
+        let mut sibling = pane.clone();
+        sibling.id = "sibling".into();
+        registry.panes.push(sibling);
         let size = Size {
             rows: 9,
             ..capture_surface().frame.size
@@ -3236,6 +3242,12 @@ mod tests {
         registry.workspaces[0]
             .windows
             .push(window("other-window", Some(leaf(&other.id))));
+        let mut sibling = pane.clone();
+        sibling.id = "sibling".into();
+        registry.panes.push(sibling);
+        let mut other_sibling = other.clone();
+        other_sibling.id = "other-sibling".into();
+        registry.panes.push(other_sibling);
         registry.panes.push(other);
         let mut state = Controller::new(&registry);
         state.sidebar.cursor = Some(SidebarTarget::Pane {

@@ -113,22 +113,6 @@ impl Sidebar {
                     });
                 }
                 for (window_index, window) in workspace.windows.iter().enumerate() {
-                    // A lone window is still an exact backend identity, but does not
-                    // need an extra visual/navigation level between workspace and pane.
-                    let grouped = workspace.windows.len() > 1;
-                    if grouped {
-                        self.rows.push(Row {
-                            target: Some(SidebarTarget::Window {
-                                workspace: workspace.id.clone(),
-                                window: window.id.clone(),
-                            }),
-                            kind: RowKind::Window {
-                                workspace: index,
-                                index: window_index,
-                                collapsed: false,
-                            },
-                        });
-                    }
                     projected.clear();
                     fn leaves<'a>(node: &'a LayoutNode, result: &mut HashSet<&'a str>) {
                         match node {
@@ -144,16 +128,36 @@ impl Sidebar {
                     if let Some(layout) = &window.layout {
                         leaves(layout, &mut projected);
                     }
-                    for (index, pane) in registry.panes.iter().enumerate() {
-                        if pane.workspace_id.as_deref() != Some(workspace.id.as_str())
-                            || pane.window_id.as_deref() != Some(window.id.as_str())
-                        {
-                            continue;
-                        }
-                        let visible = projected.contains(pane.id.as_str());
-                        if !visible && pane.status == PaneStatus::Exited {
-                            continue;
-                        }
+                    let mut panes = registry
+                        .panes
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, pane)| {
+                            if pane.workspace_id.as_ref() != Some(&workspace.id)
+                                || pane.window_id.as_ref() != Some(&window.id)
+                            {
+                                return None;
+                            }
+                            let visible = projected.contains(pane.id.as_str());
+                            (visible || pane.status != PaneStatus::Exited)
+                                .then_some((index, pane, visible))
+                        })
+                        .peekable();
+                    let first = panes.next();
+                    if workspace.windows.len() > 1 && (first.is_none() || panes.peek().is_some()) {
+                        self.rows.push(Row {
+                            target: Some(SidebarTarget::Window {
+                                workspace: workspace.id.clone(),
+                                window: window.id.clone(),
+                            }),
+                            kind: RowKind::Window {
+                                workspace: index,
+                                index: window_index,
+                                collapsed: false,
+                            },
+                        });
+                    }
+                    for (index, pane, visible) in first.into_iter().chain(panes) {
                         let target = SidebarTarget::Pane {
                             workspace: workspace.id.clone(),
                             pane: pane.id.clone(),
@@ -187,18 +191,21 @@ impl Sidebar {
                 workspace: workspace.into(),
                 pane: focused.unwrap().into(),
             },
-            Some(window)
-                if registry
-                    .workspaces
-                    .iter()
-                    .any(|entry| entry.id == workspace && entry.windows.len() > 1) =>
-            {
-                SidebarTarget::Window {
+            Some(window) => {
+                let target = SidebarTarget::Window {
                     workspace: workspace.into(),
                     window: window.into(),
+                };
+                if self
+                    .rows
+                    .iter()
+                    .any(|row| row.target.as_ref() == Some(&target))
+                {
+                    target
+                } else {
+                    SidebarTarget::Workspace(workspace.into())
                 }
             }
-            Some(_) => SidebarTarget::Workspace(workspace.into()),
             None => SidebarTarget::Workspace(workspace.into()),
         });
         if !self.active && self.cursor != desired {
