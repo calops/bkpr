@@ -1794,11 +1794,12 @@ mod tests {
         });
         let button = button.unwrap();
         let cells = &popup.surface.frame.rows[usize::from(button.y)].cells;
-        assert!(
-            cells[usize::from(button.x)..usize::from(button.x + button.width)]
-                .iter()
-                .any(|cell| cell.text == "\u{f021}")
-        );
+        let cells = &cells[usize::from(button.x)..usize::from(button.x + button.width)];
+        assert_eq!(cells.len(), 4);
+        assert_eq!(cells[0].text, "[");
+        assert_eq!(cells[1].text, "\u{f021}");
+        assert_eq!(cells[2].text, " ");
+        assert_eq!(cells[3].text, "]");
         let hit = screen_rect(button, card);
         let point = (hit.x, hit.y);
         assert!(popup.button_at(&tree, point, false).is_none());

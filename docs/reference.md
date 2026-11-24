@@ -1137,7 +1137,8 @@ there's room. Switching to plain chrome gives those columns back to the pane.
 This preference does not disable application-owned graphics.
 Enabled buttons highlight on hover and activate on a matching primary press and
 release. Plain buttons use brackets; fancy buttons have a raised edge
-without a shadow and recess while pressed. Copy buttons use the Nerd Font copy icon.
+without a shadow and recess while pressed. The Nerd Font copy and CI refresh
+icons each get two cells, with the same four-cell button width in both modes.
 
 With confirmed graphics/color support and ready pane contours, the framework
 temporarily makes the host's default background match the sidebar matte while

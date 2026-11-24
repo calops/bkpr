@@ -36,21 +36,38 @@ impl State {
 /// A borrowed, single-line button label. It doesn't own input or the cursor.
 pub struct Button<'a> {
     label: &'a str,
+    wide_icon: bool,
 }
 
 impl<'a> Button<'a> {
     /// Create a button from a sanitized single-line text label or icon.
     pub fn new(label: &'a str) -> Self {
-        Self { label }
+        Self {
+            label,
+            wide_icon: false,
+        }
+    }
+
+    /// Create a button with a single icon that needs two cells even if its Unicode width is one.
+    pub fn wide_icon(label: &'a str) -> Self {
+        Self {
+            label,
+            wide_icon: true,
+        }
+    }
+
+    fn label_width(&self) -> usize {
+        text_width(self.label).max(if self.wide_icon { 2 } else { 0 })
     }
 
     /// Preferred cell width including the two side cells shared by both modes.
     pub fn width(&self) -> u16 {
-        u16::try_from(text_width(self.label).saturating_add(2)).unwrap_or(u16::MAX)
+        u16::try_from(self.label_width().saturating_add(2)).unwrap_or(u16::MAX)
     }
 
     /// Paint one reserved row. Use a graphical face only when it was placed.
     /// Bounds below three cells omit the brackets; wider bounds reserve both side cells.
+    /// A wide icon is omitted if its full slot doesn't fit.
     /// The cursor stays unchanged.
     pub fn paint(
         &self,
@@ -77,10 +94,12 @@ impl<'a> Button<'a> {
         clear(frame, rect);
         let framed = rect.width >= 3;
         let budget = rect.width - if framed { 2 } else { 0 };
-        let measured = text_width(self.label);
+        let measured = self.label_width();
         let clipped;
         let (label, used) = if measured <= usize::from(budget) {
             (self.label, measured as u16)
+        } else if self.wide_icon {
+            ("", 0)
         } else {
             clipped = window::fit(self.label, budget);
             (clipped.as_str(), text_width(&clipped) as u16)

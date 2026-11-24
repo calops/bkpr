@@ -97,8 +97,7 @@ pub(crate) enum ButtonAction {
 
 /// Shared identity copy label and cell geometry.
 pub(crate) fn copy_button() -> Button<'static> {
-    // Nerd Font can paint the icon into the next blank cell.
-    Button::new("\u{f0c5} ")
+    Button::wide_icon("\u{f0c5}")
 }
 
 impl ButtonAction {
@@ -106,7 +105,7 @@ impl ButtonAction {
     pub(crate) fn button(&self) -> Button<'static> {
         match self {
             Self::Copy(_) => copy_button(),
-            Self::Refresh(_) => Button::new("\u{f021}"),
+            Self::Refresh(_) => Button::wide_icon("\u{f021}"),
         }
     }
 }
@@ -748,7 +747,7 @@ mod tests {
         let url = "https://github.com/org/repo";
         let mut row = Paragraph::new("Check 文字", Role::Panel).linked(url);
         row.with_refresh(None);
-        let button_width = Button::new("\u{f021}").width();
+        let button_width = 4;
         assert_eq!(
             row.preferred_width(),
             width(&row.text) + 1 + usize::from(button_width)
