@@ -556,6 +556,7 @@ struct App {
     color_query_pending: bool,
     last_button: MouseButton,
     pointer_capture: Option<PointerCapture>,
+    retired_overlay_button: Option<MouseButton>,
     sidebar_resize_hover: bool,
     pressed_pointers: RefCell<Vec<PressedPointer>>,
     terminal_selection: selection::State,
@@ -2156,6 +2157,12 @@ impl App {
     fn host_focus_changed(&mut self, focused: bool) -> Result<()> {
         self.host_focused = focused;
         if !focused {
+            if let Some(button) = self.overlays.take_pointer_capture() {
+                self.retired_overlay_button = Some(button);
+                if matches!(self.pointer_capture, Some(PointerCapture::Ui)) {
+                    self.pointer_capture = None;
+                }
+            }
             let releases = self.cancel_held_keys();
             self.scope_input_result(releases)?;
             self.retire_resize();
@@ -4522,6 +4529,30 @@ impl App {
         );
         let point = (mouse.x, mouse.y);
         self.button_pointer = None;
+        // A host blur can drop button-up. Swallow it if it arrives, but let
+        // a fresh press supersede it without retaining the old overlay owner.
+        if !wheel && self.retired_overlay_button == Some(event_button) {
+            match action {
+                MouseAction::Press => self.retired_overlay_button = None,
+                MouseAction::Release => {
+                    self.retired_overlay_button = None;
+                    if self.last_button == event_button {
+                        self.last_button = MouseButton::None;
+                    }
+                    return Ok(());
+                }
+                MouseAction::Motion => return Ok(()),
+            }
+        }
+        if !wheel
+            && matches!(action, MouseAction::Press | MouseAction::Release)
+            && self
+                .overlays
+                .pointer_button()
+                .is_some_and(|owner| owner != event_button)
+        {
+            return Ok(());
+        }
         let primary_release = action == MouseAction::Release && event_button == MouseButton::Left;
         let popover_release = primary_release
             .then(|| self.popover_button.take())
@@ -4675,7 +4706,9 @@ impl App {
                 .consent
                 .as_ref()
                 .is_some_and(|consent| !consent.state.allowed && !consent.state.sent);
-            let route = self.overlays.route_pointer(mouse.x, mouse.y, phase);
+            let route = self
+                .overlays
+                .route_pointer(mouse.x, mouse.y, phase, event_button);
             if primary_release
                 && (consent_open
                     || !matches!(
@@ -5373,6 +5406,7 @@ impl App {
             color_query_pending: false,
             last_button: MouseButton::None,
             pointer_capture: None,
+            retired_overlay_button: None,
             sidebar_resize_hover: false,
             pressed_pointers: RefCell::new(Vec::new()),
             terminal_selection: selection::State::default(),
@@ -5445,6 +5479,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         id: toast::ToastId,
         style_revision: u64,
         graphical: bool,
+        button_states: [bkpr_tui_framework::button::State; 2],
+        button_keys: [Option<bkpr_protocol::ImageKey>; 3],
         outer: Rect,
         body: Rect,
         frame: bkpr_protocol::Frame,
@@ -6447,38 +6483,42 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             );
             let mut toast_count = 0;
             let mut visible_toasts = [false; 3];
+            let button_keys = graphics.button_keys();
             for card in toasts.cards() {
                 let retained = &mut toast_frames[card.slot];
-                // Toast text is immutable per ID. UiSurface has no frame
-                // revision; size, material mode and Theme revision cover all
-                // subsequent text/style changes without warm frame copying.
+                let button_states = toasts.button_states(card);
                 let unchanged = retained.as_ref().is_some_and(|cached| {
                     cached.id == card.id
                         && cached.frame.size == card.surface.frame.size
                         && cached.graphical == card.graphical
                         && cached.style_revision == toast_theme.revision()
+                        && cached.button_states == button_states
+                        && cached.button_keys == button_keys
                 });
                 if !unchanged {
+                    let mut frame = card.surface.frame.clone();
+                    if button_keys.iter().any(Option::is_some) {
+                        toasts.paint_buttons(
+                            card,
+                            &mut frame,
+                            &toast_theme,
+                            graphics.button_painter(true),
+                        );
+                    }
                     *retained = Some(ToastPresentation {
                         id: card.id,
                         style_revision: toast_theme.revision(),
                         graphical: card.graphical,
+                        button_states,
+                        button_keys,
                         outer: card.outer,
                         body: card.body,
-                        frame: card.surface.frame.clone(),
+                        frame,
                     });
                 }
                 let cached = retained.as_mut().expect("visible toast presentation");
                 cached.outer = card.outer;
                 cached.body = card.body;
-                cached.frame.images.clear();
-                cached.frame.placements.clear();
-                toasts.paint_buttons(
-                    card,
-                    &mut cached.frame,
-                    &toast_theme,
-                    graphics.button_painter(true),
-                );
                 visible_toasts[card.slot] = true;
                 toast_order[toast_count] = card.slot;
                 toast_count += 1;
@@ -7642,6 +7682,7 @@ pub(super) mod tests {
                 color_query_pending: false,
                 last_button: MouseButton::None,
                 pointer_capture: None,
+                retired_overlay_button: None,
                 sidebar_resize_hover: false,
                 pressed_pointers: RefCell::new(Vec::new()),
                 terminal_selection: selection::State::default(),
@@ -12390,10 +12431,7 @@ pub(super) mod tests {
         .unwrap();
         worker.join().unwrap();
     }
-    #[test]
-    fn passive_ci_hover_preserves_ordinary_pane_r_input_and_keyboard_focus() {
-        let (mut app, received) = fixture();
-        attach_fixture(&mut app);
+    fn show_ci_popover(app: &mut App) -> Rect {
         app.registry.panes[0].workspace_id = Some("workspace".into());
         app.registry.panes[0].window_id = Some("window".into());
         app.registry.panes[0].project = Some(crate::ci::tests::project());
@@ -12412,7 +12450,7 @@ pub(super) mod tests {
         });
         app.state.workspace = Some("workspace".into());
         app.state.window = Some("window".into());
-        publish_test_tree(&mut app);
+        publish_test_tree(app);
         let target = TreeTarget {
             owner: app.tree_owner(),
             node: TreeNode::Native(SidebarTarget::Pane {
@@ -12421,15 +12459,25 @@ pub(super) mod tests {
             }),
         };
         let shared = Arc::clone(&app.tree);
-        {
+        let rect = {
             let mut tree = shared.lock().unwrap();
             tree.hover(Some(&target));
-            app.popover
+            let rect = app
+                .popover
                 .paint_tree(&tree, Some(&target), 3, 24, size())
                 .unwrap();
             assert!(app.popover.refresh_available(&tree));
-        }
+            rect
+        };
         app.synchronize_tree_focus();
+        rect
+    }
+
+    #[test]
+    fn passive_ci_hover_preserves_ordinary_pane_r_input_and_keyboard_focus() {
+        let (mut app, received) = fixture();
+        attach_fixture(&mut app);
+        show_ci_popover(&mut app);
         assert!(!app.state.sidebar.active);
         let focused = app.state.focused.clone();
         let views = app.views.len();
@@ -12445,6 +12493,75 @@ pub(super) mod tests {
         );
         assert_eq!(app.state.focused, focused);
         assert_eq!(app.views.len(), views);
+    }
+
+    #[test]
+    fn popover_focus_loss_swallows_late_release_and_admits_next_press() {
+        let size = size();
+        let hits = Scene {
+            size,
+            surfaces: Vec::new(),
+        }
+        .hit_map();
+        for late_release in [true, false] {
+            let (mut app, _received) = fixture();
+            attach_fixture(&mut app);
+            show_ci_popover(&mut app);
+            app.popover.scroll_by(i32::MAX);
+            let rect = {
+                let tree = app.tree.lock().unwrap();
+                app.popover
+                    .paint_tree(&tree, tree.hover.as_ref(), 3, 24, size)
+                    .unwrap()
+            };
+            app.overlays.present(
+                crate::popover::SURFACE_ID,
+                OverlayPlacement::framed(rect, size),
+                OverlayPolicy::PASSIVE,
+                None,
+            );
+            let mut point = None;
+            app.popover
+                .paint_buttons(&Theme::default(), None, None, true, |_, button, _| {
+                    point = Some((rect.x + button.x + 1, rect.y + button.y + 1));
+                    false
+                });
+            let (x, y) = point.expect("painted CI refresh button");
+            let mut parser = InputParser::new();
+            let mut demux = ReplyDemux::default();
+            let mut click = |app: &mut App, phase: char| {
+                let packet = format!("\x1b[<0;{x};{y}{phase}");
+                let mut events = decode_input(&mut parser, demux.feed(packet.as_bytes()), false);
+                assert_eq!(events.len(), 1);
+                let Some(ClientEvent::Mouse {
+                    event,
+                    button,
+                    action,
+                }) = events.pop()
+                else {
+                    panic!("expected a single physical mouse event");
+                };
+                app.mouse(event, Some((button, action)), size, &[], &[], &hits)
+                    .unwrap();
+            };
+            click(&mut app, 'M');
+            assert!(app.popover_button.is_some());
+            assert!(app.session_action.is_none());
+            app.host_focus_changed(false).unwrap();
+            app.host_focus_changed(true).unwrap();
+            if late_release {
+                click(&mut app, 'm');
+                assert!(app.button_pointer.is_none(), "old release reached overlay");
+                assert!(app.session_action.is_none());
+            }
+            click(&mut app, 'M');
+            assert!(app.popover_button.is_some(), "fresh press did not arm");
+            click(&mut app, 'm');
+            assert!(matches!(
+                app.session_action,
+                Some(SessionAction::CiRefresh { .. })
+            ));
+        }
     }
     include!("diagnostic_tests.rs");
     include!("attach_shutdown_tests.rs");

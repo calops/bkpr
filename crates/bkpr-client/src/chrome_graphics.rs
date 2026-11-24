@@ -197,18 +197,32 @@ impl ChromeGraphics {
         );
     }
 
+    pub(crate) fn button_keys(&self) -> [Option<bkpr_protocol::ImageKey>; 3] {
+        self.4.map_or([None; 3], |buttons| {
+            buttons.styles().map(|style| self.0.decoration_key(style))
+        })
+    }
+
     pub(crate) fn button_painter(
         &self,
         enabled: bool,
     ) -> impl FnMut(&mut Frame, Rect, bkpr_tui_framework::button::State) -> bool + '_ {
         let mut base = 1;
+        let mut retained = false;
         move |frame, rect, state| {
             let id = base;
             base += 64;
             enabled
-                && self
-                    .4
-                    .is_some_and(|buttons| buttons.place(&self.0, frame, rect, state, id))
+                && self.4.is_some_and(|buttons| {
+                    if !buttons.place(&self.0, frame, rect, state, id) {
+                        return false;
+                    }
+                    if !retained {
+                        self.0.retain_decoration_sources(frame, buttons.styles());
+                        retained = true;
+                    }
+                    true
+                })
         }
     }
 

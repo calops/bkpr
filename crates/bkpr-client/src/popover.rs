@@ -1005,12 +1005,15 @@ impl Popover {
                     }),
                 )
             } else {
-                ButtonState::Idle
+                ButtonState::Disabled
             };
-            let graphical = material(frame, *rect, state);
-            action
-                .button()
-                .paint(frame, *rect, theme.style(Role::Accent), state, graphical);
+            let graphical = interactive && material(frame, *rect, state);
+            let ink = theme.style(if interactive {
+                Role::Accent
+            } else {
+                Role::Muted
+            });
+            action.button().paint(frame, *rect, ink, state, graphical);
         }
     }
 }
@@ -1799,6 +1802,12 @@ mod tests {
         let hit = screen_rect(button, card);
         let point = (hit.x, hit.y);
         assert!(popup.button_at(&tree, point, false).is_none());
+        popup.paint_buttons(&Theme::default(), Some(point), None, false, |_, _, _| {
+            panic!("disabled refresh must not place active material")
+        });
+        let disabled =
+            &popup.surface.frame.rows[usize::from(button.y)].cells[usize::from(button.x)];
+        assert!(disabled.style.faint && !disabled.style.inverse);
         let armed = popup.button_at(&tree, point, true).unwrap();
         registry.revision += 1;
         tree.reconcile(vec![session(registry.clone(), owner)], owner);

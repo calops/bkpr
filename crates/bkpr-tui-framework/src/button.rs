@@ -16,6 +16,8 @@ pub enum State {
     Hover,
     /// Pointer inside after a press captured by this control.
     Pressed,
+    /// Unavailable action, presented with muted bracketed text and no bevel.
+    Disabled,
 }
 
 impl State {
@@ -48,7 +50,8 @@ impl<'a> Button<'a> {
     }
 
     /// Paint one reserved row. Use a graphical face only when it was placed.
-    /// Narrow bounds omit brackets before clipping the label. The cursor stays unchanged.
+    /// Bounds below three cells omit the brackets; wider bounds reserve both side cells.
+    /// The cursor stays unchanged.
     pub fn paint(
         &self,
         frame: &mut Frame,
@@ -57,6 +60,7 @@ impl<'a> Button<'a> {
         state: State,
         graphical: bool,
     ) {
+        let graphical = graphical && state != State::Disabled;
         rect.width = rect.width.min(frame.size.cols.saturating_sub(rect.x));
         if rect.width == 0 || rect.height != 1 {
             return;
@@ -101,7 +105,8 @@ impl<'a> Button<'a> {
         }
         style.background = background;
         style.background_source = background_source;
-        style.inverse = !graphical && state != State::Idle;
+        style.inverse = !graphical && matches!(state, State::Hover | State::Pressed);
+        style.faint |= state == State::Disabled;
         if !graphical && state == State::Pressed {
             style.bold = true;
             style.underline = 1;
@@ -117,8 +122,17 @@ impl<'a> Button<'a> {
 impl State {
     fn face(self, ink: [u8; 3]) -> [u8; 3] {
         match self {
-            Self::Idle => ink,
-            Self::Hover => ink.map(|c| c + (255 - c) / 8),
+            Self::Idle | Self::Disabled => ink,
+            Self::Hover => {
+                let lighter = ink.map(|c| c + (255 - c) / 8);
+                if crate::color::luminance(lighter).relative_contrast(crate::color::luminance(ink))
+                    < 1.1
+                {
+                    ink.map(|c| c - c / 8)
+                } else {
+                    lighter
+                }
+            }
             Self::Pressed => ink.map(|c| c - c / 10),
         }
     }
@@ -173,6 +187,7 @@ impl Materials {
     ) -> bool {
         let [cw, ch] = [frame.size.cell_width, frame.size.cell_height].map(i64::from);
         if !graphics.is_enabled()
+            || state == State::Disabled
             || rect.width < 3
             || rect.height != 1
             || !(4..=512).contains(&cw)

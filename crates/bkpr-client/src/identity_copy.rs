@@ -159,7 +159,7 @@ mod tests {
             .reconcile(vec![Arc::new(session)], owner);
     }
 
-    fn fixture(graphical: bool) -> (App, updates::Capture, Size, Vec<(u16, u16)>) {
+    fn fixture() -> (App, updates::Capture, Size) {
         let (mut app, capture) = super::super::tests::fixture();
         app.options.read_only = true;
         super::super::tests::attach_named_fixture(&mut app, "identity-pane", "identity-view");
@@ -189,93 +189,141 @@ mod tests {
         });
         publish(&mut app);
         let size = Size {
-            cols: 84,
-            rows: 40,
+            cols: 105,
+            rows: 48,
             cell_width: 9,
             cell_height: 18,
         };
-        let mut finder = crate::finder::Finder::new(
-            &app.registry,
-            Some("identity-pane"),
-            &crate::project_colors::ProjectSlots::default(),
-            |id| app.views.get(id).map(|view| &view.metadata),
-        );
-        let mut surface = UiSurface::new(size);
-        finder.paint(&mut surface, size);
-        if !graphical {
-            crate::finder::Finder::sections(size)
-                .unwrap()
-                .decorate(&mut surface.frame);
+        (app, capture, size)
+    }
+
+    fn finder_fixture() -> (App, updates::Capture, Size, OverlayPlacement) {
+        let (mut app, capture, size) = fixture();
+        app.begin_finder();
+        let (outer, content) = app.modal_geometry(size);
+        let placement = OverlayPlacement { outer, content };
+        app.overlays
+            .present("ui:modal", placement, OverlayPolicy::MODAL, None);
+        (app, capture, size, placement)
+    }
+
+    fn paint_finder(app: &mut App, size: Size, content: Rect) -> Vec<(u16, u16)> {
+        let local = content.size(size);
+        let finder = app.finder.as_mut().unwrap();
+        let mut surface = UiSurface::new(local);
+        finder.paint(&mut surface, local);
+        if let Some(sections) = crate::finder::Finder::sections(local) {
+            sections.decorate(&mut surface.frame);
         }
         let mut buttons = Vec::new();
         let cursor = surface.frame.cursor.clone();
         finder.paint_buttons(&mut surface.frame, &Theme::default(), None, |_, rect, _| {
             buttons.push(rect);
-            graphical
+            false
         });
         assert_eq!(surface.frame.cursor, cursor);
-        for rect in &buttons {
-            let row = &surface.frame.rows[usize::from(rect.y)].cells;
-            let cells = &row[usize::from(rect.x)..usize::from(rect.x + rect.width)];
-            assert!(cells.iter().any(|cell| cell.text == "\u{f0c5}"));
-            assert_eq!(cells[0].text, if graphical { " " } else { "[" });
-            assert_eq!(
-                cells.last().unwrap().text,
-                if graphical { " " } else { "]" }
-            );
-            assert!(
-                row[..usize::from(rect.x)]
+        buttons
+            .into_iter()
+            .map(|rect| {
+                let row = &surface.frame.rows[usize::from(rect.y)].cells;
+                let cells = &row[usize::from(rect.x)..usize::from(rect.x + rect.width)];
+                assert_eq!(cells[0].text, "[");
+                assert_eq!(cells.last().unwrap().text, "]");
+                let icon = cells
                     .iter()
-                    .any(|cell| cell.text == "…")
-            );
-        }
-        app.finder = Some(finder);
-        (
-            app,
-            capture,
-            size,
-            buttons.into_iter().map(|rect| (rect.x, rect.y)).collect(),
-        )
+                    .position(|cell| cell.text == "\u{f0c5}")
+                    .unwrap();
+                assert!(
+                    row[..usize::from(rect.x)]
+                        .iter()
+                        .any(|cell| cell.text == "…")
+                );
+                (content.x + rect.x + icon as u16, content.y + rect.y)
+            })
+            .collect()
     }
 
     fn pointer(app: &mut App, size: Size, point: (u16, u16), action: MouseAction) {
-        let intent = app.finder.as_mut().unwrap().handle_mouse(
-            &MouseEvent {
-                x: f32::from(point.0),
-                y: f32::from(point.1),
-                button: MouseButton::Left,
-                action,
-                modifiers: 0,
+        pointer_button(app, size, point, MouseButton::Left, action);
+    }
+
+    fn pointer_button(
+        app: &mut App,
+        size: Size,
+        point: (u16, u16),
+        button: MouseButton,
+        action: MouseAction,
+    ) {
+        let code = match button {
+            MouseButton::Left => 0,
+            MouseButton::Right => 2,
+            _ => unreachable!(),
+        };
+        let packet = format!(
+            "\x1b[<{code};{};{}{}",
+            point.0 + 1,
+            point.1 + 1,
+            if action == MouseAction::Release {
+                'm'
+            } else {
+                'M'
             },
-            size,
         );
-        app.finder_intent(intent).unwrap();
-    }
-
-    #[test]
-    fn clipped_identity_buttons_export_both_exact_ids_in_read_only_rich_and_plain_views() {
-        for graphical in [false, true] {
-            let (mut app, capture, size, buttons) = fixture(graphical);
-            assert_eq!(buttons.len(), 2);
-            for (point, expected) in buttons.into_iter().zip(CLIPBOARD_OUTPUTS) {
-                pointer(&mut app, size, point, MouseAction::Press);
-                let mut out = Vec::new();
-                app.identity_clipboard(&mut out).unwrap();
-                assert!(out.is_empty(), "press must not export");
-                pointer(&mut app, size, point, MouseAction::Release);
-                app.identity_clipboard(&mut out).unwrap();
-                assert_eq!(out, expected);
-            }
-            assert!(
-                capture.try_recv().is_err(),
-                "copy must not become pane input"
-            );
+        let mut parser = InputParser::new();
+        let mut demux = ReplyDemux::default();
+        let mut events =
+            decode_input(&mut parser, demux.feed(packet.as_bytes()), false).into_iter();
+        let Some(ClientEvent::Mouse {
+            event,
+            button: decoded_button,
+            action: decoded,
+        }) = events.next()
+        else {
+            panic!("expected a physical mouse event");
+        };
+        assert_eq!(decoded_button, button);
+        assert_eq!(decoded, action);
+        assert!(events.next().is_none());
+        let hits = Scene {
+            size,
+            surfaces: Vec::new(),
         }
+        .hit_map();
+        app.mouse(
+            event,
+            Some((decoded_button, decoded)),
+            size,
+            &[],
+            &[],
+            &hits,
+        )
+        .unwrap();
     }
 
     #[test]
-    fn finder_rejects_bare_release_outside_release_and_replaced_copy_target() {
-        let (mut app, _, size, buttons) = fixture(false);
+    fn finder_buttons_export_both_unclipped_ids_on_read_only_pointer_release() {
+        let (mut app, capture, size, placement) = finder_fixture();
+        let buttons = paint_finder(&mut app, size, placement.content);
+        assert_eq!(buttons.len(), CLIPBOARD_OUTPUTS.len());
+        for (point, expected) in buttons.into_iter().zip(CLIPBOARD_OUTPUTS) {
+            pointer(&mut app, size, point, MouseAction::Press);
+            let mut out = Vec::new();
+            app.identity_clipboard(&mut out).unwrap();
+            assert!(out.is_empty(), "press must not export");
+            pointer(&mut app, size, point, MouseAction::Release);
+            app.identity_clipboard(&mut out).unwrap();
+            assert_eq!(out, expected);
+        }
+        assert!(
+            capture.try_recv().is_err(),
+            "copy must not become pane input"
+        );
+    }
+
+    #[test]
+    fn finder_rejects_bare_release_off_button_release_and_replaced_copy_target() {
+        let (mut app, _, size, placement) = finder_fixture();
+        let buttons = paint_finder(&mut app, size, placement.content);
         let point = buttons[0];
         let mut out = Vec::new();
         pointer(&mut app, size, point, MouseAction::Release);
@@ -283,18 +331,21 @@ mod tests {
         assert!(out.is_empty());
 
         pointer(&mut app, size, point, MouseAction::Press);
-        pointer(&mut app, size, (0, 0), MouseAction::Release);
+        let content = placement.content;
+        pointer(&mut app, size, (content.x, content.y), MouseAction::Release);
         pointer(&mut app, size, point, MouseAction::Release);
         app.identity_clipboard(&mut out).unwrap();
         assert!(out.is_empty());
 
         pointer(&mut app, size, point, MouseAction::Press);
-        app.finder.as_mut().unwrap().cancel_copy_press();
+        let outside = (placement.outer.x - 1, placement.outer.y);
+        pointer(&mut app, size, outside, MouseAction::Release);
+        assert!(app.finder.is_some(), "release must not dismiss the picker");
         pointer(&mut app, size, point, MouseAction::Release);
         app.identity_clipboard(&mut out).unwrap();
         assert!(
             out.is_empty(),
-            "a release consumed by the modal frame retires the press"
+            "a release intercepted outside the modal content retires the press"
         );
 
         pointer(&mut app, size, point, MouseAction::Press);
@@ -318,15 +369,9 @@ mod tests {
             &crate::project_colors::ProjectSlots::default(),
             |id| app.views.get(id).map(|view| &view.metadata),
         );
-        let mut surface = UiSurface::new(size);
-        finder.paint(&mut surface, size);
-        let mut replaced = false;
-        finder.paint_buttons(&mut surface.frame, &Theme::default(), None, |_, rect, _| {
-            replaced |= rect.contains(point.0, point.1);
-            false
-        });
+        let replaced = paint_finder(&mut app, size, content);
         assert!(
-            replaced,
+            replaced.contains(&point),
             "the replacement is painted at the same pointer location"
         );
         pointer(&mut app, size, point, MouseAction::Release);
@@ -338,9 +383,39 @@ mod tests {
     }
 
     #[test]
+    fn secondary_gesture_outside_finder_preserves_primary_copy() {
+        let (mut app, _, size, placement) = finder_fixture();
+        let point = paint_finder(&mut app, size, placement.content)[0];
+        let outside = (placement.outer.x - 1, placement.outer.y);
+        pointer(&mut app, size, point, MouseAction::Press);
+        pointer_button(
+            &mut app,
+            size,
+            outside,
+            MouseButton::Right,
+            MouseAction::Press,
+        );
+        pointer_button(
+            &mut app,
+            size,
+            outside,
+            MouseButton::Right,
+            MouseAction::Release,
+        );
+        assert!(app.finder.is_some());
+        assert!(app.pointer_capture.is_some());
+        assert_eq!(app.overlays.pointer_button(), Some(MouseButton::Left));
+
+        let mut out = Vec::new();
+        pointer(&mut app, size, point, MouseAction::Release);
+        app.identity_clipboard(&mut out).unwrap();
+        assert_eq!(out, CLIPBOARD_OUTPUTS[0]);
+        assert!(app.pointer_capture.is_none());
+    }
+
+    #[test]
     fn sidebar_copy_exports_exact_ids_only_after_release_in_the_card() {
-        let (mut app, capture, size, _) = fixture(false);
-        app.finder = None;
+        let (mut app, capture, size) = fixture();
         app.registry.panes[0].workspace_id = Some("workspace".into());
         app.registry.panes[0].window_id = Some("window".into());
         app.registry.workspaces.push(bkpr_protocol::Workspace {
@@ -412,7 +487,8 @@ mod tests {
     #[test]
     fn stale_identity_gestures_never_export_or_replay_after_source_retirement() {
         for change in 0..8 {
-            let (mut app, _, size, buttons) = fixture(false);
+            let (mut app, _, size, placement) = finder_fixture();
+            let buttons = paint_finder(&mut app, size, placement.content);
             pointer(&mut app, size, buttons[0], MouseAction::Press);
             pointer(&mut app, size, buttons[0], MouseAction::Release);
             match change {

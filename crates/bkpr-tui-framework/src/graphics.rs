@@ -433,6 +433,14 @@ impl SvgGraphics {
         self.joined = publication.joined;
     }
 
+    /// Identity of a ready material for retained presentations, when enabled.
+    pub fn decoration_key(&self, style: DecorationStyle) -> Option<bkpr_protocol::ImageKey> {
+        self.enabled
+            .then(|| self.decorations.iter().find(|entry| entry.style == style))
+            .flatten()
+            .map(|entry| entry.image.key())
+    }
+
     /// Retain matching-cell material sources without adding placements.
     /// Inactive variants are admitted while total frame image bytes stay within
     /// 1 MiB; the renderer uploads them only when placed.

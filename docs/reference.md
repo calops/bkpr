@@ -1135,8 +1135,8 @@ the sidebar, and pane titles are shown in the sidebar rather than on the frame.
 Fancy panes reserve one extra column on each side of terminal content where
 there's room. Switching to plain chrome gives those columns back to the pane.
 This preference does not disable application-owned graphics.
-Copy, refresh and dismiss buttons highlight on hover and activate on a matching
-press and release. Plain buttons use brackets; fancy buttons have a raised edge
+Enabled buttons highlight on hover and activate on a matching primary press and
+release. Plain buttons use brackets; fancy buttons have a raised edge
 without a shadow and recess while pressed. Copy buttons use the Nerd Font copy icon.
 
 With confirmed graphics/color support and ready pane contours, the framework

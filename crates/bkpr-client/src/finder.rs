@@ -760,7 +760,7 @@ impl Finder {
         let pressed = if event.action == MouseAction::Release && event.button == MouseButton::Left {
             self.copy_press.take()
         } else {
-            if event.action == MouseAction::Press {
+            if event.action == MouseAction::Press && event.button == MouseButton::Left {
                 self.cancel_copy_press();
             }
             None

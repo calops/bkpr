@@ -185,7 +185,7 @@ fn close_rect(size: Size) -> Option<Rect> {
         return None;
     }
     let corner = u16::from(size.cols >= 3 && size.rows >= 3);
-    let width = Button::new("×").width().min(size.cols - corner);
+    let width = Button::new("×").width().min(size.cols - 2 * corner);
     Some(Rect {
         x: size.cols - corner - width,
         y: 0,

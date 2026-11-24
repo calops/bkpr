@@ -224,6 +224,14 @@ impl PreparedDecoration {
                 eh,
             ),
             (width - ew, height - eh, 3 * tw - ew, 3 * th - eh, ew, eh),
+            (
+                ew,
+                eh,
+                tw + tw / 2,
+                th + th / 2,
+                width - 2 * ew,
+                height - 2 * eh,
+            ),
         ];
         // A bounded stack buffer keeps semantic caption cutouts allocation-free.
         // Source strips are constant along their stretched axis, so cuts retain
@@ -231,6 +239,14 @@ impl PreparedDecoration {
         let mut fragments = [[0_u32; 8]; 64];
         let mut count = 0;
         for (index, (x, y, sx, sy, width, height)) in parts.into_iter().enumerate() {
+            if index == 8
+                && !matches!(
+                    self.style.kind,
+                    DecorationKind::ButtonRaised | DecorationKind::ButtonPressed
+                )
+            {
+                break;
+            }
             let left = (origin_x + i64::from(x)).max(clip_left);
             let top = (origin_y + i64::from(y)).max(clip_top);
             let right = (origin_x + i64::from(x + width)).min(clip_right);
@@ -242,8 +258,8 @@ impl PreparedDecoration {
             let dy = (top - origin_y - i64::from(y)) as u32;
             let w = (right - left) as u32;
             let h = (bottom - top) as u32;
-            let horizontal = index == 1 || index == 6;
-            let vertical = index == 3 || index == 4;
+            let horizontal = matches!(index, 1 | 6 | 8);
+            let vertical = matches!(index, 3 | 4 | 8);
             fragments[count] = [
                 x + dx,
                 y + dy,
@@ -590,6 +606,18 @@ pub(crate) fn rasterize(style: DecorationStyle, cell: [u32; 2]) -> Option<Vec<u8
     let tile = [width / 3, height / 3];
     let material = Material { style, tile, cell };
     let mut pixels = vec![0; bytes];
+    if matches!(
+        style.kind,
+        DecorationKind::ButtonRaised | DecorationKind::ButtonPressed
+    ) {
+        for y in tile[1]..2 * tile[1] {
+            let start = ((y * width + tile[0]) * 4) as usize;
+            for pixel in pixels[start..start + tile[0] as usize * 4].chunks_exact_mut(4) {
+                pixel[..3].copy_from_slice(&style.background);
+                pixel[3] = 255;
+            }
+        }
+    }
     for (index, (tx, ty)) in [
         (0, 0),
         (1, 0),
@@ -826,6 +854,124 @@ mod tests {
         assert_eq!(frame.images.len(), 1);
         assert!(frame.images[0].pixels.len() < 80 * 24 * 10 * 20 * 4);
     }
+
+    #[test]
+    fn odd_height_button_faces_are_seamless_and_share_the_plain_accent() {
+        use crate::button::{Button, Materials, State};
+        use crate::color::luminance;
+        use palette::color_difference::Wcag21RelativeContrast;
+
+        let cell = [9, 19];
+        let [cw, ch] = cell;
+        let size = Size {
+            cols: 10,
+            rows: 6,
+            cell_width: cw,
+            cell_height: ch,
+        };
+        let button = Button::new("Copy");
+        let rect = Rect {
+            x: 2,
+            y: 3,
+            width: button.width(),
+            height: 1,
+        };
+        let left = u32::from(rect.x) * cw;
+        let top = u32::from(rect.y) * ch;
+        let right = left + u32::from(rect.width) * cw;
+        let mid_x = (left + right) / 2;
+        let mid_y = top + ch / 2;
+        let (label_x, label_y) = (usize::from(rect.x) + 1, usize::from(rect.y));
+
+        for (accent, hover_darkens) in [([52, 105, 170], false), ([246, 236, 225], true)] {
+            let ink = bkpr_protocol::Style {
+                foreground: accent,
+                foreground_source: bkpr_protocol::ColorSource::Rgb(accent),
+                ..crate::default_style()
+            };
+            let mut plain = crate::blank(size);
+            button.paint(&mut plain, rect, &ink, State::Idle, false);
+            let plain_label = &plain.rows[label_y].cells[label_x];
+            assert_eq!(plain_label.text, "C");
+            assert_eq!(plain_label.style.foreground, accent);
+
+            let materials = Materials::new(accent, 3, 1620, 400, 420);
+            let [idle, hover, pressed] = [State::Idle, State::Hover, State::Pressed].map(|state| {
+                let style = materials.styles()[state as usize];
+                let [width, height] = atlas_size(style, cell).unwrap();
+                let decoration = PreparedDecoration {
+                    style,
+                    cell,
+                    image: Arc::new(Image {
+                        id: 1,
+                        generation: 1,
+                        width,
+                        height,
+                        format: PixelFormat::Rgba,
+                        pixels: rasterize(style, cell).unwrap(),
+                        source: None,
+                    }),
+                    png: None,
+                };
+                let mut frame = crate::blank(size);
+                let graphical = decoration.place(&mut frame, rect, 1);
+                assert!(graphical);
+                button.paint(&mut frame, rect, &ink, state, graphical);
+                assert_eq!(frame.rows[label_y].cells[label_x].text, plain_label.text);
+                for p in &frame.placements {
+                    let x = p.col as u32 * cw + p.offset_x;
+                    let y = p.row as u32 * ch + p.offset_y;
+                    assert!(x >= left && x + p.width <= right);
+                    assert!(y >= top && y + p.height <= top + ch);
+                    assert_eq!(p.layer, ImageLayer::BelowText);
+                }
+                let pixel = |x: u32, y: u32| {
+                    let (p, dx, dy) = frame
+                        .placements
+                        .iter()
+                        .find_map(|p| {
+                            let dx = x.checked_sub(p.col as u32 * cw + p.offset_x)?;
+                            let dy = y.checked_sub(p.row as u32 * ch + p.offset_y)?;
+                            (dx < p.width && dy < p.height).then_some((p, dx, dy))
+                        })
+                        .unwrap_or_else(|| panic!("missing {state:?} material at ({x}, {y})"));
+                    let sx = p.source_x + dx * p.source_width / p.width;
+                    let sy = p.source_y + dy * p.source_height / p.height;
+                    let offset = ((sy * width + sx) * 4) as usize;
+                    <[u8; 4]>::try_from(&frame.images[0].pixels[offset..offset + 4]).unwrap()
+                };
+                let center = pixel(mid_x, mid_y);
+                assert_eq!(center[3], 255);
+                for x in left + 2..right - 2 {
+                    for y in mid_y - 1..=mid_y + 1 {
+                        assert_eq!(pixel(x, y), center, "{state:?} face seam at ({x}, {y})");
+                    }
+                }
+                assert_eq!(pixel(left, top)[3], 0, "corner must be shadowless");
+                let light = |[r, g, b, alpha]: [u8; 4]| {
+                    assert_eq!(alpha, 255);
+                    luminance([r, g, b]).luma
+                };
+                let upper = light(pixel(mid_x, top));
+                let face = light(center);
+                let lower = light(pixel(mid_x, top + ch - 1));
+                if state == State::Pressed {
+                    assert!(upper < face && face < lower, "pressed bevel must recede");
+                } else {
+                    assert!(upper > face && face > lower, "{state:?} bevel must rise");
+                }
+                let [r, g, b, _] = center;
+                [r, g, b]
+            });
+
+            assert_eq!(idle, plain_label.style.foreground);
+            assert_eq!(luminance(hover).luma < luminance(idle).luma, hover_darkens);
+            assert!(luminance(hover).relative_contrast(luminance(idle)) >= 1.1);
+            assert_ne!(pressed, idle);
+            assert_ne!(pressed, hover);
+        }
+    }
+
     #[test]
     fn raised_light_surfaces_keep_a_visible_upper_left_facet() {
         let style = DecorationStyle {
