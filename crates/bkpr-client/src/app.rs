@@ -6821,6 +6821,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     chat_rect,
                     app.chat.inlays(),
                     pane_placement_base + (rects.len() as u32 + 1) * 64,
+                    app.chat.history_selection_spans(),
+                    app.chat.row_highlights(),
                 );
                 app.chat.set_graphical_inlays(ready, &theme);
                 terminal.register_prepared_transports(&app.chat.transports());

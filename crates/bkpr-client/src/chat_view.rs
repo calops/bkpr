@@ -170,6 +170,7 @@ pub(super) struct Paint {
     pub(super) rendered: Vec<u64>,
     hits: Vec<(Rect, Hit)>,
     hovered_channel: Option<ChannelId>,
+    row_highlights: [Option<Rect>; 2],
     inlays: Vec<(Rect, Rect, Option<u8>)>,
     inlay_mask: Option<u8>,
     outer: Rect,
@@ -211,6 +212,7 @@ impl Default for Paint {
             rendered: Vec::new(),
             hits: Vec::new(),
             hovered_channel: None,
+            row_highlights: [None; 2],
             inlays: Vec::with_capacity(2),
             inlay_mask: None,
             outer: Rect::default(),
@@ -289,6 +291,7 @@ impl Paint {
         self.ranges.clear();
         self.rendered.clear();
         self.hits.clear();
+        self.row_highlights = [None; 2];
         self.inlays.clear();
         self.inlay_mask = None;
         self.images.images.clear();
@@ -588,6 +591,10 @@ impl Chat {
             self.paint.hovered_channel = hovered.cloned();
             self.redraw();
         }
+    }
+
+    pub(in crate::app) fn row_highlights(&self) -> [Option<Rect>; 2] {
+        self.paint.row_highlights
     }
 
     pub(in crate::app) fn geometry(&self) -> Rect {
@@ -906,10 +913,14 @@ impl Chat {
                     Role::Base
                 };
                 if paint.hovered_channel.as_ref() == Some(id) {
+                    paint.row_highlights[0] = Some(bounds);
                     let hover = crate::appearance::hover_background(theme, list_background);
                     paint.fill_card(theme, bounds, hover);
                     paint.card_line(theme, bounds, &full, role, false, hover);
                 } else {
+                    if chosen {
+                        paint.row_highlights[1] = Some(bounds);
+                    }
                     paint.card_line(theme, bounds, &full, role, chosen, list_background);
                 }
                 paint.target(bounds, Hit::Channel(index));

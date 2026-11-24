@@ -120,13 +120,15 @@ impl PaneGeometry {
         index: usize,
         base: u32,
         style: DecorationStyle,
+        exclusions: &[Rect],
     ) -> bool {
         let Some((&rect, &geometry)) = self.rects.get(index).zip(self.placements.get(index)) else {
             return false;
         };
         rect.width >= 3
             && rect.height >= 3
-            && graphics.decorate_window_with_geometry(frame, rect, style, base, &[], geometry)
+            && graphics
+                .decorate_window_with_geometry(frame, rect, style, base, exclusions, geometry)
     }
 }
 
@@ -139,6 +141,7 @@ const CYAN_PANE: usize = 13;
 struct SplitGeometry {
     workspace: PaneGeometry,
     chat: PaneGeometry,
+    chat_cutouts: Vec<Rect>,
 }
 pub(crate) struct ChromeGraphics(
     SvgGraphics,
@@ -350,7 +353,10 @@ impl ChromeGraphics {
             styles[NATIVE_PANE]
         };
         self.3.workspace.rects.get(index) == Some(&rect)
-            && self.3.workspace.place(&self.0, frame, index, base, style)
+            && self
+                .3
+                .workspace
+                .place(&self.0, frame, index, base, style, &[])
     }
 
     /// Paint the tiled sections in the native graphics frame, beneath any overlays.
@@ -361,6 +367,8 @@ impl ChromeGraphics {
         origin: Rect,
         sections: &[(Rect, Rect, Option<u8>)],
         base: u32,
+        selection: &[bkpr_protocol::SelectionSpan],
+        row_highlights: [Option<Rect>; 2],
     ) -> u8 {
         let Some(styles) = self.1.as_ref().filter(|_| self.0.is_enabled()) else {
             return 0;
@@ -373,6 +381,32 @@ impl ChromeGraphics {
                 ..rect
             }),
         );
+        // These terminal backgrounds must remain visible beneath their text.
+        let cutouts = &mut self.3.chat_cutouts;
+        cutouts.clear();
+        cutouts.extend(row_highlights.into_iter().flatten().map(|rect| Rect {
+            x: origin.x + rect.x,
+            y: origin.y + rect.y,
+            ..rect
+        }));
+        for span in selection {
+            let rect = Rect {
+                x: origin.x + span.start,
+                y: origin.y + span.row,
+                width: span.end - span.start,
+                height: 1,
+            };
+            match cutouts.last_mut() {
+                Some(previous)
+                    if previous.x == rect.x
+                        && previous.width == rect.width
+                        && previous.y + previous.height == rect.y =>
+                {
+                    previous.height += 1;
+                }
+                _ => cutouts.push(rect),
+            }
+        }
         let mut ready = 0;
         for (index, &(_, _, accent)) in sections.iter().enumerate() {
             let style = match accent {
@@ -380,11 +414,14 @@ impl ChromeGraphics {
                 Some(6) => styles[CYAN_PANE],
                 _ => continue,
             };
-            if self
-                .3
-                .chat
-                .place(&self.0, frame, index, base + index as u32 * 64, style)
-            {
+            if self.3.chat.place(
+                &self.0,
+                frame,
+                index,
+                base + index as u32 * 64,
+                style,
+                cutouts,
+            ) {
                 ready |= 1 << index;
             }
         }
@@ -978,7 +1015,7 @@ mod tests {
         let mut sections = split.map(|rect| (rect, crate::controller::content(rect), None));
         let mut chat = bkpr_tui_framework::graphics_frame(size);
         assert_eq!(
-            chrome.decorate_chat_panes(&mut chat, origin, &sections, 1),
+            chrome.decorate_chat_panes(&mut chat, origin, &sections, 1, &[], [None; 2]),
             0b111
         );
         let mut native = bkpr_tui_framework::graphics_frame(size);
@@ -992,7 +1029,7 @@ mod tests {
         sections[2].2 = Some(6);
         let mut tinted = bkpr_tui_framework::graphics_frame(size);
         assert_eq!(
-            chrome.decorate_chat_panes(&mut tinted, origin, &sections, 1),
+            chrome.decorate_chat_panes(&mut tinted, origin, &sections, 1, &[], [None; 2]),
             0b111
         );
         assert_eq!(tinted.images.len(), 2);
@@ -1027,7 +1064,7 @@ mod tests {
         let original = plain.clone();
         assert!(!chrome.decorate_pane(&mut plain, rect, 0, 64, false));
         assert_eq!(
-            chrome.decorate_chat_panes(&mut plain, origin, &sections, 1),
+            chrome.decorate_chat_panes(&mut plain, origin, &sections, 1, &[], [None; 2]),
             0
         );
         for raised in [false, true] {
