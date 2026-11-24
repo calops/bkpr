@@ -161,6 +161,18 @@ const ROLES: [Role; 15] = [
     Role::BrightInfo,
 ];
 
+const HOVER_MIX: u16 = 6;
+
+/// Apply the sidebar's hover contrast to a recessed list's own fill.
+pub(crate) fn hover_background(theme: &Theme, surface: ColorSource) -> ColorSource {
+    match (theme.ink(Role::Base, false), surface) {
+        (ColorSource::Rgb(fg), ColorSource::Rgb(surface)) => {
+            ColorSource::Rgb(blend(fg, surface, HOVER_MIX))
+        }
+        _ => theme.background(Role::Hover, false),
+    }
+}
+
 struct Recipe<'a> {
     evidence: &'a ColorProbe,
     styles: [Style; 15],
@@ -230,7 +242,7 @@ impl Recipe<'_> {
                 style.foreground_source = ColorSource::Rgb(color);
                 style.faint = false;
             }
-            for (role, percent) in [(Role::Selected, 12), (Role::Hover, 6)] {
+            for (role, percent) in [(Role::Selected, 12), (Role::Hover, HOVER_MIX)] {
                 let color = blend(fg, surface, percent);
                 let style = &mut self.styles[role as usize];
                 style.background = color;
@@ -397,7 +409,7 @@ pub(crate) fn chat_backgrounds(host: &ColorProbe) -> Option<[[u8; 3]; 3]> {
     let composer = host
         .palette
         .get(&6)
-        .map_or(neutral, |&accent| mode_tint(neutral, accent, 0.16));
+        .map_or(neutral, |&accent| mode_tint(neutral, accent, 0.22));
     Some([neutral, composer, parent])
 }
 

@@ -168,6 +168,7 @@ pub(super) struct Paint {
     pub(super) surface: UiSurface,
     pub(super) rendered: Vec<u64>,
     hits: Vec<(Rect, Hit)>,
+    hovered_channel: Option<ChannelId>,
     inlays: Vec<(Rect, Rect, Option<u8>)>,
     inlay_mask: Option<u8>,
     outer: Rect,
@@ -208,6 +209,7 @@ impl Default for Paint {
             surface: UiSurface::new(initial),
             rendered: Vec::new(),
             hits: Vec::new(),
+            hovered_channel: None,
             inlays: Vec::with_capacity(2),
             inlay_mask: None,
             outer: Rect::default(),
@@ -230,6 +232,7 @@ impl Default for Paint {
 impl Paint {
     pub(super) fn invalidate_hits(&mut self) {
         self.hits.clear();
+        self.hovered_channel = None;
         self.rendered.clear();
         self.ranges.clear();
         self.rows.clear();
@@ -567,6 +570,24 @@ impl Chat {
         self.paint.key = None;
     }
 
+    pub(in crate::app) fn hover_channel(&mut self, pointer: Option<(u16, u16)>) {
+        let hovered = pointer.and_then(|(x, y)| {
+            let outer = self.paint.outer;
+            if outer.contains(x, y)
+                && self.editor.is_none()
+                && let Some(Hit::Channel(index)) = self.paint.hit(x - outer.x, y - outer.y)
+            {
+                self.ids.get(index)
+            } else {
+                None
+            }
+        });
+        if self.paint.hovered_channel.as_ref() != hovered {
+            self.paint.hovered_channel = hovered.cloned();
+            self.redraw();
+        }
+    }
+
     pub(in crate::app) fn geometry(&self) -> Rect {
         self.paint.outer
     }
@@ -774,6 +795,9 @@ impl Chat {
             return;
         }
         let geometry_changed = self.paint.outer != outer || self.paint.surface.frame.size != size;
+        if geometry_changed {
+            self.paint.hovered_channel = None;
+        }
         let old_history = self.paint.history;
         self.paint.begin(key, theme);
         self.paint_contents(screen, key, theme);
@@ -855,15 +879,14 @@ impl Chat {
                 .enumerate()
             {
                 let summary = &self.catalog[id];
-                let lead = if summary.unread_attention {
-                    "!"
-                } else if selected == Some(id) {
-                    ">"
-                } else {
-                    " "
+                let lead = match (selected == Some(id), summary.unread_attention) {
+                    (true, true) => "•!",
+                    (true, false) => "• ",
+                    (false, true) => "! ",
+                    (false, false) => "  ",
                 };
                 let name = channel_name(summary);
-                let full = format!("{lead} {name}");
+                let full = format!("{lead}{name}");
                 let bounds = row(body.x, body.y + line as u16 + 1, body.width);
                 let chosen = self.focus == Some(Focus::Channels) && self.list_cursor == index;
                 let role = if summary.unread_attention {
@@ -873,7 +896,13 @@ impl Chat {
                 } else {
                     Role::Base
                 };
-                paint.card_line(theme, bounds, &full, role, chosen, list_background);
+                if paint.hovered_channel.as_ref() == Some(id) {
+                    let hover = crate::appearance::hover_background(theme, list_background);
+                    paint.fill_card(theme, bounds, hover);
+                    paint.card_line(theme, bounds, &full, role, false, hover);
+                } else {
+                    paint.card_line(theme, bounds, &full, role, chosen, list_background);
+                }
                 paint.target(bounds, Hit::Channel(index));
             }
         }
@@ -964,16 +993,19 @@ impl Chat {
         let history_inset =
             u16::from(columns >= 3 && size.rows >= 3 && (!has_composer || inset != 0));
         let composer_columns = columns.saturating_sub(2 * inset);
+        let composer_padding = u16::from(composer_columns >= 6);
         let (button, button_width) = if channels_wide {
             ("", 0)
         } else if has_composer {
-            narrow_channels_button(composer_columns, 8)
+            narrow_channels_button(composer_columns - composer_padding, 8)
         } else {
             narrow_channels_button(columns.saturating_sub(2 * history_inset), 34)
         };
         let history_indent = if has_composer { 0 } else { button_width };
         let (draft_lines, caret_line) = if has_composer {
-            paint.composer_width = composer_columns.saturating_sub(button_width + 3).max(1);
+            paint.composer_width = composer_columns
+                .saturating_sub(button_width + composer_padding + 3)
+                .max(1);
             draft.map_or_else(
                 || (Vec::new(), 0),
                 |draft| draft.lines(usize::from(paint.composer_width)),
@@ -1059,21 +1091,26 @@ impl Chat {
         );
         history.visible_through = paint.rendered.last().copied().unwrap_or(0);
         if history.entries.is_empty() && history.error.is_none() && history_rect.height != 0 {
-            let (_, gutter) = history_columns(history_rect.width);
-            paint.line(
+            let label = if history.loaded {
+                "No messages yet"
+            } else {
+                "Loading history…"
+            };
+            let width = text_width(label) as u16;
+            let x = thread.x + thread.width.saturating_sub(width) / 2;
+            let y = (thread.y + (thread.height - 1) / 2).min(status_at - 1);
+            let x = if y == thread.y {
+                x.max(history_rect.x)
+            } else {
+                x
+            };
+            paint.card_line(
                 theme,
-                row(
-                    history_rect.x + gutter,
-                    history_rect.y,
-                    history_rect.width - gutter,
-                ),
-                if history.loaded {
-                    "No messages yet"
-                } else {
-                    "Loading history…"
-                },
+                row(x, y, thread.x + thread.width - x),
+                label,
                 Role::Muted,
                 false,
+                list_background,
             );
         }
         if status_rows != 0
@@ -1150,13 +1187,20 @@ impl Chat {
                 paint.fill_card(theme, outer, composer_background);
                 outer
             };
-            let left = body.x + button_width;
-            let columns = body.width - button_width;
+            let left = body.x + button_width + composer_padding;
+            let columns = body.width - button_width - composer_padding;
             let composer = body.y;
             let enabled = !self.sends.contains_key(&active.id);
             let has_composer_focus = self.focus == Some(Focus::Composer) && focused && enabled;
             let visible_from = caret_line.saturating_sub(composer_rows.saturating_sub(1) as usize);
-            paint.target(body, Hit::Composer);
+            paint.target(
+                Rect {
+                    x: left,
+                    width: columns,
+                    ..body
+                },
+                Hit::Composer,
+            );
             if button_width > 0 {
                 paint.channels_button(
                     theme,
@@ -1166,10 +1210,19 @@ impl Chat {
                 );
             }
             let reply = draft.and_then(|draft| draft.reply_to.as_ref());
-            let lead = if reply.is_some() { "↪ " } else { "> " };
+            let (prompt, fallback) = if reply.is_some() {
+                ("↪", ">")
+            } else {
+                ("›", ">")
+            };
+            let lead = if columns > 1 && text_width(prompt) == 1 {
+                prompt
+            } else {
+                fallback
+            };
             paint.card_line(
                 theme,
-                row(left, composer, 2.min(columns)),
+                row(left, composer, 1.min(columns)),
                 lead,
                 Role::Accent,
                 false,
@@ -1715,6 +1768,30 @@ mod tests {
             panic!("expected neutral list and thread cards plus an accented composer");
         };
         assert_eq!(chat.paint.history, thread_body);
+        chat.active.as_mut().unwrap().history.loaded = true;
+        chat.redraw();
+        chat.paint(area(wide), wide, &theme, false, false, true, BACKGROUNDS);
+        let label = "No messages yet";
+        let centered_x = thread_body.x + (thread_body.width - text_width(label) as u16) / 2;
+        let centered_y = thread_body.y + (thread_body.height - 1) / 2;
+        let frame = &chat.surface().frame;
+        assert_eq!(
+            frame.rows[usize::from(centered_y)].cells
+                [usize::from(centered_x)..usize::from(centered_x) + label.len()]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>(),
+            label
+        );
+        assert_eq!(
+            frame.rows[usize::from(composer_body.y)].cells[usize::from(composer_body.x + 1)].text,
+            "›"
+        );
+        assert_eq!(frame.cursor.x, composer_body.x + 3);
+        assert!(matches!(
+            chat.paint.hit(frame.cursor.x, frame.cursor.y),
+            Some(Hit::Composer)
+        ));
         assert_eq!(list.y, thread.y);
         assert_eq!((composer.x, composer.width), (thread.x, thread.width));
         assert_eq!(composer.y + 1, thread.y + thread.height);

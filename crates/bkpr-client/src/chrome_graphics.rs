@@ -557,13 +557,24 @@ impl ChromeGraphics {
         placement_id: u32,
     ) -> bool {
         let [col, row] = position;
-        let marker: &[&str] = match artwork {
-            Artwork::Bee | Artwork::Hive => &["●", " "],
-            Artwork::BeeHidden => &["◌", " "],
-            Artwork::Chat => &["◇"],
-            Artwork::ChatAlert => &["!"],
+        let (start, marker): (u16, &[&str]) = match artwork {
+            Artwork::Bee | Artwork::Hive => (col, &["●", " "]),
+            Artwork::BeeHidden => (col, &["◌", " "]),
+            Artwork::Chat | Artwork::ChatAlert => {
+                // The trailing cell anchors the status and its fallback glyph.
+                // Grow toward the reserved blank, never toward the scrollbar.
+                let Some(start) = col.checked_sub(1) else {
+                    return false;
+                };
+                let marker = if artwork == Artwork::Chat {
+                    &[" ", "◇"]
+                } else {
+                    &[" ", "!"]
+                };
+                (start, marker)
+            }
         };
-        let range = usize::from(col)..usize::from(col) + marker.len();
+        let range = usize::from(start)..usize::from(start) + marker.len();
         if artwork_frame.size != frame.size
             || range.end > usize::from(frame.size.cols)
             || row >= frame.size.rows
@@ -603,8 +614,8 @@ impl ChromeGraphics {
             Artwork::Bee | Artwork::BeeHidden => (1, i32::from(col), 0),
             // MAIN positions the hive half a cell left into its tree gutter.
             Artwork::Hive => (2, i32::from(col) - 1, frame.size.cell_width / 2),
-            Artwork::Chat => (3, i32::from(col), 0),
-            Artwork::ChatAlert => (4, i32::from(col), 0),
+            Artwork::Chat => (3, i32::from(start), 0),
+            Artwork::ChatAlert => (4, i32::from(start), 0),
         };
         if !self.0.place(
             artwork_frame,
@@ -615,14 +626,6 @@ impl ChromeGraphics {
             placement_id,
         ) {
             return false;
-        }
-        if matches!(artwork, Artwork::Chat | Artwork::ChatAlert) {
-            // The padded SVG uses the middle cell of the shared two-cell raster.
-            let placement = artwork_frame.placements.last_mut().unwrap();
-            let width = frame.size.cell_width;
-            placement.source_x = width / 2;
-            placement.source_width = width;
-            placement.width = width;
         }
         for cell in &mut frame.rows[usize::from(row)].cells[range] {
             cell.text.clear();
@@ -721,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_artwork_stays_in_one_status_cell_without_clipping_ink() {
+    fn chat_artwork_fills_its_status_slot_without_overwriting_neighbors() {
         for cell_width in [9, 10] {
             let mut host = ColorProbe::default();
             let query = host.graphics.begin();
@@ -749,9 +752,11 @@ mod tests {
             for (artwork, marker) in [(Artwork::Chat, "◇"), (Artwork::ChatAlert, "!")] {
                 let mut frame = bkpr_tui_framework::blank(size);
                 let mut effects = bkpr_tui_framework::graphics_frame(size);
+                bkpr_tui_framework::text(&mut frame, 4, 1, "… ", true);
                 bkpr_tui_framework::text(&mut frame, 6, 1, marker, true);
                 bkpr_tui_framework::text(&mut frame, 7, 1, "┃", false);
-                let mut expected = frame.clone();
+                let original = frame.clone();
+                let mut expected = original.clone();
                 expected.rows[1].cells[6].text = " ".into();
                 assert!(chrome.decorate(
                     &mut frame,
@@ -765,20 +770,46 @@ mod tests {
                 let [placement] = effects.placements.as_slice() else {
                     panic!("expected one badge placement");
                 };
-                assert_eq!(placement.col, 6);
+                assert_eq!(placement.col, 5);
+                assert_eq!(placement.row, 1);
                 assert_eq!(placement.offset_x, 0);
-                assert_eq!(placement.width, cell_width);
+                assert_eq!(placement.width, 2 * cell_width);
+                assert_eq!(placement.height, size.cell_height);
+                assert_eq!(placement.source_x, 0);
+                assert_eq!(placement.source_y, 0);
                 assert_eq!(placement.source_width, placement.width);
-                let source = placement.source_x..placement.source_x + placement.source_width;
+                assert_eq!(placement.source_height, placement.height);
                 let image = &effects.images[0];
-                let mut has_ink = false;
+                let [mut left, mut top, mut right, mut bottom] = [image.width, image.height, 0, 0];
                 for (index, pixel) in image.pixels.chunks_exact(4).enumerate() {
                     if pixel[3] != 0 {
-                        has_ink = true;
-                        assert!(source.contains(&(index as u32 % image.width)));
+                        let x = index as u32 % image.width;
+                        let y = index as u32 / image.width;
+                        left = left.min(x);
+                        top = top.min(y);
+                        right = right.max(x + 1);
+                        bottom = bottom.max(y + 1);
                     }
                 }
-                assert!(has_ink);
+                assert!(left < cell_width && right > cell_width);
+                assert!(left > 0 && right < image.width && top > 0 && bottom < image.height);
+                assert!(right - left >= 3 * cell_width / 2 && bottom - top >= 3 * cell_width / 2);
+
+                let mut fallback = bkpr_tui_framework::graphics_frame(size);
+                assert!(!chrome.decorate(&mut frame, &mut fallback, artwork, [6, 1], None, 2));
+                assert_eq!(frame, original);
+                bkpr_tui_framework::text(&mut frame, 5, 1, "x", true);
+                let occupied = frame.clone();
+                assert!(!chrome.decorate(
+                    &mut frame,
+                    &mut fallback,
+                    artwork,
+                    [6, 1],
+                    Some(ColorSource::Default),
+                    2,
+                ));
+                assert_eq!(frame, occupied);
+                assert!(fallback.placements.is_empty());
             }
         }
     }

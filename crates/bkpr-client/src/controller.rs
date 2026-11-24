@@ -1107,10 +1107,10 @@ fn sidebar_status_column(row_width: u16) -> u16 {
     row_width.saturating_sub(1)
 }
 
-fn workspace_chat_column(kind: crate::tree::Kind, row_width: u16) -> Option<u16> {
-    (row_width >= 4
+fn workspace_chat_column(entry: &crate::tree::TreeRow, row_width: u16) -> Option<u16> {
+    (entry.content_column() < row_width
         && matches!(
-            kind,
+            entry.kind,
             crate::tree::Kind::Native(SidebarRowKind::Workspace { .. })
         ))
     .then(|| sidebar_status_column(row_width))
@@ -1311,14 +1311,18 @@ pub(crate) fn tree_artwork_rows(
         .flat_map(move |(index, row)| {
             use crate::chrome_graphics::Artwork;
             let y = index as u16 + 2;
-            let chat = workspace_chat_column(row.kind, row_width).map(|column| {
-                let icon = if tree.channel_attention(row) {
-                    Artwork::ChatAlert
-                } else {
-                    Artwork::Chat
-                };
-                (row.owner, icon, column, y)
-            });
+            let chat = workspace_chat_column(row, row_width)
+                // The SVG takes this column and the cell immediately to its left.
+                // At minimum width keep the text marker instead of the image.
+                .filter(|&column| row.content_column() < column)
+                .map(|column| {
+                    let icon = if tree.channel_attention(row) {
+                        Artwork::ChatAlert
+                    } else {
+                        Artwork::Chat
+                    };
+                    (row.owner, icon, column, y)
+                });
             let artwork = match row.kind {
                 crate::tree::Kind::Native(SidebarRowKind::Workspace { .. }) => {
                     crate::chrome_graphics::Artwork::Hive
@@ -1415,7 +1419,7 @@ fn render_chrome(
         let plate = highlighted
             && tree_popup.is_some_and(|(_, background)| matches!(background, ColorSource::Rgb(_)));
         let selected = tree.active && entry.target.is_some() && entry.target == tree.cursor;
-        let chat_column = workspace_chat_column(entry.kind, row_width);
+        let chat_column = workspace_chat_column(entry, row_width);
         let (mut label, marker_x) = match entry.kind {
             crate::tree::Kind::Session => (
                 session_caption(
@@ -1439,7 +1443,11 @@ fn render_chrome(
                         projects: tree.project_slots(entry.owner),
                         entry,
                         known,
-                        width: chat_column.map_or(row_width, |column| column - 1),
+                        width: chat_column.map_or(row_width, |column| {
+                            let content = entry.content_column();
+                            let gap = u16::from(column.saturating_sub(content) >= 3);
+                            (column - 1 - gap).max(content)
+                        }),
                         row,
                         highlighted,
                     },
@@ -1688,7 +1696,7 @@ pub(crate) fn theme_tree_chrome(
             rect: row_rect,
             role,
         });
-        if let Some(column) = workspace_chat_column(entry.kind, row_width)
+        if let Some(column) = workspace_chat_column(entry, row_width)
             && tree.channel_attention(entry)
         {
             spans.push(RoleSpan {
@@ -2637,20 +2645,35 @@ mod tests {
 
         let mut session = session_fixture(FIXTURE_OWNER, "local");
         let model = Arc::get_mut(&mut session).unwrap();
-        Arc::get_mut(&mut model.registry).unwrap().panes[0].harness_status =
-            Some(working_record(None));
-        let workspace_id = model.registry.workspaces[0].id.clone();
+        let registry = Arc::get_mut(&mut model.registry).unwrap();
+        registry.panes[0].harness_status = Some(working_record(None));
+        registry.workspaces[0].name = "workspace".repeat(6);
+        let workspace_id = registry.workspaces[0].id.clone();
         let state = Controller::new(&session.registry);
         let mut tree = Tree::new();
         tree.reconcile(vec![session], FIXTURE_OWNER);
         let mut surface = capture_surface();
         let size = surface.frame.size;
-        let sidebar = screen_geometry(size, tree.preferred_columns).0;
+        let workspace = crate::tree::Node::Native(SidebarTarget::Workspace(workspace_id.clone()));
+        let narrow = tree
+            .rows
+            .iter()
+            .find(|row| {
+                row.target
+                    .as_ref()
+                    .is_some_and(|target| target.node == workspace)
+            })
+            .unwrap()
+            .content_column()
+            + 1;
         let scroll_guide_rows = size.rows - tree.rows.len() as u16 - 1;
-        for (guide_rows, scrolled, artwork, glyph) in [
-            (0, false, Artwork::Chat, "◇"),
-            (scroll_guide_rows, true, Artwork::ChatAlert, "!"),
+        for (columns, guide_rows, scrolled, artwork, glyph) in [
+            (None, 0, false, Some(Artwork::Chat), "◇"),
+            (None, scroll_guide_rows, true, Some(Artwork::ChatAlert), "!"),
+            (Some(narrow), 0, false, None, "◇"),
         ] {
+            tree.preferred_columns = columns;
+            let sidebar = screen_geometry(size, columns).0;
             let available = sidebar_content_rows(sidebar, guide_rows);
             tree.viewport(available);
             tree.scroll = 0;
@@ -2662,7 +2685,7 @@ mod tests {
                 FIXTURE_OWNER,
                 scrolled.then(|| workspace_id.clone()).into_iter().collect(),
             );
-            super::tree_chrome(
+            let hits = super::tree_chrome(
                 &mut surface,
                 super::TreeChromeContext {
                     native: ChromeContext {
@@ -2680,15 +2703,28 @@ mod tests {
                 &mut Vec::new(),
                 &mut Vec::new(),
             );
-            let cells = &surface.frame.rows;
-            let (_, _, col, row) = super::tree_artwork_rows(&tree, size, guide_rows)
-                .find(|(_, icon, _, _)| *icon == artwork)
-                .unwrap();
+            let row = hits
+                .iter()
+                .find(|(target, _)| target.owner == FIXTURE_OWNER && target.node == workspace)
+                .unwrap()
+                .1;
+            let col = sidebar.width - 1 - u16::from(scrolled);
+            let badge = super::tree_artwork_rows(&tree, size, guide_rows)
+                .find(|(_, icon, _, _)| matches!(icon, Artwork::Chat | Artwork::ChatAlert))
+                .map(|(_, icon, col, row)| (icon, col, row));
+            assert_eq!(badge, artwork.map(|icon| (icon, col, row)));
             let col = usize::from(col);
             let row = usize::from(row);
-            assert_eq!(col + 1 + usize::from(scrolled), usize::from(sidebar.width));
+            let cells = &surface.frame.rows;
             assert_eq!(cells[row].cells[col].text, glyph);
-            assert!(cells.iter().any(|pane| pane.cells[col].text == "\u{f0150}"));
+            if artwork.is_some() {
+                assert_eq!(cells[row].cells[col - 1].text, " ");
+                assert_eq!(cells[row].cells[col - 2].text, " ");
+                assert_eq!(cells[row].cells[col - 3].text, "…");
+                assert!(cells.iter().any(|pane| pane.cells[col].text == "\u{f0150}"));
+            } else {
+                assert!(matches!(cells[row].cells[col - 1].text.as_str(), "▾" | "▸"));
+            }
             if scrolled {
                 assert!(matches!(cells[row].cells[col + 1].text.as_str(), "┃" | "│"));
             }
@@ -2888,7 +2924,7 @@ mod tests {
                 let start = entry.content_column();
                 let width = start + budget;
                 let workspace_marker = if matches!(target, SidebarTarget::Workspace(_)) {
-                    2
+                    if budget < 2 { 2 } else { 3 }
                 } else {
                     0
                 };

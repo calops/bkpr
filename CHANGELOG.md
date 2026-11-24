@@ -31,6 +31,7 @@
 * **tui:** copy a chat history selection without leaving the composer, edit drafts with readline shortcuts, and label new posts and mentions with the effective pane title.
 * **tui:** keep chat in one pane with recessed sections. Use slightly lighter section interiors, tint the full composer, and match the edge materials to the pane and section fills.
 * **tui:** align workspace chat badges with pane status icons and extend selected sidebar highlights cleanly to the pane edge.
+* **tui:** center the empty chat, highlight channel rows on hover without selecting them, and inset the composer prompt and draft.
 
 ## [0.11.0](https://github.com/calops/bkpr/compare/v0.10.0...v0.11.0) (2026-11-23)
 

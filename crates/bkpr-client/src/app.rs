@@ -2269,6 +2269,7 @@ impl App {
                     self.pointer_capture = None;
                 }
             }
+            self.chat.hover_channel(None);
             let releases = self.cancel_held_keys();
             self.scope_input_result(releases)?;
             self.retire_resize();
@@ -4659,6 +4660,10 @@ impl App {
             };
             (event_button, action)
         });
+        let chat_target = self.chat.visible() && hits.hit_test(mouse.x, mouse.y) == Some("ui:chat");
+        if !chat_target || action != MouseAction::Motion || event_button != MouseButton::None {
+            self.chat.hover_channel(None);
+        }
         if matches!(self.pointer_capture, Some(PointerCapture::ChatSelection)) {
             if !wheel
                 && event_button == MouseButton::Left
@@ -4743,6 +4748,7 @@ impl App {
             if let Some(viewer) = &mut self.image_viewer {
                 viewer.cancel_button_press();
             }
+            self.chat.hover_channel(None);
             if let toast::PointerRoute::Activated(toast) = toast_route {
                 let diagnostic = self.diagnostics.lock().unwrap().for_toast(toast);
                 self.toasts.lock().unwrap().dismiss(toast);
@@ -5178,12 +5184,15 @@ impl App {
         if origin.is_none() {
             self.clear_tree_pointer();
         }
-        if origin.is_none()
-            && self.chat.visible()
-            && hits.hit_test(mouse.x, mouse.y) == Some("ui:chat")
-        {
+        if origin.is_none() && chat_target {
             let rect = self.chat_content(self.screen_geometry(size).1);
             if self.chat.geometry() == rect && rect.contains(mouse.x, mouse.y) {
+                if action == MouseAction::Motion
+                    && event_button == MouseButton::None
+                    && captured.is_none()
+                {
+                    self.chat.hover_channel(Some((mouse.x, mouse.y)));
+                }
                 if !wheel && action == MouseAction::Press && self.state.sidebar.active {
                     self.leave_sidebar();
                 }
