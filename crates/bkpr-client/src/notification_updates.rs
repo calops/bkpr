@@ -269,12 +269,12 @@ mod tests {
                     let channel = receiver.recv().await.unwrap().unwrap();
                     assert_eq!(channel.notifications.len(), 1);
                     assert_eq!(channel.notifications[0].sequence, 43);
-                    let NotificationSource::Channel(source) = &channel.notifications[0].source else {
+                    let NotificationSource::Channel(source) = &channel.notifications[0].source
+                    else {
                         panic!("expected channel notification");
                     };
                     assert_eq!(source.intent, ChannelAttentionKind::Question);
                     assert_eq!(source.sequence, 8);
-                    }
                     let baseline = receiver.recv().await.unwrap().unwrap();
                     assert_eq!(baseline.cursor.store_id, "replacement");
                     assert_eq!(baseline.cursor.sequence, 110);

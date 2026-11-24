@@ -1600,7 +1600,7 @@ impl Coordinator {
                 let mut changed = false;
                 for change in changes {
                     match change {
-                        ChannelCatalogChange::Upsert { channel, .. } => {
+                        ChannelCatalogChange::Upsert { channel } => {
                             changed |= app.chat.upsert(channel);
                         }
                         ChannelCatalogChange::WorkspaceClosed { workspace_id } => {

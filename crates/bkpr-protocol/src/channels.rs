@@ -425,20 +425,6 @@ pub struct ChannelCatalogPage {
     pub channel_id: ChannelId,
 }
 
-/// Exact committed post that qualified for user attention in this catalog change.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ChannelAttention {
-    /// Immutable post identity within the upsert's channel.
-    pub message_id: MessageId,
-    /// Post sequence within that channel, starting at one.
-    pub sequence: u64,
-    /// The post's original question or report intent.
-    pub intent: PostIntent,
-    /// Backend-established Unix timestamp in milliseconds.
-    pub posted_at_ms: u64,
-}
-
 /// A body-free update to the session user's live catalog.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -447,10 +433,6 @@ pub enum ChannelCatalogChange {
     Upsert {
         /// Authoritative catalog state, including the user's unread attention.
         channel: ChannelSummary,
-        /// The unread attention post committed by this change, if any. This
-        /// refers to the original post even when the summary reflects later changes.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        attention: Option<ChannelAttention>,
     },
     /// Remove the workspace and its channels from the live catalog.
     WorkspaceClosed {

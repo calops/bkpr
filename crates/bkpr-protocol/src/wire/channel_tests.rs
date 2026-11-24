@@ -492,19 +492,7 @@ fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
         ChannelResponse::CatalogChanges {
             cursor: catalog_cursor(),
             changes: vec![
-                ChannelCatalogChange::Upsert {
-                    channel: summary(),
-                    attention: None,
-                },
-                ChannelCatalogChange::Upsert {
-                    channel: summary(),
-                    attention: Some(ChannelAttention {
-                        message_id: message_id(),
-                        sequence: 6,
-                        intent: PostIntent::Report,
-                        posted_at_ms: 77,
-                    }),
-                },
+                ChannelCatalogChange::Upsert { channel: summary() },
                 ChannelCatalogChange::WorkspaceClosed {
                     workspace_id: "closed-workspace".into(),
                 },

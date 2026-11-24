@@ -2742,7 +2742,7 @@ fn concurrent_direct_sends_share_one_private_thread_and_keep_exact_receipts() {
     assert!(!changes.is_empty());
     for change in changes {
         assert!(matches!(change,
-            bkpr_protocol::channels::ChannelCatalogChange::Upsert { channel, attention: None }
+            bkpr_protocol::channels::ChannelCatalogChange::Upsert { channel }
                 if channel.direct && channel.last_sequence == 2 && !channel.unread_attention
                     && channel.workspace_id == a_workspace
         ));

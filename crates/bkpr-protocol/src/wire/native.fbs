@@ -958,15 +958,9 @@ table ChannelResponseExplicitMembers {
   members:[string] (required);
   next_after:string;
 }
-table ChannelAttention {
-  message_id:string (required);
-  sequence:ulong;
-  intent:PostIntent;
-  posted_at_ms:ulong;
-}
 table ChannelCatalogUpsert {
   channel:ChannelSummary (required);
-  attention:ChannelAttention;
+  // Do not reuse the former experimental attention slot.
 }
 table ChannelCatalogWorkspaceClosed { workspace_id:string (required); }
 union ChannelCatalogChangeBody { ChannelCatalogUpsert, ChannelCatalogWorkspaceClosed }

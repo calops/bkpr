@@ -1,8 +1,8 @@
 use super::{Store, StoredChannel, provision_channels, take_extra};
 use anyhow::{Result, ensure};
 use bkpr_protocol::channels::{
-    ChannelAttention, ChannelCatalogChange, ChannelCatalogCursor, ChannelCatalogPage, ChannelId,
-    ChannelResponse, ChannelSummary, MessageId, ParticipantId, PostIntent,
+    ChannelCatalogChange, ChannelCatalogCursor, ChannelCatalogPage, ChannelId, ChannelResponse,
+    ChannelSummary, ParticipantId,
 };
 use rusqlite::{Connection, Row, Transaction, TransactionBehavior, params};
 use std::collections::BTreeSet;
@@ -165,10 +165,7 @@ fn changes(
         let mut statement = connection.prepare(
             "SELECT e.sequence,e.workspace_id,c.id,c.workspace_id,COALESCE(d.display_name,c.name),
                     c.workspace_wide,c.settings,c.last_sequence,c.change_sequence,c.last_attention,
-                    d.channel_id IS NOT NULL,COALESCE(p.through,0),
-                    CASE WHEN e.attention_sequence > COALESCE(p.through,0)
-                         THEN e.attention_message_id END,
-                    e.attention_sequence,e.attention_intent,e.attention_posted_at_ms
+                    d.channel_id IS NOT NULL,COALESCE(p.through,0)
              FROM catalog_events e
              LEFT JOIN catalog_workspaces w ON w.id=e.workspace_id
              LEFT JOIN channels c ON c.id=e.channel_id
@@ -192,7 +189,6 @@ fn changes(
                 } else {
                     ChannelCatalogChange::Upsert {
                         channel: summary(row, 2)?,
-                        attention: attention(row, 12)?,
                     }
                 },
             );
@@ -206,23 +202,6 @@ fn changes(
         changes,
         more,
     })
-}
-
-fn attention(row: &Row<'_>, start: usize) -> Result<Option<ChannelAttention>> {
-    let Some(message_id) = row.get::<_, Option<String>>(start)? else {
-        return Ok(None);
-    };
-    let intent = match row.get_ref(start + 2)?.as_str()? {
-        "question" => PostIntent::Question,
-        "report" => PostIntent::Report,
-        _ => anyhow::bail!("invalid catalog attention intent"),
-    };
-    Ok(Some(ChannelAttention {
-        message_id: MessageId(message_id),
-        sequence: row.get(start + 1)?,
-        intent,
-        posted_at_ms: row.get(start + 3)?,
-    }))
 }
 
 pub(super) fn record_read_position(

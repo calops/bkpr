@@ -103827,642 +103827,10 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseExplicitMembersRef<'a> {
 }
 
     
-/// The table `ChannelAttention` in the namespace `native_wire`
-/// 
-/// Generated from these locations:
-/// * Table `ChannelAttention` in the file `crates/bkpr-protocol/src/wire/native.fbs:961`
-#[derive(Clone, Debug, PartialEq, PartialOrd,
-Eq, Ord, Hash,
-::serde::Serialize, ::serde::Deserialize
-)]
-pub struct ChannelAttention{
-    
-        /// The field `message_id` in the table `ChannelAttention`
-        pub message_id: ::planus::alloc::string::String,
-        /// The field `sequence` in the table `ChannelAttention`
-        pub sequence: u64,
-        /// The field `intent` in the table `ChannelAttention`
-        pub intent: self::PostIntent,
-        /// The field `posted_at_ms` in the table `ChannelAttention`
-        pub posted_at_ms: u64,}
-
-
-#[allow(clippy::derivable_impls)]
-impl ::core::default::Default for ChannelAttention {
-    fn default() -> Self {
-        Self {
-        message_id: ::core::default::Default::default(),
-        sequence: 0,
-        intent: self::PostIntent::Note,
-        posted_at_ms: 0,
-        
-        }
-    }
-}
-
-
-impl ChannelAttention {
-    /// Creates a [ChannelAttentionBuilder] for serializing an instance of this table.
-    #[inline]
-    pub fn builder() -> ChannelAttentionBuilder<()> {
-        ChannelAttentionBuilder(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn create(
-        builder: &mut ::planus::Builder,
-        field_message_id: impl ::planus::WriteAs<::planus::Offset<str>>,
-        field_sequence: impl ::planus::WriteAsDefault<u64, u64>,
-        field_intent: impl ::planus::WriteAsDefault<self::PostIntent, self::PostIntent>,
-        field_posted_at_ms: impl ::planus::WriteAsDefault<u64, u64>,
-        
-    ) -> ::planus::Offset<Self> {let prepared_message_id = field_message_id.prepare(builder);let prepared_sequence = field_sequence.prepare(builder, &0);let prepared_intent = field_intent.prepare(builder, &self::PostIntent::Note);let prepared_posted_at_ms = field_posted_at_ms.prepare(builder, &0);
-
-        let mut table_writer: ::planus::table_writer::TableWriter::<12> = ::core::default::Default::default();
-        if prepared_sequence.is_some() {table_writer.write_entry::<u64>(1);}if prepared_posted_at_ms.is_some() {table_writer.write_entry::<u64>(3);}table_writer.write_entry::<::planus::Offset<str>>(0);if prepared_intent.is_some() {table_writer.write_entry::<self::PostIntent>(2);}
-
-        unsafe {
-            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_sequence) = prepared_sequence {object_writer.write::<_, _, 8>(&prepared_sequence);}if let ::core::option::Option::Some(prepared_posted_at_ms) = prepared_posted_at_ms {object_writer.write::<_, _, 8>(&prepared_posted_at_ms);}object_writer.write::<_, _, 4>(&prepared_message_id);if let ::core::option::Option::Some(prepared_intent) = prepared_intent {object_writer.write::<_, _, 1>(&prepared_intent);}
-                
-            });
-        }builder.current_offset()
-    }
-}
-
-impl ::planus::WriteAs<::planus::Offset<ChannelAttention>> for ChannelAttention {
-    type Prepared = ::planus::Offset<Self>;
-
-    #[inline]
-    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelAttention> {
-        ::planus::WriteAsOffset::prepare(self, builder)
-    }
-}
-
-impl ::planus::WriteAsOptional<::planus::Offset<ChannelAttention>> for ChannelAttention {
-    type Prepared = ::planus::Offset<Self>;
-
-    #[inline]
-    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelAttention>> {
-        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
-    }
-}
-
-impl ::planus::WriteAsOffset<ChannelAttention> for ChannelAttention {
-    #[inline]
-    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelAttention> {
-        ChannelAttention::create(
-            builder,
-        
-            
-            &self.message_id,
-            
-        
-            
-            self.sequence,
-            
-        
-            
-            self.intent,
-            
-        
-            
-            self.posted_at_ms,
-            
-        
-        )
-    }
-}
-
-/// Builder for serializing an instance of the [ChannelAttention] type.
-///
-/// Can be created using the [ChannelAttention::builder] method.
-#[derive(Debug)]
-#[must_use]
-pub struct ChannelAttentionBuilder<State>(State);
-
-impl<
-    
-> ChannelAttentionBuilder
-<
-    (
-    
-    )
->
-{
-    /// Setter for the [`message_id` field](ChannelAttention#structfield.message_id).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn message_id<T0>(self, value: T0) -> ChannelAttentionBuilder<(
-    
-        T0,
-    
-    )>
-    where T0: ::planus::WriteAs<::planus::Offset<str>>
-    {
-        ChannelAttentionBuilder((
-            
-            value,
-        ))
-    }
-
-    
-
-    
-}
-
-impl<
-    
-        T0,
-    
-> ChannelAttentionBuilder
-<
-    (
-    
-        T0,
-    
-    )
->
-{
-    /// Setter for the [`sequence` field](ChannelAttention#structfield.sequence).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn sequence<T1>(self, value: T1) -> ChannelAttentionBuilder<(
-    
-        T0,
-    
-        T1,
-    
-    )>
-    where T1: ::planus::WriteAsDefault<u64, u64>
-    {
-        
-        let (
-            
-                v0,
-            
-        ) = self.0;ChannelAttentionBuilder((
-            
-                v0,
-            
-            value,
-        ))
-    }
-
-    
-    /// Sets the [`sequence` field](ChannelAttention#structfield.sequence) to the default value.
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn sequence_as_default(self) -> ChannelAttentionBuilder<(
-        
-            T0,
-        
-        ::planus::DefaultValue,
-    )>
-    {
-        self.sequence(::planus::DefaultValue)
-    }
-    
-
-    
-}
-
-impl<
-    
-        T0,
-    
-        T1,
-    
-> ChannelAttentionBuilder
-<
-    (
-    
-        T0,
-    
-        T1,
-    
-    )
->
-{
-    /// Setter for the [`intent` field](ChannelAttention#structfield.intent).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn intent<T2>(self, value: T2) -> ChannelAttentionBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-    )>
-    where T2: ::planus::WriteAsDefault<self::PostIntent, self::PostIntent>
-    {
-        
-        let (
-            
-                v0,
-            
-                v1,
-            
-        ) = self.0;ChannelAttentionBuilder((
-            
-                v0,
-            
-                v1,
-            
-            value,
-        ))
-    }
-
-    
-    /// Sets the [`intent` field](ChannelAttention#structfield.intent) to the default value.
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn intent_as_default(self) -> ChannelAttentionBuilder<(
-        
-            T0,
-        
-            T1,
-        
-        ::planus::DefaultValue,
-    )>
-    {
-        self.intent(::planus::DefaultValue)
-    }
-    
-
-    
-}
-
-impl<
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-> ChannelAttentionBuilder
-<
-    (
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-    )
->
-{
-    /// Setter for the [`posted_at_ms` field](ChannelAttention#structfield.posted_at_ms).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn posted_at_ms<T3>(self, value: T3) -> ChannelAttentionBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
-    
-    )>
-    where T3: ::planus::WriteAsDefault<u64, u64>
-    {
-        
-        let (
-            
-                v0,
-            
-                v1,
-            
-                v2,
-            
-        ) = self.0;ChannelAttentionBuilder((
-            
-                v0,
-            
-                v1,
-            
-                v2,
-            
-            value,
-        ))
-    }
-
-    
-    /// Sets the [`posted_at_ms` field](ChannelAttention#structfield.posted_at_ms) to the default value.
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn posted_at_ms_as_default(self) -> ChannelAttentionBuilder<(
-        
-            T0,
-        
-            T1,
-        
-            T2,
-        
-        ::planus::DefaultValue,
-    )>
-    {
-        self.posted_at_ms(::planus::DefaultValue)
-    }
-    
-
-    
-}
-
-
-
-impl<
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
-    
-> ChannelAttentionBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
-    
-)> {
-    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelAttention].
-    #[inline]
-    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelAttention>
-        where Self: ::planus::WriteAsOffset<ChannelAttention>
-    {
-        ::planus::WriteAsOffset::prepare(&self, builder)
-    }
-}
-
-impl<
-    
-        T0: ::planus::WriteAs<::planus::Offset<str>>,
-    
-        T1: ::planus::WriteAsDefault<u64, u64>,
-    
-        T2: ::planus::WriteAsDefault<self::PostIntent, self::PostIntent>,
-    
-        T3: ::planus::WriteAsDefault<u64, u64>,
-    
-> ::planus::WriteAs<::planus::Offset<ChannelAttention>> for ChannelAttentionBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
-    
-)> {
-    type Prepared = ::planus::Offset<ChannelAttention>;
-
-    #[inline]
-    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelAttention> {
-        ::planus::WriteAsOffset::prepare(self, builder)
-    }
-}
-
-impl<
-    
-        T0: ::planus::WriteAs<::planus::Offset<str>>,
-    
-        T1: ::planus::WriteAsDefault<u64, u64>,
-    
-        T2: ::planus::WriteAsDefault<self::PostIntent, self::PostIntent>,
-    
-        T3: ::planus::WriteAsDefault<u64, u64>,
-    
-> ::planus::WriteAsOptional<::planus::Offset<ChannelAttention>> for ChannelAttentionBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
-    
-)> {
-    type Prepared = ::planus::Offset<ChannelAttention>;
-
-    #[inline]
-    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelAttention>> {
-        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
-    }
-}
-
-impl<
-    
-        T0: ::planus::WriteAs<::planus::Offset<str>>,
-    
-        T1: ::planus::WriteAsDefault<u64, u64>,
-    
-        T2: ::planus::WriteAsDefault<self::PostIntent, self::PostIntent>,
-    
-        T3: ::planus::WriteAsDefault<u64, u64>,
-    
-> ::planus::WriteAsOffset<ChannelAttention> for ChannelAttentionBuilder<(
-    
-        T0,
-    
-        T1,
-    
-        T2,
-    
-        T3,
-    
-)> {
-    #[inline]
-    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelAttention> {
-        
-        let (
-            
-                v0,
-            
-                v1,
-            
-                v2,
-            
-                v3,
-            
-        ) = &self.0;ChannelAttention::create(
-            builder,
-            
-                v0,
-            
-                v1,
-            
-                v2,
-            
-                v3,
-            
-        )
-    }
-}
-
-/// Reference to a deserialized [ChannelAttention].
-#[derive(Copy, Clone)]
-pub struct ChannelAttentionRef<'a>(
-    #[allow(dead_code)]
-    ::planus::table_reader::Table<'a>
-);
-
-impl<'a> ChannelAttentionRef<'a> {
-    
-        /// Getter for the [`message_id` field](ChannelAttention#structfield.message_id).
-        #[inline]
-        pub fn message_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
-            
-            
-              
-              self.0.access_required(0, "ChannelAttention", "message_id")
-              
-            
-            
-            
-        }
-    
-        /// Getter for the [`sequence` field](ChannelAttention#structfield.sequence).
-        #[inline]
-        pub fn sequence(&self) -> ::planus::Result<u64> {
-             ::core::result::Result::Ok( 
-            
-              
-              self.0.access(1, "ChannelAttention", "sequence")
-              
-            
-            ?.unwrap_or(0))
-            
-        }
-    
-        /// Getter for the [`intent` field](ChannelAttention#structfield.intent).
-        #[inline]
-        pub fn intent(&self) -> ::planus::Result<self::PostIntent> {
-             ::core::result::Result::Ok( 
-            
-              
-              self.0.access(2, "ChannelAttention", "intent")
-              
-            
-            ?.unwrap_or(self::PostIntent::Note))
-            
-        }
-    
-        /// Getter for the [`posted_at_ms` field](ChannelAttention#structfield.posted_at_ms).
-        #[inline]
-        pub fn posted_at_ms(&self) -> ::planus::Result<u64> {
-             ::core::result::Result::Ok( 
-            
-              
-              self.0.access(3, "ChannelAttention", "posted_at_ms")
-              
-            
-            ?.unwrap_or(0))
-            
-        }
-    
-}
-
-impl<'a> ::core::fmt::Debug for ChannelAttentionRef<'a> {
-    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
-        let mut f = f.debug_struct("ChannelAttentionRef");
-        f.field("message_id", &self.message_id());f.field("sequence", &self.sequence());f.field("intent", &self.intent());f.field("posted_at_ms", &self.posted_at_ms());
-        f.finish()
-    }
-}
-
-impl<'a> ::core::convert::TryFrom<ChannelAttentionRef<'a>> for ChannelAttention {
-    type Error = ::planus::Error;
-
-
-    #[allow(unreachable_code)]
-    fn try_from(value: ChannelAttentionRef<'a>) -> ::planus::Result<Self> {
-
-        ::core::result::Result::Ok(Self {
-            message_id: ::core::convert::Into::into(value.message_id()?),sequence: ::core::convert::TryInto::try_into(value.sequence()?)?,intent: ::core::convert::TryInto::try_into(value.intent()?)?,posted_at_ms: ::core::convert::TryInto::try_into(value.posted_at_ms()?)?,
-        })
-    }
-}
-
-impl<'a> ::planus::TableRead<'a> for ChannelAttentionRef<'a> {
-    #[inline]
-    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
-        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
-    }
-}
-
-impl<'a> ::planus::VectorReadInner<'a> for ChannelAttentionRef<'a> {
-    type Error = ::planus::Error;
-    const STRIDE: usize = 4;
-
-    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
-        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
-            "[ChannelAttentionRef]",
-            "get",
-            buffer.offset_from_start,
-        ))
-    }
-}
-
-/// # Safety
-/// The planus compiler generates implementations that initialize
-/// the bytes in `write_values`.
-unsafe impl ::planus::VectorWrite<::planus::Offset<ChannelAttention>> for ChannelAttention {
-    type Value = ::planus::Offset<ChannelAttention>;
-    const STRIDE: usize = 4;
-    #[inline]
-    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
-        ::planus::WriteAs::prepare(self, builder)
-    }
-
-    #[inline]
-    unsafe fn write_values(
-        values: &[::planus::Offset<ChannelAttention>],
-        bytes: *mut ::core::mem::MaybeUninit<u8>,
-        buffer_position: u32,
-    ) {
-        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
-        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
-            ::planus::WriteAsPrimitive::write(
-                v,
-                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
-                buffer_position - (Self::STRIDE * i) as u32,
-            );
-        }
-    }
-}
-
-impl<'a> ::planus::ReadAsRoot<'a> for ChannelAttentionRef<'a> {
-    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
-        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
-            buffer: slice,
-            offset_from_start: 0,
-        }, 0).map_err(|error_kind| error_kind.with_error_location(
-            "[ChannelAttentionRef]",
-            "read_as_root",
-            0,
-        ))
-    }
-}
-
-    
 /// The table `ChannelCatalogUpsert` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelCatalogUpsert` in the file `crates/bkpr-protocol/src/wire/native.fbs:967`
+/// * Table `ChannelCatalogUpsert` in the file `crates/bkpr-protocol/src/wire/native.fbs:961`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -104470,9 +103838,7 @@ Eq, Ord, Hash,
 pub struct ChannelCatalogUpsert{
     
         /// The field `channel` in the table `ChannelCatalogUpsert`
-        pub channel: ::planus::alloc::boxed::Box<self::ChannelSummary>,
-        /// The field `attention` in the table `ChannelCatalogUpsert`
-        pub attention: ::core::option::Option<::planus::alloc::boxed::Box<self::ChannelAttention>>,}
+        pub channel: ::planus::alloc::boxed::Box<self::ChannelSummary>,}
 
 
 #[allow(clippy::derivable_impls)]
@@ -104480,7 +103846,6 @@ impl ::core::default::Default for ChannelCatalogUpsert {
     fn default() -> Self {
         Self {
         channel: ::core::default::Default::default(),
-        attention: ::core::default::Default::default(),
         
         }
     }
@@ -104498,15 +103863,14 @@ impl ChannelCatalogUpsert {
     pub fn create(
         builder: &mut ::planus::Builder,
         field_channel: impl ::planus::WriteAs<::planus::Offset<self::ChannelSummary>>,
-        field_attention: impl ::planus::WriteAsOptional<::planus::Offset<self::ChannelAttention>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_channel = field_channel.prepare(builder);let prepared_attention = field_attention.prepare(builder);
+    ) -> ::planus::Offset<Self> {let prepared_channel = field_channel.prepare(builder);
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
-        table_writer.write_entry::<::planus::Offset<self::ChannelSummary>>(0);if prepared_attention.is_some() {table_writer.write_entry::<::planus::Offset<self::ChannelAttention>>(1);}
+        let mut table_writer: ::planus::table_writer::TableWriter::<6> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::ChannelSummary>>(0);
 
         unsafe {
-            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_channel);if let ::core::option::Option::Some(prepared_attention) = prepared_attention {object_writer.write::<_, _, 4>(&prepared_attention);}
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_channel);
                 
             });
         }builder.current_offset()
@@ -104539,10 +103903,6 @@ impl ::planus::WriteAsOffset<ChannelCatalogUpsert> for ChannelCatalogUpsert {
         
             
             &self.channel,
-            
-        
-            
-            &self.attention,
             
         
         )
@@ -104586,75 +103946,15 @@ impl<
     
 }
 
-impl<
-    
-        T0,
-    
-> ChannelCatalogUpsertBuilder
-<
-    (
-    
-        T0,
-    
-    )
->
-{
-    /// Setter for the [`attention` field](ChannelCatalogUpsert#structfield.attention).
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn attention<T1>(self, value: T1) -> ChannelCatalogUpsertBuilder<(
-    
-        T0,
-    
-        T1,
-    
-    )>
-    where T1: ::planus::WriteAsOptional<::planus::Offset<self::ChannelAttention>>
-    {
-        
-        let (
-            
-                v0,
-            
-        ) = self.0;ChannelCatalogUpsertBuilder((
-            
-                v0,
-            
-            value,
-        ))
-    }
-
-    
-
-    
-    /// Sets the [`attention` field](ChannelCatalogUpsert#structfield.attention) to null.
-    #[inline]
-    #[allow(clippy::type_complexity)]
-    pub fn attention_as_null(self) -> ChannelCatalogUpsertBuilder<(
-        
-            T0,
-        
-        (),
-    )>
-    {
-        self.attention(())
-    }
-    
-}
-
 
 
 impl<
     
         T0,
-    
-        T1,
     
 > ChannelCatalogUpsertBuilder<(
     
         T0,
-    
-        T1,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelCatalogUpsert].
@@ -104670,13 +103970,9 @@ impl<
     
         T0: ::planus::WriteAs<::planus::Offset<self::ChannelSummary>>,
     
-        T1: ::planus::WriteAsOptional<::planus::Offset<self::ChannelAttention>>,
-    
 > ::planus::WriteAs<::planus::Offset<ChannelCatalogUpsert>> for ChannelCatalogUpsertBuilder<(
     
         T0,
-    
-        T1,
     
 )> {
     type Prepared = ::planus::Offset<ChannelCatalogUpsert>;
@@ -104691,13 +103987,9 @@ impl<
     
         T0: ::planus::WriteAs<::planus::Offset<self::ChannelSummary>>,
     
-        T1: ::planus::WriteAsOptional<::planus::Offset<self::ChannelAttention>>,
-    
 > ::planus::WriteAsOptional<::planus::Offset<ChannelCatalogUpsert>> for ChannelCatalogUpsertBuilder<(
     
         T0,
-    
-        T1,
     
 )> {
     type Prepared = ::planus::Offset<ChannelCatalogUpsert>;
@@ -104712,13 +104004,9 @@ impl<
     
         T0: ::planus::WriteAs<::planus::Offset<self::ChannelSummary>>,
     
-        T1: ::planus::WriteAsOptional<::planus::Offset<self::ChannelAttention>>,
-    
 > ::planus::WriteAsOffset<ChannelCatalogUpsert> for ChannelCatalogUpsertBuilder<(
     
         T0,
-    
-        T1,
     
 )> {
     #[inline]
@@ -104728,14 +104016,10 @@ impl<
             
                 v0,
             
-                v1,
-            
         ) = &self.0;ChannelCatalogUpsert::create(
             builder,
             
                 v0,
-            
-                v1,
             
         )
     }
@@ -104763,27 +104047,12 @@ impl<'a> ChannelCatalogUpsertRef<'a> {
             
         }
     
-        /// Getter for the [`attention` field](ChannelCatalogUpsert#structfield.attention).
-        #[inline]
-        pub fn attention(&self) -> ::planus::Result<::core::option::Option<self::ChannelAttentionRef<'a>>> {
-            
-            
-              
-              self.0.access(1, "ChannelCatalogUpsert", "attention")
-              
-            
-            
-            
-        }
-    
 }
 
 impl<'a> ::core::fmt::Debug for ChannelCatalogUpsertRef<'a> {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         let mut f = f.debug_struct("ChannelCatalogUpsertRef");
-        f.field("channel", &self.channel());if let ::core::option::Option::Some(field_attention) = self.attention().transpose() {
-                f.field("attention", &field_attention);
-            }
+        f.field("channel", &self.channel());
         f.finish()
     }
 }
@@ -104796,13 +104065,7 @@ impl<'a> ::core::convert::TryFrom<ChannelCatalogUpsertRef<'a>> for ChannelCatalo
     fn try_from(value: ChannelCatalogUpsertRef<'a>) -> ::planus::Result<Self> {
 
         ::core::result::Result::Ok(Self {
-            channel: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.channel()?)?),attention: 
-                                if let ::core::option::Option::Some(attention) = value.attention()? {
-                                    ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(attention)?))
-                                } else {
-                                    ::core::option::Option::None
-                                }
-                            ,
+            channel: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.channel()?)?),
         })
     }
 }
@@ -104872,7 +104135,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelCatalogUpsertRef<'a> {
 /// The table `ChannelCatalogWorkspaceClosed` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelCatalogWorkspaceClosed` in the file `crates/bkpr-protocol/src/wire/native.fbs:971`
+/// * Table `ChannelCatalogWorkspaceClosed` in the file `crates/bkpr-protocol/src/wire/native.fbs:965`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -105177,7 +104440,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelCatalogWorkspaceClosedRef<'a> {
 /// The union `ChannelCatalogChangeBody` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ChannelCatalogChangeBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:972`
+/// * Union `ChannelCatalogChangeBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:966`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -105362,7 +104625,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ChannelCatalogChangeBodyRef<'a> {
 /// The table `ChannelCatalogChange` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelCatalogChange` in the file `crates/bkpr-protocol/src/wire/native.fbs:973`
+/// * Table `ChannelCatalogChange` in the file `crates/bkpr-protocol/src/wire/native.fbs:967`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -105657,7 +104920,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelCatalogChangeRef<'a> {
 /// The table `ChannelResponseCatalogSnapshot` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseCatalogSnapshot` in the file `crates/bkpr-protocol/src/wire/native.fbs:974`
+/// * Table `ChannelResponseCatalogSnapshot` in the file `crates/bkpr-protocol/src/wire/native.fbs:968`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -106163,7 +105426,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseCatalogSnapshotRef<'a> {
 /// The table `ChannelResponseCatalogChanges` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseCatalogChanges` in the file `crates/bkpr-protocol/src/wire/native.fbs:979`
+/// * Table `ChannelResponseCatalogChanges` in the file `crates/bkpr-protocol/src/wire/native.fbs:973`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -106661,7 +105924,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseCatalogChangesRef<'a> {
 /// The table `ChannelResponseCatalogReset` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseCatalogReset` in the file `crates/bkpr-protocol/src/wire/native.fbs:984`
+/// * Table `ChannelResponseCatalogReset` in the file `crates/bkpr-protocol/src/wire/native.fbs:978`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -106887,7 +106150,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseCatalogResetRef<'a> {
 /// The table `ChannelRosterEntry` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelRosterEntry` in the file `crates/bkpr-protocol/src/wire/native.fbs:985`
+/// * Table `ChannelRosterEntry` in the file `crates/bkpr-protocol/src/wire/native.fbs:979`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -107297,7 +106560,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelRosterEntryRef<'a> {
 /// The table `ChannelResponseUserRoster` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseUserRoster` in the file `crates/bkpr-protocol/src/wire/native.fbs:989`
+/// * Table `ChannelResponseUserRoster` in the file `crates/bkpr-protocol/src/wire/native.fbs:983`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -107703,7 +106966,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseUserRosterRef<'a> {
 /// The union `ChannelResponse` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ChannelResponse` in the file `crates/bkpr-protocol/src/wire/native.fbs:993`
+/// * Union `ChannelResponse` in the file `crates/bkpr-protocol/src/wire/native.fbs:987`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -108490,7 +107753,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ChannelResponseRef<'a> {
 /// The table `ChannelPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:1011`
+/// * Table `ChannelPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:1005`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -108785,7 +108048,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelPayloadRef<'a> {
 /// The union `Payload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:1012`
+/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:1006`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -109056,7 +108319,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PayloadRef<'a> {
 /// The table `Request` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:1013`
+/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:1007`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -109445,7 +108708,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestRef<'a> {
 /// The table `OptionalPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:1014`
+/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:1008`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -109740,7 +109003,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPayloadRef<'a> {
 /// The table `OptionalFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:1015`
+/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:1009`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -110035,7 +109298,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalFailureRef<'a> {
 /// The table `Response` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:1016`
+/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:1010`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -110831,7 +110094,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ResponseRef<'a> {
 /// The table `ChannelMentionSpan` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelMentionSpan` in the file `crates/bkpr-protocol/src/wire/native.fbs:1007`
+/// * Table `ChannelMentionSpan` in the file `crates/bkpr-protocol/src/wire/native.fbs:1012`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -111338,7 +110601,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelMentionSpanRef<'a> {
 /// The table `ChannelResolvedMentionSpan` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResolvedMentionSpan` in the file `crates/bkpr-protocol/src/wire/native.fbs:1012`
+/// * Table `ChannelResolvedMentionSpan` in the file `crates/bkpr-protocol/src/wire/native.fbs:1017`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
