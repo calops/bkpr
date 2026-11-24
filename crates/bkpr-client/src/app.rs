@@ -600,6 +600,7 @@ impl App {
     fn cancel_button_presses(&mut self) {
         self.button_pointer = None;
         self.popover_button = None;
+        self.chat.cancel_button_press();
         self.recovery.cancel_button_press();
         if let Some(finder) = &mut self.finder {
             finder.cancel_copy_press();
@@ -4717,6 +4718,10 @@ impl App {
         );
         let point = (mouse.x, mouse.y);
         self.button_pointer = None;
+        self.chat.update_button_pointer(None);
+        if !chat_target && action == MouseAction::Release && event_button == MouseButton::Left {
+            self.chat.cancel_button_press();
+        }
         // A host blur can drop button-up. Swallow it if it arrives, but let
         // a fresh press supersede it without retaining the old overlay owner.
         if !wheel && self.retired_overlay_button == Some(event_button) {
@@ -5095,6 +5100,13 @@ impl App {
             }
         }
         if matches!(&captured, Some(PointerCapture::Ui)) && !wheel {
+            if event_button == MouseButton::Left && action == MouseAction::Release {
+                self.chat
+                    .update_button_pointer(chat_target.then_some(point));
+                self.chat.release_button(self.options.read_only);
+            } else if action == MouseAction::Motion && chat_target {
+                self.chat.update_button_pointer(Some(point));
+            }
             if action == MouseAction::Release
                 && let Some((target, disclosure)) = self.tree_press.take()
                 && mouse.x < self.screen_geometry(size).0.width
@@ -5225,6 +5237,7 @@ impl App {
         if origin.is_none() && chat_target {
             let rect = self.chat_content(self.screen_geometry(size).1);
             if self.chat.geometry() == rect && rect.contains(mouse.x, mouse.y) {
+                self.chat.update_button_pointer(Some(point));
                 if captured.is_none()
                     && matches!(
                         (action, event_button),
@@ -5236,6 +5249,14 @@ impl App {
                 }
                 if !wheel && action == MouseAction::Press && self.state.sidebar.active {
                     self.leave_sidebar();
+                }
+                if captured.is_none()
+                    && event_button == MouseButton::Left
+                    && action == MouseAction::Press
+                    && mouse.modifiers.is_empty()
+                    && self.chat.press_button()
+                {
+                    return Ok(());
                 }
                 if pick_image
                     && let Some((area, frame)) = self.chat.image_surface()
@@ -5795,6 +5816,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         let mut popover_effects = graphics_frame(initial_size);
         let mut image_surface = UiSurface::new(initial_size);
         let mut image_effects = graphics_frame(initial_size);
+        let mut chat_button_effects = graphics_frame(initial_size);
         let mut guide_effects = graphics_frame(initial_size);
         let mut artwork_effects = graphics_frame(initial_size);
         let mut tree_artwork =
@@ -6846,6 +6868,11 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     app.chat.row_highlights(),
                 );
                 app.chat.set_graphical_inlays(ready, &theme);
+                app.chat.paint_buttons(
+                    &mut chat_button_effects,
+                    &theme,
+                    graphics.button_painter(true),
+                );
                 terminal.register_prepared_transports(&app.chat.transports());
                 app.schedule_chat();
             }
@@ -7119,6 +7146,21 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     focused: false,
                     faint: faint_background,
                 });
+                if let Some(rect) = chat_rect
+                    && !chat_button_effects.placements.is_empty()
+                {
+                    surfaces.push(Surface {
+                        palette: None,
+                        id: "ui:chat:buttons",
+                        content: SurfaceContent::Graphics,
+                        rect,
+                        frame: &chat_button_effects,
+                        selection: &[],
+                        search: &[],
+                        focused: false,
+                        faint: faint_background,
+                    });
+                }
                 for segment in &resize_feedback_regions {
                     surfaces.push(Surface {
                         palette: None,

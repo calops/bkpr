@@ -1395,8 +1395,9 @@ In history, authenticated inline agent mentions use the same participant color
 as the agent's nickname. Identical pasted text or code does not inherit that color.
 The mention picker shows wake scope when space permits. `#desk` starts with
 addressed agents or all if none are selected; `#team` starts with all eligible agents.
-Use the channel list controls or press Ctrl-n to create a channel and Alt-e to
-change wake policy, attention or membership.
+Use **+ New channel** below the channel list or press Ctrl-n to create a
+channel. Use **Settings** at the bottom of the bar or press Alt-e to change
+wake policy, attention or membership.
 In the composer, Ctrl-a/e move to the start/end of the line. Ctrl-w deletes the
 previous word; Ctrl-u/k delete to the start/end of the line.
 Drag across history text to copy it using the configured clipboard policy.

@@ -488,7 +488,20 @@ impl Chat {
         }
     }
 
+    fn activate_button(&mut self, hit: Hit, read_only: bool) {
+        if self.editor.is_some() {
+            return;
+        }
+        match hit {
+            Hit::Create if self.supports(ChatAction::Create, read_only) => self.start_editor(true),
+            Hit::Manage if self.writable(read_only) => self.start_editor(false),
+            _ => {}
+        }
+    }
+
     fn start_editor(&mut self, create: bool) {
+        self.cancel_button_press();
+        self.redraw();
         self.set_channel_chooser(false);
         let form = if create {
             self.workspace.clone().map(chat_controls::Editor::create)
@@ -814,12 +827,6 @@ impl Chat {
                 }
             }
             (B::Left, A::Press, Some(Hit::Latest)) => self.live_tail(),
-            (B::Left, A::Press, Some(Hit::Create))
-                if self.supports(ChatAction::Create, read_only) =>
-            {
-                self.start_editor(true)
-            }
-            (B::Left, A::Press, Some(Hit::Manage)) if writable => self.start_editor(false),
             (B::Right, A::Press, Some(Hit::History(Some(index)))) if writable => {
                 if let Some(active) = &self.active
                     && !self.sends.contains_key(&active.id)

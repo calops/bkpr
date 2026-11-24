@@ -3,8 +3,9 @@ use bkpr_protocol::{
     ColorSource, Cursor, CursorShape, Frame, SelectionSpan, Size, Style, channels::*,
 };
 use bkpr_tui_framework::{
-    Rect, Role, Theme, UiSurface, clear, graphics_frame, markdown, safe_text, text, text_width,
-    window,
+    Rect, Role, Theme, UiSurface,
+    button::{Button, State as ButtonState},
+    clear, graphics_frame, markdown, safe_text, text, text_width, window,
 };
 use std::{
     borrow::Cow,
@@ -161,7 +162,7 @@ fn wrap_run(runs: &mut Vec<Run>, run: markdown::Run<'_>, spans: &[ChannelResolve
     push(&run.text[range_start..], active_role);
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Hit {
     Channel(usize),
     List,
@@ -173,6 +174,9 @@ pub(super) enum Hit {
     Create,
     Manage,
 }
+
+const CHANNEL_BUTTONS: [(Hit, &str); 2] =
+    [(Hit::Create, "+ New channel"), (Hit::Manage, "Settings")];
 
 struct Range {
     sequence: u64,
@@ -222,6 +226,9 @@ pub(super) struct Paint {
     pub(super) surface: UiSurface,
     pub(super) rendered: Vec<u64>,
     hits: Vec<(Rect, Hit)>,
+    button_pointer: Option<(u16, u16)>,
+    button_press: Option<(Rect, Hit)>,
+    painted_buttons: [Option<(ButtonState, bool)>; 2],
     hovered_channel: Option<ChannelId>,
     row_highlights: [Option<Rect>; 2],
     inlays: Vec<(Rect, Rect, Option<u8>)>,
@@ -264,6 +271,9 @@ impl Default for Paint {
             surface: UiSurface::new(initial),
             rendered: Vec::new(),
             hits: Vec::new(),
+            button_pointer: None,
+            button_press: None,
+            painted_buttons: [None; 2],
             hovered_channel: None,
             row_highlights: [None; 2],
             inlays: Vec::with_capacity(2),
@@ -286,8 +296,16 @@ impl Default for Paint {
 }
 
 impl Paint {
+    fn button_at(&self, (x, y): (u16, u16)) -> Option<(Rect, Hit)> {
+        self.hits.iter().rev().find_map(|&(rect, hit)| {
+            (matches!(hit, Hit::Create | Hit::Manage) && rect.contains(x, y)).then_some((rect, hit))
+        })
+    }
+
     pub(super) fn invalidate_hits(&mut self) {
         self.hits.clear();
+        self.button_press = None;
+        self.button_pointer = None;
         self.rendered.clear();
         self.ranges.clear();
         self.rows.clear();
@@ -343,6 +361,7 @@ impl Paint {
         self.ranges.clear();
         self.rendered.clear();
         self.hits.clear();
+        self.painted_buttons = [None; 2];
         self.row_highlights = [None; 2];
         self.inlays.clear();
         self.inlay_mask = None;
@@ -429,51 +448,6 @@ impl Paint {
         }
         self.fill_card(theme, body, background);
         body
-    }
-
-    fn channel_controls(
-        &mut self,
-        theme: &Theme,
-        body: Rect,
-        background: ColorSource,
-        title: &str,
-        settings: bool,
-        create: bool,
-    ) {
-        let (settings, create) = match (settings, create, body.width) {
-            (true, true, 18..) => ("[Settings]", "[+ New]"),
-            (true, true, 13..) => ("Settings", "+New"),
-            (true, true, 7..) => ("[S]", "[+]"),
-            (true, true, _) => ("S", "+"),
-            (true, false, 10..) => ("[Settings]", ""),
-            (true, false, _) => ("S", ""),
-            (false, true, 7..) => ("", "[+ New]"),
-            (false, true, _) => ("", "+"),
-            (false, false, _) => ("", ""),
-        };
-        let mut remaining = body.width;
-        for (label, hit) in [(create, Hit::Create), (settings, Hit::Manage)] {
-            let width = (label.len() as u16).min(remaining);
-            if width > 0 {
-                remaining -= width;
-                let bounds = row(body.x + remaining, body.y, width);
-                self.card_line(theme, bounds, label, Role::Info, false, background);
-                self.target(bounds, hit);
-                if remaining > settings.len() as u16 || matches!(hit, Hit::Manage) {
-                    remaining = remaining.saturating_sub(1);
-                }
-            }
-        }
-        if remaining >= 8 {
-            self.card_line(
-                theme,
-                row(body.x, body.y, remaining),
-                title,
-                Role::Title,
-                false,
-                background,
-            );
-        }
     }
 
     fn channels_button(
@@ -642,6 +616,72 @@ impl Chat {
         if self.paint.hovered_channel.as_ref() != hovered {
             self.paint.hovered_channel = hovered.cloned();
             self.redraw();
+        }
+    }
+
+    pub(in crate::app) fn update_button_pointer(&mut self, point: Option<(u16, u16)>) {
+        let outer = self.paint.outer;
+        self.paint.button_pointer = point
+            .filter(|&(x, y)| outer.contains(x, y))
+            .map(|(x, y)| (x - outer.x, y - outer.y));
+    }
+
+    pub(in crate::app) fn press_button(&mut self) -> bool {
+        self.paint.button_press = self
+            .paint
+            .button_pointer
+            .and_then(|point| self.paint.button_at(point));
+        self.paint.button_press.is_some()
+    }
+
+    pub(in crate::app) fn release_button(&mut self, read_only: bool) {
+        let pressed = self.paint.button_press.take();
+        let current = self
+            .paint
+            .button_pointer
+            .and_then(|point| self.paint.button_at(point));
+        if let Some((_, hit)) = pressed.filter(|pressed| Some(*pressed) == current) {
+            self.activate_button(hit, read_only);
+        }
+    }
+
+    pub(in crate::app) fn cancel_button_press(&mut self) {
+        self.paint.button_press = None;
+        self.paint.button_pointer = None;
+    }
+
+    pub(in crate::app) fn paint_buttons(
+        &mut self,
+        effects: &mut Frame,
+        theme: &Theme,
+        mut place: impl FnMut(&mut Frame, Rect, ButtonState) -> bool,
+    ) {
+        let paint = &mut self.paint;
+        effects.size = paint.surface.frame.size;
+        effects.images.clear();
+        effects.placements.clear();
+        for (index, (hit, label)) in CHANNEL_BUTTONS.into_iter().enumerate() {
+            let Some(&(rect, _)) = paint.hits.iter().find(|(_, candidate)| *candidate == hit)
+            else {
+                continue;
+            };
+            let state = ButtonState::at(
+                rect,
+                paint.button_pointer,
+                paint.button_press == Some((rect, hit)),
+            );
+            let graphical = place(effects, rect, state);
+            let presentation = Some((state, graphical));
+            if paint.painted_buttons[index] != presentation {
+                Button::new(label).paint(
+                    &mut paint.surface.frame,
+                    rect,
+                    theme.style(Role::Accent),
+                    state,
+                    graphical,
+                );
+                paint.painted_buttons[index] = presentation;
+            }
         }
     }
 
@@ -853,6 +893,7 @@ impl Chat {
         }
         let geometry_changed = self.paint.outer != outer || self.paint.surface.frame.size != size;
         if geometry_changed {
+            self.cancel_button_press();
             self.paint.hovered_channel = None;
         }
         let old_history = self.paint.history;
@@ -921,19 +962,24 @@ impl Chat {
         if let Some(outer) = list {
             let body = paint.inlay(theme, outer, list_background, None);
             paint.target(outer, Hit::List);
-            paint.channel_controls(
+            let reserved = 1 + u16::from(!self.ids.is_empty());
+            let has_settings = writing && body.height > reserved;
+            let has_create = can_create && body.height >= reserved + 2 + u16::from(has_settings);
+            let list_height = body
+                .height
+                .saturating_sub(1 + u16::from(has_settings) + 2 * u16::from(has_create));
+            paint.card_line(
                 theme,
-                body,
-                list_background,
+                row(body.x, body.y, body.width),
                 if list_only {
                     "Choose a channel"
                 } else {
                     "Channels"
                 },
-                writing,
-                can_create,
+                Role::Title,
+                false,
+                list_background,
             );
-            let list_height = body.height.saturating_sub(1);
             let selected = self.active.as_ref().map(|active| &active.id);
             let offset = self
                 .list_cursor
@@ -971,6 +1017,19 @@ impl Chat {
                     paint.card_line(theme, bounds, &full, role, chosen, list_background);
                 }
                 paint.target(bounds, Hit::Channel(index));
+            }
+            if has_create {
+                let visible = (self.ids.len().saturating_sub(offset)).min(usize::from(list_height));
+                paint.target(
+                    row(body.x, body.y + visible as u16 + 2, body.width),
+                    Hit::Create,
+                );
+            }
+            if has_settings {
+                paint.target(
+                    row(body.x, body.y + body.height - 1, body.width),
+                    Hit::Manage,
+                );
             }
         }
         if list_only {
@@ -1982,8 +2041,19 @@ mod tests {
                 predicate(*hit) && chat.paint.hit(rect.x, rect.y).is_some_and(predicate)
             })
         };
-        assert!(has_action(&chat, |hit| matches!(hit, Hit::Manage)));
-        assert!(has_action(&chat, |hit| matches!(hit, Hit::Create)));
+        for (hit, y) in [
+            (Hit::Create, list_body.y + 3),
+            (Hit::Manage, list_body.y + list_body.height - 1),
+        ] {
+            assert_eq!(
+                chat.paint.button_at((list_body.x + list_body.width - 1, y)),
+                Some((row(list_body.x, y, list_body.width), hit))
+            );
+        }
+        assert!(matches!(
+            chat.paint.hit(list_body.x, list_body.y + 2),
+            Some(Hit::List)
+        ));
 
         chat.active.as_mut().unwrap().history.anchor = Some(Anchor {
             sequence: 1,
