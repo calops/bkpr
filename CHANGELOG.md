@@ -29,7 +29,7 @@
 * **agents:** scope native collaboration approvals to verified managed Claude registrations and fresh, admitted Codex threads
 * **tui:** retain recent channel history when switching. Shift-Enter is the only newline shortcut.
 * **tui:** copy a chat history selection without leaving the composer, edit drafts with readline shortcuts, and label new posts and mentions with the effective pane title.
-* **tui:** align the channel list, thread and composer within native pane padding, tint the composer like overlay inputs, and keep routine hints and wake text out of the thread.
+* **tui:** align the recessed channel list, thread and composer within native pane padding. Tint the composer like overlay inputs and keep routine hints and wake text out of the thread.
 * **tui:** extend the selected workspace highlight through the chat badge and sidebar edge, matching selected pane rows.
 
 ## [0.11.0](https://github.com/calops/bkpr/compare/v0.10.0...v0.11.0) (2026-11-23)

@@ -115,7 +115,7 @@ impl PaneGeometry {
 }
 pub(crate) struct ChromeGraphics(
     SvgGraphics,
-    Option<[DecorationStyle; 15]>,
+    Option<[DecorationStyle; 17]>,
     Option<DecorationEvidence>,
     PaneGeometry,
     Option<bkpr_tui_framework::button::Materials>,
@@ -183,6 +183,13 @@ impl ChromeGraphics {
                         .unwrap_or(popup.background),
                     ..popup
                 };
+                let inlay = |accent| DecorationStyle {
+                    background: crate::appearance::region_background(host, accent)
+                        .unwrap_or(pane.background),
+                    inset_px: [size.cell_width / 4, size.cell_height / 2],
+                    radius_px: size.cell_width,
+                    ..pane
+                };
                 let sidebar_edge = DecorationStyle {
                     kind: bkpr_tui_framework::decoration::DecorationKind::RecessedTransparentLeftGutter,
                     ..pane
@@ -203,6 +210,8 @@ impl ChromeGraphics {
                     region(Some(3)),
                     region(Some(4)),
                     sidebar_edge,
+                    inlay(None),
+                    inlay(Some(6)),
                     idle,
                     hover,
                     pressed,
@@ -257,7 +266,7 @@ impl ChromeGraphics {
         if self.0.is_enabled()
             && let Some(styles) = &self.1
         {
-            self.0.retain_decoration_sources(frame, &styles[5..7]);
+            self.0.retain_decoration_sources(frame, &styles[12..14]);
         }
     }
 
@@ -431,7 +440,13 @@ impl ChromeGraphics {
         base: u32,
         accent: Option<u8>,
     ) -> bool {
-        self.decorate_region_clipped(frame, card, text_body, base, accent, None)
+        let index = match accent {
+            None => 5,
+            Some(6) => 6,
+            Some(index @ 1..=4) => 6 + usize::from(index),
+            _ => return false,
+        };
+        self.decorate_region_clipped(frame, card, text_body, base, index, None)
     }
 
     /// Place the shared region material without covering neighboring chat cells.
@@ -444,7 +459,12 @@ impl ChromeGraphics {
         accent: Option<u8>,
     ) -> bool {
         let before = frame.placements.len();
-        self.decorate_region_clipped(frame, card, text_body, base, accent, Some(card))
+        let index = match accent {
+            None => 12,
+            Some(6) => 13,
+            _ => return false,
+        };
+        self.decorate_region_clipped(frame, card, text_body, base, index, Some(card))
             && frame.placements.len() != before
     }
 
@@ -454,7 +474,7 @@ impl ChromeGraphics {
         card: Rect,
         text_body: Rect,
         base: u32,
-        accent: Option<u8>,
+        index: usize,
         clip: Option<Rect>,
     ) -> bool {
         if !self.0.is_enabled()
@@ -471,12 +491,6 @@ impl ChromeGraphics {
         }
         let Some(styles) = self.1 else {
             return false;
-        };
-        let index = match accent {
-            None => 5,
-            Some(6) => 6,
-            Some(index @ 1..=4) => 6 + usize::from(index),
-            _ => return false,
         };
         let cw = i64::from(frame.size.cell_width);
         let ch = i64::from(frame.size.cell_height);
