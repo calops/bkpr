@@ -4605,6 +4605,27 @@ impl App {
         }
         Ok(false)
     }
+
+    fn open_image_viewer(
+        &mut self,
+        image: Arc<Image>,
+        size: Size,
+        button: MouseButton,
+    ) -> Result<()> {
+        self.last_button = button;
+        self.pointer_capture = Some(PointerCapture::Ui);
+        if !self.colors.graphics.supported() {
+            self.notify("Image viewing requires Kitty graphics support".into());
+            return Ok(());
+        }
+        self.image_viewer = Some(image_viewer::ImageViewer::new(image));
+        self.state.prefix = false;
+        self.clear_tree_pointer();
+        self.sidebar_resize_hover = false;
+        self.update_resize_hover(size, None);
+        self.notify_focus()
+    }
+
     fn mouse(
         &mut self,
         mouse: termwiz::input::MouseEvent,
@@ -5187,6 +5208,20 @@ impl App {
         if origin.is_none() {
             self.clear_tree_pointer();
         }
+        let pick_image = origin.is_none()
+            && event_button == MouseButton::Left
+            && action == MouseAction::Press
+            && mouse.modifiers == Modifiers::ALT;
+        let image_at = |area: Rect, frame: &Frame| {
+            if !area.contains(mouse.x, mouse.y) {
+                return None;
+            }
+            image_viewer::hit_test(
+                frame,
+                f32::from(mouse.x - area.x) + 0.5,
+                f32::from(mouse.y - area.y) + 0.5,
+            )
+        };
         if origin.is_none() && chat_target {
             let rect = self.chat_content(self.screen_geometry(size).1);
             if self.chat.geometry() == rect && rect.contains(mouse.x, mouse.y) {
@@ -5201,6 +5236,13 @@ impl App {
                 }
                 if !wheel && action == MouseAction::Press && self.state.sidebar.active {
                     self.leave_sidebar();
+                }
+                if pick_image
+                    && let Some((area, frame)) = self.chat.image_surface()
+                    && let Some(image) = image_at(area, frame)
+                {
+                    self.chat.hover_channel(None);
+                    return self.open_image_viewer(image, size, button);
                 }
                 if event_button == MouseButton::Left
                     && action == MouseAction::Press
@@ -5249,37 +5291,11 @@ impl App {
         {
             return Ok(());
         }
-        if origin.is_none()
-            && event_button == MouseButton::Left
-            && action == MouseAction::Press
-            && mouse.modifiers == Modifiers::ALT
+        if pick_image
+            && let Some(frame) = self.views.get(pane).and_then(|view| view.frame.as_ref())
+            && let Some(image) = image_at(self.pane_content(*rect), frame)
         {
-            let area = self.pane_content(*rect);
-            let hit = area
-                .contains(mouse.x, mouse.y)
-                .then(|| {
-                    let view = self.views.get(pane)?;
-                    let frame = view.frame.as_ref()?;
-                    let x = f32::from(mouse.x - area.x) + 0.5;
-                    let y = f32::from(mouse.y - area.y) + 0.5;
-                    image_viewer::hit_test(frame, x, y)
-                })
-                .flatten();
-            if let Some(image) = hit {
-                self.last_button = button;
-                self.pointer_capture = Some(PointerCapture::Ui);
-                if !self.colors.graphics.supported() {
-                    self.notify("Image viewing requires Kitty graphics support".into());
-                    return Ok(());
-                }
-                self.image_viewer = Some(image_viewer::ImageViewer::new(image));
-                self.state.prefix = false;
-                self.clear_tree_pointer();
-                self.sidebar_resize_hover = false;
-                self.update_resize_hover(size, None);
-                self.notify_focus()?;
-                return Ok(());
-            }
+            return self.open_image_viewer(image, size, button);
         }
         if origin.is_none() && button == MouseButton::Left && action == MouseAction::Press {
             self.leave_sidebar();

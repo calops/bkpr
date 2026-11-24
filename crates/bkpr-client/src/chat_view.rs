@@ -2055,6 +2055,95 @@ mod tests {
     }
 
     #[test]
+    fn alt_click_picks_the_full_chat_image_and_does_not_send_a_pane_click() {
+        use bkpr_protocol::{Image, ImageLayer, PixelFormat, Placement};
+        use std::sync::Arc;
+
+        let (mut app, input) = fixture();
+        attach_fixture(&mut app);
+        let query = app.colors.graphics.begin();
+        let query = std::str::from_utf8(&query).unwrap();
+        let id = query.split("i=").nth(1).unwrap().split(',').next().unwrap();
+        app.colors.feed(format!("graphics;Gi={id};OK").as_bytes());
+        open_channel(&mut app.chat, 0);
+        let size = size();
+        let theme = Theme::default();
+        let outer = app.chat_content(app.screen_geometry(size).1);
+        app.chat
+            .paint(outer, size, &theme, false, true, true, BACKGROUNDS);
+        let image = Arc::new(Image {
+            id: 7,
+            generation: 19,
+            width: 6,
+            height: 5,
+            format: PixelFormat::Rgba,
+            pixels: [80, 90, 100, 255].repeat(30),
+            source: None,
+        });
+        let graphics = &mut app.chat.paint.images;
+        graphics.images.push(Arc::clone(&image));
+        graphics.placements.push(Placement {
+            image_id: image.id,
+            generation: image.generation,
+            placement_id: 1,
+            col: 2,
+            row: 1,
+            offset_x: 0,
+            offset_y: 0,
+            width: size.cell_width,
+            height: size.cell_height,
+            source_x: 1,
+            source_y: 2,
+            source_width: 3,
+            source_height: 2,
+            layer: ImageLayer::AboveText,
+            z: 0,
+        });
+        let (area, _) = app.chat.image_surface().unwrap();
+        let hits = Scene {
+            size,
+            surfaces: vec![Surface {
+                id: "ui:chat",
+                rect: outer,
+                frame: &app.chat.surface().frame,
+                palette: None,
+                selection: &[],
+                search: &[],
+                focused: true,
+                faint: false,
+                content: SurfaceContent::Cells,
+            }],
+        }
+        .hit_map();
+        let preview = (area.x + 2, area.y + 1);
+        pointer(&mut app, size, &hits, (area.x + 3, preview.1), 8, 'M');
+        pointer(&mut app, size, &hits, (area.x + 3, preview.1), 8, 'm');
+        assert!(app.image_viewer.is_none());
+        pointer(&mut app, size, &hits, preview, 0, 'M');
+        pointer(&mut app, size, &hits, preview, 0, 'm');
+        assert!(app.image_viewer.is_none());
+        pointer(&mut app, size, &hits, preview, 8, 'M');
+        pointer(&mut app, size, &hits, preview, 8, 'm');
+        let mut viewer = UiSurface::new(size);
+        app.image_viewer
+            .as_ref()
+            .unwrap()
+            .paint(&mut viewer, &theme);
+        assert!(Arc::ptr_eq(&viewer.frame.images[0], &image));
+        let placement = &viewer.frame.placements[0];
+        assert_eq!((placement.source_width, placement.source_height), (6, 5));
+        while let Ok(operation) = input.try_recv() {
+            assert!(!matches!(
+                operation,
+                bkpr_protocol::Operation::Pane {
+                    request: bkpr_protocol::PaneRequest::Mouse { .. },
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
     fn channel_drag_copies_logical_text_and_retires_at_geometry_change() {
         let (mut app, input) = fixture();
         attach_fixture(&mut app);

@@ -33,6 +33,7 @@
 * **tui:** keep chat in one pane with recessed sections. Use slightly lighter section interiors, tint the full composer, and match the edge materials to the pane and section fills.
 * **tui:** align workspace chat badges with pane status icons and extend selected sidebar highlights cleanly to the pane edge.
 * **tui:** center the empty chat, highlight channel rows on hover, and keep typing in the composer after channel or history clicks. Tab opens a separate channel chooser.
+* **tui:** Alt-click an inline chat PNG to open the original in the shared pane image viewer.
 * **channels:** new `#desk` channels wake only explicitly mentioned agents for agent-authored posts; existing settings are unchanged.
 
 ## [0.11.0](https://github.com/calops/bkpr/compare/v0.10.0...v0.11.0) (2026-11-23)
