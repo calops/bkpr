@@ -745,6 +745,31 @@ when needed. `session.inspect` returns flat pages of ten items; ownership filter
 Pane creation requires ownership IDs, expected window revision and final layout
 all together, or all absent for explicitly unowned creation at session/all scope.
 
+To open a managed Omp window, pass this to the MCP `control` tool. Replace the
+example workspace ID and revision with the values from `whoami` or
+`session.inspect`, and use paths on the daemon's host.
+
+```json
+{
+  "operation": "window.create",
+  "arguments": {
+    "workspace_id": "00000000-0000-4000-8000-000000000001",
+    "expected_revision": 7,
+    "spec": {
+      "argv": ["bkpr", "run", "omp"],
+      "cwd": "/home/you/project",
+      "home": "/home/you",
+      "size": {"cols": 100, "rows": 30, "cell_width": 8, "cell_height": 16}
+    }
+  }
+}
+```
+
+All four `spec.size` fields are required; cell dimensions are in pixels. For
+the next `window.create` in the same workspace, take `expected_revision` from
+the successful receipt's `workspace_revision`, not `window_revision` or
+`registry_revision`.
+
 `pane.read` returns right-trimmed visible text, preserving indentation and interior
 spaces, with a default 2048-byte UTF-8 page and optional `tail_rows`. Continue with
 `next_offset` and the returned `revision` as `expected_revision`; real canonical
@@ -782,13 +807,13 @@ explicit passthrough invocations remain unchanged.
 | --- | --- |
 | `whoami` | Compact launch/binding/ownership/readiness facts and serving daemon `protocol_version` (native wire family); `detail:true` adds context/project |
 | `set_title` | Discoverable agent label, separate from the pane name |
-| `discover_agents` | Current-workspace peers with IDs, label, status and cached CWD/project name/branch; exact filters and cursor pagination |
+| `discover_agents` | Live peers with IDs, label, status and cached CWD/project name/branch; not channel membership |
 | `send_message` | Send a 1:1 message and get a compact durable receipt; each direct message requests a native wake |
 | `read_inbox` | Unread summaries; `include_read:true` revisits unacknowledged reads |
 | `read_message` | Recipient-only UTF-8 body pages, without processed acknowledgement |
 | `ack_message` | Explicit processed acknowledgement |
 | `inspect_outbox` | Sender-only delivery/read/ack/expiry metadata, never bodies |
-| `channel_list`, `channel_members` | Paged workspace discovery, effective policy and exact participant IDs |
+| `channel_list`, `channel_members` | Accessible workspace channels and policy; exact channel roster and member IDs |
 | `channel_create`, `channel_post` | Create a named group channel or post to `#team`, `#desk` or an exact channel ID |
 | `channel_history`, `channel_read` | Up to ten body-free summaries, or an exact message in UTF-8 byte pages |
 | `channel_upload`, `channel_fetch` | Upload a local PNG to a channel or save an exact readable channel attachment to a new local file; both return metadata only |
@@ -797,18 +822,24 @@ explicit passthrough invocations remain unchanged.
 | `terminal_input` | Explicit literal text, bracketed paste, key events or raw bytes against an exact pane |
 | `read_result` | Temporary, authenticated pages for an explicitly oversized result |
 
-The user chooses the lead. The lead posts one kickoff in `#team` with a
-proposal and a `source: {channel_id, message_id}` linking the original post.
-Peers contribute one substantive finding, objection or improvement instead of
-echoing agreement. The lead synthesizes and replies once at the original
-post's `reply_target` unless the user explicitly requests individual reports.
-Wait for native wakes instead of polling. A wake that needs no action needs
-no terminal chatter.
+The user chooses the lead for the current authenticated request only, not for
+unrelated requests. The lead posts one unmentioned kickoff in `#team` with a
+proposal and a `source: {channel_id, message_id}` linking the original user post,
+then waits for input. Peers contribute one substantive finding, objection or
+improvement instead of echoing agreement. Only the lead sends one synthesis to
+the exact original `#desk` `reply_target` unless the user explicitly requests
+individual reports. Wait for native wakes instead of polling. A wake that needs
+no action needs no terminal chatter.
 
 By default in a new `#team`, user and agent posts without agent mentions wake
 eligible peers. A post with exact agent mentions wakes only the named eligible
 agents; if no named agent can wake, it doesn't wake everyone instead. Stale
 mention IDs are rejected. Existing channels keep their saved policy.
+
+When replying in `#team` to the selected proposal, use that post's `reply_target`
+and, if present, `mentions: [post.author_mention_id]` to address the live author
+without a roster lookup. Use `channel_members` when you need exact member IDs
+for a channel. Skip discovery and history preflight for known discussions.
 
 `source` is optional and uses exact IDs, not `#desk` or `#team`. It doesn't
 route wakes, grant access, or replace `reply_to`, which stays in one channel.
@@ -2027,9 +2058,9 @@ posted images are retained with their messages and don't count toward this limit
 New workspaces get two ordinary, workspace-wide channels. `#desk` requests a
 wake for all eligible agents on a user post unless it mentions specific agents.
 Agent posts request no wakes; questions and reports request user attention.
-`#team` requests a wake for all eligible agents except the author on every post,
-without requesting user attention. Authorized agents who arrive later join
-workspace-wide channels automatically. The session user can change these
+`#team` requests a wake for all eligible agents except the author unless the post
+mentions specific agents. It does not request user attention. Authorized agents
+who arrive later join workspace-wide channels automatically. The session user can change these
 settings; reopening or repairing a workspace creates only missing presets.
 If channel storage is unavailable, the workspace can still open and run panes;
 listing or creating channels retries provisioning and reports any remaining
@@ -2080,6 +2111,14 @@ addressed post for this recipient, or the only post in the batch. An unaddressed
 batch with multiple posts still returns IDs only. Use `next_offset` with
 `channel_read` if the first page is incomplete, and pass `post.reply_target` to
 `channel_post` when replying.
+
+Only the selected wake `post` may include `author_mention_id`. It is the same
+opaque handle as `channel_members.mention_id` for the exact current author
+launch and binding, when that agent is still an eligible member of the channel.
+It is omitted from the native wake pointer, metadata-only results and linked
+source pages. Use it only in same-channel `mentions`, never for author
+authority, DM routing or as a `reply_target`. Reply to the user using the
+original user post's exact `reply_target`, which may be on `post.source`.
 
 A native pointer is not user authority. An authenticated channel post with
 `message.author.kind == "user"` carries user intent without terminal or pane

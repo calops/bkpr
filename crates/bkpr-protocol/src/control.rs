@@ -516,7 +516,7 @@ fn argument_contract(operation: &str, mut arguments: Value) -> Value {
 }
 
 fn signature_from_schema(operation: &str, schema: &Value) -> String {
-    fn fields(schema: &Value, root: &Value, nested: bool) -> String {
+    fn fields(schema: &Value, root: &Value, depth: u8) -> String {
         let required = schema["required"].as_array();
         schema["properties"]
             .as_object()
@@ -531,23 +531,29 @@ fn signature_from_schema(operation: &str, schema: &Value) -> String {
                         } else {
                             "?"
                         };
-                        let target = property["$ref"]
-                            .as_str()
-                            .and_then(|reference| reference.strip_prefix('#'))
-                            .and_then(|pointer| root.pointer(pointer))
-                            .unwrap_or(property);
-                        if nested && target["properties"].is_object() {
-                            format!("{name}{suffix}:{{{}}}", fields(target, root, false))
-                        } else {
-                            format!("{name}{suffix}")
+                        if depth > 0 {
+                            let target = property["$ref"]
+                                .as_str()
+                                .and_then(|reference| reference.strip_prefix('#'))
+                                .and_then(|pointer| root.pointer(pointer))
+                                .unwrap_or(property);
+                            if target["properties"].is_object() {
+                                return format!(
+                                    "{name}{suffix}:{{{}}}",
+                                    fields(target, root, depth - 1)
+                                );
+                            }
                         }
+                        format!("{name}{suffix}")
                     })
                     .collect::<Vec<_>>()
                     .join(",")
             })
             .unwrap_or_default()
     }
-    format!("{operation}({})", fields(schema, schema, true))
+    // Show spec.size in window creation help without expanding other signatures.
+    let depth = if operation == "window.create" { 2 } else { 1 };
+    format!("{operation}({})", fields(schema, schema, depth))
 }
 
 /// Compact signatures generated from the decoder schemas, suitable for tool help.
@@ -1015,6 +1021,21 @@ mod tests {
         assert_eq!(closed["window_id"], "n");
         assert_eq!(closed["window_closed"], true);
         assert!(closed.get("window_revision").is_none());
+    }
+
+    #[test]
+    fn window_creation_signature_exposes_the_required_geometry_only_where_needed() {
+        let signature = schema("window.create").unwrap();
+        let signature = signature["signature"].as_str().unwrap();
+        let (_, spec) = signature.split_once("spec:{").unwrap();
+        let (_, geometry) = spec.split_once("size:{").unwrap();
+        let (geometry, _) = geometry.split_once('}').unwrap();
+        let mut dimensions: Vec<_> = geometry.split(',').collect();
+        dimensions.sort_unstable();
+        assert_eq!(dimensions, ["cell_height", "cell_width", "cols", "rows"]);
+        assert!(common_signatures().contains(signature));
+        let reopen = schema("pane.reopen").unwrap();
+        assert!(!reopen["signature"].as_str().unwrap().contains("size:{"));
     }
 
     #[test]
