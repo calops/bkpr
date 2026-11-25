@@ -7,8 +7,8 @@ const [outDir, clientAssets] = process.argv.slice(2);
 mkdirSync(outDir, { recursive: true });
 
 const THEMES = {
-  light: { ink: "#1A1E26", honey: "#E8990B", fill: "#F0F0F0" },
-  dark: { ink: "#F1ECE0", honey: "#F2A516", fill: "#242424" },
+  light: { ink: "#1A1E26", honey: "#E8990B" },
+  dark: { ink: "#F1ECE0", honey: "#F2A516" },
 };
 
 const beeView = "-9 -11 18 18";
@@ -37,7 +37,7 @@ function hexPoints(cx, cy, r) {
 }
 
 function placedBee(t, x, y, rot, scale) {
-  return `<g transform="translate(${x} ${y}) rotate(${rot}) scale(${scale})">${bee({ ink: t.ink, fill: t.fill })}</g>`;
+  return `<g transform="translate(${x} ${y}) rotate(${rot}) scale(${scale})">${bee({ ink: "#20242C", fill: "#F1ECE0" }, t.honey)}</g>`;
 }
 
 const trail = (t, d, width = 2, dash = "3 3.5") =>
