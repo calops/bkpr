@@ -9,7 +9,7 @@
 ### Bug Fixes
 
 * **channels:** guide agents to verify earlier user context for ambiguous `#desk` follow-ups without replaying completed work ([#75](https://github.com/calops/bkpr/issues/75))
-* **channels:** guide managed agents to coordinate in `#team` and keep `#desk` for user-facing replies ([#75](https://github.com/calops/bkpr/issues/75))
+* **channels:** guide agents to coordinate directly in `#team`, wait for native wakes without polling, and have one reporter reply in `#desk` ([#75](https://github.com/calops/bkpr/issues/75))
 * **channels:** default exact Claude and fresh managed Codex collaboration tools to native allow, and accept workspace selectors in agent channel reads and history ([#75](https://github.com/calops/bkpr/issues/75))
 
 ## [0.11.0](https://github.com/calops/bkpr/compare/v0.10.0...v0.11.0) (2026-11-23)

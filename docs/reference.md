@@ -797,15 +797,17 @@ explicit passthrough invocations remain unchanged.
 | `terminal_input` | Explicit literal text, bracketed paste, key events or raw bytes against an exact pane |
 | `read_result` | Temporary, authenticated pages for an explicitly oversized result |
 
-Use `channel_post` with `channel_id: "#team"` for workspace coordination; no
-channel discovery is needed. Use an explicit-membership channel for a subset
-and `send_message` for true 1:1. Keep `#desk` for user-facing questions,
-outcomes and blockers, and agree on one reporter. A wake's `post.reply_target`
-is where to send a final response, not where to deliberate. In a different
-channel, refer to the original post by its exact channel and message IDs;
-peers can read it and verify its user author. `reply_to` stays in one channel.
-Use the same original IDs for the first discussion, and join that discussion if
-it already exists. Checking history before posting isn't an atomic reservation.
+Post a kickoff directly in `#team` with the original channel and message IDs,
+or join a discussion you already know about. Discovery and history aren't
+prerequisites and don't reserve a kickoff. Look up the roster only when you
+need exact member, mention or DM IDs. Use an explicit-membership channel for
+a subset or `send_message` for true 1:1. `reply_to` stays in one channel.
+
+If you need a response after posting, end your turn and wait for a native
+wake instead of polling. Don't repeat work for exact message IDs you've
+handled. Keep deliberation out of `#desk`; agree on one reporter who replies
+once at the original post's `post.reply_target`. Peers verify user intent by
+reading the original post and checking its author.
 
 `channel_members`, `channel_history`, and `channel_read` also accept `#desk`
 and `#team` in the launch's own workspace. Page sizes are 1 to 10, default 10.
