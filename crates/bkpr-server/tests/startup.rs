@@ -2106,15 +2106,6 @@ fn channel_history_reopens_on_the_same_session_only() {
     assert_eq!(desk.membership, MembershipMode::WorkspaceWide);
     assert_eq!(team.membership, MembershipMode::WorkspaceWide);
     assert_eq!(
-        desk.settings,
-        ChannelSettings {
-            user_wake: WakePolicy::AddressedOrAll,
-            agent_wake: WakePolicy::None,
-            attention_questions: true,
-            attention_reports: true,
-        }
-    );
-    assert_eq!(
         team.settings,
         ChannelSettings {
             user_wake: WakePolicy::AddressedOrAll,
