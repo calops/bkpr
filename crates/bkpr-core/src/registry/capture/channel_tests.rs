@@ -1900,7 +1900,11 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     );
     let coordinator = user_binding(&registry, &workspace, &team_id, &a);
     assert_eq!(
-        user_wakes(mention_as_user(&team_id, "request for coordinator", coordinator)),
+        user_wakes(mention_as_user(
+            &team_id,
+            "request for coordinator",
+            coordinator
+        )),
         1
     );
 
@@ -2839,6 +2843,59 @@ fn concurrent_direct_sends_share_one_private_thread_and_keep_exact_receipts() {
     assert_eq!(agent(&registry, &a, original()), a_post);
     assert!(subscribe(&registry, &b, &receiving).is_null());
 
+    let message_id: MessageId = serde_json::from_value(a_post["message"]["id"].clone()).unwrap();
+    let ChannelResponse::Listed { channels, .. } =
+        channel(&registry, None, list(&a_workspace)).unwrap()
+    else {
+        panic!("expected workspace channels");
+    };
+    let team = &channels
+        .iter()
+        .find(|channel| channel.name == "#team")
+        .unwrap()
+        .id;
+    let ChannelRequest::Post {
+        channel_id,
+        post: mut kickoff,
+    } = post(team, "DM context", PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    kickoff.source = Some(Box::new(ChannelSource {
+        channel_id: id.clone(),
+        message_id: message_id.clone(),
+    }));
+    let outsider_receiver = receiver(&registry, &outsider);
+    assert!(matches!(
+        channel(&registry, None, ChannelRequest::Post { channel_id, post: kickoff }).unwrap(),
+        ChannelResponse::Posted { wake_count: 3, .. }
+    ));
+    let expand = |caller: &Launch, receiver| {
+        let wake = subscribe(&registry, caller, receiver);
+        agent(
+            &registry,
+            caller,
+            AgentRequest::ChannelWake {
+                batch_id: wake["channel_wake"]["batch_id"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("expected a channel wake, got {wake}"))
+                    .into(),
+                max_body_bytes: None,
+                include_source: true,
+            },
+        )
+    };
+    let visible = expand(&b, &receiving);
+    let source = &visible["post"]["source"];
+    assert_eq!(source["text"], "from A");
+    assert_eq!(
+        source["reply_target"],
+        json!({"channel_id": id, "reply_to": message_id})
+    );
+    let hidden = expand(&outsider, &outsider_receiver);
+    assert_eq!(hidden["post"]["text"], "DM context");
+    assert!(hidden["post"].get("source").is_none());
+
     // Failure inserting mandatory wake work rolls back both the thread and post.
     let disk = rusqlite::Connection::open(root.join("state/channels.sqlite3")).unwrap();
     disk.execute_batch(
@@ -2867,7 +2924,7 @@ fn concurrent_direct_sends_share_one_private_thread_and_keep_exact_receipts() {
     let count: usize = disk
         .query_row("SELECT count(*) FROM posts", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 2);
+    assert_eq!(count, 3);
     let ChannelRequest::Post {
         channel_id,
         post: mut reply,
@@ -2899,6 +2956,7 @@ fn direct_post(launch_id: &str, text: &str, key: &str) -> AgentRequest {
             text: text.into(),
             intent: PostIntent::Note,
             mentions: Vec::new(),
+            mention_spans: Vec::new(),
             reply_to: None,
             attachments: Vec::new(),
             source: None,

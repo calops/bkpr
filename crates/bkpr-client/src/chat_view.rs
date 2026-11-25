@@ -2266,6 +2266,7 @@ mod tests {
                     mention_spans: Vec::new(),
                     reply_to: None,
                     attachments: Vec::new(),
+                    source: None,
                 },
                 text: text.into(),
                 attachments: Vec::new(),

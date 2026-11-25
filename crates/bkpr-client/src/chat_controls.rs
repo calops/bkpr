@@ -32,6 +32,10 @@ pub(super) struct EditorSurfaces<'a> {
 }
 
 /// A local editor action for the app to handle against its current owner.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Short-lived editor action moves a request into the existing job without allocating"
+)]
 pub(super) enum EditorAction {
     /// No change to the app's view or requests.
     None,

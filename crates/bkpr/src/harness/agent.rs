@@ -1205,7 +1205,10 @@ mod tests {
                         );
                         assert_eq!(post.intent, PostIntent::Note);
                         if request.get("mentions").is_some() {
-                            assert_eq!(post.mentions, [ParticipantId("exact-mention-handle".into())]);
+                            assert_eq!(
+                                post.mentions,
+                                [ParticipantId("exact-mention-handle".into())]
+                            );
                             assert_eq!(
                                 post.mention_spans,
                                 [ChannelMentionSpan {
