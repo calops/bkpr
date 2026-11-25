@@ -1,7 +1,7 @@
 use super::*;
 use bkpr_protocol::channels::{
-    ChannelId, ChannelPost, ChannelRequest, ChannelResponse, MembershipMode, ParticipantId,
-    PostIntent,
+    ChannelId, ChannelPost, ChannelRequest, ChannelResponse, ChannelSource, MembershipMode,
+    MessageId, ParticipantId, PostIntent,
 };
 use bkpr_protocol::{AgentReceiverMode, AgentWakeOutcome};
 
@@ -297,6 +297,7 @@ fn post(id: &ChannelId, text: &str, intent: PostIntent) -> ChannelRequest {
             mentions: Vec::new(),
             reply_to: None,
             attachments: Vec::new(),
+            source: None,
         },
     }
 }
@@ -537,6 +538,7 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
             AgentRequest::ChannelWake {
                 batch_id: old_batch,
                 max_body_bytes: Some(4096),
+                include_source: false,
             }
         )
         .is_err()
@@ -1054,12 +1056,38 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
             .unwrap()
             .into(),
     );
+    let desk_id: ChannelId = serde_json::from_value(
+        listed["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["name"] == "#desk")
+            .unwrap()["id"]
+            .clone(),
+    )
+    .unwrap();
     let (a_mention, a_selector) = mention_and_launch(&registry, &sender, &team_id, &a_actor);
     assert_eq!(a_selector, a.grant.launch_id);
+    let ChannelRequest::Post {
+        channel_id,
+        post: mut passive_post,
+    } = post(&desk, "passive desk", PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    let source_body = "東京".repeat(400);
+    passive_post.text.clone_from(&source_body);
+    passive_post.source = Some(Box::new(ChannelSource {
+        channel_id: desk_id.clone(),
+        message_id: MessageId("nested-dangling".into()),
+    }));
     let passive = agent_channel(
         &registry,
         &sender,
-        post(&desk, "passive desk", PostIntent::Note),
+        ChannelRequest::Post {
+            channel_id,
+            post: passive_post,
+        },
     )
     .unwrap();
     assert_eq!(passive["wake_count"], 0);
@@ -1075,7 +1103,27 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         ChannelRequest::Post { channel_id, post }
     };
     let older = agent_channel(&registry, &sender, addressed_post("older callout")).unwrap();
-    let newest = agent_channel(&registry, &sender, addressed_post("newest callout")).unwrap();
+    let ChannelRequest::Post {
+        channel_id,
+        post: mut newest_post,
+    } = addressed_post("newest callout")
+    else {
+        unreachable!()
+    };
+    let source = Box::new(ChannelSource {
+        channel_id: desk_id.clone(),
+        message_id: serde_json::from_value(passive["message"]["id"].clone()).unwrap(),
+    });
+    newest_post.source = Some(source.clone());
+    let newest = agent_channel(
+        &registry,
+        &sender,
+        ChannelRequest::Post {
+            channel_id,
+            post: newest_post,
+        },
+    )
+    .unwrap();
     assert_eq!(newest["message"]["mentions"], json!([a_actor]));
     let broadcast = post(&team, "newer broadcast", PostIntent::Note);
     let receipt = agent_channel(&registry, &sender, broadcast.clone()).unwrap();
@@ -1102,6 +1150,12 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     let lookup_with = |pointer: &Value, max_body_bytes| AgentRequest::ChannelWake {
         batch_id: pointer["batch_id"].as_str().unwrap().to_owned(),
         max_body_bytes,
+        include_source: false,
+    };
+    let lookup_source = |pointer: &Value, max_body_bytes| AgentRequest::ChannelWake {
+        batch_id: pointer["batch_id"].as_str().unwrap().to_owned(),
+        max_body_bytes,
+        include_source: true,
     };
     let lookup = |pointer: &Value| lookup_with(pointer, None);
     let lookup_body = |pointer: &Value, maximum| lookup_with(pointer, Some(maximum));
@@ -1128,6 +1182,48 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         json!({
             "channel_id": a_pointer["channel_id"], "reply_to": newest["message"]["id"],
         })
+    );
+    assert_eq!(callout["post"]["message"]["source"], json!(source));
+    assert!(callout["post"].get("source").is_none());
+    assert!(a_pointer.get("source").is_none());
+    let expanded = agent(&registry, &a, lookup_source(a_pointer, Some(4)));
+    assert_eq!(expanded["post"]["text"], "newe");
+    let source_page = &expanded["post"]["source"];
+    let mut source_message = passive["message"].clone();
+    source_message
+        .as_object_mut()
+        .unwrap()
+        .remove("source")
+        .unwrap();
+    assert_eq!(source_page["message"], source_message);
+    assert_eq!(source_page["text"], "東");
+    assert_eq!(source_page["body_bytes"], source_body.len());
+    assert_eq!(source_page["next_offset"], 3);
+    assert_eq!(
+        source_page["reply_target"],
+        json!({ "channel_id": desk_id, "reply_to": source.message_id }),
+    );
+    assert!(source_page.get("source").is_none());
+    let next_page = agent(
+        &registry,
+        &a,
+        AgentRequest::ChannelRead {
+            channel_id: source.channel_id.clone(),
+            message_id: source.message_id,
+            offset: Some(3),
+            max_bytes: Some(4),
+        },
+    );
+    assert_eq!(next_page["text"], "京");
+    assert_eq!(next_page["next_offset"], 6);
+    let default = agent(&registry, &a, lookup_source(a_pointer, None));
+    assert_eq!(default["post"]["text"], "newest callout");
+    assert_eq!(default["post"]["source"]["next_offset"], 2046);
+    assert_eq!(default["post"]["source"]["text"], &source_body[..2046]);
+    assert!(
+        agent(&registry, &b, lookup_source(b_pointer, None))
+            .get("post")
+            .is_none()
     );
     assert!(
         agent(&registry, &b, lookup_body(b_pointer, 4096))
@@ -1245,17 +1341,7 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         true
     );
 
-    let desk = ChannelId(
-        listed["channels"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|c| c["name"] == "#desk")
-            .unwrap()["id"]
-            .as_str()
-            .unwrap()
-            .to_owned(),
-    );
+    let desk = desk_id;
     let ChannelRequest::Post {
         channel_id,
         post: mut user_post,
@@ -1317,6 +1403,14 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     assert_eq!(user["post"]["message"]["id"], message.id.0);
     assert_eq!(user["post"]["text"], "broadcast singleton");
     assert!(user["post"]["next_offset"].is_null());
+    assert_eq!(
+        agent(
+            &registry,
+            &b,
+            lookup_source(&singleton["channel_wake"], None)
+        ),
+        user
+    );
     let response = agent_channel(
         &registry,
         &b,
@@ -1333,6 +1427,7 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
                     serde_json::from_value(user["post"]["reply_target"]["reply_to"].clone())
                         .unwrap(),
                 ),
+                source: None,
             },
         },
     )

@@ -159,6 +159,16 @@ pub enum PostIntent {
     Report,
 }
 
+/// Author-supplied pointer to an exact channel message, not a grant to read it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelSource {
+    /// Exact owning channel ID; workspace shorthand is not accepted.
+    pub channel_id: ChannelId,
+    /// Exact message ID within that channel.
+    pub message_id: MessageId,
+}
+
 /// A post retry is equivalent only when its authenticated author, channel and every field match.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -178,6 +188,9 @@ pub struct ChannelPost {
     /// Immutable resources uploaded into the same channel.
     #[serde(default)]
     pub attachments: Vec<AttachmentId>,
+    /// Optional context link; posting does not resolve or verify the target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Box<ChannelSource>>,
 }
 
 impl fmt::Debug for ChannelPost {
@@ -306,6 +319,9 @@ pub struct MessageSummary {
     pub reply_to: Option<MessageId>,
     /// Channel-scoped immutable attachment references.
     pub attachments: Vec<AttachmentId>,
+    /// Optional author-supplied context link, independent of read access to its target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Box<ChannelSource>>,
 }
 
 /// One retained post ready to render without fetching its body or attachment metadata.
@@ -335,6 +351,9 @@ impl ChannelMessage {
                 .map(|id| id.as_ref().len())
                 .sum::<usize>()
             + message.reply_to.as_ref().map_or(0, |id| id.as_ref().len())
+            + message.source.as_ref().map_or(0, |source| {
+                source.channel_id.as_ref().len() + source.message_id.as_ref().len()
+            })
             + message
                 .attachments
                 .iter()
@@ -742,6 +761,9 @@ impl ChannelRequest {
                     !post.text.trim().is_empty() || !post.attachments.is_empty(),
                     "channel post requires text or an attachment"
                 );
+                if let Some(source) = &post.source {
+                    valid_source_ids(source.channel_id.as_ref(), source.message_id.as_ref())?;
+                }
                 valid_references(&post.mentions, post.reply_to.as_ref(), &post.attachments)
             }
             Self::History {
@@ -803,6 +825,15 @@ pub(crate) fn valid_id(value: &str) -> Result<()> {
         "invalid channel identity or idempotency key"
     );
     Ok(())
+}
+
+pub(crate) fn valid_source_ids(channel_id: &str, message_id: &str) -> Result<()> {
+    valid_id(channel_id)?;
+    ensure!(
+        !matches!(channel_id, "#desk" | "#team"),
+        "channel source requires an exact channel ID"
+    );
+    valid_id(message_id)
 }
 
 pub(crate) fn valid_name(value: &str) -> Result<()> {

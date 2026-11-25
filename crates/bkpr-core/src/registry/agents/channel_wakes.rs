@@ -203,6 +203,7 @@ impl Registry {
         launch: &Launch,
         batch_id: String,
         max_body_bytes: Option<u32>,
+        include_source: bool,
         connected: &dyn Fn() -> bool,
     ) -> Result<Value> {
         ensure!(
@@ -219,15 +220,19 @@ impl Registry {
             &|| !connected() || self.session_end_requested(),
             &|workspace| self.delivery_workspace_open(workspace),
             |store| {
-                store.channel_wake_lookup(
+                let reply = store.channel_wake_lookup(
                     recipient(launch)?,
                     batch_id,
                     max_body_bytes.map(|maximum| maximum as usize),
-                    &|workspace| {
-                        ensure!(connected(), "channel request disconnected");
-                        self.channel_authority(workspace, Some(launch), false)
-                    },
-                )
+                    include_source,
+                    &|workspace| self.channel_authority(workspace, Some(launch), false),
+                    connected,
+                )?;
+                ensure!(
+                    !include_source || connected(),
+                    "channel request disconnected"
+                );
+                Ok(reply)
             },
         )
     }

@@ -334,6 +334,7 @@ mod tests {
                         mentions: vec![],
                         reply_to: None,
                         attachments: vec![],
+                        source: None,
                     },
                 },
             },

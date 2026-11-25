@@ -2139,6 +2139,7 @@ fn channel_history_reopens_on_the_same_session_only() {
             mentions: vec![],
             reply_to: None,
             attachments: vec![],
+            source: None,
         },
     };
     let receipt = send(&endpoint.socket, &authority, post.clone());

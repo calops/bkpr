@@ -857,6 +857,7 @@ impl Store {
             mentions: post.mentions,
             reply_to: post.reply_to,
             attachments: post.attachments,
+            source: post.source,
         };
         let needed = wakes.len() + usize::from(attention);
         let pending_work = needed != 0 && !retire(self, &channel.workspace_id)?;
@@ -1121,9 +1122,23 @@ impl Store {
         maximum: usize,
         project: impl FnOnce(MessagePage<'_>) -> Result<T>,
     ) -> Result<T> {
+        self.optional_message_page(channel_id, message_id, offset, maximum, project)?
+            .context("channel message unavailable")
+    }
+
+    fn optional_message_page<T>(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        offset: usize,
+        maximum: usize,
+        project: impl FnOnce(MessagePage<'_>) -> Result<T>,
+    ) -> Result<Option<T>> {
         let mut statement = self.connection.prepare(READ_POST)?;
         let mut rows = statement.query(params![channel_id.as_ref(), message_id.as_ref()])?;
-        let row = rows.next()?.context("channel message unavailable")?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
         let text = row.get_ref(1)?.as_str()?;
         ensure!(text.is_char_boundary(offset), "invalid channel body offset");
         let mut end = offset.saturating_add(maximum).min(text.len());
@@ -1136,6 +1151,7 @@ impl Store {
             body_bytes: text.len(),
             next_offset: (end < text.len()).then_some(end),
         })
+        .map(Some)
     }
 
     fn message(&self, id: &ChannelId, row: &Row<'_>) -> Result<ChannelMessage> {

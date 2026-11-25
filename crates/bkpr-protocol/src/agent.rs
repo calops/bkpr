@@ -185,13 +185,17 @@ pub enum AgentRequest {
         /// Operation subject to the launch channel allowlist and current membership.
         request: Box<ChannelRequest>,
     },
-    /// Resolve a delivered channel wake, optionally including the first page of one post.
+    /// Resolve a delivered channel wake, optionally including bounded post context.
     ChannelWake {
         /// Exact opaque batch ID from the native notification.
         batch_id: String,
-        /// Requested body-page limit in UTF-8 bytes (4 through 4096); omitted for metadata only.
+        /// Per-body UTF-8 page limit (4 through 4096). Omission requests metadata only
+        /// unless `include_source` is true, in which case the limit defaults to 2048.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_body_bytes: Option<u32>,
+        /// Include the selected post and, when authorized and available, one linked source page.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        include_source: bool,
     },
     /// Read an exact channel message in UTF-8 pages under current membership.
     ChannelRead {

@@ -4,7 +4,7 @@ use super::{
 };
 use crate::channels::{ChannelClaim, ChannelRecipient};
 use anyhow::{Context, Result, ensure};
-use bkpr_protocol::channels::ChannelWake;
+use bkpr_protocol::channels::{ChannelSource, ChannelWake};
 use rusqlite::{OptionalExtension, Row};
 use serde::Serialize;
 
@@ -22,7 +22,15 @@ struct ChannelWakeLookup<'a> {
 #[derive(Serialize)]
 struct WakePost<'a> {
     #[serde(flatten)]
-    page: MessagePage<'a>,
+    page: WakePage<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<WakePage<'a>>,
+}
+
+#[derive(Serialize)]
+struct WakePage<'a> {
+    #[serde(flatten)]
+    page: &'a MessagePage<'a>,
     reply_target: ReplyTarget<'a>,
 }
 
@@ -31,6 +39,29 @@ struct ReplyTarget<'a> {
     channel_id: &'a ChannelId,
     reply_to: &'a MessageId,
 }
+
+impl<'a> WakePage<'a> {
+    fn new(page: &'a MessagePage<'a>, channel_id: &'a ChannelId, reply_to: &'a MessageId) -> Self {
+        Self {
+            page,
+            reply_target: ReplyTarget {
+                channel_id,
+                reply_to,
+            },
+        }
+    }
+}
+
+#[derive(Debug)]
+struct WakeLookupDisconnected;
+
+impl std::fmt::Display for WakeLookupDisconnected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("channel request disconnected")
+    }
+}
+
+impl std::error::Error for WakeLookupDisconnected {}
 
 fn wake_reply(
     wake: &ChannelWake,
@@ -233,20 +264,27 @@ impl Store {
         ).optional()?.unwrap_or(false))
     }
 
+    /// Returns the recipient's retained batch and, when requested, bounded authorized body pages.
     pub(crate) fn channel_wake_lookup(
         &self,
         recipient: ChannelRecipient<'_>,
         batch_id: String,
         max_body_bytes: Option<usize>,
+        include_source: bool,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+        connected: &dyn Fn() -> bool,
     ) -> Result<serde_json::Value> {
+        let admit = |workspace: &str| {
+            ensure!(connected(), WakeLookupDisconnected);
+            admit(workspace)
+        };
         let (channel_id, pending_count, addressed_message_id) = self.connection.query_row(
             "SELECT channel_id,pending_count,addressed_message_id FROM channel_batches
                WHERE id=?1 AND launch_id=?2 AND binding_revision=?3 AND participant_id=?4 AND outcome IS NOT 'revoked'",
             params![batch_id, recipient.launch, recipient.binding, recipient.participant],
             |row| Ok((ChannelId(row.get(0)?), row.get(1)?, row.get::<_, Option<String>>(2)?.map(MessageId))),
         ).optional()?.context(ChannelAccessLost)?;
-        self.access(&channel_id, admit)?;
+        self.access(&channel_id, &admit)?;
         let mut statement = self.connection.prepare(
             "SELECT w.message_id,p.sequence,w.addressed FROM notification_work w JOIN posts p ON p.id=w.message_id
                WHERE w.batch_id=?1 ORDER BY p.sequence LIMIT ?2",
@@ -267,21 +305,59 @@ impl Store {
                 [only] => Some(&only.id),
                 _ => None,
             });
-        if let (Some(maximum), Some(id)) = (max_body_bytes, selected) {
+        let maximum = max_body_bytes.or(include_source.then_some(2048));
+        if let (Some(maximum), Some(id)) = (maximum, selected) {
             return self.with_message_page(&wake.channel_id, id, 0, maximum, |page| {
-                wake_reply(
-                    &wake,
-                    &messages,
-                    Some(WakePost {
-                        page,
-                        reply_target: ReplyTarget {
-                            channel_id: &wake.channel_id,
-                            reply_to: id,
-                        },
-                    }),
-                )
+                let project = |source: Option<WakePage<'_>>| {
+                    wake_reply(
+                        &wake,
+                        &messages,
+                        Some(WakePost {
+                            page: WakePage::new(&page, &wake.channel_id, id),
+                            source,
+                        }),
+                    )
+                };
+                if let Some(link) = page.message.source.as_ref().filter(|_| include_source) {
+                    self.with_wake_source(link, maximum, &admit, project)
+                } else {
+                    project(None)
+                }
             });
         }
         wake_reply(&wake, &messages, None)
+    }
+
+    fn with_wake_source(
+        &self,
+        link: &ChannelSource,
+        maximum: usize,
+        admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+        project: impl Fn(Option<WakePage<'_>>) -> Result<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        match self.access(&link.channel_id, admit) {
+            Ok(_) => (),
+            Err(error) if error.is::<WakeLookupDisconnected>() => return Err(error),
+            Err(error) if error.is::<ChannelAccessLost>() => return project(None),
+            Err(error) => return Err(error),
+        }
+        if let Some(reply) = self.optional_message_page(
+            &link.channel_id,
+            &link.message_id,
+            0,
+            maximum,
+            |mut page| {
+                page.message.source = None;
+                project(Some(WakePage::new(
+                    &page,
+                    &link.channel_id,
+                    &link.message_id,
+                )))
+            },
+        )? {
+            Ok(reply)
+        } else {
+            project(None)
+        }
     }
 }

@@ -240,6 +240,7 @@ pub(super) fn write_agent_request(
         AgentRequest::ChannelWake {
             batch_id,
             max_body_bytes,
+            include_source,
         } => {
             let batch_id = write_channel_identity(builder, batch_id, budget)?;
             let max_body_bytes = max_body_bytes
@@ -249,7 +250,12 @@ pub(super) fn write_agent_request(
                     Ok::<_, anyhow::Error>(g::OptionalU32::create(builder, value))
                 })
                 .transpose()?;
-            let offset = g::AgentRequestChannelWake::create(builder, batch_id, max_body_bytes);
+            let offset = g::AgentRequestChannelWake::create(
+                builder,
+                batch_id,
+                max_body_bytes,
+                *include_source,
+            );
             g::AgentRequest::create_agent_request_channel_wake(builder, offset)
         }
         AgentRequest::ChannelRead {
@@ -442,6 +448,7 @@ pub(super) fn read_agent_request(
                     Ok::<_, anyhow::Error>(bytes)
                 })
                 .transpose()?,
+            include_source: value.include_source()?,
         },
         g::AgentRequestRef::AgentRequestChannelRead(value) => AgentRequest::ChannelRead {
             channel_id: ChannelId(read_channel_identity(value.channel_id()?, budget)?),

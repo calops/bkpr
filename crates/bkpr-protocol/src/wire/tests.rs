@@ -365,6 +365,7 @@ fn agent_channel_requests_append_ordinals_and_roundtrip() {
             AgentRequest::ChannelWake {
                 batch_id: "wake:1".into(),
                 max_body_bytes: None,
+                include_source: false,
             },
             15,
         ),
@@ -372,6 +373,7 @@ fn agent_channel_requests_append_ordinals_and_roundtrip() {
             AgentRequest::ChannelWake {
                 batch_id: "wake:1".into(),
                 max_body_bytes: Some(4),
+                include_source: false,
             },
             15,
         ),
@@ -379,6 +381,15 @@ fn agent_channel_requests_append_ordinals_and_roundtrip() {
             AgentRequest::ChannelWake {
                 batch_id: "wake:1".into(),
                 max_body_bytes: Some(4096),
+                include_source: true,
+            },
+            15,
+        ),
+        (
+            AgentRequest::ChannelWake {
+                batch_id: "wake:1".into(),
+                max_body_bytes: None,
+                include_source: true,
             },
             15,
         ),
@@ -421,19 +432,20 @@ fn agent_channel_requests_append_ordinals_and_roundtrip() {
 }
 
 #[test]
-fn channel_wake_body_limit_is_a_trailing_optional_field() {
-    let operation = |max_body_bytes| Operation::Agent {
+fn channel_wake_optional_fields_default_away_when_absent() {
+    let operation = |max_body_bytes, include_source| Operation::Agent {
         launch_id: "launch".into(),
         token: "secret".into(),
         guard: None,
         request: AgentRequest::ChannelWake {
             batch_id: "wake:1".into(),
             max_body_bytes,
+            include_source,
         },
     };
     let mut codec = Codec::new();
     let encoded = codec
-        .encode_request(&Request::new(operation(Some(4))))
+        .encode_request(&Request::new(operation(Some(4), true)))
         .unwrap()
         .to_vec();
     let (_, operation_field) = root_field(&encoded, 2);
@@ -441,6 +453,8 @@ fn channel_wake_body_limit_is_a_trailing_optional_field() {
     let wake = indirect(&encoded, agent_request_field);
     let (body_limit_entry, body_limit_field) = table_field(&encoded, wake, 1);
     let (_, limit_value) = table_field(&encoded, indirect(&encoded, body_limit_field), 0);
+    let (_, source_field) = table_field(&encoded, wake, 2);
+    assert_eq!(encoded[source_field], 1);
 
     // The original vtable ends after batch_id, before the new optional field.
     let mut old = encoded.clone();
@@ -448,8 +462,11 @@ fn channel_wake_body_limit_is_a_trailing_optional_field() {
     old[vtable..vtable + 2].copy_from_slice(&6u16.to_le_bytes());
     assert_eq!(
         serde_json::to_value(decode_request(&old).unwrap()).unwrap(),
-        serde_json::to_value(Request::new(operation(None))).unwrap(),
+        serde_json::to_value(Request::new(operation(None, false))).unwrap(),
     );
+    let legacy = serde_json::json!({"method": "channel_wake", "batch_id": "wake:1"});
+    let decoded: AgentRequest = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), legacy);
 
     for invalid in [3u32, 4097] {
         let mut malformed = encoded.clone();
@@ -457,7 +474,7 @@ fn channel_wake_body_limit_is_a_trailing_optional_field() {
         assert!(decode_request(&malformed).is_err());
         assert!(
             codec
-                .encode_request(&Request::new(operation(Some(invalid))))
+                .encode_request(&Request::new(operation(Some(invalid), true)))
                 .is_err()
         );
     }

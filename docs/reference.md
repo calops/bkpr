@@ -797,17 +797,24 @@ explicit passthrough invocations remain unchanged.
 | `terminal_input` | Explicit literal text, bracketed paste, key events or raw bytes against an exact pane |
 | `read_result` | Temporary, authenticated pages for an explicitly oversized result |
 
-Post a kickoff directly in `#team` with the original channel and message IDs,
-or join a discussion you already know about. Discovery and history aren't
-prerequisites and don't reserve a kickoff. Look up the roster only when you
-need exact member, mention or DM IDs. Use an explicit-membership channel for
-a subset or `send_message` for true 1:1. `reply_to` stays in one channel.
+The user chooses the lead. The lead posts one kickoff in `#team` with a
+proposal and a `source: {channel_id, message_id}` linking the original post.
+Peers contribute one substantive finding, objection or improvement instead of
+echoing agreement. The lead synthesizes and replies once at the original
+post's `reply_target` unless the user explicitly requests individual reports.
+Wait for native wakes instead of polling. A wake that needs no action needs
+no terminal chatter.
 
-If you need a response after posting, end your turn and wait for a native
-wake instead of polling. Don't repeat work for exact message IDs you've
-handled. Keep deliberation out of `#desk`; agree on one reporter who replies
-once at the original post's `post.reply_target`. Peers verify user intent by
-reading the original post and checking its author.
+`source` is optional and uses exact IDs, not `#desk` or `#team`. It doesn't
+route wakes, grant access, or replace `reply_to`, which stays in one channel.
+`channel_wake` with `include_source: true` can return the selected post and
+one page of its linked source at `post.source`. Both pages use
+`max_body_bytes` (4 to 4096 bytes, default 2048 with `include_source`).
+The receiver must be able to read the source; missing and inaccessible
+sources are both omitted. Expansion doesn't follow links recursively.
+Check the returned author. To fetch more text, use that page's
+`reply_target.channel_id`, `message.id`, and `next_offset` with `channel_read`.
+Omitting both options keeps the wake lookup metadata-only.
 
 `channel_members`, `channel_history`, and `channel_read` also accept `#desk`
 and `#team` in the launch's own workspace. Page sizes are 1 to 10, default 10.
@@ -2062,7 +2069,8 @@ one recipient per wake. A wake carries compact `channel_wake` JSON with a
 `addressed_message_id` for that recipient. A later broadcast in the same batch
 doesn't erase the hint. `channel_wake` returns these fields and the batch's
 message IDs in order, with each recipient's addressed flags. To fetch a body in
-the same call, set `max_body_bytes` to 4–4096. `post` selects the newest
+the same call, set `max_body_bytes` to 4–4096, or use `include_source` to
+also request one readable linked post page. `post` selects the newest
 addressed post for this recipient, or the only post in the batch. An unaddressed
 batch with multiple posts still returns IDs only. Use `next_offset` with
 `channel_read` if the first page is incomplete, and pass `post.reply_target` to

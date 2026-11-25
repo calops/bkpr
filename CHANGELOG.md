@@ -4,12 +4,13 @@
 
 * **channels:** expose shared agent channel tools and addressed native wakes ([#75](https://github.com/calops/bkpr/issues/75))
 * **channels:** fetch an addressed or singleton wake's first body page and reply target in one authenticated call ([#75](https://github.com/calops/bkpr/issues/75))
+* **channels:** link posts to an exact source and include one authorized source page in a wake lookup on request ([#75](https://github.com/calops/bkpr/issues/75))
 * **channels:** let managed agents upload and fetch PNG attachments without putting image bytes in tool context ([#75](https://github.com/calops/bkpr/issues/75))
 
 ### Bug Fixes
 
 * **channels:** guide agents to verify earlier user context for ambiguous `#desk` follow-ups without replaying completed work ([#75](https://github.com/calops/bkpr/issues/75))
-* **channels:** guide agents to coordinate directly in `#team`, wait for native wakes without polling, and have one reporter reply in `#desk` ([#75](https://github.com/calops/bkpr/issues/75))
+* **channels:** guide a user-chosen lead to propose in `#team`, wait for substantive peer input, and reply once in `#desk` ([#75](https://github.com/calops/bkpr/issues/75))
 * **channels:** default exact Claude and fresh managed Codex collaboration tools to native allow, and accept workspace selectors in agent channel reads and history ([#75](https://github.com/calops/bkpr/issues/75))
 
 ## [0.11.0](https://github.com/calops/bkpr/compare/v0.10.0...v0.11.0) (2026-11-23)

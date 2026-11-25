@@ -208,6 +208,7 @@ fn post(key: &str) -> ChannelPost {
         mentions: Vec::new(),
         reply_to: None,
         attachments: Vec::new(),
+        source: None,
     }
 }
 
@@ -523,6 +524,129 @@ fn typed_mentions_and_policy_select_only_current_agents_and_preserve_unread_atte
 }
 
 #[test]
+fn wake_source_rechecks_read_authority_and_omits_unavailable_links() {
+    use super::{ChannelClaim, ChannelRecipient};
+
+    let f = Fixture::new();
+    let source_channel = f.create(
+        &f.user,
+        WORKSPACE,
+        MembershipMode::Explicit,
+        vec![f.a.id.clone()],
+        quiet(),
+    );
+    let ChannelResponse::Channel {
+        channel: destination,
+    } = f
+        .request(ChannelRequest::Create {
+            workspace_id: WORKSPACE.into(),
+            name: "wake destination".into(),
+            membership: MembershipMode::WorkspaceWide,
+            members: Vec::new(),
+            settings: ChannelSettings {
+                user_wake: WakePolicy::All,
+                ..quiet()
+            },
+        })
+        .unwrap()
+    else {
+        panic!("create reply")
+    };
+    let original = posted(f.request(send(&source_channel, post("original"))).unwrap());
+    let recipient = ChannelRecipient {
+        launch: "launch-a",
+        binding: 1,
+        participant: f.a.id.as_ref(),
+    };
+    let admit = |workspace: &str| f.authority(&f.a, workspace);
+    let linked = |key, channel_id, message_id| {
+        let mut link = post(key);
+        link.source = Some(Box::new(ChannelSource {
+            channel_id,
+            message_id,
+        }));
+        f.request(send(&destination.id, link)).unwrap();
+        f.engine
+            .with_store(|store| {
+                store.claim_wakes(
+                    &ChannelClaim {
+                        recipient,
+                        batch_id: key,
+                        receiver_id: "receiver",
+                        generation: 1,
+                        deadline: u64::MAX / 2,
+                    },
+                    &admit,
+                )
+            })
+            .unwrap()
+            .expect("linked post enqueued a wake")
+    };
+    let lookup = |wake: &ChannelWake, include_source, connected: &dyn Fn() -> bool| {
+        f.engine.with_store(|store| {
+            store.channel_wake_lookup(
+                recipient,
+                wake.batch_id.clone(),
+                Some(16),
+                include_source,
+                &admit,
+                connected,
+            )
+        })
+    };
+    let accessible = linked("accessible", source_channel.clone(), original.id.clone());
+    assert_eq!(
+        lookup(&accessible, true, &|| true).unwrap()["post"]["source"]["message"]["id"],
+        original.id.as_ref()
+    );
+    let only_destination = || {
+        let first = AtomicBool::new(true);
+        move || first.swap(false, Ordering::Relaxed)
+    };
+    assert!(lookup(&accessible, false, &only_destination()).is_ok());
+    let error = lookup(&accessible, true, &only_destination()).unwrap_err();
+    assert!(
+        error
+            .chain()
+            .any(|cause| cause.to_string() == "channel request disconnected")
+    );
+
+    let missing_message = linked(
+        "missing-message",
+        source_channel.clone(),
+        MessageId("missing-post".into()),
+    );
+    let missing_channel = linked(
+        "missing-channel",
+        ChannelId("missing-channel".into()),
+        original.id.clone(),
+    );
+    let foreign = f.create(
+        &f.user,
+        OTHER_WORKSPACE,
+        MembershipMode::WorkspaceWide,
+        Vec::new(),
+        quiet(),
+    );
+    let foreign_post = posted(f.request(send(&foreign, post("foreign"))).unwrap());
+    let denied = linked("foreign-source", foreign, foreign_post.id);
+    for wake in [&missing_message, &missing_channel, &denied] {
+        let omitted = lookup(wake, true, &|| true).unwrap();
+        assert!(omitted["post"].get("source").is_none());
+        assert_eq!(omitted, lookup(wake, false, &|| true).unwrap());
+    }
+    f.request(ChannelRequest::SetMembership {
+        channel_id: source_channel,
+        membership: MembershipMode::Explicit,
+        members: Vec::new(),
+    })
+    .unwrap();
+    let revoked = lookup(&accessible, true, &|| true).unwrap();
+    assert!(revoked["post"].get("source").is_none());
+    assert_eq!(revoked, lookup(&accessible, false, &|| true).unwrap());
+}
+
+#[test]
 fn durable_history_recovery_and_atomic_commit_failure() {
     let f = Fixture::new();
     let id = f.wide(ChannelSettings::default());
@@ -534,6 +658,11 @@ fn durable_history_recovery_and_atomic_commit_failure() {
     let attachment = uploaded(f.request(upload(&id, png())).unwrap());
     let mut initial = post("commit-fails");
     initial.attachments.push(attachment.id);
+    let source = Box::new(ChannelSource {
+        channel_id: ChannelId("unknown-source-channel".into()),
+        message_id: MessageId("unknown-source-post".into()),
+    });
+    initial.source = Some(source.clone());
     assert!(f.request(send(&id, initial.clone())).is_err());
     assert_eq!(f.staged_bytes(), u64::from(attachment.byte_len));
     assert_eq!(
@@ -592,6 +721,9 @@ fn durable_history_recovery_and_atomic_commit_failure() {
         )
     };
     assert_eq!(run(send(&id, initial.clone())).unwrap(), accepted);
+    let mut changed = initial.clone();
+    changed.source.as_mut().unwrap().message_id = MessageId("different-source-post".into());
+    assert!(run(send(&id, changed)).is_err());
     let ChannelResponse::Message { message: actual } = run(ChannelRequest::Read {
         channel_id: id.clone(),
         message_id: message.id.clone(),
@@ -599,6 +731,7 @@ fn durable_history_recovery_and_atomic_commit_failure() {
     .unwrap() else {
         panic!("read reply")
     };
+    assert_eq!(actual.message.source, Some(source));
     assert_eq!((actual.message, actual.text), (message, initial.text));
     assert_eq!(
         run(mark(&id, 0)).unwrap(),
