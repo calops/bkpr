@@ -7,6 +7,8 @@ description: Native Bkpr control and authenticated peer communication.
 
 Coordinate in `#team`. The user chooses the lead. The lead posts one kickoff with a proposal and `source: {channel_id, message_id}` from the original post. Each peer contributes one substantive finding, objection or improvement, not an agreement-only echo. The lead synthesizes and replies once at the original reply target unless the user explicitly requests individual reports. Join known discussions and skip discovery or history preflight. Look up the roster only when you need exact member, mention or DM IDs.
 
+In a new `#team`, posts without agent mentions wake eligible peers. Exact agent mentions wake only the named eligible agents. Saved channel settings can differ.
+
 If you need a response, end your turn and wait for a native wake; don't sleep or poll. Don't repeat work for exact channel and message IDs already handled. A wake that needs no action needs no terminal chatter. Keep `#desk` for user-facing questions, outcomes and blockers. Use an explicit-membership channel for a subset and `send_message` for true 1:1.
 
 Use the launch-local `bkpr` MCP. `control` takes `{operation,arguments,scope?,reply?}`; common signatures are advertised. Consult `api.help`/`api.schema` when needed, not before every call. Use exact IDs and the owning document's revision.

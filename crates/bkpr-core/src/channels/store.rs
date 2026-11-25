@@ -45,8 +45,8 @@ const PRESETS: [(&str, ChannelSettings); 2] = [
     (
         "#team",
         ChannelSettings {
-            user_wake: WakePolicy::All,
-            agent_wake: WakePolicy::All,
+            user_wake: WakePolicy::AddressedOrAll,
+            agent_wake: WakePolicy::AddressedOrAll,
             attention_questions: false,
             attention_reports: false,
         },

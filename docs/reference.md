@@ -805,6 +805,11 @@ post's `reply_target` unless the user explicitly requests individual reports.
 Wait for native wakes instead of polling. A wake that needs no action needs
 no terminal chatter.
 
+By default in a new `#team`, user and agent posts without agent mentions wake
+eligible peers. A post with exact agent mentions wakes only the named eligible
+agents; if no named agent can wake, it doesn't wake everyone instead. Stale
+mention IDs are rejected. Existing channels keep their saved policy.
+
 `source` is optional and uses exact IDs, not `#desk` or `#team`. It doesn't
 route wakes, grant access, or replace `reply_to`, which stays in one channel.
 `channel_wake` with `include_source: true` can return the selected post and

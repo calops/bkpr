@@ -2114,7 +2114,15 @@ fn channel_history_reopens_on_the_same_session_only() {
             attention_reports: true,
         }
     );
-    assert_eq!(team.settings, ChannelSettings::default());
+    assert_eq!(
+        team.settings,
+        ChannelSettings {
+            user_wake: WakePolicy::AddressedOrAll,
+            agent_wake: WakePolicy::AddressedOrAll,
+            attention_questions: false,
+            attention_reports: false,
+        }
+    );
     let custom = ChannelSettings {
         user_wake: WakePolicy::AddressedOnly,
         ..desk.settings

@@ -773,9 +773,38 @@ fn workspace_presets_repair_without_resetting_existing_channel() {
     else {
         panic!("expected both presets");
     };
-    let channel = channels.iter().find(|channel| &channel.id == desk).unwrap();
-    assert_eq!(channel.settings, custom);
-    assert_eq!(channel.membership, MembershipMode::Explicit);
+    let saved_desk = channels.iter().find(|channel| &channel.id == desk).unwrap();
+    assert_eq!(saved_desk.settings, custom);
+    assert_eq!(saved_desk.membership, MembershipMode::Explicit);
+
+    let team = reopened["#team"].clone();
+    let legacy = ChannelSettings {
+        user_wake: WakePolicy::All,
+        agent_wake: WakePolicy::All,
+        attention_reports: false,
+        attention_questions: false,
+    };
+    channel(
+        &registry,
+        None,
+        ChannelRequest::SetSettings {
+            channel_id: team.clone(),
+            settings: legacy,
+        },
+    )
+    .unwrap();
+    drop(registry);
+
+    let registry = Registry::open(root.path()).unwrap();
+    let ChannelResponse::Listed { channels, .. } = channel(&registry, None, list()).unwrap() else {
+        panic!("expected both presets");
+    };
+    let saved = channels
+        .iter()
+        .find(|channel| channel.name == "#team")
+        .unwrap();
+    assert_eq!(saved.id, team);
+    assert_eq!(saved.settings, legacy);
 }
 
 #[test]
@@ -1125,6 +1154,34 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     )
     .unwrap();
     assert_eq!(newest["message"]["mentions"], json!([a_actor]));
+    assert_eq!(older["wake_count"], 1);
+    assert_eq!(newest["wake_count"], 1);
+
+    let (self_mention, _) = mention_and_launch(
+        &registry,
+        &sender,
+        &team_id,
+        sender.channel_participant.as_ref().unwrap(),
+    );
+    let ChannelRequest::Post {
+        channel_id,
+        post: mut ineligible,
+    } = post(&team, "addressed to self", PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    ineligible.mentions.push(self_mention);
+    let self_callout = agent_channel(
+        &registry,
+        &sender,
+        ChannelRequest::Post {
+            channel_id,
+            post: ineligible,
+        },
+    )
+    .unwrap();
+    assert_eq!(self_callout["wake_count"], 0);
+
     let broadcast = post(&team, "newer broadcast", PostIntent::Note);
     let receipt = agent_channel(&registry, &sender, broadcast.clone()).unwrap();
     assert_eq!(receipt["wake_count"], 2);
@@ -1132,14 +1189,21 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         agent_channel(&registry, &sender, broadcast).unwrap(),
         receipt
     );
+    let next_broadcast = agent_channel(
+        &registry,
+        &sender,
+        post(&team, "last broadcast", PostIntent::Note),
+    )
+    .unwrap();
+    assert_eq!(next_broadcast["wake_count"], 2);
     let a_receiver = receiver(&registry, &a);
     let b_receiver = receiver(&registry, &b);
     let a_wake = subscribe(&registry, &a, &a_receiver);
     let b_wake = subscribe(&registry, &b, &b_receiver);
     let a_pointer = &a_wake["channel_wake"];
     let b_pointer = &b_wake["channel_wake"];
-    assert_eq!(a_pointer["pending_count"], 3);
-    assert_eq!(b_pointer["pending_count"], 3);
+    assert_eq!(a_pointer["pending_count"], 4);
+    assert_eq!(b_pointer["pending_count"], 2);
     assert_eq!(a_pointer["addressed_message_id"], newest["message"]["id"]);
     assert!(b_pointer.get("addressed_message_id").is_none());
     assert!(!a_wake.to_string().contains("newer broadcast"));
@@ -1172,6 +1236,9 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     assert_eq!(detail["messages"][0]["addressed"], true);
     assert_eq!(detail["messages"][2]["addressed"], false);
     assert!(detail.get("post").is_none());
+    let other = agent(&registry, &b, lookup(b_pointer));
+    assert_eq!(other["messages"][0]["id"], receipt["message"]["id"]);
+    assert_eq!(other["messages"][1]["id"], next_broadcast["message"]["id"]);
     let callout = agent(&registry, &a, lookup_body(a_pointer, 6));
     assert_eq!(callout["post"]["message"]["id"], newest["message"]["id"]);
     assert_eq!(callout["post"]["message"]["author"]["kind"], "agent");
@@ -1479,6 +1546,33 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     );
     assert_eq!(page["text"].as_str().unwrap(), &body[..4095]);
     assert_eq!(page["next_offset"], 4095);
+
+    let user_post = |request| {
+        let ChannelResponse::Posted { wake_count, .. } = channel(&registry, None, request).unwrap()
+        else {
+            panic!("expected user post")
+        };
+        wake_count
+    };
+    assert_eq!(
+        user_post(post(&team_id, "request for all peers", PostIntent::Note)),
+        3
+    );
+    let ChannelRequest::Post {
+        channel_id,
+        post: mut addressed,
+    } = post(&team_id, "request for coordinator", PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    addressed.mentions.push(a_actor);
+    assert_eq!(
+        user_post(ChannelRequest::Post {
+            channel_id,
+            post: addressed,
+        }),
+        1
+    );
 }
 
 #[test]

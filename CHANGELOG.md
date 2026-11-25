@@ -11,6 +11,7 @@
 
 * **channels:** guide agents to verify earlier user context for ambiguous `#desk` follow-ups without replaying completed work ([#75](https://github.com/calops/bkpr/issues/75))
 * **channels:** guide a user-chosen lead to propose in `#team`, wait for substantive peer input, and reply once in `#desk` ([#75](https://github.com/calops/bkpr/issues/75))
+* **channels:** default new `#team` channels to waking only mentioned agents when addressed and all eligible peers otherwise, without rewriting saved settings ([#75](https://github.com/calops/bkpr/issues/75))
 * **channels:** default exact Claude and fresh managed Codex collaboration tools to native allow, and accept workspace selectors in agent channel reads and history ([#75](https://github.com/calops/bkpr/issues/75))
 
 ## [0.11.0](https://github.com/calops/bkpr/compare/v0.10.0...v0.11.0) (2026-11-23)
