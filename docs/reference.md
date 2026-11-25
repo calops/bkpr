@@ -1988,7 +1988,8 @@ not terminal contents, prompts, arbitrary status messages or capture tokens.
 Inspection/subscription is not a provider delivery receipt. Attached TUIs may
 independently present best-effort OS alerts through confirmed OSC 99, with local
 focus suppression and source activation. Unconfirmed terminals do not attempt
-desktop presentation. See the [notification design](notifications.md) for bounds,
+desktop presentation. New alerts include the Bkpr bee when the terminal
+advertises icon support. See the [notification design](notifications.md) for bounds,
 failure semantics, desktop presentation and the selected UnifiedPush publisher.
 
 ### Push destinations

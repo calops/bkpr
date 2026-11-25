@@ -2924,6 +2924,7 @@ mod notification_host_tests {
             app_name: "test",
             title: "attention",
             body: "",
+            icon: None,
             activation: Activation::Report,
             report_close: true,
             urgency: Urgency::Normal,

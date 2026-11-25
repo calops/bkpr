@@ -58,6 +58,8 @@ pub struct Capabilities {
     pub title: bool,
     /// Separate body payloads are supported.
     pub body: bool,
+    /// Separate image icon payloads are supported.
+    pub icon: bool,
     /// Activation can be reported back to the originating terminal application.
     pub activation: bool,
     /// Activation can focus the originating physical terminal window.
@@ -185,6 +187,8 @@ pub struct Notification<'a> {
     pub title: &'a str,
     /// Plain body; nonempty content requires confirmed body support.
     pub body: &'a str,
+    /// Optional PNG, JPEG, or GIF bytes; omitted when icon support is unconfirmed.
+    pub icon: Option<&'a [u8]>,
     /// Activation behavior, requiring the corresponding confirmed capabilities.
     pub activation: Activation,
     /// Request closure reports; requires positively confirmed close-event support.
@@ -272,6 +276,18 @@ pub(crate) fn show_validated(
         .encode_slice(notification.app_name, &mut app_name)
         .expect("bounded application name fits base64 buffer");
     let app_name = std::str::from_utf8(&app_name[..count]).expect("base64 is ASCII");
+    if capabilities.icon
+        && let Some(icon) = notification.icon
+    {
+        for chunk in icon.chunks(MAX_CHUNK_BYTES) {
+            write!(
+                out,
+                "\x1b]99;i={}:p=icon:e=1:d=0:a={action};{}\x1b\\",
+                notification.id,
+                Base64Display::new(chunk, &STANDARD),
+            )?;
+        }
+    }
     for (kind, text, final_payload) in [
         ("title", notification.title, notification.body.is_empty()),
         ("body", notification.body, true),
@@ -373,6 +389,7 @@ fn parse_capabilities(payload: &str) -> Option<Capabilities> {
             match (key, value) {
                 ("p", "title") => capabilities.title = true,
                 ("p", "body") => capabilities.body = true,
+                ("p", "icon") => capabilities.icon = true,
                 ("p", "close") => capabilities.close = true,
                 ("a", "report") => capabilities.activation = true,
                 ("a", "focus") => capabilities.focus = true,
@@ -486,6 +503,7 @@ mod tests {
             app_name: "Bkpr",
             title: &title,
             body,
+            icon: None,
             activation: Activation::ReportAndFocus,
             report_close: false,
             urgency: Urgency::Normal,
@@ -530,12 +548,54 @@ mod tests {
     }
 
     #[test]
+    fn icon_chunks_precede_completion_and_require_advertised_support() {
+        let id = Id::new();
+        let icon = vec![0xff; MAX_CHUNK_BYTES + 1];
+        let notice = Notification {
+            id,
+            app_name: "Bkpr",
+            title: "Ready",
+            body: "",
+            icon: Some(&icon),
+            activation: Activation::None,
+            report_close: false,
+            urgency: Urgency::Normal,
+        };
+        for (features, expected_chunks) in [("p=title", 0), ("p=title,icon", 2)] {
+            let mut wire = Vec::new();
+            show(&mut wire, parse_capabilities(features).unwrap(), &notice).unwrap();
+            let wire = std::str::from_utf8(&wire).unwrap();
+            let (last, chunks) = wire
+                .trim_end_matches("\x1b\\")
+                .rsplit_once("\x1b\\")
+                .map_or((wire.trim_end_matches("\x1b\\"), ""), |(head, last)| {
+                    (last, head)
+                });
+            assert!(last.starts_with(&format!("\x1b]99;i={id}:p=title:e=1:d=1:")));
+            let prefix = format!("\x1b]99;i={id}:p=icon:e=1:d=0:a=-focus;");
+            let mut decoded = Vec::new();
+            let mut count = 0;
+            for chunk in chunks.split("\x1b\\").filter(|chunk| !chunk.is_empty()) {
+                let bytes = STANDARD
+                    .decode(chunk.strip_prefix(&prefix).unwrap())
+                    .unwrap();
+                assert!(!bytes.is_empty() && bytes.len() <= MAX_CHUNK_BYTES);
+                decoded.extend(bytes);
+                count += 1;
+            }
+            assert_eq!(count, expected_chunks);
+            assert_eq!(decoded, if count == 0 { &[][..] } else { &icon });
+        }
+    }
+
+    #[test]
     fn unconfirmed_or_unsupported_policy_never_starts_a_partial_notification() {
         let mut notification = Notification {
             id: Id::new(),
             app_name: "Bkpr",
             title: "Needs attention",
             body: "",
+            icon: None,
             activation: Activation::None,
             report_close: false,
             urgency: Urgency::Normal,
@@ -568,6 +628,7 @@ mod tests {
             app_name: "test",
             title: "attention",
             body: "",
+            icon: None,
             activation: Activation::None,
             report_close: false,
             urgency: Urgency::Normal,
