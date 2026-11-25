@@ -54,7 +54,7 @@ pub(crate) fn command() -> clap::Command {
     use clap::{Arg, ArgAction, ArgGroup};
     clap::Command::new("install")
         .about("Install a supported harness's native Bkpr integration")
-        .long_about("Manage the current account/profile's native integration. Credentials remain launch-local; this command does not grant native approvals or restart harnesses. Inspect and dry-run never write files.")
+        .long_about("Manage the current account/profile's native integration. Credentials remain launch-local. Claude and Codex get exact Bkpr collaboration defaults without changing broader native approval modes. This command does not restart harnesses. Inspect and dry-run never write files.")
         .arg(Arg::new("harness").required(true).value_parser(["claude", "codex", "omp", "pi", "opencode", "opencode2", "agy", "antigravity"]))
         .arg(Arg::new("inspect").long("inspect").action(ArgAction::SetTrue).help("Inspect configuration, ownership and known native policy restrictions"))
         .arg(Arg::new("dry-run").long("dry-run").action(ArgAction::SetTrue).help("Validate and show installation changes without writing"))
@@ -197,6 +197,22 @@ fn stored(definition: &Definition, program: &Path) -> Manifest {
             .collect(),
         removals: definition.removals.clone(),
     }
+}
+
+fn same_required_installation(manifest: &Manifest, mut expected: Manifest) -> bool {
+    expected.entries.retain(|entry| !entry.default);
+    manifest.schema == expected.schema
+        && manifest.kind == expected.kind
+        && manifest.program == expected.program
+        && manifest.version == expected.version
+        && manifest.root == expected.root
+        && manifest.assets == expected.assets
+        && manifest.files == expected.files
+        && manifest
+            .entries
+            .iter()
+            .filter(|entry| !entry.default)
+            .eq(&expected.entries)
 }
 
 fn safe_path(path: &Path) -> Result<()> {
@@ -521,7 +537,7 @@ fn verify_record(manifest: &Manifest) -> Result<()> {
     }
     let mut documents = BTreeMap::new();
     let known: Vec<_> = manifest.entries.iter().collect();
-    for entry in &manifest.entries {
+    for entry in manifest.entries.iter().filter(|entry| !entry.default) {
         if !documents.contains_key(&entry.file) {
             let before = read(&entry.file)?;
             documents.insert(
@@ -539,7 +555,54 @@ fn verify_record(manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
-/// Resolve the owned current-profile installation, rejecting stale code, edits and native opt-outs.
+enum DefaultSlot {
+    Empty,
+    Matching(usize),
+    Foreign,
+}
+
+fn default_slot(document: &config::Document, entry: &Entry) -> Result<DefaultSlot> {
+    let Some(value) = document.get(&entry.keys)? else {
+        return Ok(DefaultSlot::Empty);
+    };
+    let values = value
+        .as_array()
+        .context("native integration list is not an array")?;
+    let mut exact = None;
+    for (index, value) in values.iter().enumerate() {
+        if value == &entry.value {
+            if exact.replace(index).is_some() {
+                return Ok(DefaultSlot::Foreign);
+            }
+        } else if entry
+            .marker
+            .as_deref()
+            .is_some_and(|marker| contains_marker(value, marker))
+        {
+            return Ok(DefaultSlot::Foreign);
+        }
+    }
+    Ok(exact.map_or(DefaultSlot::Empty, DefaultSlot::Matching))
+}
+
+fn retained_paths(value: &Value, prefix: &str, paths: &mut Vec<String>) {
+    if paths.len() >= 8 {
+        return;
+    }
+    match value.as_object() {
+        Some(table) => {
+            for (key, value) in table {
+                retained_paths(value, &format!("{prefix}.{key}"), paths);
+                if paths.len() >= 8 {
+                    break;
+                }
+            }
+        }
+        _ => paths.push(prefix.to_owned()),
+    }
+}
+
+/// Resolve the owned current-profile installation, rejecting stale code, required edits and native opt-outs.
 pub(super) fn runtime(kind: HarnessKind, invocation: Invocation) -> Result<Option<RuntimeInstall>> {
     let mut paths = paths()?;
     if let Some(profile) = invocation.profile {
@@ -588,7 +651,7 @@ pub(super) fn runtime(kind: HarnessKind, invocation: Invocation) -> Result<Optio
     );
     let expected = stored(&definition, &paths.program);
     ensure!(
-        manifest == expected,
+        same_required_installation(&manifest, expected),
         "installed integration is stale; run bkpr install {} --update",
         kind.as_str()
     );
@@ -626,7 +689,8 @@ pub(super) fn validate_command(path: &Path, kind: HarnessKind) -> Result<()> {
 }
 
 fn plan(definition: &Definition, paths: &Paths, owners: &[Manifest], mode: Mode) -> Result<Plan> {
-    let target = stored(definition, &paths.program);
+    let mut target = stored(definition, &paths.program);
+    let mut preserved_defaults = BTreeMap::new();
     let removing = mode == Mode::Uninstall;
     let mut changes = Vec::new();
     let mut used_owners = BTreeSet::new();
@@ -657,8 +721,16 @@ fn plan(definition: &Definition, paths: &Paths, owners: &[Manifest], mode: Mode)
                 .iter()
                 .filter(|removal| removal.file == file)
             {
+                let subtree = document.get(&removal.keys)?;
+                // A prepared Codex preferences-only table is not a foreign
+                // registration; installing supplies its required transport.
+                let codex_preferences = definition.kind == HarnessKind::Codex
+                    && subtree
+                        .as_ref()
+                        .and_then(Value::as_object)
+                        .is_some_and(|table| table.keys().all(|key| removal.allowed.contains(key)));
                 ensure!(
-                    document.get(&removal.keys)?.is_none(),
+                    subtree.is_none() || codex_preferences,
                     "foreign native integration subtree: {}",
                     file.display()
                 );
@@ -699,10 +771,37 @@ fn plan(definition: &Definition, paths: &Paths, owners: &[Manifest], mode: Mode)
             let mut candidates = vec![entry];
             for (old, _) in old {
                 ensure!(
-                    old.file == entry.file && old.keys == entry.keys && old.array == entry.array,
+                    old.file == entry.file
+                        && old.keys == entry.keys
+                        && old.array == entry.array
+                        && old.default == entry.default,
                     "unsupported native setting ownership migration"
                 );
                 candidates.push(old);
+            }
+            if entry.default {
+                let last = old.last().map(|(entry, owner)| (*entry, *owner));
+                let slot = default_slot(&document, entry)?;
+                match (last, slot) {
+                    (None, DefaultSlot::Empty) if !removing && new.is_some() => {
+                        document.array_change(&entry.keys, None, Some(&entry.value))?;
+                    }
+                    (Some((owned, owner)), DefaultSlot::Matching(index))
+                        if !owned.preserved && owned.value == entry.value =>
+                    {
+                        used_owners.insert(owner);
+                        if removing || new.is_none() {
+                            document.array_change(&entry.keys, Some(index), None)?;
+                        }
+                    }
+                    _ if !removing => {
+                        let mut preserved = entry.clone();
+                        preserved.preserved = true;
+                        preserved_defaults.insert(preserved.id.clone(), preserved);
+                    }
+                    _ => {}
+                }
+                continue;
             }
             let desired = if removing {
                 None
@@ -761,6 +860,16 @@ fn plan(definition: &Definition, paths: &Paths, owners: &[Manifest], mode: Mode)
                     let table = value
                         .as_object()
                         .context("native integration subtree is not an object")?;
+                    if definition.kind == HarnessKind::Codex {
+                        let mut paths = Vec::new();
+                        retained_paths(&value, &removal.keys.join("."), &mut paths);
+                        ensure!(
+                            paths.is_empty(),
+                            "Codex requires a transport for its Bkpr settings; before uninstall, move or remove these native preferences in {}: {}",
+                            file.display(),
+                            paths.join(", ")
+                        );
+                    }
                     ensure!(
                         table.keys().all(|key| removal.allowed.contains(key)),
                         "foreign settings in native integration subtree: {}",
@@ -837,6 +946,12 @@ fn plan(definition: &Definition, paths: &Paths, owners: &[Manifest], mode: Mode)
             });
         }
     }
+    for entry in &mut target.entries {
+        if let Some(preserved) = preserved_defaults.remove(&entry.id) {
+            *entry = preserved;
+        }
+    }
+    target.entries.extend(preserved_defaults.into_values());
     let mut journal_owners: Vec<_> = used_owners
         .into_iter()
         .map(|index| owners[index].clone())
@@ -1323,7 +1438,7 @@ mod tests;
 
 fn check_unowned(definition: &Definition) -> Result<()> {
     let mut documents = BTreeMap::new();
-    for entry in &definition.entries {
+    for entry in definition.entries.iter().filter(|entry| !entry.default) {
         if !documents.contains_key(&entry.file) {
             let bytes = types::read_native(&entry.file)?;
             documents.insert(

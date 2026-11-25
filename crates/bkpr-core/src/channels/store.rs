@@ -340,32 +340,16 @@ impl Store {
                     &authority,
                 );
             }
-            ChannelRequest::Post { channel_id, post }
-                if routes.workspace.is_some()
-                    && matches!(channel_id.as_ref(), "#desk" | "#team") =>
-            {
-                let workspace = routes.workspace.expect("agent workspace");
-                let lookup = |connection: &Connection| {
-                    connection
-                        .query_row(
-                            "SELECT id FROM channels WHERE workspace_id=?1 AND name=?2",
-                            params![workspace, channel_id.as_ref()],
-                            |row| Ok(ChannelId(row.get(0)?)),
-                        )
-                        .optional()
-                };
-                let id = if let Some(id) = lookup(&self.connection)? {
-                    id
-                } else {
-                    workspace_authority(workspace, &admit)?;
-                    self.provision([workspace])?;
-                    lookup(&self.connection)?.context(ChannelAccessLost)?
-                };
-                selector = Some(channel_id);
-                ChannelRequest::Post {
-                    channel_id: id,
-                    post,
-                }
+            ChannelRequest::Post { channel_id, post } => {
+                let channel_id =
+                    match self.resolve_builtin(&channel_id, routes.workspace, &admit)? {
+                        Some(id) => {
+                            selector = Some(channel_id);
+                            id
+                        }
+                        None => channel_id,
+                    };
+                ChannelRequest::Post { channel_id, post }
             }
             request => request,
         };
@@ -460,6 +444,33 @@ impl Store {
             } => Ok((self.attachment(&channel_id, &attachment_id)?, false)),
             _ => unreachable!("workspace and subscription routes are handled separately"),
         }
+    }
+
+    fn resolve_builtin(
+        &mut self,
+        selector: &ChannelId,
+        workspace: Option<&str>,
+        admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+    ) -> Result<Option<ChannelId>> {
+        let Some(workspace) = workspace.filter(|_| matches!(selector.as_ref(), "#desk" | "#team"))
+        else {
+            return Ok(None);
+        };
+        let lookup = |connection: &Connection| {
+            connection
+                .query_row(
+                    "SELECT id FROM channels WHERE workspace_id=?1 AND name=?2",
+                    params![workspace, selector.as_ref()],
+                    |row| Ok(ChannelId(row.get(0)?)),
+                )
+                .optional()
+        };
+        if let Some(id) = lookup(&self.connection)? {
+            return Ok(Some(id));
+        }
+        workspace_authority(workspace, admit)?;
+        self.provision([workspace])?;
+        Ok(Some(lookup(&self.connection)?.context(ChannelAccessLost)?))
     }
 
     fn access(
@@ -922,10 +933,11 @@ impl Store {
     }
 
     pub(crate) fn compact_members(
-        &self,
+        &mut self,
         request: ChannelRequest,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
         caller: (&str, u64),
+        workspace: Option<&str>,
     ) -> Result<serde_json::Value> {
         let ChannelRequest::ListMembers {
             channel_id,
@@ -935,6 +947,9 @@ impl Store {
         else {
             unreachable!("compact roster requires a members request");
         };
+        let channel_id = self
+            .resolve_builtin(&channel_id, workspace, admit)?
+            .unwrap_or(channel_id);
         let (channel, authority) = self.access(&channel_id, admit)?;
         let members = self.members_if_explicit(&channel_id, &channel)?;
         let (entries, next_after) =
@@ -961,9 +976,10 @@ impl Store {
     }
 
     pub(crate) fn compact_history(
-        &self,
+        &mut self,
         request: ChannelRequest,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+        workspace: Option<&str>,
     ) -> Result<serde_json::Value> {
         let ChannelRequest::History {
             channel_id,
@@ -974,6 +990,9 @@ impl Store {
         else {
             unreachable!("compact history requires a history request");
         };
+        let channel_id = self
+            .resolve_builtin(&channel_id, workspace, admit)?
+            .unwrap_or(channel_id);
         let (channel, _) = self.access(&channel_id, admit)?;
         let bound = history_bound(&channel, before, after);
         let sql = if after.is_some() {
@@ -1059,11 +1078,12 @@ impl Store {
     }
 
     pub(crate) fn compact_message(
-        &self,
+        &mut self,
         request: ChannelRequest,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
         offset: usize,
         maximum: usize,
+        workspace: Option<&str>,
     ) -> Result<serde_json::Value> {
         let ChannelRequest::Read {
             channel_id,
@@ -1072,6 +1092,9 @@ impl Store {
         else {
             unreachable!("compact message requires a read request");
         };
+        let channel_id = self
+            .resolve_builtin(&channel_id, workspace, admit)?
+            .unwrap_or(channel_id);
         self.access(&channel_id, admit)?;
         self.with_message_page(&channel_id, &message_id, offset, maximum, |page| {
             #[derive(serde::Serialize)]

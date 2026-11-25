@@ -8,13 +8,16 @@ use anyhow::{Context, Result, bail};
 use bkpr_protocol::{ConversationSource, HarnessKind};
 use serde_json::{Value, json};
 
-use super::{Capture, assets, claude_inbox, install, passthrough, run_managed, scrub};
+use super::{
+    Capture, assets, claude_inbox, collaboration, install, passthrough, run_managed, scrub,
+};
 
 const MAX_CALLBACK_BYTES: u64 = 1024 * 1024;
 
 struct ArgumentPlan {
     settings: Option<(usize, bool)>,
     insert_at: usize,
+    external_mcp_config: bool,
 }
 
 // Unknown options belong to Claude's parser. In particular, never reinterpret a
@@ -23,6 +26,7 @@ fn argument_plan(arguments: &[OsString]) -> Option<ArgumentPlan> {
     let mut plan = ArgumentPlan {
         settings: None,
         insert_at: arguments.len(),
+        external_mcp_config: false,
     };
     let mut index = 0;
     let mut first_positional = true;
@@ -55,6 +59,7 @@ fn argument_plan(arguments: &[OsString]) -> Option<ArgumentPlan> {
             | "--disallowed-tools"
             | "--tools"
             | "--betas" => {
+                plan.external_mcp_config |= option == "--mcp-config";
                 let mut end = index + 1;
                 while end < arguments.len() && !arguments[end].as_encoded_bytes().starts_with(b"-")
                 {
@@ -214,6 +219,31 @@ fn compose(settings: &mut Value, program: &str) -> Result<()> {
     Ok(())
 }
 
+fn add_collaboration_defaults(settings: &mut Value) {
+    let Some(settings) = settings.as_object_mut() else {
+        return;
+    };
+    let Some(permissions) = settings
+        .entry("permissions")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+    else {
+        return;
+    };
+    let Some(allow) = permissions
+        .entry("allow")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+    else {
+        return;
+    };
+    for rule in collaboration::claude_rules().map(Value::String) {
+        if !allow.contains(&rule) {
+            allow.push(rule);
+        }
+    }
+}
+
 fn supplement(arguments: &mut Vec<OsString>, plan: ArgumentPlan, settings: Value) -> Result<()> {
     let settings = serde_json::to_string(&settings)?;
     if let Some((index, inline)) = plan.settings {
@@ -257,6 +287,9 @@ pub(super) fn launch(executable: PathBuf, mut arguments: Vec<OsString>) -> Resul
                 .to_str()
                 .context("Claude callback path is not UTF-8")?,
         )?;
+        if !plan.external_mcp_config {
+            add_collaboration_defaults(&mut settings);
+        }
         supplement(&mut arguments, plan, settings)?;
         let insertion = arguments
             .iter()
@@ -415,6 +448,45 @@ mod tests {
         }
         let mut invalid = json!({"hooks": {"SessionStart": {"unexpected": true}}});
         assert!(compose(&mut invalid, "/bkpr").is_err());
+    }
+
+    #[test]
+    fn collaboration_defaults_append_only_exact_native_names() {
+        let mut config = json!({
+            "permissions": {
+                "defaultMode": "auto",
+                "allow": ["Read", "mcp__bkpr__channel_post"],
+                "ask": ["mcp__bkpr__channel_create"],
+                "deny": ["mcp__bkpr__send_message"],
+            },
+            "deniedMcpServers": [{"serverName": "bkpr"}],
+        });
+        let mut expected = config.clone();
+        let allow = expected["permissions"]["allow"].as_array_mut().unwrap();
+        allow.extend(
+            collaboration::claude_rules()
+                .filter(|rule| rule != "mcp__bkpr__channel_post")
+                .map(Value::String),
+        );
+        add_collaboration_defaults(&mut config);
+        assert_eq!(config, expected);
+        add_collaboration_defaults(&mut config);
+        assert_eq!(config, expected);
+        let forbidden = [
+            "control",
+            "terminal_input",
+            "channel_upload",
+            "channel_fetch",
+            "*",
+        ];
+        for tool in forbidden {
+            assert!(
+                !config["permissions"]["allow"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(format!("mcp__bkpr__{tool}")))
+            );
+        }
     }
 
     #[test]

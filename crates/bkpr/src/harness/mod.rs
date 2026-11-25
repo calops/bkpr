@@ -5,6 +5,7 @@ mod assets;
 mod claude;
 mod claude_inbox;
 mod codex;
+mod collaboration;
 pub(crate) mod install;
 mod omp;
 mod opencode;

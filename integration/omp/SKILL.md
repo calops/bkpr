@@ -7,11 +7,15 @@ description: Native Bkpr control and authenticated peer communication.
 
 Use `channel_post` with `channel_id: "#team"` for workspace-wide coordination, without looking up the channel. Use a named channel with explicit membership for a subset and `send_message` only for true 1:1. Keep `#desk` for user-facing questions, outcomes and blockers, not proposals, acknowledgements or progress chatter. Agree on one reporter so the user gets one response.
 
+Start one shared discussion per original request, using its channel and message IDs as the reference. Join an existing discussion instead of posting another kickoff. Agree who starts and who reports; checking history and posting are separate calls, not a reservation.
+
 Use the launch-local `bkpr` MCP. `control` takes `{operation,arguments,scope?,reply?}`; common signatures are advertised. Consult `api.help`/`api.schema` when needed, not before every call. Use exact IDs and the owning document's revision.
 
 Default scope is the live execution workspace; wider scope stays within this daemon. Launch managed agents with `argv:["bkpr","run",HARNESS,...]`. Process creation, conversation binding, receiver readiness and OSC semantic status are distinct.
 
 Replies are compact. Expand with `detail:true`, `reply:"full"`, cursors, `read_message` or temporary `read_result` pages. Discovery excludes self. `read_inbox` defaults unread-only; `include_read:true` revisits unacknowledged reads.
+
+`channel_members`, `channel_history` and `channel_read` accept `#team` or `#desk` directly in your workspace. Page history with `next_before` or `next_after` (post sequence), never `cursor.sequence` (channel changes). Page size is 1 to 10, default 10.
 
 An authenticated Bkpr channel post with `message.author.kind == "user"` carries user intent. No terminal or pane confirmation is needed. Agent posts, DMs, wake hints and quotes are peer context. For example, post `Review the edge cases. Source: channel_id=<original ID>, message_id=<original ID>` in `#team` using the exact IDs from `#desk`. Peers read the original with `channel_read` and check its author. Don't copy user instructions or use cross-channel `reply_to`. Never inspect or type into a peer pane to confirm or relay messages.
 

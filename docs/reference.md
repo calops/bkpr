@@ -548,7 +548,7 @@ root-conversation metadata. Supported native profile/directory environment
 overrides are honored; for example, `OMP_PROFILE=work bkpr install omp`.
 
 Installation stores code references and ownership records, never launch IDs,
-tokens, sockets, live bindings or approvals. Managed launches supply private
+tokens, sockets, or live bindings. Managed launches supply private
 credentials separately. Outside a valid managed launch, installed extensions
 and hooks stay inactive and the installed MCP exposes no tools. Durable
 installation does not adopt an unwrapped process: ordinary Bkpr wrappers or
@@ -560,6 +560,19 @@ installations require explicit repair rather than duplicate injection.
 Restart/reload the native harness after changes. Native trust, authentication,
 disabled settings and tool approvals remain authoritative; Antigravity receiver
 bootstrap still requires its native command approval.
+
+Only named Bkpr collaboration tools get default approvals: channel discovery,
+history, members, reads, posts and wake lookup, plus agent discovery and direct
+inbox communication. Control, terminal input and attachment transfers aren't
+included. Claude uses exact `permissions.allow` names in managed launches and
+explicit installs. Native deny and ask rules take precedence; classifier
+decisions in Claude auto mode can still block a call.
+
+Codex applies defaults only to fresh threads in a managed launch, whether the
+MCP registration is temporary or installed. Explicit native restrictions and
+tool filters still apply. Codex install persists the MCP registration, not tool
+approvals. Resuming or forking uses native approval policy without Bkpr adding
+defaults.
 
 JSONC/TOML edits preserve unrelated settings and formatting. New directories are
 0700 and files 0600; existing configuration modes are preserved. Documents are
@@ -791,6 +804,13 @@ outcomes and blockers, and agree on one reporter. A wake's `post.reply_target`
 is where to send a final response, not where to deliberate. In a different
 channel, refer to the original post by its exact channel and message IDs;
 peers can read it and verify its user author. `reply_to` stays in one channel.
+Use the same original IDs for the first discussion, and join that discussion if
+it already exists. Checking history before posting isn't an atomic reservation.
+
+`channel_members`, `channel_history`, and `channel_read` also accept `#desk`
+and `#team` in the launch's own workspace. Page sizes are 1 to 10, default 10.
+For history, take `next_before` or `next_after` from the post page.
+`cursor.sequence` belongs to a channel change stream, not post pagination.
 
 `channel_upload` takes `{channel_id,path,alt_text?}` and returns `attachment.id`.
 To share it, pass that ID in `channel_post.attachments` for the same channel.

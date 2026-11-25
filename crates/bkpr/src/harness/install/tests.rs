@@ -31,7 +31,7 @@ fn apply(
 }
 
 #[test]
-fn native_codex_approvals_and_foreign_servers_survive_update_and_uninstall() -> Result<()> {
+fn codex_installs_transport_only_and_preserves_user_policy() -> Result<()> {
     let (_root, mut paths) = fixture()?;
     let config = paths.home.join(".codex/config.toml");
     directory(config.parent().unwrap(), false)?;
@@ -39,19 +39,29 @@ fn native_codex_approvals_and_foreign_servers_survive_update_and_uninstall() -> 
     fs::write(&config, original)?;
     let first = codex::definition(&paths)?;
     let installed = apply(&paths, &first, &[], Mode::Install)?;
-    let mut text = fs::read_to_string(&config)?;
-    text.push_str("\n# native approval, not an installer grant\n[mcp_servers.bkpr.tools.send_message]\napproval_mode = 'approve'\n");
-    fs::write(&config, text)?;
+    let parse =
+        |file: &Path| -> Result<toml::Value> { Ok(toml::from_str(&fs::read_to_string(file)?)?) };
+    let value = parse(&config)?;
+    assert!(value["mcp_servers"]["bkpr"].get("tools").is_none());
+    let mut document = config::Document::parse(Format::Toml, Some(&fs::read(&config)?), &config)?;
+    let tool_path = |tool: &str| ["mcp_servers", "bkpr", "tools", tool].map(String::from);
+    let mut send_mode = tool_path("send_message").to_vec();
+    send_mode.push("approval_mode".into());
+    document.set(&send_mode, Some(&Value::String("prompt".into())))?;
+    fs::write(&config, document.bytes())?;
+    verify_record(&installed)?;
     paths.program = PathBuf::from("/fixture/bkpr-b");
     let updated = codex::definition(&paths)?;
     let installed = apply(&paths, &updated, &[installed], Mode::Update)?;
-    let text = fs::read_to_string(&config)?;
-    assert!(text.contains("command = 'other' # keep this comment"));
-    let value: toml::Value = toml::from_str(&text)?;
+    let updated = codex::definition(&paths)?;
+    let installed = apply(&paths, &updated, &[installed], Mode::Update)?;
+    let value = parse(&config)?;
+    let tools = &value["mcp_servers"]["bkpr"]["tools"];
     assert_eq!(
-        value["mcp_servers"]["bkpr"]["tools"]["send_message"]["approval_mode"].as_str(),
-        Some("approve")
+        tools["send_message"]["approval_mode"].as_str(),
+        Some("prompt")
     );
+    assert!(tools.get("ack_message").is_none());
     assert_eq!(
         value["mcp_servers"]["bkpr"]["command"].as_str(),
         Some("/fixture/bkpr-b")
@@ -64,7 +74,34 @@ fn native_codex_approvals_and_foreign_servers_survive_update_and_uninstall() -> 
     fs::write(&config, document.bytes())?;
     let disabled = codex::definition(&paths)?;
     assert!(!disabled.blockers.is_empty());
-    apply(&paths, &disabled, &[installed], Mode::Uninstall)?;
+    let before = fs::read(&config)?;
+    let error = plan(
+        &disabled,
+        &paths,
+        std::slice::from_ref(&installed),
+        Mode::Uninstall,
+    )
+    .err()
+    .context("uninstall must retain the user's Codex preferences")?;
+    assert!(
+        error
+            .to_string()
+            .contains("mcp_servers.bkpr.tools.send_message.approval_mode")
+    );
+    assert!(error.to_string().contains("mcp_servers.bkpr.enabled"));
+    assert_eq!(fs::read(&config)?, before);
+    document.set(&tool_path("send_message"), None)?;
+    document.set(
+        &["mcp_servers".into(), "bkpr".into(), "enabled".into()],
+        None,
+    )?;
+    fs::write(&config, document.bytes())?;
+    apply(
+        &paths,
+        &codex::definition(&paths)?,
+        &[installed],
+        Mode::Uninstall,
+    )?;
     let text = fs::read_to_string(&config)?;
     let value: toml::Value = toml::from_str(&text)?;
     assert!(value["mcp_servers"].get("bkpr").is_none());
@@ -74,6 +111,82 @@ fn native_codex_approvals_and_foreign_servers_survive_update_and_uninstall() -> 
     );
     assert!(text.contains("# keep this comment"));
     assert_eq!(value["model"].as_str(), Some("fixture-model"));
+    Ok(())
+}
+
+#[test]
+fn claude_exact_user_allow_remains_unowned_and_removed_default_stays_removed() -> Result<()> {
+    let (_root, paths) = fixture()?;
+    let first = claude::definition(&paths)?;
+    let mut defaults = first.entries.iter().filter(|entry| entry.default);
+    let user_rule = defaults
+        .next()
+        .context("missing first Claude collaboration default")?;
+    let removed_rule = defaults
+        .next()
+        .context("missing second Claude collaboration default")?;
+    let settings = &user_rule.file;
+    directory(settings.parent().unwrap(), false)?;
+    fs::write(
+        settings,
+        serde_json::to_vec(&serde_json::json!({
+            "permissions": {"allow": [&user_rule.value]}
+        }))?,
+    )?;
+    let installed = apply(&paths, &claude::definition(&paths)?, &[], Mode::Install)?;
+    assert!(
+        installed
+            .entries
+            .iter()
+            .any(|entry| entry.id == user_rule.id && entry.preserved)
+    );
+    let bytes = fs::read(settings)?;
+    let mut document = config::Document::parse(user_rule.format, Some(&bytes), settings)?;
+    let allows = document
+        .get(&user_rule.keys)?
+        .context("missing Claude allows")?;
+    let index = allows
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|entry| entry == &removed_rule.value)
+        .context("missing installed Claude default")?;
+    document.array_change(&removed_rule.keys, Some(index), None)?;
+    fs::write(settings, document.bytes())?;
+    verify_record(&installed)?;
+    let installed = apply(
+        &paths,
+        &claude::definition(&paths)?,
+        &[installed],
+        Mode::Update,
+    )?;
+    let installed = apply(
+        &paths,
+        &claude::definition(&paths)?,
+        &[installed],
+        Mode::Update,
+    )?;
+    let bytes = fs::read(settings)?;
+    let document = config::Document::parse(user_rule.format, Some(&bytes), settings)?;
+    let allows = document
+        .get(&user_rule.keys)?
+        .context("missing Claude allows")?;
+    assert!(!allows.as_array().unwrap().contains(&removed_rule.value));
+    apply(
+        &paths,
+        &claude::definition(&paths)?,
+        &[installed],
+        Mode::Uninstall,
+    )?;
+    let bytes = fs::read(settings)?;
+    let document = config::Document::parse(user_rule.format, Some(&bytes), settings)?;
+    let allows = document
+        .get(&user_rule.keys)?
+        .context("missing Claude allows")?;
+    assert_eq!(
+        allows.as_array().unwrap().as_slice(),
+        std::slice::from_ref(&user_rule.value)
+    );
     Ok(())
 }
 

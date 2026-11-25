@@ -166,6 +166,12 @@ pub(super) struct Entry {
     pub array: bool,
     /// Conservative marker for detecting edited or unknown owned-looking array members.
     pub marker: Option<String>,
+    /// Install this optional preference only if the native slot is unclaimed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub default: bool,
+    /// The user supplied, edited, or removed the default; never claim it again.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub preserved: bool,
 }
 impl Entry {
     /// Describe a single owned object or table slot.
@@ -178,6 +184,8 @@ impl Entry {
             value,
             array: false,
             marker: None,
+            default: false,
+            preserved: false,
         }
     }
     /// Describe one owned member without replacing the surrounding native array.
@@ -197,8 +205,19 @@ impl Entry {
             value,
             array: true,
             marker: Some(marker),
+            default: false,
+            preserved: false,
         }
     }
+    /// Mark an exact native preference as an optional installer default.
+    pub fn with_default(mut self) -> Self {
+        self.default = true;
+        self
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 /// Native integration subtree removed only by explicit uninstall after ownership checks.

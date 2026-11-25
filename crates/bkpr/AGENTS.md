@@ -10,7 +10,11 @@ The launcher waits for one bounded readiness record on daemon stdout, then check
 
 Managed launches obtain authority through the backend's verified launcher/PTY ancestry checks. Keep capture credentials launch-local; persisted native settings contain code references only. Native bindings, first-prompt facts, notification readiness and OSC semantic status remain distinct. Preserve native interfaces, arguments, consent and unmanaged opt-outs. Codex's private app-server/proxy and OpenCode 2's standalone service are ownership boundaries, not optional installer shortcuts.
 
-`harness/assets.rs` owns private credential files; `integration/shared/native.ts` owns native callback subprocesses. Shared MCP belongs to `harness/agent.rs`; extensions bind native sessions and receivers rather than duplicating tools. Ordinary execution never edits native profiles. Explicit durable operations belong to `harness/install.rs` and its native definitions; preserve unrelated configuration, refuse conflicts and never grant approvals. Inspect/dry-run must not create files or invoke onboarding.
+`harness/assets.rs` owns private credential files; `integration/shared/native.ts` owns native callback subprocesses. Shared MCP belongs to `harness/agent.rs`; extensions bind native sessions and receivers rather than duplicating tools. Ordinary execution never edits native profiles. Explicit durable operations belong to `harness/install.rs` and its native definitions; preserve unrelated configuration and refuse conflicts. Inspect/dry-run must not create files or invoke onboarding.
+
+`harness/collaboration.rs` owns the exact default native tool names for Claude and Codex. Defaults cannot replace native ask/deny/filter policy or approve control, terminal input or file transfers. Keep user rules separate from installer-owned entries.
+
+Codex thread defaults query the existing private app server through a loopback WebSocket; use Tungstenite's handshake-only build (no TLS) for that client. The 0.30 release reuses the workspace's existing `rand` 0.10 and `http` 1 dependencies.
 
 Channel file tools open explicit local paths in the launch-local MCP helper or authenticated Codex relay. Only typed attachment bytes and channel IDs cross the daemon transport; MCP replies carry metadata. Fetch publishes a fresh file without clobbering an existing name.
 

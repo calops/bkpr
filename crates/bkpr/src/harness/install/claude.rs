@@ -8,6 +8,7 @@ use bkpr_protocol::HarnessKind;
 use serde_json::{Value, json};
 
 use super::types::{Asset, Bundle, Definition, Entry, Format, Paths, read_native, shell_command};
+use crate::harness::collaboration;
 
 const CALLBACK_EVENTS: &[&str] = &[
     "SessionStart",
@@ -241,6 +242,17 @@ pub(super) fn definition(paths: &Paths) -> Result<Definition> {
             }))?,
         )],
     )?;
+    entries.extend(collaboration::claude_rules().map(|rule| {
+        Entry::array(
+            &format!("approval-{rule}"),
+            settings_file.clone(),
+            Format::Json,
+            &["permissions", "allow"],
+            json!(rule),
+            rule.clone(),
+        )
+        .with_default()
+    }));
     Ok(Definition {
         kind: HarnessKind::Claude,
         bundle,
@@ -250,7 +262,7 @@ pub(super) fn definition(paths: &Paths) -> Result<Definition> {
         blockers,
         notes: vec![
             "Start a new managed Claude session to load the configured MCP and hooks; existing sessions are unchanged.".into(),
-            "Native trust, MCP policy and tool approvals remain Claude-owned; outside a managed launch the hooks are inert and MCP exposes no tools.".into(),
+            "Only named Bkpr collaboration tools get default allow rules. Native ask, deny, server policy and trust still apply; outside a managed launch the hooks and MCP are inactive.".into(),
         ],
     })
 }
@@ -318,7 +330,11 @@ mod tests {
         )?;
         fs::set_permissions(&paths.program, fs::Permissions::from_mode(0o700))?;
         let definition = definition(&paths)?;
-        for entry in definition.entries.iter().filter(|entry| entry.array) {
+        for entry in definition
+            .entries
+            .iter()
+            .filter(|entry| entry.keys.first().is_some_and(|key| key == "hooks"))
+        {
             let command = entry.value["hooks"][0]["command"].as_str().unwrap();
             let mut child = Command::new("/bin/sh")
                 .args(["-c", command])

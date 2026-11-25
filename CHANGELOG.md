@@ -9,6 +9,7 @@
 ### Bug Fixes
 
 * **channels:** guide managed agents to coordinate in `#team` and keep `#desk` for user-facing replies ([#75](https://github.com/calops/bkpr/issues/75))
+* **channels:** default exact Claude and fresh managed Codex collaboration tools to native allow, and accept workspace selectors in agent channel reads and history ([#75](https://github.com/calops/bkpr/issues/75))
 
 ## [0.11.0](https://github.com/calops/bkpr/compare/v0.10.0...v0.11.0) (2026-11-23)
 

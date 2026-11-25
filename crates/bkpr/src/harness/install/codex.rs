@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, ensure};
 use bkpr_protocol::HarnessKind;
-use serde_json::json;
 
 use super::types::{Asset, Bundle, Definition, Entry, Format, Paths, Removal, read_native};
+use crate::harness::codex::approvals;
 
 fn native_home(paths: &Paths) -> Result<PathBuf> {
     let override_directory = paths
@@ -29,22 +29,15 @@ fn native_home(paths: &Paths) -> Result<PathBuf> {
 pub(super) fn definition(paths: &Paths) -> Result<Definition> {
     let file = native_home(paths)?.join("config.toml");
     let manifest = paths.manifest(HarnessKind::Codex, &[&file]);
-    let installation = manifest
-        .to_str()
-        .context("Codex installation record path is not UTF-8")?;
-    let program = paths
-        .program
-        .to_str()
-        .context("Codex MCP executable path is not UTF-8")?;
     let mut blockers = Vec::new();
     if let Some(bytes) = read_native(&file)? {
         let text = std::str::from_utf8(&bytes).map_err(|_| {
             anyhow::anyhow!("invalid UTF-8 in Codex configuration {}", file.display())
         })?;
-        let config: toml::Value = toml::from_str(text).map_err(|_| {
+        let parsed: toml::Value = toml::from_str(text).map_err(|_| {
             anyhow::anyhow!("invalid Codex configuration TOML at {}", file.display())
         })?;
-        if config
+        if parsed
             .get("mcp_servers")
             .and_then(|servers| servers.get("bkpr"))
             .and_then(|server| server.get("enabled"))
@@ -54,11 +47,7 @@ pub(super) fn definition(paths: &Paths) -> Result<Definition> {
             blockers.push("Codex has explicitly disabled the Bkpr MCP server".into());
         }
     }
-    let registration = json!({
-        "command": program,
-        "args": ["capture", "installed-mcp", "--harness", "codex", "--installation", installation],
-        "env_vars": ["BKPR_AGENT_RELAY_SOCKET", "BKPR_AGENT_RELAY_TOKEN"]
-    });
+    let registration = approvals::registration(&paths.program, Some(&manifest))?;
     let entries = ["command", "args", "env_vars"]
         .into_iter()
         .map(|key| {
@@ -102,8 +91,8 @@ pub(super) fn definition(paths: &Paths) -> Result<Definition> {
         blockers,
         notes: vec![
             "Start a new managed Codex session to load the configured MCP; the private app-server/proxy still owns exact conversation binding.".into(),
-            "Native policies, disabled state and tool approvals are unchanged. The installed entry stores relay environment names only; relay values exist only during managed launches.".into(),
-            "Explicit uninstall removes the logical Bkpr MCP entry and its Bkpr-specific native tool preferences; other servers and permission settings are untouched.".into(),
+            "The entry stores relay environment names only; values exist only during managed launches. A fresh managed thread may get launch-local collaboration defaults; no approval rule is written to Codex settings.".into(),
+            "Uninstall removes the owned registration. If user preferences would be left without the transport Codex requires, move or remove the named preferences first.".into(),
         ],
     })
 }

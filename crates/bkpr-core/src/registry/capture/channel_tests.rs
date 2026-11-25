@@ -813,6 +813,153 @@ fn create_repairs_presets_after_storage_recovers() {
 }
 
 #[test]
+fn authenticated_compact_channel_reads_resolve_only_workspace_builtins() {
+    let root = private_root();
+    let root = root.path();
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.join("omp")).unwrap();
+    let (registry, _server) = open(root);
+    let spec = launch_spec(root, "reader", "native-reader");
+    send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: Some(spec.clone()),
+        },
+    );
+    let reader = live(&registry, &spec.home);
+    let foreign = send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: None,
+        },
+    );
+    let ChannelResponse::Listed {
+        channels: foreign_channels,
+        ..
+    } = channel(
+        &registry,
+        None,
+        ChannelRequest::List {
+            workspace_id: foreign["workspace_id"].as_str().unwrap().into(),
+            after: None,
+            limit: 10,
+        },
+    )
+    .unwrap()
+    else {
+        panic!("expected foreign workspace presets");
+    };
+
+    let compact = |request| agent_channel(&registry, &reader, request);
+    let members = |id: &ChannelId| ChannelRequest::ListMembers {
+        channel_id: id.clone(),
+        after: None,
+        limit: 10,
+    };
+    for name in ["#desk", "#team"] {
+        let selector = ChannelId(name.into());
+        let empty = compact(history(&selector)).unwrap();
+        assert_eq!(empty["messages"], json!([]));
+        let exact_id = ChannelId(empty["cursor"]["channel_id"].as_str().unwrap().into());
+        assert_ne!(exact_id, selector);
+        assert_eq!(compact(history(&exact_id)).unwrap(), empty);
+        let roster = compact(members(&selector)).unwrap();
+        assert_eq!(compact(members(&exact_id)).unwrap(), roster);
+        assert!(
+            roster["participants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["launch_id"] == reader.grant.launch_id)
+        );
+
+        let body = format!("東京 {name} actual body");
+        let receipt = compact(post(&selector, &body, PostIntent::Note)).unwrap();
+        let summary = &receipt["message"];
+        let listed = compact(history(&selector)).unwrap();
+        assert_eq!(listed["messages"], json!([summary]));
+        assert_eq!(listed, compact(history(&exact_id)).unwrap());
+        assert!(!listed.to_string().contains(body.as_str()));
+        let ChannelResponse::History { messages, .. } =
+            channel(&registry, None, history(&exact_id)).unwrap()
+        else {
+            panic!("expected native history");
+        };
+        assert_eq!(messages[0].text, body);
+
+        let read = |id: &ChannelId, message_id, offset, max_bytes| {
+            agent_result(
+                &registry,
+                &reader,
+                AgentRequest::ChannelRead {
+                    channel_id: id.clone(),
+                    message_id,
+                    offset,
+                    max_bytes,
+                },
+            )
+        };
+        let message_id = bkpr_protocol::channels::MessageId(summary["id"].as_str().unwrap().into());
+        let first = read(&selector, message_id.clone(), None, Some(4)).unwrap();
+        assert_eq!(first["message"], *summary);
+        assert_eq!(first["text"], "東");
+        assert_eq!(first["body_bytes"], body.len());
+        assert_eq!(first["next_offset"], 3);
+        assert_eq!(
+            first,
+            read(&exact_id, message_id.clone(), None, Some(4)).unwrap()
+        );
+        let rest = read(&selector, message_id.clone(), Some(3), Some(4096)).unwrap();
+        assert_eq!(rest["text"], &body[3..]);
+        assert!(rest["next_offset"].is_null());
+        let ChannelResponse::Message { message: native } = channel(
+            &registry,
+            None,
+            ChannelRequest::Read {
+                channel_id: exact_id,
+                message_id: message_id.clone(),
+            },
+        )
+        .unwrap() else {
+            panic!("expected native message");
+        };
+        assert_eq!(native.text, body);
+
+        assert!(channel(&registry, None, history(&selector)).is_err());
+        assert!(channel(&registry, None, members(&selector)).is_err());
+        assert!(
+            channel(
+                &registry,
+                None,
+                ChannelRequest::Read {
+                    channel_id: selector,
+                    message_id,
+                },
+            )
+            .is_err()
+        );
+
+        let foreign_id = &foreign_channels.iter().find(|c| c.name == name).unwrap().id;
+        let ChannelResponse::Posted { message, .. } = channel(
+            &registry,
+            None,
+            post(
+                foreign_id,
+                &format!("foreign {name} body"),
+                PostIntent::Note,
+            ),
+        )
+        .unwrap() else {
+            panic!("expected a real foreign post");
+        };
+        assert!(compact(history(foreign_id)).is_err());
+        assert!(compact(members(foreign_id)).is_err());
+        assert!(read(foreign_id, message.id, None, Some(4)).is_err());
+    }
+}
+
+#[test]
 fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fences() {
     use bkpr_protocol::channels::{ChannelSettings, WakePolicy};
 

@@ -973,7 +973,7 @@ impl Registry {
                 .inner
                 .channels
                 .with_delivery_store(&cancelled, &workspace_open, |store| {
-                    store.compact_members(request, &admit, caller)
+                    store.compact_members(request, &admit, caller, workspace.as_deref())
                 })
                 .map(Payload::Control);
         }
@@ -985,7 +985,7 @@ impl Registry {
                 .inner
                 .channels
                 .with_delivery_store(&cancelled, &workspace_open, |store| {
-                    store.compact_history(request, &admit)
+                    store.compact_history(request, &admit, workspace.as_deref())
                 })
                 .map(Payload::Control);
         }
@@ -995,7 +995,7 @@ impl Registry {
                 .inner
                 .channels
                 .with_delivery_store(&cancelled, &workspace_open, |store| {
-                    store.compact_message(request, &admit, offset, maximum)
+                    store.compact_message(request, &admit, offset, maximum, workspace.as_deref())
                 })
                 .map(Payload::Control);
         }

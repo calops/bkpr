@@ -15,6 +15,8 @@ use anyhow::{Context, Result, bail};
 use parking_lot::Mutex;
 use serde_json::Value;
 
+use super::approvals::ThreadDefaults;
+
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PENDING_SELECTIONS: usize = 32;
 const MAX_CONNECTIONS: usize = 8;
@@ -50,6 +52,7 @@ pub(super) fn supervise(
     native_socket: &Path,
     native: &mut Child,
     cancelled: &AtomicUsize,
+    defaults: Option<&ThreadDefaults<'_>>,
     selected: impl FnMut(&str, &str) -> Result<()> + Send,
 ) -> Result<ExitStatus> {
     let control = Control::default();
@@ -57,7 +60,7 @@ pub(super) fn supervise(
         let control = &control;
         let (send, receive) = mpsc::sync_channel(1);
         let worker = scope.spawn(move || {
-            let result = tap(listener, native_socket, control, selected);
+            let result = tap(listener, native_socket, control, defaults, selected);
             control.stop();
             let _ = send.send(result);
         });
@@ -103,6 +106,7 @@ fn tap(
     listener: UnixListener,
     native_socket: &Path,
     control: &Control,
+    defaults: Option<&ThreadDefaults<'_>>,
     selected: impl FnMut(&str, &str) -> Result<()> + Send,
 ) -> Result<()> {
     listener.set_nonblocking(true)?;
@@ -141,6 +145,7 @@ fn tap(
                                 control,
                                 connection,
                                 selections,
+                                defaults,
                                 selected,
                             );
                             control.close(connection);
@@ -178,6 +183,7 @@ fn tap_connection(
     control: &Control,
     connection: u64,
     selections: &Mutex<Selections>,
+    defaults: Option<&ThreadDefaults<'_>>,
     selected: &Mutex<impl FnMut(&str, &str) -> Result<()> + Send>,
 ) -> Result<()> {
     let server = UnixStream::connect(native_socket).context("connect owned Codex app-server")?;
@@ -203,15 +209,21 @@ fn tap_connection(
                 &mut server_write,
                 stopped,
                 true,
-                |bytes| {
-                    let message =
+                |bytes, unfragmented| {
+                    let message: RequestMetadata<'_> =
                         serde_json::from_slice(bytes).context("parse Codex native request")?;
+                    let rewritten =
+                        if unfragmented && message.method.as_deref() == Some("thread/start") {
+                            defaults.and_then(|defaults| defaults.rewrite(bytes))
+                        } else {
+                            None
+                        };
                     let mut state = selections.lock();
                     state.request_on(connection, &message)?;
                     if let Some(thread) = state.prompt_on(connection, &message) {
                         selected.lock()("turn/start", &thread)?;
                     }
-                    Ok(())
+                    Ok(rewritten)
                 },
             );
             stopped.store(true, Ordering::Release);
@@ -225,18 +237,18 @@ fn tap_connection(
             &mut client_write,
             stopped,
             false,
-            |bytes| {
+            |bytes, _| {
                 // Hold through binding: newer outgoing selections cannot race a stale response.
                 let mut state = selections.lock();
                 if !state.pending.keys().any(|(owner, _)| *owner == connection) {
-                    return Ok(());
+                    return Ok(None);
                 }
                 let message = serde_json::from_slice(bytes)
                     .context("parse Codex native selection response")?;
                 if let Some((method, thread)) = state.response_on(connection, &message)? {
                     selected.lock()(method, &thread)?;
                 }
-                Ok(())
+                Ok(None)
             },
         );
         stopped.store(true, Ordering::Release);
@@ -471,7 +483,7 @@ fn forward(
     destination: &mut UnixStream,
     stopped: &AtomicBool,
     masked: bool,
-    mut inspect: impl FnMut(&[u8]) -> Result<()>,
+    mut inspect: impl FnMut(&[u8], bool) -> Result<Option<Vec<u8>>>,
 ) -> Result<()> {
     if !upgrade(source, destination, stopped, !masked)? {
         return Ok(());
@@ -551,7 +563,14 @@ fn forward(
                     if masked {
                         apply_mask(&mut payload, &header[header_len - 4..header_len]);
                     }
-                    inspect(&payload)?;
+                    if let Some(rewritten) = inspect(&payload, true)? {
+                        ensure_rewrite_fits(&rewritten)?;
+                        payload = rewritten;
+                        if masked {
+                            header_len =
+                                rewrite_masked_length(&mut header, header_len, payload.len());
+                        }
+                    }
                     if masked {
                         apply_mask(&mut payload, &header[header_len - 4..header_len]);
                     }
@@ -568,7 +587,7 @@ fn forward(
                         fragments.extend_from_slice(&payload);
                     }
                     if final_frame {
-                        inspect(&fragments)?;
+                        let _ = inspect(&fragments, false)?;
                         fragments.clear();
                     }
                 }
@@ -585,6 +604,35 @@ fn forward(
             return Ok(());
         }
     }
+}
+
+fn ensure_rewrite_fits(payload: &[u8]) -> Result<()> {
+    if payload.len() > MAX_MESSAGE_BYTES {
+        bail!("rewritten Codex native request exceeds its message limit");
+    }
+    Ok(())
+}
+
+fn rewrite_masked_length(header: &mut [u8; 14], previous: usize, length: usize) -> usize {
+    let mask: [u8; 4] = header[previous - 4..previous].try_into().unwrap();
+    let offset = match length {
+        0..=125 => {
+            header[1] = 0x80 | length as u8;
+            2
+        }
+        126..=65535 => {
+            header[1] = 0x80 | 126;
+            header[2..4].copy_from_slice(&(length as u16).to_be_bytes());
+            4
+        }
+        _ => {
+            header[1] = 0x80 | 127;
+            header[2..10].copy_from_slice(&(length as u64).to_be_bytes());
+            10
+        }
+    };
+    header[offset..offset + 4].copy_from_slice(&mask);
+    offset + 4
 }
 
 fn write_wire(stream: &mut UnixStream, bytes: &[u8], stopped: &AtomicBool) -> Result<()> {
@@ -825,7 +873,8 @@ mod tests {
                 &mut destination,
                 &AtomicBool::new(false),
                 masked,
-                |bytes| {
+                |bytes, unfragmented| {
+                    assert!(!unfragmented);
                     assert_eq!(bytes, message);
                     let mut before_binding = vec![0; prefix.len()];
                     consumer.read_exact(&mut before_binding)?;
@@ -837,7 +886,7 @@ mod tests {
                     );
                     consumer.set_nonblocking(false)?;
                     observed += 1;
-                    Ok(())
+                    Ok(None)
                 },
             )?;
             destination.shutdown(Shutdown::Write)?;
@@ -865,10 +914,11 @@ mod tests {
             &mut destination,
             &AtomicBool::new(false),
             true,
-            |bytes| {
+            |bytes, unfragmented| {
+                assert!(unfragmented);
                 assert_eq!(bytes, message);
                 observed += 1;
-                Ok(())
+                Ok(None)
             },
         )?;
         destination.shutdown(Shutdown::Write)?;
@@ -876,6 +926,37 @@ mod tests {
         consumer.read_to_end(&mut received)?;
         assert_eq!(received, wire);
         assert_eq!(observed, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn rewritten_native_start_preserves_mask_and_reencodes_payload_length() -> Result<()> {
+        let original = b"{\"id\":7,\"method\":\"thread/start\",\"params\":{}}";
+        let patched = serde_json::to_vec(&json!({"id":7,"method":"thread/start",
+            "params":{"config":{"mcp_servers.bkpr.tools.channel_post.approval_mode":"approve",
+                "native_setting":"x".repeat(256)}}}))?;
+        let (mut producer, mut source) = UnixStream::pair()?;
+        let (mut destination, mut consumer) = UnixStream::pair()?;
+        producer.write_all(&[UPGRADE, &frame(1, true, original, true)].concat())?;
+        producer.shutdown(Shutdown::Write)?;
+        forward(
+            &mut source,
+            &mut destination,
+            &AtomicBool::new(false),
+            true,
+            |bytes, whole| {
+                assert!(whole);
+                assert_eq!(bytes, original);
+                Ok(Some(patched.clone()))
+            },
+        )?;
+        destination.shutdown(Shutdown::Write)?;
+        let mut received = Vec::new();
+        consumer.read_to_end(&mut received)?;
+        assert_eq!(
+            received,
+            [UPGRADE, &frame(1, true, &patched, true)].concat()
+        );
         Ok(())
     }
 
@@ -900,13 +981,13 @@ mod tests {
             &mut destination,
             &AtomicBool::new(false),
             true,
-            |bytes| {
+            |bytes, _| {
                 let request: RequestMetadata<'_> = serde_json::from_slice(bytes)?;
                 state.request_on(0, &request)?;
                 if let Some(thread) = state.prompt_on(0, &request) {
                     observed.push(("turn/start", thread));
                 }
-                Ok(())
+                Ok(None)
             },
         )?;
         destination.shutdown(Shutdown::Write)?;
@@ -947,7 +1028,7 @@ mod tests {
                     &mut destination,
                     &AtomicBool::new(false),
                     masked,
-                    |_| Ok(())
+                    |_, _| Ok(None)
                 )
                 .is_err(),
                 "{bytes:?}"
@@ -974,7 +1055,7 @@ mod tests {
                 &mut destination,
                 &control.stopped,
                 false,
-                |_| Ok(()),
+                |_, _| Ok(None),
             )
         })?;
         Ok(())
@@ -1015,7 +1096,7 @@ mod tests {
                 &mut destination,
                 &AtomicBool::new(false),
                 false,
-                |_| panic!("HTTP is not JSON")
+                |_, _| panic!("HTTP is not JSON")
             )
             .is_err()
         );
@@ -1046,7 +1127,7 @@ mod tests {
                 &mut destination,
                 &AtomicBool::new(false),
                 false,
-                |_| bail!("capture authorization revoked")
+                |_, _| bail!("capture authorization revoked")
             )
             .is_err()
         );
@@ -1099,6 +1180,7 @@ mod tests {
                     &runtime.path().join("unused.sock"),
                     &mut native,
                     &cancellation,
+                    None,
                     |_, _| panic!("no selection")
                 )
                 .is_err()
