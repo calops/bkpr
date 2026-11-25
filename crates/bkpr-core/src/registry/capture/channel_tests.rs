@@ -1576,6 +1576,150 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
 }
 
 #[test]
+fn channel_wake_author_mention_tracks_live_binding_and_membership() {
+    let root = private_root();
+    let root = root.path();
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.join("omp")).unwrap();
+    let (registry, _server) = open(root);
+    let author_spec = launch_spec(root, "author", "author-native");
+    send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: Some(author_spec.clone()),
+        },
+    );
+    let author = live(&registry, &author_spec.home);
+    let workspace = registry.snapshot().unwrap().workspaces.remove(0);
+    let reader_spec = launch_spec(root, "reader", "reader-native");
+    send(
+        &registry,
+        Operation::WindowCreate {
+            workspace_id: workspace.id.clone(),
+            expected_revision: workspace.revision,
+            name: None,
+            spec: reader_spec.clone(),
+        },
+    );
+    let reader = live(&registry, &reader_spec.home);
+    let author_id = author.channel_participant.as_ref().unwrap();
+    let reader_id = reader.channel_participant.as_ref().unwrap();
+    let ChannelResponse::Channel { channel: group } = channel(
+        &registry,
+        None,
+        ChannelRequest::Create {
+            workspace_id: workspace.id,
+            name: "author mention".into(),
+            membership: MembershipMode::Explicit,
+            members: vec![author_id.clone(), reader_id.clone()],
+            settings: Default::default(),
+        },
+    )
+    .unwrap() else {
+        panic!("expected an explicit channel");
+    };
+    let receipt = agent_channel(
+        &registry,
+        &author,
+        post(&group.id, "proposal from a live author", PostIntent::Note),
+    )
+    .unwrap();
+    assert_eq!(receipt["wake_count"], 1);
+    let reader_receiver = receiver(&registry, &reader);
+    let notification = subscribe(&registry, &reader, &reader_receiver);
+    let pointer = &notification["channel_wake"];
+    assert!(pointer.get("author_mention_id").is_none());
+    let lookup = |max_body_bytes| {
+        agent(
+            &registry,
+            &reader,
+            AgentRequest::ChannelWake {
+                batch_id: pointer["batch_id"].as_str().unwrap().to_owned(),
+                max_body_bytes,
+                include_source: false,
+            },
+        )
+    };
+    assert!(lookup(None).get("post").is_none());
+    let (old, _) = mention_and_launch(&registry, &reader, &group.id, author_id);
+    let selected = lookup(Some(2048));
+    assert_eq!(selected["post"]["author_mention_id"], old.as_ref());
+    assert_eq!(selected["post"]["message"], receipt["message"]);
+    assert_ne!(old, *author_id);
+    let event = |event| {
+        launch_request(
+            &registry,
+            &author,
+            Operation::HarnessEvent {
+                launch_id: author.grant.launch_id.clone(),
+                token: author.grant.token.clone(),
+                event,
+            },
+        )
+        .unwrap()
+        .into_json()
+        .unwrap()
+    };
+    let conversation = author.managed.conversation.as_ref().unwrap();
+    assert_eq!(
+        event(CaptureEvent::Bind {
+            conversation_id: conversation.id.clone(),
+            source: conversation.source,
+            expected_revision: Some(conversation.generation),
+        })["accepted"],
+        true
+    );
+    let (current, _) = mention_and_launch(&registry, &reader, &group.id, author_id);
+    assert_ne!(current, old);
+    assert_eq!(
+        lookup(Some(2048))["post"]["author_mention_id"],
+        current.as_ref()
+    );
+    let ChannelRequest::Post {
+        channel_id,
+        mut post,
+    } = post(&group.id, "reject replaced handle", PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    post.mentions.push(old);
+    assert!(
+        agent_channel(
+            &registry,
+            &reader,
+            ChannelRequest::Post { channel_id, post }
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("refresh the roster")
+    );
+
+    let membership = |members| {
+        channel(
+            &registry,
+            None,
+            ChannelRequest::SetMembership {
+                channel_id: group.id.clone(),
+                membership: MembershipMode::Explicit,
+                members,
+            },
+        )
+        .unwrap()
+    };
+    membership(vec![reader_id.clone()]);
+    let without_author = lookup(Some(2048));
+    assert!(without_author["post"].get("author_mention_id").is_none());
+    assert_eq!(without_author["post"]["message"], receipt["message"]);
+    membership(vec![author_id.clone(), reader_id.clone()]);
+    assert_eq!(
+        lookup(Some(2048))["post"]["author_mention_id"],
+        current.as_ref()
+    );
+    event(CaptureEvent::End);
+    assert_eq!(lookup(Some(2048)), without_author);
+}
+
+#[test]
 fn authenticated_channel_attachments_require_live_member() {
     use bkpr_protocol::channels::{AttachmentMediaType, AttachmentUpload};
 

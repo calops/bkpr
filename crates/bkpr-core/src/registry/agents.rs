@@ -865,6 +865,32 @@ fn live_channel_agent<'a>(
     .then_some((launch, agent))
 }
 
+fn channel_caller<'a>(
+    state: &State,
+    workspace: &str,
+    caller: &Launch,
+    agents: &'a AgentState,
+    captures: &'a crate::harness::Captures,
+) -> Result<(&'a Launch, &'a Agent)> {
+    captures.authorize(caller)?;
+    let (current, agent) = state
+        .record
+        .registry
+        .panes
+        .iter()
+        .find(|pane| pane.id == caller.grant.pane_id)
+        .and_then(|pane| live_channel_agent(state, pane, workspace, agents, captures))
+        .context("no bound participant in this workspace")?;
+    ensure!(
+        current.grant.launch_id == caller.grant.launch_id
+            && current.binding_generation == caller.binding_generation
+            && current.channel_participant == caller.channel_participant
+            && current.control.same_authority(&caller.control),
+        "channel participant binding changed"
+    );
+    Ok((current, agent))
+}
+
 fn channel_agent(launch: &Launch, agent: &Agent) -> channels::Participant {
     channels::Participant {
         id: launch
@@ -924,22 +950,8 @@ impl Registry {
         let captures = self.inner.captures.lock().unwrap();
         let actor = if let Some(caller) = caller {
             ensure!(writable, ChannelAccessLost);
-            captures.authorize(caller).context(ChannelAccessLost)?;
-            let (current, agent) = state
-                .record
-                .registry
-                .panes
-                .iter()
-                .find(|pane| pane.id == caller.grant.pane_id)
-                .and_then(|pane| live_channel_agent(&state, pane, workspace, &agents, &captures))
+            let (current, agent) = channel_caller(&state, workspace, caller, &agents, &captures)
                 .context(ChannelAccessLost)?;
-            ensure!(
-                current.grant.launch_id == caller.grant.launch_id
-                    && current.binding_generation == caller.binding_generation
-                    && current.channel_participant == caller.channel_participant
-                    && current.control.same_authority(&caller.control),
-                ChannelAccessLost
-            );
             channel_agent(current, agent)
         } else {
             user()
@@ -979,6 +991,43 @@ impl Registry {
             writable,
             workspace_open,
             participants,
+        })
+    }
+
+    fn channel_author_mention(
+        &self,
+        workspace: &str,
+        caller: &Launch,
+        author: &channels::ParticipantId,
+    ) -> Result<Option<String>> {
+        let state = self.inner.state.lock().unwrap();
+        healthy(&state)?;
+        ensure!(
+            !state.closing
+                && !self.session_end_requested()
+                && !state.closing_workspaces.contains(workspace),
+            "channel workspace unavailable"
+        );
+        let agents = self.inner.agents.state.lock().unwrap();
+        healthy_agents(&agents)?;
+        let captures = self.inner.captures.lock().unwrap();
+        channel_caller(&state, workspace, caller, &agents, &captures)?;
+        let mut eligible = state
+            .record
+            .registry
+            .panes
+            .iter()
+            .filter_map(|pane| live_channel_agent(&state, pane, workspace, &agents, &captures))
+            .map(|(launch, _)| launch)
+            .filter(|launch| launch.channel_participant.as_ref() == Some(author));
+        Ok(match (eligible.next(), eligible.next()) {
+            (Some(launch), None) if launch.binding_generation != 0 => {
+                Some(crate::channels::agent_mention_id(
+                    &launch.grant.launch_id,
+                    launch.binding_generation,
+                ))
+            }
+            _ => None,
         })
     }
 

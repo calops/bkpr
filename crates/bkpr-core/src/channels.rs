@@ -3,7 +3,7 @@
 use anyhow::{Result, ensure};
 use bkpr_protocol::channels::{
     AttachmentMediaType, AttachmentUpload, ChannelCursor, ChannelId, ChannelRequest,
-    ChannelResponse, ChannelSubscriptionStatus, Participant,
+    ChannelResponse, ChannelSubscriptionStatus, Participant, ParticipantId,
 };
 use std::{
     io::Cursor,
@@ -80,6 +80,18 @@ pub(crate) struct ChannelClaim<'a> {
     pub(crate) receiver_id: &'a str,
     pub(crate) generation: u64,
     pub(crate) deadline: u64,
+}
+
+/// Authority callbacks for a recipient-scoped wake lookup.
+pub(crate) struct ChannelWakeAccess<'a> {
+    pub(crate) admit: &'a dyn Fn(&str) -> Result<ChannelAuthority>,
+    pub(crate) author_mention: &'a dyn Fn(&str, &ParticipantId) -> Result<Option<String>>,
+    pub(crate) connected: &'a dyn Fn() -> bool,
+}
+
+/// Format the opaque handle accepted by the exact live-agent mention resolver.
+pub(crate) fn agent_mention_id(launch: &str, binding: u64) -> String {
+    format!("{launch}:{binding}")
 }
 
 pub(crate) struct ChannelRoutes<'a> {

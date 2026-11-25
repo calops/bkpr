@@ -2,9 +2,9 @@ use super::{
     ChannelAccessLost, ChannelAuthority, ChannelId, MAX_PENDING, MessageId, MessagePage, Store,
     params,
 };
-use crate::channels::{ChannelClaim, ChannelRecipient};
+use crate::channels::{ChannelClaim, ChannelRecipient, ChannelWakeAccess};
 use anyhow::{Context, Result, ensure};
-use bkpr_protocol::channels::{ChannelSource, ChannelWake};
+use bkpr_protocol::channels::{ChannelSource, ChannelWake, ParticipantKind};
 use rusqlite::{OptionalExtension, Row};
 use serde::Serialize;
 
@@ -23,6 +23,8 @@ struct ChannelWakeLookup<'a> {
 struct WakePost<'a> {
     #[serde(flatten)]
     page: WakePage<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    author_mention_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source: Option<WakePage<'a>>,
 }
@@ -271,10 +273,14 @@ impl Store {
         batch_id: String,
         max_body_bytes: Option<usize>,
         include_source: bool,
-        admit: &impl Fn(&str) -> Result<ChannelAuthority>,
-        connected: &dyn Fn() -> bool,
+        authority: ChannelWakeAccess<'_>,
     ) -> Result<serde_json::Value> {
-        let admit = |workspace: &str| {
+        let ChannelWakeAccess {
+            admit,
+            author_mention,
+            connected,
+        } = authority;
+        let access = |workspace: &str| {
             ensure!(connected(), WakeLookupDisconnected);
             admit(workspace)
         };
@@ -284,7 +290,7 @@ impl Store {
             params![batch_id, recipient.launch, recipient.binding, recipient.participant],
             |row| Ok((ChannelId(row.get(0)?), row.get(1)?, row.get::<_, Option<String>>(2)?.map(MessageId))),
         ).optional()?.context(ChannelAccessLost)?;
-        self.access(&channel_id, &admit)?;
+        let (channel, _) = self.access(&channel_id, &access)?;
         let mut statement = self.connection.prepare(
             "SELECT w.message_id,p.sequence,w.addressed FROM notification_work w JOIN posts p ON p.id=w.message_id
                WHERE w.batch_id=?1 ORDER BY p.sequence LIMIT ?2",
@@ -308,18 +314,30 @@ impl Store {
         let maximum = max_body_bytes.or(include_source.then_some(2048));
         if let (Some(maximum), Some(id)) = (maximum, selected) {
             return self.with_message_page(&wake.channel_id, id, 0, maximum, |page| {
+                let author = &page.message.author;
+                let author_mention_id = if author.kind == ParticipantKind::Agent
+                    && author.id.as_ref() != recipient.participant
+                    && (channel.workspace_wide
+                        || self.explicit_member(&wake.channel_id, &author.id)?)
+                {
+                    ensure!(connected(), WakeLookupDisconnected);
+                    author_mention(&channel.workspace_id, &author.id)?
+                } else {
+                    None
+                };
                 let project = |source: Option<WakePage<'_>>| {
                     wake_reply(
                         &wake,
                         &messages,
                         Some(WakePost {
                             page: WakePage::new(&page, &wake.channel_id, id),
+                            author_mention_id: author_mention_id.as_deref(),
                             source,
                         }),
                     )
                 };
                 if let Some(link) = page.message.source.as_ref().filter(|_| include_source) {
-                    self.with_wake_source(link, maximum, &admit, project)
+                    self.with_wake_source(link, maximum, &access, project)
                 } else {
                     project(None)
                 }

@@ -486,14 +486,21 @@ impl Store {
         ).optional()?.context(ChannelAccessLost)?;
         let authority = workspace_authority(&channel.workspace_id, admit)?;
         if authority.actor.kind == ParticipantKind::Agent && !channel.workspace_wide {
-            let member: bool = self.connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM members WHERE channel_id=?1 AND participant_id=?2)",
-                params![id.as_ref(), authority.actor.id.as_ref()],
-                |r| r.get(0),
-            )?;
-            ensure!(member, ChannelAccessLost);
+            ensure!(
+                self.explicit_member(id, &authority.actor.id)?,
+                ChannelAccessLost
+            );
         }
         Ok((channel, authority))
+    }
+
+    fn explicit_member(&self, channel: &ChannelId, participant: &ParticipantId) -> Result<bool> {
+        exists(
+            &self.connection,
+            "SELECT EXISTS(SELECT 1 FROM members WHERE channel_id=?1 AND participant_id=?2)",
+            channel,
+            participant.as_ref(),
+        )
     }
 
     fn list(
@@ -960,7 +967,7 @@ impl Store {
                 entry.launch_id.as_deref().map_or(caller, |id| (id, entry.binding_revision))
             });
             let mention_id = launch.map_or_else(|| entry.actor.id.0.clone(), |(id, generation)| {
-                format!("{id}:{generation}")
+                super::agent_mention_id(id, generation)
             });
             let mut member = serde_json::json!({
                 "id":entry.actor.id, "kind":entry.actor.kind, "display_name":entry.actor.display_name,

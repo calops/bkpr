@@ -225,11 +225,16 @@ impl Registry {
                     batch_id,
                     max_body_bytes.map(|maximum| maximum as usize),
                     include_source,
-                    &|workspace| self.channel_authority(workspace, Some(launch), false),
-                    connected,
+                    crate::channels::ChannelWakeAccess {
+                        admit: &|workspace| self.channel_authority(workspace, Some(launch), false),
+                        author_mention: &|workspace, author| {
+                            self.channel_author_mention(workspace, launch, author)
+                        },
+                        connected,
+                    },
                 )?;
                 ensure!(
-                    !include_source || connected(),
+                    (!include_source && max_body_bytes.is_none()) || connected(),
                     "channel request disconnected"
                 );
                 Ok(reply)

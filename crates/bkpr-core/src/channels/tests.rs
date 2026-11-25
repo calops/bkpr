@@ -589,8 +589,11 @@ fn wake_source_rechecks_read_authority_and_omits_unavailable_links() {
                 wake.batch_id.clone(),
                 Some(16),
                 include_source,
-                &admit,
-                connected,
+                super::ChannelWakeAccess {
+                    admit: &admit,
+                    author_mention: &|_, _| unreachable!("fixture posts are user-authored"),
+                    connected,
+                },
             )
         })
     };
