@@ -55,7 +55,7 @@ pub struct Document {
 }
 
 impl Document {
-    /// Parse a bounded UTF-8 input. Both Markdown line break events remain visible.
+    /// Parse bounded UTF-8 input, retaining line breaks and spacing between blocks.
     /// Raw HTML is omitted, images are alt-text labels, and links are plain text.
     /// Escape terminal controls and directional formatting before reflow.
     pub fn parse(source: &str) -> Self {
@@ -92,7 +92,7 @@ impl Document {
                 Event::SoftBreak | Event::HardBreak => builder.finish_line(true),
                 Event::Rule => {
                     builder.literal("─");
-                    builder.finish_line(false);
+                    builder.end_block();
                 }
                 _ => (),
             }
@@ -343,6 +343,7 @@ fn row_cut(rest: &str, columns: usize, verbatim: bool, start: usize, mut spans: 
 struct Builder<'a> {
     doc: Document,
     open: Option<Line>,
+    block_gap: bool,
     bold: usize,
     italic: usize,
     quotes: usize,
@@ -422,22 +423,23 @@ impl<'a> Builder<'a> {
         match tag {
             TagEnd::Heading(_) => {
                 self.bold -= 1;
-                self.finish_line(false);
+                self.end_block();
             }
             TagEnd::Strong => self.bold -= 1,
             TagEnd::Emphasis => self.italic -= 1,
             TagEnd::BlockQuote(_) => {
-                self.finish_line(false);
+                self.end_block();
                 self.quotes -= 1;
             }
             TagEnd::CodeBlock => {
-                self.finish_line(false);
+                self.end_block();
                 self.code_block = false;
             }
-            TagEnd::Paragraph => self.finish_line(false),
+            TagEnd::Paragraph => self.end_block(),
             TagEnd::List(_) => {
                 self.finish_line(false);
                 self.lists.pop();
+                self.block_gap |= self.lists.is_empty() && !self.doc.lines.is_empty();
             }
             TagEnd::Item => {
                 self.finish_item_line();
@@ -476,12 +478,30 @@ impl<'a> Builder<'a> {
         }
         let start = self.doc.text.len();
         let spans = self.doc.spans.len();
+        if std::mem::take(&mut self.block_gap) {
+            self.doc.lines.push(Line {
+                text: start..start,
+                spans: spans..spans,
+                prefix: Prefix {
+                    quote: false,
+                    indent: 0,
+                    item: None,
+                    show_marker: false,
+                },
+                verbatim: false,
+            });
+        }
         self.open = Some(Line {
             text: start..start,
             spans: spans..spans,
             prefix,
             verbatim: self.code_block,
         });
+    }
+
+    fn end_block(&mut self) {
+        self.finish_line(false);
+        self.block_gap = !self.doc.lines.is_empty();
     }
 
     fn finish_line(&mut self, force: bool) {
@@ -608,7 +628,7 @@ mod tests {
         assert_eq!(text(&rows[1]), "> 4. next");
         assert_eq!(
             rows[2..].iter().map(text).collect::<Vec<_>>(),
-            ["  code", "", "  more"]
+            ["", "  code", "", "  more"]
         );
         for (label, style) in [
             (
@@ -665,6 +685,45 @@ mod tests {
     }
 
     #[test]
+    fn block_spacing_keeps_tight_lists_and_literal_code_rows() {
+        let doc = Document::parse(concat!(
+            "\n\n# Report\n\nFirst paragraph\nwrapped in source.\n\nSecond paragraph\n\n",
+            "- tight one\n- tight two\n\n> quoted one\n>\n> quoted two\n\n",
+            "```\ncode one\n\n\ncode two\n```\n\n",
+            "1. loose one\n\n2. loose two\n\nTail\n\n",
+        ));
+        assert_eq!(
+            doc.wrap(80).iter().map(text).collect::<Vec<_>>(),
+            [
+                "Report",
+                "",
+                "First paragraph",
+                "wrapped in source.",
+                "",
+                "Second paragraph",
+                "",
+                "- tight one",
+                "- tight two",
+                "",
+                "> quoted one",
+                "",
+                "> quoted two",
+                "",
+                "code one",
+                "",
+                "",
+                "code two",
+                "",
+                "1. loose one",
+                "",
+                "2. loose two",
+                "",
+                "Tail",
+            ],
+        );
+    }
+
+    #[test]
     fn markdown_keeps_host_controls_and_remote_images_inert() {
         let doc = Document::parse(
             "<img src=\"bad\">\n\nA &#27;\u{10eeee}\u{202e} ![alt](https://hidden.test) [link](<javascript:&#7;hi>)",
@@ -702,7 +761,7 @@ mod tests {
         let rows = doc.wrap(1);
         assert_eq!(
             rows.iter().map(text).collect::<Vec<_>>(),
-            ["a", " ", " ", "b", "x", " \u{301}", "z"]
+            ["a", " ", " ", "b", "", "x", " \u{301}", "z"]
         );
     }
 }

@@ -1403,8 +1403,9 @@ to the composer without losing your draft.
 In the composer, Ctrl-a/e move to the start/end of the line. Ctrl-w deletes the
 previous word; Ctrl-u/k delete to the start/end of the line.
 Drag across history text to copy it using the configured clipboard policy.
-Ctrl-b then y copies the current selection again. Copy preserves hard line
-breaks without including the nickname gutter or visual spacing.
+Ctrl-b then y copies the current selection again. Copy preserves logical line
+breaks, paragraph spacing, and blank code lines, but omits the nickname gutter
+and visual spacing between messages.
 Private direct threads cannot be posted to or edited. Read-only clients can
 browse but cannot send, edit channels or advance the user's read position.
 
