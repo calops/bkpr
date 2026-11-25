@@ -133,7 +133,7 @@ if (clientAssets) {
     ${bee({ ink: "#000", fill: "#fff" })}
   </mask>
   <rect x="-9" y="-11" width="18" height="18" mask="url(#bee)"/>`;
-  writeFileSync(join(clientAssets, "bee.svg"), doc(beeView, 18, 18, mask));
+  writeFileSync(join(clientAssets, "bee.svg"), doc("-7.3 -9.2 15.5 15.5", 18, 18, mask));
 
   const color = bee({ ink: "#20242C", fill: "#F1ECE0" }, "#F2A516");
   execFileSync("magick", [
