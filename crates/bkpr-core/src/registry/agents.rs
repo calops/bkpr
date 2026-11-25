@@ -526,21 +526,29 @@ fn channel_actor(
     state: &State,
     pane: &PaneInfo,
 ) -> channels::Participant {
-    let mut title = pane.title.clone();
-    super::project_title(state, &pane.id, &mut title);
-    let title = agent.harness.display_title(&title).trim();
+    let explicit_pane =
+        (!state.record.automatic_titles.contains(&pane.id)).then_some(pane.title.as_str());
+    let display_name = explicit_pane
+        .into_iter()
+        .chain(agent.title.as_deref())
+        .map(str::trim)
+        .find(|title| {
+            !title.is_empty()
+                && title.len() <= channels::MAX_NAME_BYTES
+                && !title.chars().any(char::is_control)
+        })
+        .map_or_else(
+            || {
+                let id = id.as_ref();
+                let end = id.char_indices().nth(6).map_or(id.len(), |(at, _)| at);
+                format!("{}·{}", agent.harness.display_name(), &id[..end])
+            },
+            str::to_owned,
+        );
     channels::Participant {
         id,
         kind: channels::ParticipantKind::Agent,
-        display_name: if title.is_empty()
-            || title.len() > channels::MAX_NAME_BYTES
-            || title.chars().any(char::is_control)
-        {
-            agent.harness.display_name()
-        } else {
-            title
-        }
-        .to_owned(),
+        display_name,
     }
 }
 

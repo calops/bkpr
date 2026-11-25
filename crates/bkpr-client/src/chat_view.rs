@@ -15,7 +15,7 @@ use std::{
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
-const MAX_NICK: u16 = 16;
+const MAX_NICK: u16 = 24;
 const LIST_MIN_WIDTH: u16 = 55;
 
 pub(in crate::app) struct Entry {

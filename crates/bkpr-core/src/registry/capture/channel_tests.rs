@@ -1221,6 +1221,106 @@ fn authenticated_compact_channel_reads_resolve_only_workspace_builtins() {
 }
 
 #[test]
+fn channel_labels_ignore_native_titles_and_snapshot_explicit_names() {
+    let root = private_root();
+    let root = root.path();
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.join("omp")).unwrap();
+    let (registry, _server) = open(root);
+    let mut spec = launch_spec(root, "labels", "label-fixture");
+    spec.title = None;
+    send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: Some("Not an author".into()),
+            initial: Some(spec.clone()),
+        },
+    );
+    let launch = live(&registry, &spec.home);
+    let workspace = registry.snapshot().unwrap().workspaces.remove(0).id;
+    let ChannelResponse::Listed { channels, .. } = channel(
+        &registry,
+        None,
+        ChannelRequest::List {
+            workspace_id: workspace.clone(),
+            after: None,
+            limit: 8,
+        },
+    )
+    .unwrap() else {
+        panic!("expected workspace presets")
+    };
+    let id = &channels
+        .iter()
+        .find(|channel| channel.name == "#desk")
+        .unwrap()
+        .id;
+    let receipt = |key| agent_channel(&registry, &launch, post(id, key, PostIntent::Note)).unwrap();
+    let original = receipt("original");
+    let author = &original["message"]["author"];
+    let label = author["display_name"].as_str().unwrap();
+    assert_ne!(label, "Not an author");
+    let pane = registry.capture_pane(&launch.grant.pane_id).unwrap();
+    for native in ["◕ Working", r#"{"wake":"spinner"}"#] {
+        pane.shared.published.lock().unwrap().title = Some(native.into());
+        assert_eq!(receipt(native)["message"]["author"], *author);
+        let ChannelResponse::UserRoster { participants, .. } = channel(
+            &registry,
+            None,
+            ChannelRequest::UserRoster {
+                workspace_id: workspace.clone(),
+                channel_id: Some(id.clone()),
+                after: None,
+                limit: 8,
+            },
+        )
+        .unwrap() else {
+            panic!("expected live roster")
+        };
+        let entry = participants
+            .iter()
+            .find(|entry| {
+                entry
+                    .binding
+                    .as_ref()
+                    .is_some_and(|binding| binding.launch_id == launch.grant.launch_id)
+            })
+            .expect("the current launch is present in the channel roster");
+        assert_eq!(entry.participant.display_name, label);
+    }
+    agent(
+        &registry,
+        &launch,
+        AgentRequest::SetTitle {
+            title: "Review lead".into(),
+        },
+    );
+    assert_eq!(
+        receipt("named")["message"]["author"]["display_name"],
+        "Review lead"
+    );
+    send(
+        &registry,
+        Operation::PaneRename {
+            pane_id: launch.grant.pane_id.clone(),
+            title: "Pane override".into(),
+        },
+    );
+    assert_eq!(
+        receipt("override")["message"]["author"]["display_name"],
+        "Pane override"
+    );
+    let compact = agent_channel(&registry, &launch, history(id)).unwrap();
+    let retained = compact["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["id"] == original["message"]["id"])
+        .unwrap();
+    assert_eq!(retained["author"], *author);
+    assert_eq!(receipt("original"), original);
+}
+
+#[test]
 fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fences() {
     use bkpr_protocol::channels::{ChannelSettings, WakePolicy};
 

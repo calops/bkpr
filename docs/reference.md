@@ -1391,6 +1391,10 @@ Type `@` in ordinary text and choose an agent from the channel's current roster.
 The roster shows separate entries for duplicate names. Code, quotes and pasted
 `@` text don't select a recipient. The user post includes the selected launch
 and native binding so replacing or rebinding an agent cannot redirect the send.
+Chat uses the explicit pane label, then the agent's authenticated discovery
+label, then the harness name with a stable participant suffix. Terminal title
+changes do not rename chat participants. Posts retain the author label saved
+when they were sent.
 In history, authenticated inline agent mentions use the same participant color
 as the agent's nickname. Identical pasted text or code does not inherit that color.
 The mention picker shows wake scope when space permits. `#desk` starts with
