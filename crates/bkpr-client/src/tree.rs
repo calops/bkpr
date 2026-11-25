@@ -58,20 +58,20 @@ impl TreeRow {
     }
 
     pub fn icon_column(&self) -> u16 {
-        1 + self.depth
+        1 + self.depth * 2
     }
 
     pub fn content_column(&self) -> u16 {
         if self.branch() {
             self.icon_column() + 2
         } else {
-            2 + self.depth.saturating_sub(1)
+            2 + self.depth.saturating_sub(1) * 2
         }
     }
 
     pub fn prefix_width(&self) -> u16 {
         match self.kind {
-            Kind::Native(SidebarRowKind::Spacer) => self.depth,
+            Kind::Native(SidebarRowKind::Spacer) => self.depth * 2,
             Kind::Native(SidebarRowKind::Projects { .. } | SidebarRowKind::Detail { .. }) => {
                 self.content_column() - 1
             }
@@ -80,11 +80,17 @@ impl TreeRow {
     }
 
     pub fn write_prefix(&self, label: &mut String, highlighted: bool) {
-        label.extend((1..=self.prefix_width()).map(|level| {
+        label.extend((0..self.prefix_width()).map(|offset| {
             if highlighted {
-                ' '
+                return ' ';
+            }
+            let guide = self.guide_at(offset / 2 + 1);
+            if offset % 2 == 0 {
+                guide
+            } else if matches!(guide, '├' | '╰') {
+                '─'
             } else {
-                self.guide_at(level)
+                ' '
             }
         }));
     }

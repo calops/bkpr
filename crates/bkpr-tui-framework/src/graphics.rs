@@ -54,12 +54,12 @@ macro_rules! guide_mask {
 }
 static GUIDE_MASKS: [SvgAsset; 4] = [
     guide_mask!(0, "M5 0V20"),
-    guide_mask!(1, "M5 10H10"),
+    guide_mask!(1, "M5 10H20"),
     guide_mask!(2, "M5 7V20"),
-    guide_mask!(3, "M5 0V5Q5 10 10 10"),
+    guide_mask!(3, "M5 0V5Q5 10 10 10H20"),
 ];
 
-/// One connector cell in a tree prefix.
+/// One row of a two-cell tree indentation slot.
 #[derive(Clone, Copy)]
 pub enum TreeGuide {
     /// A vertical continuation only.
@@ -672,7 +672,7 @@ impl SvgGraphics {
         true
     }
 
-    /// Place a one-cell guide using the prepared inks. The focus path either
+    /// Place a guide using the prepared inks. Branches span two cells; stems use one. The focus path either
     /// passes through a stem or turns into the branch without recoloring its tail.
     /// Returns false if any piece is unavailable so callers can keep text fallback.
     pub fn place_tree_guide(
@@ -707,10 +707,11 @@ impl SvgGraphics {
                 frame.placements.truncate(start);
                 return false;
             }
-            let cell_width = frame.size.cell_width;
             let placed = frame.placements.last_mut().unwrap();
-            placed.source_width = cell_width;
-            placed.width = cell_width;
+            if matches!(mask, 0 | 2) {
+                placed.source_width = frame.size.cell_width;
+                placed.width = frame.size.cell_width;
+            }
             placed.z = index as i32;
         }
         true
@@ -1122,7 +1123,7 @@ mod tests {
             };
             assert_eq!(pixel(5, 0), Some(bright));
             assert_eq!(pixel(5, 19), Some(bottom));
-            assert_eq!(pixel(9, 10), Some(right));
+            assert_eq!(pixel(19, 10), Some(right));
         }
     }
 

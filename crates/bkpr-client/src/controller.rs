@@ -1602,9 +1602,10 @@ pub(crate) fn theme_tree_chrome(
                 background,
             });
         }
-        for level in 1..=entry.prefix_width().min(sidebar.width.saturating_sub(1)) {
+        for x in 1..=entry.prefix_width().min(sidebar.width.saturating_sub(1)) {
+            let level = (x - 1) / 2 + 1;
             let rect = Rect {
-                x: level,
+                x,
                 width: 1,
                 ..row_rect
             };
@@ -3316,11 +3317,11 @@ mod tests {
             );
         }
         assert_ne!(bright, muted);
-        assert_eq!(ink(window_y, icon_x - 1), bright);
-        assert_eq!(ink(pane_y, icon_x - 1), muted);
-        assert_eq!(ink(detail_y, icon_x - 1), muted);
+        assert_eq!(ink(window_y, icon_x - 2), bright);
+        assert_eq!(ink(pane_y, icon_x - 2), muted);
+        assert_eq!(ink(detail_y, icon_x - 2), muted);
         assert_eq!(ink(pane_y, icon_x), bright);
-        assert_eq!(ink(other_y, icon_x - 1), muted);
+        assert_eq!(ink(other_y, icon_x - 2), muted);
         assert_eq!(ink(window_y, icon_x), bright);
         assert_eq!(ink(other_y, icon_x), bright);
     }

@@ -329,7 +329,7 @@ Healthy sessions have no status badge. Windows use the two-cell `` honeycomb
 slot and neutral labels; project colors belong to pane bees. Bright tree guides
 trace only the selected item's path to its ancestors. Fancy chrome rounds each
 turn and leaves off-path arms of junctions muted. Plain chrome keeps Unicode
-guides at the same one-cell indentation. The active pane's title and metadata
+guides at the same two-cell indentation. The active pane's title and metadata
 share one full-width highlight.
 In workspaces with several windows, a window with one sidebar pane is shown
 as that pane directly under the workspace.

@@ -172,18 +172,27 @@ impl ChromeGraphics {
         {
             let y = offset + 2;
             let index = tree.scroll + offset;
-            for x in 1..=entry.prefix_width().min(sidebar.width.saturating_sub(1)) {
-                let cell = &mut row.cells[usize::from(x)];
-                let guide = match entry.guide_at(x) {
+            let width = entry.prefix_width().min(sidebar.width.saturating_sub(1));
+            for x in (1..=width).step_by(2) {
+                let level = (x - 1) / 2 + 1;
+                let guide = match entry.guide_at(level) {
                     '│' => TreeGuide::Stem,
                     '├' => TreeGuide::Tee,
                     '╰' => TreeGuide::Elbow,
                     _ => continue,
                 };
+                let span = if matches!(guide, TreeGuide::Stem) {
+                    1
+                } else {
+                    2
+                };
+                if x + span - 1 > width {
+                    continue;
+                }
                 let edge = focus
                     .iter()
                     .flatten()
-                    .find(|edge| edge.depth == x && (edge.start..=edge.end).contains(&index));
+                    .find(|edge| edge.depth == level && (edge.start..=edge.end).contains(&index));
                 if self.0.place_tree_guide(
                     effects,
                     [i32::from(x), y as i32],
@@ -192,8 +201,10 @@ impl ChromeGraphics {
                     edge.is_some_and(|edge| edge.end == index),
                     0x4000_0000 + (y as u32 * 8 + u32::from(x)) * 2,
                 ) {
-                    cell.text.clear();
-                    cell.text.push(' ');
+                    for cell in &mut row.cells[usize::from(x)..usize::from(x + span)] {
+                        cell.text.clear();
+                        cell.text.push(' ');
+                    }
                 }
             }
         }
