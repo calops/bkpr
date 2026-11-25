@@ -3,7 +3,10 @@
 use crate::controller::{SessionGroup, SessionStatus, SidebarRow, SidebarRowKind, SidebarTarget};
 use crate::project_colors::{ProjectColors, ProjectHost, ProjectSlots};
 use bkpr_protocol::{PaneSnapshot, RegistrySnapshot};
-use bkpr_tui_framework::{Navigation, NavigationRow};
+use bkpr_tui_framework::{
+    Navigation, NavigationRow,
+    tree_guides::{FocusEdge, Prefix},
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -39,12 +42,6 @@ pub(crate) struct TreeRow {
     parent_row: Option<usize>,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct FocusEdge {
-    pub depth: u16,
-    pub start: usize,
-    pub end: usize,
-}
 impl TreeRow {
     fn branch(&self) -> bool {
         matches!(
@@ -58,54 +55,23 @@ impl TreeRow {
     }
 
     pub fn icon_column(&self) -> u16 {
-        1 + self.depth * 2
+        1 + self.prefix().width()
     }
 
     pub fn content_column(&self) -> u16 {
-        if self.branch() {
-            self.icon_column() + 2
-        } else {
-            2 + self.depth.saturating_sub(1) * 2
-        }
+        self.icon_column() + if self.branch() { 2 } else { 0 }
     }
 
-    pub fn prefix_width(&self) -> u16 {
+    pub fn prefix(&self) -> Prefix {
         match self.kind {
-            Kind::Native(SidebarRowKind::Spacer) => self.depth * 2,
-            Kind::Native(SidebarRowKind::Projects { .. } | SidebarRowKind::Detail { .. }) => {
-                self.content_column() - 1
+            Kind::Native(SidebarRowKind::Spacer) => Prefix::spacer(self.depth, self.continuations),
+            Kind::Native(SidebarRowKind::Projects { .. }) => {
+                Prefix::secondary(self.depth, self.continuations, true)
             }
-            _ => self.icon_column() - 1,
-        }
-    }
-
-    pub fn write_prefix(&self, label: &mut String, highlighted: bool) {
-        label.extend((0..self.prefix_width()).map(|offset| {
-            if highlighted {
-                return ' ';
+            Kind::Native(SidebarRowKind::Detail { .. }) => {
+                Prefix::secondary(self.depth, self.continuations, false)
             }
-            let guide = self.guide_at(offset / 2 + 1);
-            if offset % 2 == 0 {
-                guide
-            } else if matches!(guide, '├' | '╰') {
-                '─'
-            } else {
-                ' '
-            }
-        }));
-    }
-
-    pub fn guide_at(&self, level: u16) -> char {
-        if self.branch() && level == self.depth {
-            if self.last_sibling { '╰' } else { '├' }
-        } else if matches!(self.kind, Kind::Native(SidebarRowKind::Projects { .. }))
-            && level == self.depth
-            || (level < self.depth || matches!(self.kind, Kind::Native(SidebarRowKind::Spacer)))
-                && self.continuations & (1 << level) != 0
-        {
-            '│'
-        } else {
-            ' '
+            _ => Prefix::node(self.depth, self.continuations, self.last_sibling),
         }
     }
 }

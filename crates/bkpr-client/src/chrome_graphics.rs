@@ -138,14 +138,10 @@ impl ChromeGraphics {
         self.0.set_enabled(enabled)
     }
     pub(crate) fn prepare_tree_guides(&mut self, theme: &bkpr_tui_framework::Theme) {
-        let inks = match (
+        self.0.tree_guide_inks([
             theme.ink(bkpr_tui_framework::Role::Base, false),
             crate::appearance::inactive_tree_guide_ink(theme),
-        ) {
-            (ColorSource::Rgb(bright), ColorSource::Rgb(muted)) => Some([bright, muted]),
-            _ => None,
-        };
-        self.0.tree_guide_inks(inks);
+        ]);
     }
 
     pub(crate) fn draw_tree_guides(
@@ -155,58 +151,34 @@ impl ChromeGraphics {
         effects: &mut Frame,
         guide_rows: u16,
     ) {
-        use bkpr_tui_framework::graphics::TreeGuide;
         if !self.0.is_enabled() {
             return;
         }
         let focus = tree.focus_edges();
         let sidebar = crate::controller::screen_geometry(text.size, tree.preferred_columns).0;
         let available = crate::controller::sidebar_content_rows(sidebar, guide_rows);
-        for (offset, (entry, row)) in tree
+        let scrollbar = crate::controller::sidebar_scrollbar(tree, available).is_some();
+        let width = sidebar.width.saturating_sub(1 + u16::from(scrollbar));
+        for (offset, entry) in tree
             .rows
             .iter()
             .skip(tree.scroll)
-            .zip(text.rows.iter_mut().skip(2))
             .take(available)
             .enumerate()
         {
-            let y = offset + 2;
-            let index = tree.scroll + offset;
-            let width = entry.prefix_width().min(sidebar.width.saturating_sub(1));
-            for x in (1..=width).step_by(2) {
-                let level = (x - 1) / 2 + 1;
-                let guide = match entry.guide_at(level) {
-                    '│' => TreeGuide::Stem,
-                    '├' => TreeGuide::Tee,
-                    '╰' => TreeGuide::Elbow,
-                    _ => continue,
-                };
-                let span = if matches!(guide, TreeGuide::Stem) {
-                    1
-                } else {
-                    2
-                };
-                if x + span - 1 > width {
-                    continue;
-                }
-                let edge = focus
-                    .iter()
-                    .flatten()
-                    .find(|edge| edge.depth == level && (edge.start..=edge.end).contains(&index));
-                if self.0.place_tree_guide(
-                    effects,
-                    [i32::from(x), y as i32],
-                    guide,
-                    edge.is_some(),
-                    edge.is_some_and(|edge| edge.end == index),
-                    0x4000_0000 + (y as u32 * 8 + u32::from(x)) * 2,
-                ) {
-                    for cell in &mut row.cells[usize::from(x)..usize::from(x + span)] {
-                        cell.text.clear();
-                        cell.text.push(' ');
-                    }
-                }
-            }
+            entry.prefix().paint_fancy(
+                &self.0,
+                text,
+                effects,
+                Rect {
+                    x: 1,
+                    y: offset as u16 + 2,
+                    width,
+                    height: 1,
+                },
+                bkpr_tui_framework::tree_guides::Focus::at(&focus, tree.scroll + offset),
+                0x4000_0000,
+            );
         }
     }
 

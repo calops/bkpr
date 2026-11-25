@@ -3,6 +3,7 @@
 use crate::ColorProbe;
 use crate::decoration::{self, DecorationGeometry, DecorationStyle, PreparedDecoration};
 use crate::joined::{JoinedCache, JoinedSurface, OpaqueSpan, PreparedJoined};
+use crate::tree_guides::TreeGuide;
 use crate::{TerminalGuard, prepared_png::PreparedTransport, raster_cache::RasterCache};
 use bkpr_protocol::{ColorSource, Frame, Image, ImageLayer, PixelFormat, Placement, Size};
 use resvg::{tiny_skia, usvg};
@@ -58,17 +59,6 @@ static GUIDE_MASKS: [SvgAsset; 4] = [
     guide_mask!(2, "M5 7V20"),
     guide_mask!(3, "M5 0V5Q5 10 10 10H20"),
 ];
-
-/// One row of a two-cell tree indentation slot.
-#[derive(Clone, Copy)]
-pub enum TreeGuide {
-    /// A vertical continuation only.
-    Stem,
-    /// A branch with a continuing trunk.
-    Tee,
-    /// The final branch at this depth.
-    Elbow,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Config {
@@ -304,9 +294,15 @@ impl SvgGraphics {
         self.enabled
     }
 
-    /// Set the active and inactive inks for the next preparation of two-cell artwork.
-    pub fn tree_guide_inks(&mut self, inks: Option<[[u8; 3]; 2]>) {
-        self.guide_inks = inks.filter(|_| self.span == [2, 1]);
+    /// Set active and inactive inks for the next preparation of two-cell artwork.
+    /// If either ink is not explicit RGB, keep Unicode tree guides.
+    pub fn tree_guide_inks(&mut self, inks: [ColorSource; 2]) {
+        self.guide_inks = match inks {
+            [ColorSource::Rgb(active), ColorSource::Rgb(inactive)] if self.span == [2, 1] => {
+                Some([active, inactive])
+            }
+            _ => None,
+        };
     }
 
     /// Request icons for the measured cell size and actual foreground sources.
@@ -672,10 +668,7 @@ impl SvgGraphics {
         true
     }
 
-    /// Place a guide using the prepared inks. Branches span two cells; stems use one. The focus path either
-    /// passes through a stem or turns into the branch without recoloring its tail.
-    /// Returns false if any piece is unavailable so callers can keep text fallback.
-    pub fn place_tree_guide(
+    pub(crate) fn place_tree_guide(
         &self,
         frame: &mut Frame,
         position: [i32; 2],
@@ -1099,16 +1092,53 @@ mod tests {
 
     #[test]
     fn tree_junctions_keep_the_muted_arm_and_connect_across_rows() {
+        use crate::tree_guides::{Focus, FocusEdge, Prefix};
         let mut graphics = SvgGraphics::new(ASSETS, 2, 1).unwrap();
         let size = size(10);
         let bright = [255, 255, 255];
         let muted = [80, 80, 80];
-        graphics.tree_guide_inks(Some([bright, muted]));
+        let prefix = Prefix::node(1, 0, false);
+        let bounds = crate::Rect {
+            x: 1,
+            y: 0,
+            width: 2,
+            height: 1,
+        };
+        let mut label = String::new();
+        prefix.write_plain(&mut label, true);
+        label.push('A');
+        let mut plain = crate::blank(size);
+        crate::text(&mut plain, bounds.x, bounds.y, &label, false);
+        let mut missing = crate::graphics_frame(size);
+        prefix.paint_fancy(
+            &graphics,
+            &mut plain,
+            &mut missing,
+            bounds,
+            Focus::default(),
+            1,
+        );
+        assert!(missing.placements.is_empty());
+        assert_eq!(plain.rows[0].cells[1].text, "├");
+        assert_eq!(plain.rows[0].cells[2].text, "─");
+        graphics.tree_guide_inks([ColorSource::Rgb(bright), ColorSource::Rgb(muted)]);
         graphics.prepare(&host(), size, &[]);
         prepared(&mut graphics);
         for (turn, bottom, right) in [(true, muted, bright), (false, bright, muted)] {
             let mut frame = crate::graphics_frame(size);
-            assert!(graphics.place_tree_guide(&mut frame, [1, 0], TreeGuide::Tee, true, turn, 1));
+            let focus = Focus::at(
+                &[Some(FocusEdge {
+                    depth: 1,
+                    start: 0,
+                    end: usize::from(!turn),
+                })],
+                0,
+            );
+            let mut text = plain.clone();
+            prefix.paint_fancy(&graphics, &mut text, &mut frame, bounds, focus, 1);
+            assert_eq!(text.rows[0].cells[1].text, " ");
+            assert_eq!(text.rows[0].cells[2].text, " ");
+            assert_eq!(text.rows[0].cells[3].text, "A");
             let pixel = |x, y| {
                 frame.placements.iter().rev().find_map(|placed| {
                     let image = frame

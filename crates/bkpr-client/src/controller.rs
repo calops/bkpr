@@ -1030,7 +1030,7 @@ fn native_row_label(
     } = context;
     let marker_x = entry.icon_column();
     let mut label = String::with_capacity(usize::from(width) * 2);
-    entry.write_prefix(&mut label, highlighted);
+    entry.prefix().write_plain(&mut label, !highlighted);
     match kind {
         SidebarRowKind::Workspace { index, collapsed } => {
             let workspace = &registry.workspaces[index];
@@ -1602,27 +1602,13 @@ pub(crate) fn theme_tree_chrome(
                 background,
             });
         }
-        for x in 1..=entry.prefix_width().min(sidebar.width.saturating_sub(1)) {
-            let level = (x - 1) / 2 + 1;
-            let rect = Rect {
-                x,
-                width: 1,
-                ..row_rect
-            };
-            let bright = focus_edges.iter().flatten().any(|edge| {
-                edge.depth == level && (edge.start..=edge.end).contains(&(tree.scroll + index))
-            });
-            spans.push(RoleSpan {
-                rect,
-                role: if bright { Role::Base } else { Role::Muted },
-            });
-            if !bright {
-                foregrounds.push(ForegroundSpan {
-                    rect,
-                    foreground: inactive_guide_ink,
-                });
-            }
-        }
+        entry.prefix().plain_styles(
+            row_rect,
+            bkpr_tui_framework::tree_guides::Focus::at(&focus_edges, tree.scroll + index),
+            inactive_guide_ink,
+            &mut spans,
+            foregrounds,
+        );
         let ci_status = match kind {
             SidebarRowKind::Detail { index } => registry.panes[index]
                 .project
