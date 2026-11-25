@@ -133,7 +133,7 @@ impl Desktop {
                 app_name: "Bkpr",
                 title,
                 body,
-                icon: Some(include_bytes!("../../../assets/logo/bkpr-notification.png")),
+                icon: Some(include_bytes!("../assets/bkpr-notification.png")),
                 activation,
                 report_close: false,
                 urgency: notification::Urgency::Normal,

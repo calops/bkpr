@@ -282,7 +282,7 @@ pub(crate) fn show_validated(
         for chunk in icon.chunks(MAX_CHUNK_BYTES) {
             write!(
                 out,
-                "\x1b]99;i={}:p=icon:e=1:d=0;{}\x1b\\",
+                "\x1b]99;i={}:p=icon:e=1:d=0:a={action};{}\x1b\\",
                 notification.id,
                 Base64Display::new(chunk, &STANDARD),
             )?;
@@ -572,7 +572,7 @@ mod tests {
                     (last, head)
                 });
             assert!(last.starts_with(&format!("\x1b]99;i={id}:p=title:e=1:d=1:")));
-            let prefix = format!("\x1b]99;i={id}:p=icon:e=1:d=0;");
+            let prefix = format!("\x1b]99;i={id}:p=icon:e=1:d=0:a=-focus;");
             let mut decoded = Vec::new();
             let mut count = 0;
             for chunk in chunks.split("\x1b\\").filter(|chunk| !chunk.is_empty()) {
