@@ -684,7 +684,8 @@ impl SvgGraphics {
         let (first, second) = match guide {
             TreeGuide::Stem => ((0, ink), None),
             TreeGuide::Tee if turns_here => ((2, muted), Some((3, bright))),
-            TreeGuide::Tee => ((0, ink), Some((1, muted))),
+            // The arm overlaps the stem at the join. Keep the through path on top.
+            TreeGuide::Tee => ((1, muted), Some((0, ink))),
             TreeGuide::Elbow => ((3, ink), None),
         };
         let start = frame.placements.len();
@@ -1153,6 +1154,9 @@ mod tests {
             };
             assert_eq!(pixel(5, 0), Some(bright));
             assert_eq!(pixel(5, 19), Some(bottom));
+            if !turn {
+                assert_eq!(pixel(5, 10), Some(bright));
+            }
             assert_eq!(pixel(19, 10), Some(right));
         }
     }
