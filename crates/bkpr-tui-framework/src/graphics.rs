@@ -39,6 +39,37 @@ pub struct SvgAsset {
     pub svg: &'static str,
 }
 
+const GUIDE_ID: u32 = u32::MAX - 3;
+macro_rules! guide_mask {
+    ($index:literal, $path:literal) => {
+        SvgAsset {
+            id: GUIDE_ID + $index,
+            svg: concat!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" preserveAspectRatio="none"><path fill="none" stroke="white" stroke-width="2" d=""#,
+                $path,
+                r#""/></svg>"#,
+            ),
+        }
+    };
+}
+static GUIDE_MASKS: [SvgAsset; 4] = [
+    guide_mask!(0, "M5 0V20"),
+    guide_mask!(1, "M5 10H10"),
+    guide_mask!(2, "M5 7V20"),
+    guide_mask!(3, "M5 0V5Q5 10 10 10"),
+];
+
+/// One connector cell in a tree prefix.
+#[derive(Clone, Copy)]
+pub enum TreeGuide {
+    /// A vertical continuation only.
+    Stem,
+    /// A branch with a continuing trunk.
+    Tee,
+    /// The final branch at this depth.
+    Elbow,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Config {
     width: u32,
@@ -47,6 +78,7 @@ struct Config {
     len: usize,
     cell: [u32; 2],
     decorations: [Option<DecorationStyle>; MAX_DECORATIONS],
+    guide_inks: Option<[[u8; 3]; 2]>,
     joined: Option<JoinedSurface>,
 }
 impl Config {
@@ -63,6 +95,7 @@ impl Config {
             len: 0,
             cell: [size.cell_width, size.cell_height],
             decorations: [None; MAX_DECORATIONS],
+            guide_inks: None,
             joined: None,
         })
     }
@@ -73,6 +106,14 @@ impl Config {
         {
             self.colors[self.len] = rgb;
             self.len += 1;
+        }
+    }
+
+    fn inks(&self, asset: u32) -> &[[u8; 3]] {
+        if asset >= GUIDE_ID {
+            self.guide_inks.as_ref().map_or(&[], |inks| inks.as_slice())
+        } else {
+            &self.colors[..self.len]
         }
     }
 }
@@ -144,6 +185,7 @@ pub struct SvgGraphics {
     foreground: Option<[u8; 3]>,
     palette: HashMap<usize, [u8; 3]>,
     color_revision: Option<u64>,
+    guide_inks: Option<[[u8; 3]; 2]>,
     uploads_dirty: bool,
 }
 impl SvgGraphics {
@@ -171,6 +213,7 @@ impl SvgGraphics {
             || columns == 0
             || rows == 0
             || assets.iter().any(|asset| asset.svg.len() > 64 * 1024)
+            || assets.iter().any(|asset| asset.id >= GUIDE_ID)
             || assets
                 .iter()
                 .enumerate()
@@ -213,6 +256,7 @@ impl SvgGraphics {
             foreground: None,
             palette: HashMap::new(),
             color_revision: None,
+            guide_inks: None,
             uploads_dirty: false,
         })
     }
@@ -260,6 +304,11 @@ impl SvgGraphics {
         self.enabled
     }
 
+    /// Set the active and inactive inks for the next preparation of two-cell artwork.
+    pub fn tree_guide_inks(&mut self, inks: Option<[[u8; 3]; 2]>) {
+        self.guide_inks = inks.filter(|_| self.span == [2, 1]);
+    }
+
     /// Request icons for the measured cell size and actual foreground sources.
     /// Unresolved colors or unsupported graphics leave those icons unavailable.
     pub fn prepare(&mut self, host: &ColorProbe, size: Size, sources: &[ColorSource]) {
@@ -294,6 +343,7 @@ impl SvgGraphics {
         if let Some(config) = next.as_mut() {
             let mut count = 0;
             config.joined = self.joined_request;
+            config.guide_inks = self.guide_inks;
             for style in decorations {
                 if config.decorations[..count].contains(&Some(*style)) {
                     continue;
@@ -311,6 +361,7 @@ impl SvgGraphics {
             // Canonicalize order so row movement cannot invalidate raster work.
             config.colors[..config.len].sort_unstable();
             if config.len == 0
+                && config.guide_inks.is_none()
                 && config.decorations.iter().all(Option::is_none)
                 && config.joined.is_none()
             {
@@ -353,7 +404,7 @@ impl SvgGraphics {
         }
         self.ready.retain(|entry| {
             next.is_some_and(|config| {
-                config.colors[..config.len].contains(&entry.rgb)
+                config.inks(entry.asset_id).contains(&entry.rgb)
                     && entry.matches(entry.asset_id, &config, entry.rgb)
             })
         });
@@ -620,6 +671,50 @@ impl SvgGraphics {
         });
         true
     }
+
+    /// Place a one-cell guide using the prepared inks. The focus path either
+    /// passes through a stem or turns into the branch without recoloring its tail.
+    /// Returns false if any piece is unavailable so callers can keep text fallback.
+    pub fn place_tree_guide(
+        &self,
+        frame: &mut Frame,
+        position: [i32; 2],
+        guide: TreeGuide,
+        on_path: bool,
+        turns_here: bool,
+        placement: u32,
+    ) -> bool {
+        let Some([bright, muted]) = self.config.and_then(|config| config.guide_inks) else {
+            return false;
+        };
+        let ink = if on_path { bright } else { muted };
+        let (first, second) = match guide {
+            TreeGuide::Stem => ((0, ink), None),
+            TreeGuide::Tee if turns_here => ((2, muted), Some((3, bright))),
+            TreeGuide::Tee => ((0, ink), Some((1, muted))),
+            TreeGuide::Elbow => ((3, ink), None),
+        };
+        let start = frame.placements.len();
+        for (index, (mask, rgb)) in std::iter::once(first).chain(second).enumerate() {
+            if !self.place(
+                frame,
+                GUIDE_ID + mask,
+                position,
+                [0, 0],
+                ColorSource::Rgb(rgb),
+                placement + index as u32,
+            ) {
+                frame.placements.truncate(start);
+                return false;
+            }
+            let cell_width = frame.size.cell_width;
+            let placed = frame.placements.last_mut().unwrap();
+            placed.source_width = cell_width;
+            placed.width = cell_width;
+            placed.z = index as i32;
+        }
+        true
+    }
 }
 impl Drop for SvgGraphics {
     fn drop(&mut self) {
@@ -641,16 +736,22 @@ fn current(shared: &Shared, generation: u64) -> bool {
     shared.generation.load(Ordering::Acquire) == generation
 }
 fn mask(tree: &usvg::Tree, config: &Config) -> Option<Vec<u8>> {
+    mask_scaled(tree, config, false)
+}
+
+fn mask_scaled(tree: &usvg::Tree, config: &Config, stretch: bool) -> Option<Vec<u8>> {
     let mut pixmap = tiny_skia::Pixmap::new(config.width, config.height)?;
     let size = tree.size();
-    let scale = (config.width as f32 / size.width()).min(config.height as f32 / size.height());
+    let sx = config.width as f32 / size.width();
+    let sy = config.height as f32 / size.height();
+    let [sx, sy] = if stretch { [sx, sy] } else { [sx.min(sy); 2] };
     let transform = tiny_skia::Transform::from_row(
-        scale,
+        sx,
         0.0,
         0.0,
-        scale,
-        (config.width as f32 - size.width() * scale) / 2.0,
-        (config.height as f32 - size.height() * scale) / 2.0,
+        sy,
+        (config.width as f32 - size.width() * sx) / 2.0,
+        (config.height as f32 - size.height() * sy) / 2.0,
     );
     resvg::render(tree, transform, &mut pixmap.as_mut());
     Some(
@@ -674,7 +775,8 @@ fn run(
     resource_generation: u64,
     cache_root: Option<PathBuf>,
 ) {
-    let mut trees: Vec<Option<Option<usvg::Tree>>> = (0..assets.len()).map(|_| None).collect();
+    let asset_count = assets.len() + GUIDE_MASKS.len();
+    let mut trees: Vec<Option<Option<usvg::Tree>>> = (0..asset_count).map(|_| None).collect();
     let mut cache: VecDeque<Entry> = VecDeque::new();
     let mut cache_bytes = 0;
     let mut next_id = 1u32;
@@ -700,15 +802,19 @@ fn run(
         if !current(&shared, generation) {
             continue;
         }
-        let mut entries = Vec::with_capacity((config.len * assets.len()).min(MAX_IMAGES));
+        let limit = MAX_IMAGES + 2 * GUIDE_MASKS.len() * usize::from(config.guide_inks.is_some());
+        let mut entries = Vec::with_capacity((config.len * assets.len() + 8).min(limit));
         let mut bytes = 0;
-        for rgb in config.colors[..config.len].iter().copied() {
-            for (index, asset) in assets.iter().enumerate() {
+        for (index, asset) in assets.iter().chain(&GUIDE_MASKS).enumerate() {
+            for (ink_index, &rgb) in config.inks(asset.id).iter().enumerate() {
+                if asset.id >= GUIDE_ID && ink_index == 1 && config.inks(asset.id)[0] == rgb {
+                    continue;
+                }
                 if !current(&shared, generation) {
                     break;
                 }
                 let image_bytes = config.width as usize * config.height as usize * 4;
-                if entries.len() >= MAX_IMAGES || bytes + image_bytes > MAX_BYTES {
+                if entries.len() >= limit || bytes + image_bytes > MAX_BYTES {
                     continue;
                 }
                 let entry = if let Some(index) =
@@ -727,14 +833,21 @@ fn run(
                     {
                         masks = Some(Masks {
                             size: [config.width, config.height],
-                            alpha: (0..assets.len()).map(|_| None).collect(),
+                            alpha: (0..asset_count).map(|_| None).collect(),
                         });
                     }
                     let prepared = &mut masks.as_mut().unwrap().alpha[index];
                     if prepared.is_none() {
                         *prepared = persistent
                             .prepare(
-                                &("svg-mask", asset.svg),
+                                &(
+                                    if asset.id >= GUIDE_ID {
+                                        "tree-guide"
+                                    } else {
+                                        "svg-mask"
+                                    },
+                                    asset.svg,
+                                ),
                                 [config.width, config.height],
                                 PixelFormat::Gray,
                                 || {
@@ -747,7 +860,13 @@ fn run(
                                             .ok()
                                         })
                                         .as_ref()
-                                        .and_then(|tree| mask(tree, &config))
+                                        .and_then(|tree| {
+                                            if asset.id >= GUIDE_ID {
+                                                mask_scaled(tree, &config, true)
+                                            } else {
+                                                mask(tree, &config)
+                                            }
+                                        })
                                 },
                             )
                             .map(|raster| raster.pixels);
@@ -975,6 +1094,36 @@ mod tests {
         };
         assert_eq!(unsafe { libc::poll(&mut poll, 1, 5000) }, 1);
         assert!(graphics.drain().unwrap());
+    }
+
+    #[test]
+    fn tree_junctions_keep_the_muted_arm_and_connect_across_rows() {
+        let mut graphics = SvgGraphics::new(ASSETS, 2, 1).unwrap();
+        let size = size(10);
+        let bright = [255, 255, 255];
+        let muted = [80, 80, 80];
+        graphics.tree_guide_inks(Some([bright, muted]));
+        graphics.prepare(&host(), size, &[]);
+        prepared(&mut graphics);
+        for (turn, bottom, right) in [(true, muted, bright), (false, bright, muted)] {
+            let mut frame = crate::graphics_frame(size);
+            assert!(graphics.place_tree_guide(&mut frame, [1, 0], TreeGuide::Tee, true, turn, 1));
+            let pixel = |x, y| {
+                frame.placements.iter().rev().find_map(|placed| {
+                    let image = frame
+                        .images
+                        .iter()
+                        .find(|image| image.id == placed.image_id)
+                        .unwrap();
+                    let offset = (y * image.width + x) as usize * 4;
+                    let pixel = &image.pixels[offset..offset + 4];
+                    (pixel[3] > 0).then(|| <[u8; 3]>::try_from(&pixel[..3]).unwrap())
+                })
+            };
+            assert_eq!(pixel(5, 0), Some(bright));
+            assert_eq!(pixel(5, 19), Some(bottom));
+            assert_eq!(pixel(9, 10), Some(right));
+        }
     }
 
     fn placed(graphics: &SvgGraphics, width: u32) -> Frame {

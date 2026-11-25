@@ -5756,6 +5756,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 chrome_markers.push((artwork, col, row, source));
             }
             graphics.set_enabled(app.chrome_graphics_enabled);
+            graphics.prepare_tree_guides(&theme);
             graphics.prepare(ui_colors, size, &marker_sources);
             graphics.prepare_panes(size, &rects);
             next_pane_graphics.clear();
@@ -5817,6 +5818,12 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     &mut chrome_foregrounds,
                 );
             }
+            graphics.draw_tree_guides(
+                &tree,
+                &mut chrome_surface.frame,
+                &mut artwork_effects,
+                guide_rows,
+            );
             for &(artwork, col, row, source) in &chrome_markers {
                 graphics.decorate(
                     &mut chrome_surface.frame,

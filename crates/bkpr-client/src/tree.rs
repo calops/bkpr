@@ -58,39 +58,48 @@ impl TreeRow {
     }
 
     pub fn icon_column(&self) -> u16 {
-        1 + self.depth * 3
+        1 + self.depth
     }
 
     pub fn content_column(&self) -> u16 {
         if self.branch() {
             self.icon_column() + 2
         } else {
-            3 + self.depth.saturating_sub(1) * 3
+            2 + self.depth.saturating_sub(1)
+        }
+    }
+
+    pub fn prefix_width(&self) -> u16 {
+        match self.kind {
+            Kind::Native(SidebarRowKind::Spacer) => self.depth,
+            Kind::Native(SidebarRowKind::Projects { .. } | SidebarRowKind::Detail { .. }) => {
+                self.content_column() - 1
+            }
+            _ => self.icon_column() - 1,
         }
     }
 
     pub fn write_prefix(&self, label: &mut String, highlighted: bool) {
-        let spacer = matches!(self.kind, Kind::Native(SidebarRowKind::Spacer));
-        let end = self.depth + u16::from(spacer);
-        for level in 1..end {
-            label.push_str(if !highlighted && self.continuations & (1 << level) != 0 {
-                "│  "
+        label.extend((1..=self.prefix_width()).map(|level| {
+            if highlighted {
+                ' '
             } else {
-                "   "
-            });
-        }
-        if self.branch() && self.depth > 0 {
-            label.push_str(if highlighted {
-                "   "
-            } else if self.last_sibling {
-                "╰─╴"
-            } else {
-                "├─╴"
-            });
-        } else if matches!(self.kind, Kind::Native(SidebarRowKind::Projects { .. })) {
-            label.push_str(if highlighted { "  " } else { "│ " });
-        } else if matches!(self.kind, Kind::Native(SidebarRowKind::Detail { .. })) {
-            label.push_str("  ");
+                self.guide_at(level)
+            }
+        }));
+    }
+
+    pub fn guide_at(&self, level: u16) -> char {
+        if self.branch() && level == self.depth {
+            if self.last_sibling { '╰' } else { '├' }
+        } else if matches!(self.kind, Kind::Native(SidebarRowKind::Projects { .. }))
+            && level == self.depth
+            || (level < self.depth || matches!(self.kind, Kind::Native(SidebarRowKind::Spacer)))
+                && self.continuations & (1 << level) != 0
+        {
+            '│'
+        } else {
+            ' '
         }
     }
 }

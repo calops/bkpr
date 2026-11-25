@@ -1602,23 +1602,10 @@ pub(crate) fn theme_tree_chrome(
                 background,
             });
         }
-        let prefix_width = if matches!(kind, SidebarRowKind::Spacer) {
-            entry.depth * 3
-        } else if matches!(
-            kind,
-            SidebarRowKind::Projects { .. } | SidebarRowKind::Detail { .. }
-        ) {
-            entry.content_column().saturating_sub(1)
-        } else {
-            entry.icon_column().saturating_sub(1)
-        };
-        for level in 1..=prefix_width.div_ceil(3) {
-            let x = 1 + (level - 1) * 3;
+        for level in 1..=entry.prefix_width().min(sidebar.width.saturating_sub(1)) {
             let rect = Rect {
-                x,
-                width: 3
-                    .min(prefix_width - (x - 1))
-                    .min(sidebar.width.saturating_sub(x)),
+                x: level,
+                width: 1,
                 ..row_rect
             };
             let bright = focus_edges.iter().flatten().any(|edge| {
@@ -3329,11 +3316,11 @@ mod tests {
             );
         }
         assert_ne!(bright, muted);
-        assert_eq!(ink(window_y, icon_x - 3), bright);
-        assert_eq!(ink(pane_y, icon_x - 3), muted);
-        assert_eq!(ink(detail_y, icon_x - 3), muted);
+        assert_eq!(ink(window_y, icon_x - 1), bright);
+        assert_eq!(ink(pane_y, icon_x - 1), muted);
+        assert_eq!(ink(detail_y, icon_x - 1), muted);
         assert_eq!(ink(pane_y, icon_x), bright);
-        assert_eq!(ink(other_y, icon_x - 3), muted);
+        assert_eq!(ink(other_y, icon_x - 1), muted);
         assert_eq!(ink(window_y, icon_x), bright);
         assert_eq!(ink(other_y, icon_x), bright);
     }
@@ -4745,13 +4732,9 @@ mod tests {
                         .all(|cell| cell.style.background_source == expected)
                 );
                 if visible {
-                    assert!(cells[1..4].iter().all(|cell| cell.text == " "));
+                    assert_eq!(cells[1].text, " ");
                 } else if matches!(entry.kind, SidebarRowKind::Pane { .. }) {
-                    assert!(
-                        cells[1..4]
-                            .iter()
-                            .any(|cell| matches!(cell.text.as_str(), "╰" | "├"))
-                    );
+                    assert!(matches!(cells[1].text.as_str(), "╰" | "├"));
                 }
             }
             assert_eq!(
@@ -4814,10 +4797,6 @@ mod tests {
                 .iter()
                 .any(|cell| cell.text != " " && cell.style.inverse)
         );
-        assert!(
-            surface.frame.rows[row].cells[1..4]
-                .iter()
-                .all(|cell| cell.text == " ")
-        );
+        assert_eq!(surface.frame.rows[row].cells[1].text, " ");
     }
 }
