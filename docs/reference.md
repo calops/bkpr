@@ -1096,6 +1096,11 @@ across the highlighted item, card and border cells; tree guides disappear inside
 that item and return when the popup closes. Limited-color clients retain native
 inverse keyboard selection.
 
+Bright tree guides lead to the panes shown in the current window, whether or
+not they have keyboard focus. Detached panes and panes in other windows keep
+muted branches. Fancy guides use the same two-cell indent as Unicode guides;
+the Unicode guides remain available while graphics load or when they don't fit.
+
 Contextual hints always use a passive popup populated from the same effective
 bindings as dispatch. It stays left-anchored, overflowing only when the visible
 content needs more width. Every keybind popup adds one cell on the right through

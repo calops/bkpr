@@ -663,8 +663,8 @@ fn draw_prepared(
     // Scene strings are never interpreted as terminal programs. Only renderer-owned
     // escapes and validated normalized colors/positions reach the physical terminal.
     if frame.rows.len() > frame.size.rows as usize
-        || frame.images.len() > 1024
-        || frame.placements.len() > 4096
+        || frame.images.len() > geometry::MAX_IMAGES
+        || frame.placements.len() > geometry::MAX_PLACEMENTS
     {
         bail!("scene dimension/resource limits");
     }

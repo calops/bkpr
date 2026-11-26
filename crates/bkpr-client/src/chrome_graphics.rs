@@ -146,39 +146,12 @@ impl ChromeGraphics {
 
     pub(crate) fn draw_tree_guides(
         &self,
-        tree: &crate::tree::Tree,
-        text: &mut Frame,
-        effects: &mut Frame,
-        guide_rows: u16,
+        rows: &[crate::controller::GuideRow],
+        artwork: &mut bkpr_tui_framework::CellArtwork,
     ) {
-        if !self.0.is_enabled() {
-            return;
-        }
-        let focus = tree.focus_edges();
-        let sidebar = crate::controller::screen_geometry(text.size, tree.preferred_columns).0;
-        let available = crate::controller::sidebar_content_rows(sidebar, guide_rows);
-        let scrollbar = crate::controller::sidebar_scrollbar(tree, available).is_some();
-        let width = sidebar.width.saturating_sub(1 + u16::from(scrollbar));
-        for (offset, entry) in tree
-            .rows
-            .iter()
-            .skip(tree.scroll)
-            .take(available)
-            .enumerate()
-        {
-            entry.prefix().paint_fancy(
-                &self.0,
-                text,
-                effects,
-                Rect {
-                    x: 1,
-                    y: offset as u16 + 2,
-                    width,
-                    height: 1,
-                },
-                bkpr_tui_framework::tree_guides::Focus::at(&focus, tree.scroll + offset),
-                0x4000_0000,
-            );
+        for row in rows {
+            row.prefix
+                .paint_fancy(&self.0, artwork, row.bounds, row.focus);
         }
     }
 

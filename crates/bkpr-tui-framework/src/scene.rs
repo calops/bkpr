@@ -175,6 +175,42 @@ impl<'a> Surface<'a> {
         }
     }
 }
+
+/// Optional cell-aligned artwork backed by glyphs on a scene surface.
+///
+/// Groups replace their fallback cells only when the entire group is visible
+/// and fits after ordinary scene graphics. The caller keeps the fallback text.
+pub struct CellArtwork {
+    text: &'static str,
+    before: &'static str,
+    pub(crate) frame: Frame,
+    pub(crate) groups: Vec<(Rect, std::ops::Range<usize>)>,
+}
+
+impl CellArtwork {
+    /// Attach to the named full-viewport text surface and stack below the
+    /// named later surface. Both IDs must be present for artwork to appear.
+    pub fn new(size: Size, text: &'static str, before: &'static str) -> Self {
+        Self {
+            text,
+            before,
+            frame: graphics_frame(size),
+            groups: Vec::new(),
+        }
+    }
+
+    /// Clear the previous presentation, retaining storage for the next frame.
+    pub fn reset(&mut self, size: Size) {
+        self.frame.size = size;
+        self.frame.images.clear();
+        self.frame.placements.clear();
+        self.groups.clear();
+    }
+
+    pub(crate) fn room_for(&self, count: usize) -> bool {
+        self.frame.placements.len() + count <= geometry::MAX_PLACEMENTS
+    }
+}
 /// Back-to-front layers composed into one physical terminal update.
 pub struct Scene<'a> {
     /// Physical viewport dimensions and cell pixel metrics.
@@ -537,7 +573,7 @@ fn clip_projections(
             }
             geometry::reuse_constant_axes(&mut fragment, size);
             output.push(fragment);
-            if output.len() > 4096 {
+            if output.len() > geometry::MAX_PLACEMENTS {
                 bail!("composed projection limit");
             }
         }
@@ -975,6 +1011,82 @@ fn annotate(
     }
 }
 
+fn resource_alias(
+    aliases: &mut HashMap<((u64, u64), String, ImageKey), ImageKey>,
+    next: &mut u32,
+    scoped: ((u64, u64), String, ImageKey),
+) -> Result<ImageKey> {
+    Ok(match aliases.entry(scoped) {
+        std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            *next = next.checked_add(1).context("scene resource namespace exhausted")?;
+            *entry.insert(ImageKey { id: *next, generation: 0 })
+        }
+    })
+}
+
+fn compose_cell_artwork<'a>(
+    prepared: &mut geometry::Prepared<'a>,
+    artwork: &'a CellArtwork,
+    visible: &[Rect],
+    depth: i32,
+    canvas: &mut Frame,
+    mut alias: impl FnMut(ImageKey) -> Result<ImageKey>,
+) -> Result<()> {
+    if visible.is_empty() || prepared.placements.len() >= geometry::MAX_PLACEMENTS {
+        return Ok(());
+    }
+    let local = geometry::prepare(&artwork.frame, canvas.size)?;
+    let mut mapped = HashMap::new();
+    for &(rect, ref placements) in &artwork.groups {
+        if prepared.placements.len() + placements.len() > geometry::MAX_PLACEMENTS
+            || !visible.iter().any(|clip| {
+                clip.contains(rect.x, rect.y)
+                    && clip.contains(rect.x + rect.width - 1, rect.y)
+            })
+        {
+            continue;
+        }
+        let cells = &mut canvas.rows[usize::from(rect.y)].cells
+            [usize::from(rect.x)..usize::from(rect.x + rect.width)];
+        if cells.iter().any(|cell| cell.width != 1) {
+            continue;
+        }
+        // Guide masks are natural-size, so each placement projects to exactly
+        // one on-screen image. Both halves of a junction are admitted together.
+        let group = &local.placements[placements.clone()];
+        let additional_images = group
+            .iter()
+            .enumerate()
+            .filter(|&(index, p)| {
+                !mapped.contains_key(&p.image)
+                    && !group[..index].iter().any(|other| other.image == p.image)
+            })
+            .count();
+        if prepared.images.len() + additional_images > geometry::MAX_IMAGES {
+            continue;
+        }
+        for mut p in group.iter().copied() {
+            let key = p.image;
+            p.image = match mapped.entry(key) {
+                std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let alias = alias(key)?;
+                    prepared.images.insert(alias, local.images[&key]);
+                    *entry.insert(alias)
+                }
+            };
+            p.z += depth;
+            prepared.placements.push(p);
+        }
+        for cell in cells {
+            cell.text.clear();
+            cell.text.push(' ');
+        }
+    }
+    Ok(())
+}
+
 /// Retained scene compositor for one physical terminal and its generation-scoped image resources.
 #[derive(Default)]
 pub struct Renderer {
@@ -1014,6 +1126,26 @@ impl Renderer {
         host: &ColorProbe,
         terminal: &mut TerminalGuard,
     ) -> Result<()> {
+        self.render_with_cell_artwork(out, scene, host, terminal, None)
+    }
+
+    /// Render a scene with optional artwork over retained fallback cells.
+    ///
+    /// If an optional group is clipped or exceeds the composed image or
+    /// placement budget, its text survives. Ordinary scene validation is unchanged.
+    pub fn render_with_cell_artwork(
+        &mut self,
+        out: &mut impl Write,
+        scene: &Scene<'_>,
+        host: &ColorProbe,
+        terminal: &mut TerminalGuard,
+        artwork: Option<&CellArtwork>,
+    ) -> Result<()> {
+        let artwork = artwork.filter(|art| {
+            !art.groups.is_empty() && art.frame.size == scene.size && host.graphics.supported()
+        });
+        let mut artwork_cells = None;
+        let mut artwork_depth = None;
         for surface in &scene.surfaces {
             let r = surface.rect;
             if u32::from(r.x) + u32::from(r.width) > u32::from(scene.size.cols)
@@ -1101,6 +1233,17 @@ impl Renderer {
             if r.width == 0 || r.height == 0 {
                 continue;
             }
+            if let Some(art) = artwork {
+                if surface.id == art.text && surface.content == SurfaceContent::Cells
+                    && r == (Rect { x: 0, y: 0, width: scene.size.cols, height: scene.size.rows })
+                {
+                    artwork_cells = Some(index);
+                }
+                if surface.id == art.before && artwork_cells.is_some() && artwork_depth.is_none() {
+                    artwork_depth = Some(depth + 1);
+                    depth += 2;
+                }
+            }
             if let Some(cover) = surface.cell_rect() {
                 if matches!(surface.content, SurfaceContent::CellsWithUnderlay(_)) {
                     clip_projections(&mut prepared.placements, cover, scene.size, true)?;
@@ -1161,20 +1304,7 @@ impl Renderer {
                 };
                 let scoped = (namespace, surface.id.to_owned(), key);
                 retained.insert(scoped.clone());
-                let alias = if let Some(alias) = self.aliases.get(&scoped) {
-                    *alias
-                } else {
-                    self.next_alias = self
-                        .next_alias
-                        .checked_add(1)
-                        .context("scene resource namespace exhausted")?;
-                    let alias = ImageKey {
-                        id: self.next_alias,
-                        generation: 0,
-                    };
-                    self.aliases.insert(scoped, alias);
-                    alias
-                };
+                let alias = resource_alias(&mut self.aliases, &mut self.next_alias, scoped)?;
                 mapping.insert(key, alias);
                 prepared.images.insert(alias, image);
             }
@@ -1205,6 +1335,20 @@ impl Renderer {
                 prepared.placements.push(p);
             }
         }
+        if let (Some(art), Some(index), Some(depth)) = (artwork, artwork_cells, artwork_depth) {
+            compose_cell_artwork(
+                &mut prepared,
+                art,
+                &self.visible[index],
+                depth,
+                canvas,
+                |key| {
+                    let scoped = ((0, 0), art.text.to_owned(), key);
+                    retained.insert(scoped.clone());
+                    resource_alias(&mut self.aliases, &mut self.next_alias, scoped)
+                },
+            )?;
+        }
         self.aliases.retain(|key, _| retained.contains(key));
         // Rebuild visible resource requirements after layer clipping. The renderer
         // may retain bounded inactive projections only while their source survives.
@@ -1218,7 +1362,9 @@ impl Renderer {
                 prepared.original.insert(p.image);
             }
         }
-        if prepared.images.len() > 1024 || prepared.placements.len() > 4096 {
+        if prepared.images.len() > geometry::MAX_IMAGES
+            || prepared.placements.len() > geometry::MAX_PLACEMENTS
+        {
             bail!("composed scene resource limit");
         }
         draw_prepared(
@@ -2066,6 +2212,58 @@ mod scene_tests {
             notifications: VecDeque::new(),
             observed_focus: None,
         })
+    }
+
+    #[test]
+    fn cell_artwork_keeps_retained_text_when_only_one_slot_remains_or_artwork_is_withdrawn() {
+        let size = Size { cols: 4, rows: 2, cell_width: 1, cell_height: 1 };
+        let area = Rect { x: 0, y: 0, width: size.cols, height: size.rows };
+        let mut fallback = blank(size);
+        text(&mut fallback, 0, 0, "├─A", false);
+        let image = Arc::new(Image {
+            id: 1, generation: 1, width: 1, height: 1,
+            format: PixelFormat::Rgba, pixels: vec![255; 4], source: None,
+        });
+        let placement = |col, row, placement_id| Placement {
+            image_id: image.id, generation: image.generation, placement_id, col, row,
+            offset_x: 0, offset_y: 0, width: 1, height: 1, source_x: 0, source_y: 0,
+            source_width: 1, source_height: 1, layer: ImageLayer::AboveText, z: 0,
+        };
+        let mut artwork = CellArtwork::new(size, "text", "artwork");
+        artwork.frame.images.push(Arc::clone(&image));
+        artwork.frame.placements.extend([placement(0, 0, 1), placement(1, 0, 2)]);
+        artwork.groups.push((Rect { width: 2, height: 1, ..area }, 0..2));
+        let empty = graphics_frame(size);
+        let mut full = graphics_frame(size);
+        full.images.push(Arc::clone(&image));
+        full.placements.extend(
+            (1..geometry::MAX_PLACEMENTS as u32).map(|id| placement(3, 1, id)),
+        );
+        let mut host = ColorProbe::default();
+        let query = host.graphics.begin();
+        let id = std::str::from_utf8(&query).unwrap().split("i=").nth(1).unwrap().split(',').next().unwrap();
+        host.feed(format!("graphics;Gi={id};OK").as_bytes());
+        let mut renderer = Renderer::default();
+        let mut terminal = terminal();
+        for (ordinary, offer, expected) in [
+            (&empty, Some(&artwork), [" ", " "]),
+            (&full, Some(&artwork), ["├", "─"]),
+            (&empty, Some(&artwork), [" ", " "]),
+            (&empty, None, ["├", "─"]),
+        ] {
+            let surface = |id, frame, content| Surface {
+                id, frame, content, rect: area, palette: None, selection: &[], search: &[],
+                focused: false, faint: false,
+            };
+            let scene = Scene { size, surfaces: vec![
+                surface("text", &fallback, SurfaceContent::Cells),
+                surface("artwork", ordinary, SurfaceContent::Graphics),
+            ] };
+            renderer.render_with_cell_artwork(&mut Vec::new(), &scene, &host, &mut terminal, offer).unwrap();
+            let cells = &renderer.canvas.as_ref().unwrap().rows[0].cells;
+            assert_eq!([cells[0].text.as_str(), cells[1].text.as_str()], expected);
+            assert_eq!(cells[2].text, "A");
+        }
     }
     #[test]
     fn same_native_image_keys_are_scoped_by_pane_without_copying_pixels() {

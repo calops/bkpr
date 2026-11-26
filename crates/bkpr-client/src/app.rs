@@ -5548,6 +5548,9 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         let mut image_effects = graphics_frame(initial_size);
         let mut guide_effects = graphics_frame(initial_size);
         let mut artwork_effects = graphics_frame(initial_size);
+        let mut tree_artwork =
+            bkpr_tui_framework::CellArtwork::new(initial_size, "ui:chrome", "ui:sidebar:artwork");
+        let mut guide_projection = crate::controller::GuideProjection::default();
         let mut toast_effects = graphics_frame(initial_size);
         let mut notice_effects = graphics_frame(initial_size);
         let gutter_frame = graphics_frame(initial_size);
@@ -5604,6 +5607,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 frame.images.clear();
                 frame.placements.clear();
             }
+            tree_artwork.reset(size);
             app.validate_sidebar_resize(size);
             app.validate_resize(size);
             let rects = app.rects(size);
@@ -5736,7 +5740,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 },
                 &project_palette,
                 &chrome_projects,
-                &mut chrome_foregrounds,
+                (&mut chrome_foregrounds, &mut guide_projection),
             );
             chrome_markers.clear();
             marker_sources.clear();
@@ -5815,15 +5819,10 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     },
                     &project_palette,
                     &chrome_projects,
-                    &mut chrome_foregrounds,
+                    (&mut chrome_foregrounds, &mut guide_projection),
                 );
             }
-            graphics.draw_tree_guides(
-                &tree,
-                &mut chrome_surface.frame,
-                &mut artwork_effects,
-                guide_rows,
-            );
+            graphics.draw_tree_guides(&guide_projection.rows, &mut tree_artwork);
             for &(artwork, col, row, source) in &chrome_markers {
                 graphics.decorate(
                     &mut chrome_surface.frame,
@@ -7210,7 +7209,13 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 }
                 let scene = Scene { size, surfaces };
                 graphics.register_uploads(&mut terminal);
-                renderer.render(&mut out, &scene, &app.colors, &mut terminal)?;
+                renderer.render_with_cell_artwork(
+                    &mut out,
+                    &scene,
+                    &app.colors,
+                    &mut terminal,
+                    Some(&tree_artwork),
+                )?;
                 let ready = unsafe {
                     libc::poll(
                         fds.as_mut_ptr(),
