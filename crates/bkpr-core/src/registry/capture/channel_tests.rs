@@ -547,7 +547,7 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
     let window = &workspace.windows[0];
     drop(server);
     drop(registry);
-    // A v9 store has the history but used a separate launch delivery ledger.
+    // An earlier channel store retained history alongside a separate launch delivery ledger.
     let old_disk = rusqlite::Connection::open(root.join("state/channels.sqlite3")).unwrap();
     old_disk
         .execute_batch(
