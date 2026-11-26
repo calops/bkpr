@@ -44,6 +44,20 @@ pub struct ChannelAuthority {
     pub participants: Vec<WorkspaceParticipant>,
 }
 
+/// Verified loss of channel access or of the requesting attachment/session.
+///
+/// Admission adapters must not use this for internal, storage or registry health failures.
+#[derive(Debug)]
+pub(crate) struct ChannelAccessLost;
+
+impl std::fmt::Display for ChannelAccessLost {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("channel unavailable")
+    }
+}
+
+impl std::error::Error for ChannelAccessLost {}
+
 /// Channel storage and bounded subscription admission for one exclusively leased session.
 pub struct ChannelEngine {
     root: PathBuf,
@@ -98,9 +112,11 @@ impl ChannelEngine {
     /// Execute one typed operation, checking authority against the resolved workspace.
     ///
     /// `admit` must sample live authority without blocking on I/O or returning a registry
-    /// guard. `workspace_open` reads exact committed workspace presence independently of the
-    /// caller or a provisional close reservation. The caller must not hold a registry lock
-    /// around this call. `cancelled` stops pending waits but does not roll back admitted mutations.
+    /// guard. Only a typed access loss closes a subscription in response to an admission
+    /// error; other errors propagate. `workspace_open` reads exact committed workspace
+    /// presence independently of the caller or a provisional close reservation. The caller
+    /// must not hold a registry lock around this call. `cancelled` stops pending waits but
+    /// does not roll back admitted mutations.
     pub fn request(
         &self,
         request: ChannelRequest,
@@ -259,7 +275,7 @@ impl ChannelEngine {
                 };
             let (sequence, changes, more, open) = match result {
                 Ok(page) => page,
-                Err(error) if error.is::<store::ChannelAccessLost>() => break,
+                Err(error) if error.is::<ChannelAccessLost>() => break,
                 Err(error) => return Err(error),
             };
             if !changes.is_empty() || !open || Instant::now() >= deadline {

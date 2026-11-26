@@ -59,7 +59,8 @@ identity! {
     AttachmentId,
 }
 
-/// Which authorized workspace participants are channel members.
+/// Which authorized workspace agents are channel members. The session user
+/// retains access regardless of membership mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MembershipMode {
@@ -373,9 +374,10 @@ pub enum ChannelRequest {
         limit: u16,
     },
     /// List closed workspaces in this session with retained channels, ordered by opaque
-    /// identity. Archived workspaces need not have a recoverable display name.
+    /// identity. Archived workspaces need not have a recoverable display name. Resume
+    /// from the returned continuation, even when a page contains no archives.
     ListArchivedWorkspaces {
-        /// Exclude this identity and earlier identities, or start at the first archive.
+        /// Exclusive continuation from the previous page, or absent to start scanning.
         after: Option<String>,
         /// Maximum number of workspace identities to return.
         limit: u16,
@@ -474,6 +476,8 @@ pub enum ChannelRequest {
         wait_ms: u32,
     },
     /// Validate and store one immutable raster attachment.
+    /// Unposted uploads expire after 24 hours and share a 64 MiB session-wide budget.
+    /// A committed post retains the attachment as part of its history.
     UploadAttachment {
         /// Channel which will own the resource.
         channel_id: ChannelId,
@@ -504,7 +508,7 @@ pub enum ChannelResponse {
     ArchivedWorkspaces {
         /// Exact workspace IDs, ordered by identity. No display names are retained here.
         workspace_ids: Vec<String>,
-        /// Exclusive continuation when more archives are available.
+        /// Last examined workspace ID when more candidates remain, even on an empty page.
         next_after: Option<String>,
     },
     /// Page of current channel participants.

@@ -46,6 +46,7 @@ CREATE TABLE changes (
     PRIMARY KEY(channel_id,sequence)
 ) WITHOUT ROWID, STRICT;
 CREATE INDEX changes_visibility ON changes(channel_id,participant_id,sequence);
+-- Upload staging metadata (and expiry) lives separately so posting never rewrites the BLOB.
 CREATE TABLE attachments (
     id TEXT PRIMARY KEY,
     channel_id TEXT NOT NULL REFERENCES channels(id),

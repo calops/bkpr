@@ -1002,9 +1002,19 @@ fn owner_exit_revokes_even_when_a_fork_inherits_the_lifetime_socket() {
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, holder_pid, 0) } as i32;
     assert!(fd >= 0);
     let holder = Holder(unsafe { OwnedFd::from_raw_fd(fd) });
-    assert_eq!(server.registry.inner.clients.lock().unwrap().len(), 1);
+    let (request, _request_peer) = UnixStream::pair().unwrap();
+    // Block the watcher from invalidating the lease to exercise the admission
+    // check while the active flag and both descriptor lifetimes still hold.
+    let clients = server.registry.inner.clients.lock().unwrap();
+    assert_eq!(clients.len(), 1);
+    let client = clients.values().next().unwrap();
+    assert!(client.channel_connected(&request));
     child.stdin.take().unwrap().write_all(b"exit\n").unwrap();
     assert!(child.wait().unwrap().success());
+    assert!(client.is_active());
+    assert!(crate::transport::lifetime_connected(&client.lifetime));
+    assert!(!client.channel_connected(&request));
+    drop(clients);
     eventually(|| server.registry.inner.clients.lock().unwrap().is_empty());
     let mut poll = libc::pollfd {
         fd: holder.0.as_raw_fd(),

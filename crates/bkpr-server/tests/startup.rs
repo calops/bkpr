@@ -2197,11 +2197,19 @@ fn channel_history_reopens_on_the_same_session_only() {
     daemon.shutdown_host();
 }
 
+fn channel_list_operation(workspace_id: String) -> Operation {
+    Operation::Channels {
+        request: bkpr_protocol::channels::ChannelRequest::List {
+            workspace_id,
+            after: None,
+            limit: 1,
+        },
+    }
+}
+
 #[test]
 #[ignore = "owned subprocess fixture; requires its private working-directory marker"]
 fn owned_channel_client_fixture() {
-    use bkpr_protocol::channels::ChannelRequest;
-
     let cwd = std::env::current_dir().unwrap();
     assert_eq!(
         fs::read(cwd.join("owned-channel-client")).unwrap(),
@@ -2219,13 +2227,7 @@ fn owned_channel_client_fixture() {
         &endpoint.socket,
         as_channel_client(
             &authority,
-            Operation::Channels {
-                request: ChannelRequest::List {
-                    workspace_id: "ignored".into(),
-                    after: None,
-                    limit: 1,
-                },
-            },
+            channel_list_operation(std::env::var("BKPR_WORKSPACE_ID").unwrap()),
         ),
     )
     .unwrap();
@@ -2236,10 +2238,14 @@ fn owned_channel_client_fixture() {
             .contains("daemon-owned processes cannot act as the channel user")
     );
     fs::write(cwd.join("channel-client-denied"), b"denied").unwrap();
+    // Keep the workspace open for the positive check from outside the daemon.
+    std::io::stdin().read_line(&mut String::new()).unwrap();
 }
 
 #[test]
 fn pane_process_cannot_obtain_user_channel_authority_by_registering() {
+    use bkpr_protocol::{Payload, channels::ChannelResponse};
+
     let fixture = Fixture::new();
     fs::write(fixture.cwd.join("owned-channel-client"), b"private").unwrap();
     let mut daemon = fixture.start_host();
@@ -2250,7 +2256,23 @@ fn pane_process_cannot_obtain_user_channel_authority_by_registering() {
         "owned_channel_client_fixture".into(),
         "--ignored".into(),
     ];
-    daemon.open(bkpr_protocol::DEFAULT_SESSION_NAME, Some(spec));
+    let endpoint = daemon.open(bkpr_protocol::DEFAULT_SESSION_NAME, Some(spec));
     wait_for(&fixture.cwd.join("channel-client-denied"), b"denied");
+    let workspace = daemon.snapshot().workspaces.into_iter().next().unwrap();
+    let (_lifetime, authority) = register_channel_client(&endpoint);
+    activate_channel_client(&endpoint, &authority);
+    let response = request(
+        &endpoint.socket,
+        as_channel_client(&authority, channel_list_operation(workspace.id)),
+    )
+    .unwrap();
+    assert!(response.ok, "{:?}", response.error);
+    assert!(matches!(
+        response.result,
+        Some(Payload::Channels(ChannelResponse::Listed {
+            channels,
+            next_after: None,
+        })) if channels.is_empty()
+    ));
     daemon.shutdown_host();
 }

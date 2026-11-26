@@ -890,7 +890,7 @@ impl Registry {
         request: bkpr_protocol::channels::ChannelRequest,
         connected: &impl Fn() -> bool,
     ) -> Result<Payload> {
-        use crate::channels::ChannelAuthority;
+        use crate::channels::{ChannelAccessLost, ChannelAuthority};
         use bkpr_protocol::channels::{Participant, ParticipantId, ParticipantKind};
 
         self.inner
@@ -898,8 +898,8 @@ impl Registry {
             .request(
                 request,
                 |workspace_id| {
-                    ensure!(connected(), "channel request disconnected");
                     let state = self.inner.state.lock().unwrap();
+                    ensure!(connected(), ChannelAccessLost);
                     healthy(&state)?;
                     ensure!(
                         !state.closing && !self.session_end_requested(),

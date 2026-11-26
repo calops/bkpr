@@ -1955,14 +1955,21 @@ woken or read it. Retry an uncertain post only with exactly the same request
 and key. History pages include bodies and attachment descriptors, not image
 bytes. Use the returned cursor for change subscriptions, page forward by post
 sequence when catching up, and mark read independently. Saved explicit member
-IDs are separate from the current mention roster.
+IDs are separate from the current mention roster. Explicit membership restricts
+agent access, not the session user's access.
+
+An uploaded image is staged for 24 hours until a post references it. A session
+can stage up to 64 MiB across its channels. Uploads reclaim expired stages;
+posted images are retained with their messages and don't count toward this limit.
 
 History lives with the recoverable session. Detach and restart do not prune
 history or replay old launch wakes. A user can discover archives and read their
-channels without reopening the workspace. An archived subscription reports
-closure after its final page. A new workspace with the
-same name does not inherit them. Default channel provisioning, MCP and native
-wake dispatch, direct-message migration, and the chat UI are separate features.
+channels without reopening the workspace. Follow `next_after` until it is absent,
+even when a page contains no archives. An archived subscription reports closure
+after its final page; backend failures are returned as errors. A new workspace
+with the same name does not inherit the old workspace's channels. Default channel
+provisioning, MCP and native wake dispatch, direct-message migration, and the
+chat UI are separate features.
 
 ## Notification records and subscriptions
 

@@ -32,6 +32,12 @@ pub(crate) use platform::{launch_in_pane, ownership_snapshot, pane_snapshot};
 mod sampler;
 pub(crate) use sampler::{ObservationLease, fresh_snapshot};
 
+/// Read only the kernel parent PID, including for ancestors owned by another UID.
+/// This topology observation does not authenticate the inspected process.
+pub(crate) fn parent_pid(pid: i32) -> Result<Option<i32>> {
+    platform::parent_pid(pid)
+}
+
 pub(crate) fn lineage(
     process: &Process,
     root: &Process,
@@ -426,6 +432,51 @@ mod platform {
     pub fn process(pid: i32) -> Result<Option<Process>> {
         read_process(pid, false)
     }
+
+    pub(super) fn parent_pid(pid: i32) -> Result<Option<i32>> {
+        match read_parent_stat(pid) {
+            Ok(parent) => Ok(parent),
+            Err(error) if gone(&error) || error.kind() == std::io::ErrorKind::PermissionDenied => {
+                Ok(None)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn read_parent_stat(pid: i32) -> std::io::Result<Option<i32>> {
+        let mut file = File::open(format!("/proc/{pid}/stat"))?;
+        let mut stat = [0_u8; 2048];
+        let mut len = 0;
+        while len < stat.len() {
+            match file.read(&mut stat[len..]) {
+                Ok(0) => return Ok(parse_parent(&stat[..len])),
+                Ok(n) => len += n,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(None)
+    }
+
+    fn parse_parent(stat: &[u8]) -> Option<i32> {
+        // comm may contain closing parentheses, spaces and non-UTF-8 bytes.
+        let close = stat.iter().rposition(|&byte| byte == b')')?;
+        let [b' ', state, b' ', tail @ ..] = &stat[close + 1..] else {
+            return None;
+        };
+        if matches!(*state, b'Z' | b'X' | b'x') {
+            return None;
+        }
+        let end = tail.iter().position(|&byte| byte == b' ')?;
+        std::str::from_utf8(&tail[..end]).ok()?.parse().ok()
+    }
+
+    #[test]
+    fn topology_parent_ignores_command_encoding_and_rejects_incomplete_stats() {
+        assert_eq!(parse_parent(b"33 (name) \xff) S 42 33 0"), Some(42));
+        assert_eq!(parse_parent(b"33 (name) S 42"), None);
+        assert_eq!(parse_parent(b"33 (name) Z 42 33 0"), None);
+    }
     pub fn snapshot() -> Result<HashMap<i32, Process>> {
         let mut table = HashMap::new();
         let mut count = 0;
@@ -815,6 +866,9 @@ mod platform {
 mod platform {
     use super::*;
     use std::os::unix::ffi::OsStringExt;
+
+    const PROC_FLAG_INEXIT: u32 = 4;
+
     #[repr(C)]
     struct BsdInfo {
         flags: u32,
@@ -888,7 +942,10 @@ mod platform {
         if count as usize != size {
             bail!("incomplete Darwin process identity");
         }
-        if info.uid != unsafe { libc::geteuid() } || info.status == 5 || info.flags & 4 != 0 {
+        if info.uid != unsafe { libc::geteuid() }
+            || info.status == libc::SZOMB
+            || info.flags & PROC_FLAG_INEXIT != 0
+        {
             return Ok(None);
         }
         Ok(Some(Process {
@@ -904,6 +961,32 @@ mod platform {
             stopped: info.status == 4,
             identity: format!("darwin:{}:{}", info.start_sec, info.start_usec),
         }))
+    }
+
+    pub(super) fn parent_pid(pid: i32) -> Result<Option<i32>> {
+        let mut info: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of_val(&info);
+        // Unlike PROC_PIDTBSDINFO, XNU permits this flavor across UIDs.
+        let count = unsafe {
+            proc_pidinfo(
+                pid,
+                libc::PROC_PIDT_SHORTBSDINFO,
+                0,
+                (&mut info as *mut libc::proc_bsdshortinfo).cast(),
+                size as i32,
+            )
+        };
+        if count <= 0 {
+            check_error()?;
+            return Ok(None);
+        }
+        if count as usize != size || info.pbsi_pid != pid as u32 {
+            bail!("invalid Darwin process topology");
+        }
+        if info.pbsi_status == libc::SZOMB || info.pbsi_flags & PROC_FLAG_INEXIT != 0 {
+            return Ok(None);
+        }
+        Ok(i32::try_from(info.pbsi_ppid).ok())
     }
     pub fn snapshot() -> Result<HashMap<i32, Process>> {
         let mut pids = vec![0_i32; MAX_PROCESSES];
@@ -1026,6 +1109,9 @@ mod platform {
 mod platform {
     use super::*;
     pub fn process(_: i32) -> Result<Option<Process>> {
+        Ok(None)
+    }
+    pub(super) fn parent_pid(_: i32) -> Result<Option<i32>> {
         Ok(None)
     }
     pub fn snapshot() -> Result<HashMap<i32, Process>> {

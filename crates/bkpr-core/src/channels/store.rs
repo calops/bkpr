@@ -1,5 +1,5 @@
-use super::ChannelAuthority;
-use anyhow::{Context, Result, ensure};
+use super::{ChannelAccessLost, ChannelAuthority};
+use anyhow::{Context, Result, bail, ensure};
 use bkpr_protocol::channels::{
     AttachmentDescriptor, AttachmentId, AttachmentUpload, ChannelChange, ChannelChangeKind,
     ChannelCursor, ChannelId, ChannelMessage, ChannelPost, ChannelRequest, ChannelResponse,
@@ -10,7 +10,6 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Transaction, param
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use std::{
-    fmt,
     fs::{File, OpenOptions},
     io::ErrorKind,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
@@ -20,19 +19,29 @@ use std::{
 use uuid::Uuid;
 
 const APPLICATION_ID: i64 = 0x424b4348;
+// Versions 3–6 were assigned to downstream channel layers without attachment staging.
+const STORE_VERSION: i64 = 7;
 const STORE_NAME: &str = "channels.sqlite3";
 const MAX_PENDING: usize = 4096;
 
-#[derive(Debug)]
-pub(super) struct ChannelAccessLost;
+pub(super) const MAX_ARCHIVE_CANDIDATES: usize = 128;
+pub(super) const MAX_STAGED_BYTES: u64 = 64 * 1024 * 1024;
+const STAGING_TTL_MS: u64 = 24 * 60 * 60 * 1000;
+pub(super) const MAX_STAGING_RECLAIM: usize = 128;
 
-impl fmt::Display for ChannelAccessLost {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("channel unavailable")
-    }
-}
-
-impl std::error::Error for ChannelAccessLost {}
+// Shared by fresh initialization and the one-time staging migration.
+const ATTACHMENT_STAGING_SCHEMA: &str = "
+    CREATE TABLE staged_attachments (
+        id TEXT PRIMARY KEY REFERENCES attachments(id) ON DELETE CASCADE,
+        expires_ms INTEGER NOT NULL CHECK(expires_ms >= 0),
+        byte_len INTEGER NOT NULL CHECK(byte_len > 0)
+    ) WITHOUT ROWID, STRICT;
+    CREATE INDEX staged_attachment_expiry ON staged_attachments(expires_ms,id);
+    CREATE TABLE attachment_budget (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+        unposted_bytes INTEGER NOT NULL CHECK(unposted_bytes >= 0)
+    ) STRICT;
+    INSERT INTO attachment_budget VALUES(1,0);";
 
 pub(super) struct Store {
     pub(super) connection: Connection,
@@ -81,7 +90,7 @@ impl Store {
         let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
         ensure!(
             (empty && application == 0 && version == 0)
-                || (application == APPLICATION_ID && matches!(version, 1 | 2)),
+                || (application == APPLICATION_ID && matches!(version, 1 | 2 | STORE_VERSION)),
             "foreign or unsupported channel store"
         );
         connection.execute_batch(
@@ -96,20 +105,24 @@ impl Store {
         if empty {
             let tx = connection.transaction()?;
             tx.execute_batch(include_str!("schema.sql"))?;
+            tx.execute_batch(ATTACHMENT_STAGING_SCHEMA)?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
-            tx.pragma_update(None, "user_version", 2)?;
+            tx.pragma_update(None, "user_version", STORE_VERSION)?;
             tx.commit()?;
             directory.sync_all()?;
         } else {
-            if version == 1 {
+            if version < STORE_VERSION {
                 let tx = connection.transaction()?;
-                tx.execute_batch(
-                    "ALTER TABLE members ADD COLUMN workspace_id TEXT NOT NULL DEFAULT '';
-                     UPDATE members SET workspace_id=(SELECT workspace_id FROM channels WHERE id=members.channel_id);
-                     CREATE INDEX workspace_wide_channels ON channels(workspace_id,id) WHERE workspace_wide=1;
-                     CREATE INDEX visible_explicit_channels ON members(workspace_id,participant_id,channel_id);",
-                )?;
-                tx.pragma_update(None, "user_version", 2)?;
+                if version == 1 {
+                    tx.execute_batch(
+                        "ALTER TABLE members ADD COLUMN workspace_id TEXT NOT NULL DEFAULT '';
+                         UPDATE members SET workspace_id=(SELECT workspace_id FROM channels WHERE id=members.channel_id);
+                         CREATE INDEX workspace_wide_channels ON channels(workspace_id,id) WHERE workspace_wide=1;
+                         CREATE INDEX visible_explicit_channels ON members(workspace_id,participant_id,channel_id);",
+                    )?;
+                }
+                migrate_attachment_staging(&tx)?;
+                tx.pragma_update(None, "user_version", STORE_VERSION)?;
                 tx.commit()?;
             }
             // Retain frozen work as history; a new runtime must not adopt old wakes or alerts.
@@ -375,22 +388,40 @@ impl Store {
         limit: u16,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
     ) -> Result<ChannelResponse> {
+        // Seek past every workspace on the index rather than scanning its duplicate
+        // channel rows. A lookahead checks only for another unexamined candidate.
         let mut statement = self.connection.prepare(
-            "SELECT DISTINCT workspace_id FROM channels WHERE workspace_id>?1 ORDER BY workspace_id",
+            "SELECT workspace_id FROM channels WHERE workspace_id>?1 ORDER BY workspace_id LIMIT 1",
         )?;
-        let mut rows = statement.query([after.unwrap_or("")])?;
+        let mut cursor = after.unwrap_or("").to_owned();
         let mut workspace_ids = Vec::new();
-        while let Some(row) = rows.next()? {
+        for _ in 0..MAX_ARCHIVE_CANDIDATES {
+            let mut rows = statement.query([cursor.as_str()])?;
+            let Some(row) = rows.next()? else {
+                return Ok(ChannelResponse::ArchivedWorkspaces {
+                    workspace_ids,
+                    next_after: None,
+                });
+            };
             let id = row.get_ref(0)?.as_str()?;
-            if workspace_authority(id, admit).is_ok_and(|authority| !authority.workspace_open) {
+            let authority = admit(id)?;
+            authority.actor.validate()?;
+            if authority.actor.kind != ParticipantKind::User {
+                return Ok(ChannelResponse::ArchivedWorkspaces {
+                    workspace_ids: Vec::new(),
+                    next_after: None,
+                });
+            }
+            cursor.clear();
+            cursor.push_str(id);
+            if !authority.workspace_open {
                 workspace_ids.push(id.to_owned());
-                if workspace_ids.len() > usize::from(limit) {
+                if workspace_ids.len() == usize::from(limit) {
                     break;
                 }
             }
         }
-        let next_after =
-            take_extra(&mut workspace_ids, limit).then(|| workspace_ids.last().unwrap().clone());
+        let next_after = statement.exists([cursor.as_str()])?.then_some(cursor);
         Ok(ChannelResponse::ArchivedWorkspaces {
             workspace_ids,
             next_after,
@@ -649,10 +680,7 @@ impl Store {
             id: MessageId(new_id()),
             sequence,
             author: authority.actor,
-            posted_at_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)?
-                .as_millis()
-                .try_into()?,
+            posted_at_ms: unix_time_ms()?,
             intent: post.intent,
             mentions: post.mentions,
             reply_to: post.reply_to,
@@ -672,16 +700,8 @@ impl Store {
                 "channel reply target unavailable"
             );
         }
-        for attachment in &message.attachments {
-            ensure!(
-                exists(
-                    &tx,
-                    "SELECT EXISTS(SELECT 1 FROM attachments WHERE channel_id=?1 AND id=?2)",
-                    id,
-                    attachment.as_ref()
-                )?,
-                "channel attachment unavailable"
-            );
+        if !message.attachments.is_empty() {
+            promote_attachments(&tx, id, &message.attachments, message.posted_at_ms)?;
         }
         if pending_work {
             let pending: usize = tx.query_row(
@@ -896,13 +916,35 @@ impl Store {
     }
 
     fn upload(&mut self, id: &ChannelId, upload: AttachmentUpload) -> Result<ChannelResponse> {
+        let now = unix_time_ms()?;
         let attachment = AttachmentDescriptor {
             id: AttachmentId(new_id()),
             media_type: upload.media_type,
             alt_text: upload.alt_text,
             byte_len: upload.bytes.len().try_into()?,
         };
-        self.connection.execute(
+        let tx = self.connection.transaction()?;
+        let staged: u64 = tx.query_row(
+            "SELECT unposted_bytes FROM attachment_budget WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )?;
+        let reclaimed = reclaim_staged_attachments(&tx, now, u64::MAX)?;
+        let remaining = staged
+            .checked_sub(reclaimed)
+            .context("inconsistent channel attachment budget")?;
+        let total = remaining
+            .checked_add(u64::from(attachment.byte_len))
+            .context("inconsistent channel attachment budget")?;
+        if total > MAX_STAGED_BYTES {
+            // Leave progress durable even if a bounded sweep could not free enough space.
+            if reclaimed != 0 {
+                set_staged_bytes(&tx, remaining)?;
+                tx.commit()?;
+            }
+            bail!("channel unattached upload capacity exceeded");
+        }
+        tx.execute(
             "INSERT INTO attachments VALUES(?1,?2,?3,?4)",
             params![
                 attachment.id.as_ref(),
@@ -911,14 +953,26 @@ impl Store {
                 upload.bytes
             ],
         )?;
+        tx.execute(
+            "INSERT INTO staged_attachments(id,expires_ms,byte_len) VALUES(?1,?2,?3)",
+            params![
+                attachment.id.as_ref(),
+                staging_expiry(now)?,
+                attachment.byte_len
+            ],
+        )?;
+        set_staged_bytes(&tx, total)?;
+        tx.commit()?;
         Ok(ChannelResponse::AttachmentUploaded { attachment })
     }
 
     fn attachment(&self, id: &ChannelId, attachment_id: &AttachmentId) -> Result<ChannelResponse> {
         self.connection
             .query_row(
-                "SELECT descriptor,bytes FROM attachments WHERE channel_id=?1 AND id=?2",
-                params![id.as_ref(), attachment_id.as_ref()],
+                "SELECT a.descriptor,a.bytes FROM attachments a
+                 LEFT JOIN staged_attachments s ON s.id=a.id
+                 WHERE a.channel_id=?1 AND a.id=?2 AND (s.expires_ms IS NULL OR s.expires_ms>?3)",
+                params![id.as_ref(), attachment_id.as_ref(), unix_time_ms()?],
                 |r| {
                     Ok(ChannelResponse::Attachment {
                         attachment: json(r, 0)?,
@@ -929,6 +983,120 @@ impl Store {
             .optional()?
             .context("channel attachment unavailable")
     }
+}
+
+fn unix_time_ms() -> Result<u64> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_millis()
+        .try_into()?)
+}
+
+fn staging_expiry(now: u64) -> Result<u64> {
+    now.checked_add(STAGING_TTL_MS)
+        .context("channel attachment expiry overflow")
+}
+
+fn set_staged_bytes(tx: &Transaction<'_>, bytes: u64) -> Result<()> {
+    tx.execute(
+        "UPDATE attachment_budget SET unposted_bytes=?1 WHERE singleton=1",
+        [bytes],
+    )?;
+    Ok(())
+}
+
+fn reclaim_staged_attachments(tx: &Transaction<'_>, through: u64, target: u64) -> Result<u64> {
+    // Snapshot a bounded batch before deleting from the expiry index via the FK cascade.
+    let mut due = tx.prepare(
+        "SELECT id,byte_len FROM staged_attachments WHERE expires_ms<=?1
+         ORDER BY expires_ms,id LIMIT ?2",
+    )?;
+    let expired = due
+        .query_map(params![through, MAX_STAGING_RECLAIM], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if expired.is_empty() {
+        return Ok(0);
+    }
+    let mut delete = tx.prepare("DELETE FROM attachments WHERE id=?1")?;
+    let mut bytes = 0;
+    for (id, byte_len) in expired {
+        delete.execute([id])?;
+        bytes += byte_len;
+        if bytes >= target {
+            break;
+        }
+    }
+    Ok(bytes)
+}
+
+fn promote_attachments(
+    tx: &Transaction<'_>,
+    channel: &ChannelId,
+    ids: &[AttachmentId],
+    now: u64,
+) -> Result<()> {
+    let mut lookup = tx.prepare(
+        "SELECT s.byte_len FROM attachments a LEFT JOIN staged_attachments s ON s.id=a.id
+         WHERE a.channel_id=?1 AND a.id=?2 AND (s.expires_ms IS NULL OR s.expires_ms>?3)",
+    )?;
+    let mut promote = tx.prepare("DELETE FROM staged_attachments WHERE id=?1")?;
+    let mut credited = 0;
+    for id in ids {
+        let bytes: Option<u64> = lookup
+            .query_row(params![channel.as_ref(), id.as_ref(), now], |row| {
+                row.get(0)
+            })
+            .optional()?
+            .context("channel attachment unavailable")?;
+        if let Some(bytes) = bytes {
+            promote.execute([id.as_ref()])?;
+            credited += bytes;
+        }
+    }
+    if credited != 0 {
+        tx.execute(
+            "UPDATE attachment_budget SET unposted_bytes=unposted_bytes-?1 WHERE singleton=1",
+            [credited],
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_attachment_staging(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(ATTACHMENT_STAGING_SCHEMA)?;
+    let expiry = staging_expiry(unix_time_ms()?)?;
+    let migrated = tx.execute(
+        "INSERT INTO staged_attachments(id,expires_ms,byte_len)
+         SELECT id,?1,length(bytes) FROM attachments",
+        [expiry],
+    )?;
+    if migrated == 0 {
+        return Ok(());
+    }
+    {
+        let mut refs =
+            tx.prepare("SELECT a.value FROM posts p, json_each(p.summary,'$.attachments') a")?;
+        let mut rows = refs.query([])?;
+        let mut retain = tx.prepare("DELETE FROM staged_attachments WHERE id=?1")?;
+        while let Some(row) = rows.next()? {
+            retain.execute([row.get_ref(0)?.as_str()?])?;
+        }
+    }
+    let mut staged: u64 = tx.query_row(
+        "SELECT COALESCE(sum(byte_len),0) FROM staged_attachments",
+        [],
+        |row| row.get(0),
+    )?;
+    // Legacy uploads had no timestamp. Give retained uploads a fresh grace period
+    // and use their opaque IDs to break ties if they already exceed the budget.
+    while staged > MAX_STAGED_BYTES {
+        let reclaimed = reclaim_staged_attachments(tx, expiry, staged - MAX_STAGED_BYTES)?;
+        ensure!(reclaimed != 0, "inconsistent channel attachment budget");
+        staged -= reclaimed;
+    }
+    set_staged_bytes(tx, staged)
 }
 
 impl StoredChannel {
@@ -977,7 +1145,7 @@ fn workspace_authority(
     workspace: &str,
     admit: &impl Fn(&str) -> Result<ChannelAuthority>,
 ) -> Result<ChannelAuthority> {
-    let authority = admit(workspace).context(ChannelAccessLost)?;
+    let authority = admit(workspace)?;
     authority.actor.validate()?;
     ensure!(
         authority.workspace_open || authority.actor.kind == ParticipantKind::User,

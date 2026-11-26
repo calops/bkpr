@@ -125,6 +125,7 @@ ImageResource requests/payloads are retired and rejected.
 * **client:** give recovery a full-width aligned list with colored harness icons and details below it; retain saved pane titles as metadata rather than presenting shell names as conversation identities.
 * **client:** keep the sidebar refresh-checks hint stable across unrelated registry revisions without relaxing painted-source validation for dispatched actions.
 * **client:** bring fancy chrome shadows closer to their edges so they show on both sides without changing the palette.
+* **channels:** preserve authenticated SSH attachments and fence queued requests by client process lifetime. Page archive scans, propagate backend failures, and bound uploads that have not been posted.
 
 ### Breaking Rust API Changes
 

@@ -1,7 +1,11 @@
-use super::{ChannelAuthority, ChannelEngine, MAX_SUBSCRIBERS, WorkspaceParticipant};
+use super::{
+    ChannelAccessLost, ChannelAuthority, ChannelEngine, MAX_SUBSCRIBERS, WorkspaceParticipant,
+    store::{MAX_ARCHIVE_CANDIDATES, MAX_STAGED_BYTES, MAX_STAGING_RECLAIM},
+};
 use anyhow::{Result, ensure};
 use bkpr_protocol::channels::*;
 use std::{
+    cell::Cell,
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt, symlink},
     sync::atomic::{AtomicBool, Ordering},
@@ -46,10 +50,32 @@ impl Fixture {
         }
     }
 
+    fn reopen(mut self) -> Self {
+        self.engine = ChannelEngine::new(self.root.path().to_owned());
+        self
+    }
+
+    fn staged_bytes(&self) -> u64 {
+        let (tracked, actual) = self
+            .engine
+            .with_store(|store| {
+                Ok(store.connection.query_row(
+                    "SELECT unposted_bytes,(SELECT COALESCE(sum(length(a.bytes)),0)
+                     FROM staged_attachments s JOIN attachments a ON a.id=s.id)
+                     FROM attachment_budget WHERE singleton=1",
+                    [],
+                    |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(tracked, actual);
+        tracked
+    }
+
     fn authority(&self, actor: &Participant, workspace: &str) -> Result<ChannelAuthority> {
         ensure!(
             workspace == WORKSPACE || actor.kind == ParticipantKind::User,
-            "workspace unavailable"
+            ChannelAccessLost
         );
         let participants = if workspace == WORKSPACE {
             vec![
@@ -250,6 +276,13 @@ fn upload(channel: &ChannelId, bytes: Vec<u8>) -> ChannelRequest {
             bytes,
         },
     }
+}
+
+fn uploaded(response: ChannelResponse) -> AttachmentDescriptor {
+    let ChannelResponse::AttachmentUploaded { attachment } = response else {
+        panic!("attachment upload reply")
+    };
+    attachment
 }
 
 #[test]
@@ -488,8 +521,11 @@ fn durable_history_recovery_and_atomic_commit_failure() {
          CREATE TABLE injected_child(id INTEGER REFERENCES injected_parent(id) DEFERRABLE INITIALLY DEFERRED);
          CREATE TRIGGER inject_commit_failure AFTER INSERT ON notification_work BEGIN INSERT INTO injected_child VALUES(1); END;",
     );
-    let initial = post("commit-fails");
+    let attachment = uploaded(f.request(upload(&id, png())).unwrap());
+    let mut initial = post("commit-fails");
+    initial.attachments.push(attachment.id);
     assert!(f.request(send(&id, initial.clone())).is_err());
+    assert_eq!(f.staged_bytes(), u64::from(attachment.byte_len));
     assert_eq!(f.list(&f.user)[0].last_sequence, 0);
     assert_eq!(
         f.request(messages(&id, None, 1)).unwrap(),
@@ -512,6 +548,7 @@ fn durable_history_recovery_and_atomic_commit_failure() {
     ));
     f.sql("DROP TRIGGER inject_commit_failure");
     let accepted = f.request(send(&id, initial.clone())).unwrap();
+    assert_eq!(f.staged_bytes(), 0);
     let message = posted(accepted.clone());
     assert_eq!(message.sequence, 1);
     assert_eq!(f.work(&message.id).len(), 2);
@@ -826,25 +863,37 @@ fn subscription_commit_revocation_and_capacity_do_not_depend_on_slow_consumers()
         quiet(),
     );
     thread::scope(|scope| {
-        let (observed, ready) = crossbeam_channel::bounded(1);
+        let (observed, ready) = crossbeam_channel::bounded(0);
+        let (completed, result) = crossbeam_channel::bounded(1);
         let (fixture, channel) = (&f, &id);
-        let waiter = scope.spawn(move || {
-            let signalled = AtomicBool::new(false);
-            fixture.engine.request(
-                subscribe(channel, Some(0), 1, MAX_WAIT_MS),
-                |workspace| {
-                    if !signalled.swap(true, Ordering::Relaxed) {
-                        observed.send(()).unwrap();
-                    }
-                    fixture.authority(&fixture.a, workspace)
-                },
-                |_| true,
-                || false,
-            )
+        scope.spawn(move || {
+            let sampled = Cell::new(false);
+            let signalled = Cell::new(false);
+            completed
+                .send(fixture.engine.request(
+                    subscribe(channel, Some(0), 1, MAX_WAIT_MS),
+                    |workspace| {
+                        sampled.set(true);
+                        fixture.authority(&fixture.a, workspace)
+                    },
+                    |_| true,
+                    || {
+                        // After the empty store observation, just before waiting for a commit.
+                        if sampled.get() && !signalled.replace(true) {
+                            observed.send(()).unwrap();
+                        }
+                        false
+                    },
+                ))
+                .unwrap();
         });
         ready.recv_timeout(Duration::from_secs(5)).unwrap();
         f.request(send(&id, post("race"))).unwrap();
-        let response = waiter.join().unwrap().unwrap();
+        // A final re-observation at MAX_WAIT_MS also sees the commit; it is too late.
+        let response = result
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
         assert!(
             matches!(response, ChannelResponse::Changes { changes, .. } if changes == [ChannelChange { sequence: 1, kind: ChannelChangeKind::Post }])
         );
@@ -1013,6 +1062,13 @@ fn retained_archive_discovery_and_membership_do_not_depend_on_live_roster() {
         run(&f.user, archives(None), false).unwrap(),
         ChannelResponse::ArchivedWorkspaces {
             workspace_ids: vec![WORKSPACE.into()],
+            next_after: Some(WORKSPACE.into()),
+        }
+    );
+    assert_eq!(
+        run(&f.user, archives(Some(WORKSPACE.into())), false).unwrap(),
+        ChannelResponse::ArchivedWorkspaces {
+            workspace_ids: Vec::new(),
             next_after: None,
         }
     );
@@ -1084,6 +1140,132 @@ fn retained_archive_discovery_and_membership_do_not_depend_on_live_roster() {
         }
     );
     assert!(run(&f.a, explicit(None), true).is_err());
+}
+
+#[test]
+fn archive_scan_is_bounded_and_continues_after_empty_pages_without_agent_disclosure() {
+    let f = Fixture::new();
+    f.engine
+        .with_store(|store| {
+            store.connection.execute(
+                "WITH RECURSIVE candidates(i) AS (
+                     VALUES(0) UNION ALL SELECT i+1 FROM candidates WHERE i<?1
+                 )
+                 INSERT INTO channels(id,workspace_id,name,workspace_wide,settings)
+                 SELECT printf('first-%03d',i),printf('workspace-%03d',i),'first',1,?2 FROM candidates
+                 UNION ALL
+                 SELECT printf('second-%03d',i),printf('workspace-%03d',i),'second',1,?2 FROM candidates",
+                rusqlite::params![MAX_ARCHIVE_CANDIDATES, serde_json::to_string(&quiet())?],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let archived = format!("workspace-{MAX_ARCHIVE_CANDIDATES:03}");
+    let last_examined = format!("workspace-{:03}", MAX_ARCHIVE_CANDIDATES - 1);
+    let examined = Cell::new(0);
+    let open = |workspace: &str| workspace != archived;
+    let run = |actor: &Participant, after| {
+        f.engine
+            .request(
+                ChannelRequest::ListArchivedWorkspaces {
+                    after,
+                    limit: MAX_PAGE_LIMIT,
+                },
+                |workspace| {
+                    examined.set(examined.get() + 1);
+                    Ok(ChannelAuthority {
+                        actor: actor.clone(),
+                        writable: false,
+                        workspace_open: open(workspace),
+                        participants: Vec::new(),
+                    })
+                },
+                open,
+                || false,
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        run(&f.user, None),
+        ChannelResponse::ArchivedWorkspaces {
+            workspace_ids: Vec::new(),
+            next_after: Some(last_examined.clone()),
+        }
+    );
+    assert_eq!(examined.replace(0), MAX_ARCHIVE_CANDIDATES);
+    assert_eq!(
+        run(&f.user, Some(last_examined)),
+        ChannelResponse::ArchivedWorkspaces {
+            workspace_ids: vec![archived.clone()],
+            next_after: None,
+        }
+    );
+    assert_eq!(examined.replace(0), 1);
+    assert_eq!(
+        run(&f.a, None),
+        ChannelResponse::ArchivedWorkspaces {
+            workspace_ids: Vec::new(),
+            next_after: None,
+        }
+    );
+    assert_eq!(examined.get(), 1);
+}
+
+#[test]
+fn internal_authority_failures_are_neither_subscription_closure_nor_archive_filtering() {
+    let f = Fixture::new();
+    let id = f.wide(quiet());
+    f.create(
+        &f.user,
+        OTHER_WORKSPACE,
+        MembershipMode::WorkspaceWide,
+        Vec::new(),
+        quiet(),
+    );
+    let failure = || std::io::Error::other("registry persistence unavailable");
+    let result = f.engine.request(
+        subscribe(&id, Some(0), 1, 0),
+        |_| Err(failure().into()),
+        |_| true,
+        || false,
+    );
+    assert!(result.unwrap_err().is::<std::io::Error>());
+    let result = f.engine.request(
+        ChannelRequest::ListArchivedWorkspaces {
+            after: None,
+            limit: 2,
+        },
+        |workspace| {
+            if workspace == OTHER_WORKSPACE {
+                return Err(failure().into());
+            }
+            let mut authority = f.authority(&f.user, workspace)?;
+            authority.workspace_open = false;
+            Ok(authority)
+        },
+        |_| false,
+        || false,
+    );
+    assert!(result.unwrap_err().is::<std::io::Error>());
+    assert_eq!(
+        f.engine
+            .request(
+                subscribe(&id, Some(0), 1, 0),
+                |_| Err(ChannelAccessLost.into()),
+                |_| true,
+                || false,
+            )
+            .unwrap(),
+        ChannelResponse::Changes {
+            cursor: ChannelCursor {
+                channel_id: id,
+                sequence: 0,
+            },
+            changes: Vec::new(),
+            more: false,
+            status: ChannelSubscriptionStatus::Closed,
+        }
+    );
 }
 
 #[test]
@@ -1173,7 +1355,7 @@ fn unauthorized_upload_does_not_decode_and_valid_upload_rechecks_before_insert()
     assert!(
         f.as_actor(&f.b, upload(&id, vec![1]))
             .unwrap_err()
-            .is::<super::store::ChannelAccessLost>()
+            .is::<ChannelAccessLost>()
     );
     assert!(
         f.as_actor(&f.a, upload(&id, vec![1]))
@@ -1437,26 +1619,13 @@ fn visibility_index_migration_preserves_member_access_and_durable_history() {
     let accepted = f.as_actor(&f.a, send(&id, original.clone())).unwrap();
     f.sql(
         "DROP INDEX visible_explicit_channels;
+         DROP TABLE staged_attachments;
+         DROP TABLE attachment_budget;
          DROP INDEX workspace_wide_channels;
          ALTER TABLE members DROP COLUMN workspace_id;
          PRAGMA user_version=1;",
     );
-    let Fixture {
-        root,
-        engine,
-        user,
-        a,
-        b,
-    } = f;
-    drop(engine);
-    let engine = ChannelEngine::new(root.path().to_owned());
-    let f = Fixture {
-        root,
-        engine,
-        user,
-        a,
-        b,
-    };
+    let f = f.reopen();
     assert_eq!(f.list(&f.a)[0].id, id);
     assert!(f.list(&f.b).is_empty());
     assert_eq!(f.as_actor(&f.a, send(&id, original)).unwrap(), accepted);
@@ -1473,5 +1642,172 @@ fn visibility_index_migration_preserves_member_access_and_durable_history() {
             ))
         })
         .unwrap();
-    assert_eq!((sync, version), (3, 2));
+    assert_eq!((sync, version), (3, 7));
+}
+
+#[test]
+fn legacy_attachment_migration_caps_staged_bytes_and_retains_posted_history() {
+    let f = Fixture::new();
+    let original = f.wide(quiet());
+    let other = f.create(
+        &f.user,
+        OTHER_WORKSPACE,
+        MembershipMode::WorkspaceWide,
+        Vec::new(),
+        quiet(),
+    );
+    let sample = png();
+    let kept = uploaded(f.request(upload(&original, sample.clone())).unwrap());
+    let resumed = uploaded(f.request(upload(&original, sample.clone())).unwrap());
+    let mut attached = post("legacy-posted");
+    attached.attachments.push(kept.id.clone());
+    let message = posted(f.request(send(&original, attached)).unwrap());
+    // Simulate a version-two store with the full staging budget plus one extra
+    // unreferenced row. Only the two small real PNGs will be fetched or posted.
+    f.sql(
+        "DROP TABLE staged_attachments;
+         DROP TABLE attachment_budget;
+         PRAGMA user_version=2;",
+    );
+    f.engine
+        .with_store(|store| {
+            store.connection.execute(
+                "WITH RECURSIVE fill(n) AS (
+                     VALUES(1) UNION ALL SELECT n+1 FROM fill WHERE n<?4
+                 )
+                 INSERT INTO attachments(id,channel_id,descriptor,bytes)
+                 SELECT printf('legacy-%02d',n),?1,'{}',
+                        zeroblob(?2-CASE WHEN n=1 THEN ?3 ELSE 0 END) FROM fill
+                 UNION ALL SELECT '!legacy-overflow',?1,'{}',zeroblob(1)",
+                rusqlite::params![
+                    original.as_ref(),
+                    MAX_ATTACHMENT_BYTES,
+                    resumed.byte_len,
+                    MAX_STAGED_BYTES / MAX_ATTACHMENT_BYTES as u64
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let f = f.reopen();
+    assert_eq!(f.staged_bytes(), MAX_STAGED_BYTES);
+    let fetch =
+        |channel_id: &ChannelId, attachment_id: &AttachmentId| ChannelRequest::GetAttachment {
+            channel_id: channel_id.clone(),
+            attachment_id: attachment_id.clone(),
+        };
+    assert_eq!(
+        f.request(fetch(&original, &kept.id)).unwrap(),
+        ChannelResponse::Attachment {
+            attachment: kept.clone(),
+            bytes: sample.clone().into(),
+        }
+    );
+    assert_eq!(
+        f.request(fetch(&original, &resumed.id)).unwrap(),
+        ChannelResponse::Attachment {
+            attachment: resumed.clone(),
+            bytes: sample.clone().into(),
+        }
+    );
+    assert!(
+        f.request(upload(&other, sample.clone()))
+            .unwrap_err()
+            .to_string()
+            .contains("capacity")
+    );
+    let mut attach_resumed = post("legacy-pending");
+    attach_resumed.attachments.push(resumed.id);
+    f.request(send(&original, attach_resumed)).unwrap();
+    assert_eq!(
+        f.staged_bytes(),
+        MAX_STAGED_BYTES - u64::from(resumed.byte_len)
+    );
+    let expiring = uploaded(f.request(upload(&other, sample.clone())).unwrap());
+    let f = f.reopen();
+    assert_eq!(f.staged_bytes(), MAX_STAGED_BYTES);
+    assert!(f.request(fetch(&other, &expiring.id)).is_ok());
+    f.engine
+        .with_store(|store| {
+            store.connection.execute(
+                "UPDATE staged_attachments SET expires_ms=0 WHERE id=?1",
+                [expiring.id.as_ref()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(f.request(fetch(&other, &expiring.id)).is_err());
+    let mut expired_post = post("expired");
+    expired_post.attachments.push(expiring.id.clone());
+    assert!(f.request(send(&other, expired_post)).is_err());
+    f.request(upload(&other, sample)).unwrap();
+    assert_eq!(f.staged_bytes(), MAX_STAGED_BYTES);
+    f.engine
+        .with_store(|store| {
+            let removed: u64 = store.connection.query_row(
+                "SELECT count(*) FROM attachments WHERE id IN ('!legacy-overflow',?1)",
+                [expiring.id.as_ref()],
+                |row| row.get(0),
+            )?;
+            assert_eq!(removed, 0);
+            Ok(())
+        })
+        .unwrap();
+    assert!(matches!(
+        f.request(messages(&original, None, 2)).unwrap(),
+        ChannelResponse::History { messages, .. }
+            if messages[0].message == message && messages[0].attachments == [kept]
+    ));
+}
+
+#[test]
+fn upload_reclaims_a_bounded_oldest_first_batch_of_staged_rows() {
+    let f = Fixture::new();
+    let channel = f.wide(quiet());
+    f.engine
+        .with_store(|store| {
+            let tx = store.connection.transaction()?;
+            tx.execute(
+                "WITH RECURSIVE fill(n) AS (
+                     VALUES(0) UNION ALL SELECT n+1 FROM fill WHERE n<?2
+                 )
+                 INSERT INTO attachments(id,channel_id,descriptor,bytes)
+                 SELECT printf('legacy-%03d',n),?1,'{}',zeroblob(1) FROM fill",
+                rusqlite::params![channel.as_ref(), MAX_STAGING_RECLAIM + 1],
+            )?;
+            // Row zero has the latest expiry; ties among the rest use ID order.
+            tx.execute_batch(
+                "INSERT INTO staged_attachments(id,expires_ms,byte_len)
+                 SELECT id,CASE WHEN id='legacy-000' THEN 1 ELSE 0 END,1 FROM attachments;
+                 UPDATE attachment_budget SET unposted_bytes=(SELECT count(*) FROM attachments);",
+            )?;
+            tx.commit()?;
+            Ok(())
+        })
+        .unwrap();
+    let first = uploaded(f.request(upload(&channel, png())).unwrap());
+    assert_eq!(f.staged_bytes(), u64::from(first.byte_len) + 2);
+    let survivors = f
+        .engine
+        .with_store(|store| {
+            let mut statement = store.connection.prepare(
+                "SELECT id FROM staged_attachments WHERE expires_ms<=1 ORDER BY expires_ms,id",
+            )?;
+            Ok(statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .unwrap();
+    assert_eq!(
+        survivors,
+        [
+            format!("legacy-{:03}", MAX_STAGING_RECLAIM + 1),
+            "legacy-000".into(),
+        ]
+    );
+    let second = uploaded(f.request(upload(&channel, png())).unwrap());
+    assert_eq!(
+        f.staged_bytes(),
+        u64::from(first.byte_len + second.byte_len)
+    );
 }
