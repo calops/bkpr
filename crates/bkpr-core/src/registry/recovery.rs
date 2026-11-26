@@ -64,7 +64,7 @@ struct TitleSource {
     launch_id: String,
     generation: u64,
     group: i32,
-    lifetime: ProcessLifetime,
+    lifetime: Arc<ProcessLifetime>,
 }
 
 /// Pane-local title observation and its non-durable process witness.
@@ -587,7 +587,7 @@ impl Registry {
         launch: &crate::harness::Launch,
         descriptor: HarnessRecovery,
         active: bool,
-        title_lifetime: Option<ProcessLifetime>,
+        title_lifetime: Option<Arc<ProcessLifetime>>,
     ) -> Result<()> {
         validate(&descriptor)?;
         let pane_id = &launch.grant.pane_id;
@@ -597,12 +597,15 @@ impl Registry {
             // This authenticated binding supersedes earlier sampled role/CWD,
             // including when its durable descriptor is otherwise unchanged.
             state.pending_directories.remove(pane_id);
-            let captures = self.inner.captures.lock().unwrap();
+            let mut captures = self.inner.captures.lock().unwrap();
             let current = captures
                 .launches
-                .get(&launch.grant.launch_id)
+                .get_mut(&launch.grant.launch_id)
                 .context("native binding launch ended")?;
             let generation = current.binding_generation;
+            if current.channel_lifetime.is_none() {
+                current.channel_lifetime = title_lifetime.clone();
+            }
             let title_source = title_lifetime.map(|lifetime| TitleSource {
                 launch_id: launch.grant.launch_id.clone(),
                 generation,

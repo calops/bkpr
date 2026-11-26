@@ -852,7 +852,7 @@ fn live_channel_agent<'a>(
     let agent = agents.store.agents.get(&visible.launch_id)?;
     (launch.grant.pane_id == pane.id
         && launch.channel_participant.is_some()
-        && launch.control.is_valid()
+        && launch.channel_launch_alive()
         && visible.conversation.is_some()
         && visible.conversation == launch.managed.conversation
         && agent.exited_at.is_none())
@@ -868,7 +868,9 @@ fn channel_agent(launch: &Launch, agent: &Agent) -> channels::Participant {
         kind: channels::ParticipantKind::Agent,
         display_name: agent
             .title
-            .clone()
+            .as_ref()
+            .filter(|title| !title.trim().is_empty())
+            .cloned()
             .unwrap_or_else(|| launch.grant.kind.display_name().to_owned()),
     }
 }

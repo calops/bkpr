@@ -24,12 +24,23 @@ pub(crate) struct Launch {
     pub(crate) binding_generation: u64,
     /// Live channel identity granted after a durable, authenticated native bind.
     pub(crate) channel_participant: Option<channels::ParticipantId>,
+    /// Kernel exit witness for the launch admitted to workspace channels.
+    pub(crate) channel_lifetime: Option<std::sync::Arc<crate::control_lease::ProcessLifetime>>,
     /// Request-local only; never retained in the capture registry or durable store.
     pub(crate) binding_guard: Option<AgentBindingGuard>,
     /// Private, in-process admission witness. Never decoded from the wire.
     pub(crate) binding_context_admitted: bool,
 }
 impl Launch {
+    /// Whether this launch still has a live kernel witness for channel admission.
+    pub(crate) fn channel_launch_alive(&self) -> bool {
+        self.control.is_valid()
+            && self
+                .channel_lifetime
+                .as_ref()
+                .is_some_and(|life| life.is_alive())
+    }
+
     pub(crate) fn control_lease(&self) -> Result<crate::ControlLease> {
         self.control.bind(&self.root, &self.pane_root)?;
         Ok(self.control.clone())
@@ -249,6 +260,7 @@ impl Captures {
                 control: crate::ControlLease::default(),
                 binding_generation: 0,
                 channel_participant: None,
+                channel_lifetime: None,
                 binding_guard: None,
                 binding_context_admitted: false,
             },

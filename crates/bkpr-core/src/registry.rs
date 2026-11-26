@@ -689,6 +689,18 @@ impl Registry {
             fresh,
             lifecycle_owner: true,
         };
+        let owner = Arc::downgrade(&registry.inner);
+        registry.inner.channels.set_launch_liveness(move |id| {
+            owner.upgrade().is_some_and(|inner| {
+                inner
+                    .captures
+                    .lock()
+                    .unwrap()
+                    .launches
+                    .get(id)
+                    .is_some_and(crate::harness::Launch::channel_launch_alive)
+            })
+        });
         registry.start_agent_maintenance()?;
         registry.start_projects(project_events)?;
         registry.start_ci(ci_events)?;
@@ -914,21 +926,18 @@ impl Registry {
         if matches!(request, ChannelRequest::ListArchivedWorkspaces { .. }) {
             ensure!(caller.is_none(), "channel archives require user authority");
         }
-        let with_roster = matches!(
-            request,
-            ChannelRequest::ListMembers { .. }
-                | ChannelRequest::Create { .. }
-                | ChannelRequest::SetMembership { .. }
-                | ChannelRequest::Post { .. }
-        );
+        let with_roster = match &request {
+            ChannelRequest::ListMembers { .. } | ChannelRequest::Post { .. } => true,
+            ChannelRequest::Create { members, .. }
+            | ChannelRequest::SetMembership { members, .. } => !members.is_empty(),
+            _ => false,
+        };
 
         self.inner
             .channels
             .request(
                 request,
-                |workspace_id| {
-                    self.channel_authority(workspace_id, caller, with_roster, connected)
-                },
+                |workspace_id| self.channel_authority(workspace_id, caller, with_roster, connected),
                 |workspace_id| workspace_exists(&self.inner.state.lock().unwrap(), workspace_id),
                 || !connected() || self.session_end_requested(),
             )
@@ -1685,9 +1694,6 @@ impl Registry {
         let registry = result?;
         children.committed = true;
         reservation.committed = true;
-        if let SpawnTarget::CreateWorkspace { workspace_id, .. } = &target {
-            self.inner.channels.provision([workspace_id.as_str()]);
-        }
         // A process can exit before callbacks are attached. Process every such
         // completion while the batch reservation still protects final membership.
         for (info, pane) in infos.iter().zip(&children.panes) {
@@ -1700,6 +1706,9 @@ impl Registry {
             }
         }
         drop(reservation);
+        if let SpawnTarget::CreateWorkspace { workspace_id, .. } = &target {
+            self.inner.channels.provision([workspace_id.as_str()]);
+        }
         let registry = {
             let state = self.inner.state.lock().unwrap();
             healthy(&state)?;
@@ -1923,7 +1932,7 @@ impl Registry {
         };
         self.withdraw_notifications(&pane);
         self.inner.captures.lock().unwrap().retire_pane(id);
-        self.inner.channels.invalidate();
+        self.inner.channels.reconcile_retired_work();
         let unbound_restore = {
             let mut state = self.inner.state.lock().unwrap();
             let unbound = state

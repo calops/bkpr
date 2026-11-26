@@ -231,6 +231,11 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
         },
     );
     let other = live(&registry, &b.home);
+    agent(
+        &registry,
+        &other,
+        AgentRequest::SetTitle { title: " ".into() },
+    );
     let ChannelResponse::Members { participants, .. } = channel(
         &registry,
         None,
@@ -334,11 +339,7 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
         direct["message_id"]
     );
     let pane = old.grant.pane_id.clone();
-    let target = || SpawnTarget::Restore {
-        pane_id: pane.clone(),
-        workspace_id: workspace.id.clone(),
-        window_id: workspace.windows[0].id.clone(),
-    };
+    let window = &workspace.windows[0];
     drop(server);
     drop(registry);
 
@@ -355,10 +356,16 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
         expected,
         workspace: None,
     };
+    let revision = registry.snapshot().unwrap().workspaces[0].windows[0].revision;
     // Use the owned launcher fixture as the exact PTY root of the reserved execution.
     registry
         .spawn_inner(
-            target(),
+            SpawnTarget::Reopen {
+                pane_id: pane.clone(),
+                workspace_id: workspace.id.clone(),
+                window_id: window.id.clone(),
+                expected_revision: revision,
+            },
             launch_spec(root, "a", NATIVE_ID),
             Some(resume),
             None,
@@ -366,6 +373,7 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
         .unwrap();
     let recovered = live(&registry, &a.home);
     assert_ne!(recovered.grant.launch_id, old.grant.launch_id);
+    assert_ne!(recovered.grant.pane_id, pane);
     let ChannelResponse::History { messages, .. } =
         channel(&registry, Some(&recovered), history(&kept)).unwrap()
     else {
@@ -408,18 +416,105 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
         ]
     );
     drop(work);
+    registry
+        .request_authenticated(
+            Request::new(Operation::HarnessEvent {
+                launch_id: recovered.grant.launch_id.clone(),
+                token: recovered.grant.token.clone(),
+                event: CaptureEvent::End,
+            }),
+            &Peer {
+                pid: recovered.root.pid,
+                uid: unsafe { libc::geteuid() },
+                birth: recovered.root.identity.clone(),
+            },
+        )
+        .unwrap();
+    assert!(channel(&registry, None, history(&kept)).is_ok());
+    let pending: usize = db
+        .query_row(
+            "SELECT count(*) FROM notification_work WHERE launch_id=?1 AND pending=1",
+            [&recovered.grant.launch_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 0);
     drop(db);
     drop(server);
     drop(registry);
 
     let (registry, _server) = open(root);
-    // Same native string, label, pane and workspace, but no backend recovery reservation.
     registry
-        .spawn_inner(target(), launch_spec(root, "a", NATIVE_ID), None, None)
+        .inner
+        .observer_started
+        .store(true, std::sync::atomic::Ordering::Release);
+    let pane = recovered.grant.pane_id;
+    let expected = registry
+        .recovery_candidates()
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.pane_id == pane)
+        .unwrap()
+        .harness;
+    let mut spec = launch_spec(root, "a", NATIVE_ID);
+    // Keeping the shell alive makes the authenticated launcher a descendant,
+    // not the exact PTY root of this reserved resume.
+    spec.argv.splice(
+        0..0,
+        [
+            "/bin/sh".into(),
+            "-c".into(),
+            "\"$@\"; IFS= read -r hold".into(),
+            "fixture".into(),
+        ],
+    );
+    registry
+        .spawn_inner(
+            SpawnTarget::Restore {
+                pane_id: pane.clone(),
+                workspace_id: workspace.id.clone(),
+                window_id: window.id.clone(),
+            },
+            spec,
+            Some(recovery::ResumeAttempt {
+                source: pane,
+                expected,
+                workspace: None,
+            }),
+            None,
+        )
         .unwrap();
     let replacement = live(&registry, &a.home);
+    assert_ne!(replacement.root.pid, replacement.pane_root.pid);
     assert!(channel(&registry, Some(&replacement), history(&kept)).is_err());
     assert!(channel(&registry, Some(&replacement), history(&desk)).is_ok());
+    let replacement_id = replacement.channel_participant.as_ref().unwrap().clone();
+    let addressed = |key: &str| {
+        let mut request = post(&desk, key, PostIntent::Note);
+        if let ChannelRequest::Post { post, .. } = &mut request {
+            post.mentions.push(replacement_id.clone());
+        }
+        request
+    };
+    assert!(channel(&registry, None, addressed("before exit")).is_ok());
+    let process = crate::harness_process::process(replacement.root.pid)
+        .unwrap()
+        .unwrap();
+    assert_eq!(process.identity, replacement.root.identity);
+    assert_eq!(unsafe { libc::kill(process.pid, libc::SIGKILL) }, 0);
+    let lifetime = replacement.channel_lifetime.as_ref().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while lifetime.is_alive() {
+        assert!(Instant::now() < deadline, "fixture launcher did not exit");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(registry.capture_pane(&replacement.grant.pane_id).is_ok());
+    let error = channel(&registry, None, addressed("after exit")).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("mention no longer names a current member")
+    );
 }
 
 fn private_root() -> tempfile::TempDir {
@@ -519,4 +614,40 @@ fn workspace_presets_repair_without_resetting_existing_channel() {
     let channel = channels.iter().find(|channel| &channel.id == desk).unwrap();
     assert_eq!(channel.settings, custom);
     assert_eq!(channel.membership, MembershipMode::Explicit);
+}
+
+#[test]
+fn create_repairs_presets_after_storage_recovers() {
+    let root = private_root();
+    let registry = Registry::open(root.path()).unwrap();
+    let path = root.path().join("channels.sqlite3");
+    fs::create_dir(&path).unwrap();
+    let workspace = send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: None,
+        },
+    );
+    let id = workspace["workspace_id"].as_str().unwrap();
+    let create = || ChannelRequest::Create {
+        workspace_id: id.into(),
+        name: "custom".into(),
+        membership: MembershipMode::WorkspaceWide,
+        members: Vec::new(),
+        settings: Default::default(),
+    };
+    assert!(channel(&registry, None, create()).is_err());
+    fs::remove_dir(&path).unwrap();
+    channel(&registry, None, create()).unwrap();
+    let db = rusqlite::Connection::open(path).unwrap();
+    let mut query = db
+        .prepare("SELECT name FROM channels WHERE workspace_id=?1 ORDER BY name")
+        .unwrap();
+    let names = query
+        .query_map([id], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(names, ["#desk", "#team", "custom"]);
 }

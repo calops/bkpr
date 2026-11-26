@@ -189,6 +189,45 @@ impl Store {
         Ok(())
     }
 
+    pub(super) fn retire_inactive_launches(&mut self, active: &dyn Fn(&str) -> bool) -> Result<()> {
+        let mut inactive = Vec::new();
+        let mut launches = std::collections::BTreeMap::<String, bool>::new();
+        {
+            let mut statement = self.connection.prepare(
+                "SELECT launch_id,message_id,participant_id FROM notification_work
+                 WHERE pending=1 AND launch_id IS NOT NULL",
+            )?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                let launch = row.get_ref(0)?.as_str()?;
+                let live = match launches.get(launch) {
+                    Some(live) => *live,
+                    None => {
+                        let live = active(launch);
+                        launches.insert(launch.to_owned(), live);
+                        live
+                    }
+                };
+                if !live {
+                    inactive.push((row.get::<_, String>(1)?, row.get::<_, String>(2)?));
+                }
+            }
+        }
+        if !inactive.is_empty() {
+            let tx = self.connection.transaction()?;
+            {
+                let mut update = tx.prepare(
+                    "UPDATE notification_work SET pending=0 WHERE message_id=?1 AND participant_id=?2",
+                )?;
+                for (message, participant) in inactive {
+                    update.execute([message, participant])?;
+                }
+            }
+            tx.commit()?;
+        }
+        Ok(())
+    }
+
     pub(super) fn provision<'a>(
         &mut self,
         workspaces: impl IntoIterator<Item = &'a str>,
