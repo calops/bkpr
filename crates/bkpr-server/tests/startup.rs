@@ -2202,7 +2202,7 @@ fn channel_list_operation(workspace_id: String) -> Operation {
         request: bkpr_protocol::channels::ChannelRequest::List {
             workspace_id,
             after: None,
-            limit: 1,
+            limit: 8,
         },
     }
 }
@@ -2244,7 +2244,10 @@ fn owned_channel_client_fixture() {
 
 #[test]
 fn pane_process_cannot_obtain_user_channel_authority_by_registering() {
-    use bkpr_protocol::{Payload, channels::ChannelResponse};
+    use bkpr_protocol::{
+        Payload,
+        channels::{ChannelRequest, ChannelResponse, MembershipMode},
+    };
 
     let fixture = Fixture::new();
     fs::write(fixture.cwd.join("owned-channel-client"), b"private").unwrap();
@@ -2261,6 +2264,26 @@ fn pane_process_cannot_obtain_user_channel_authority_by_registering() {
     let workspace = daemon.snapshot().workspaces.into_iter().next().unwrap();
     let (_lifetime, authority) = register_channel_client(&endpoint);
     activate_channel_client(&endpoint, &authority);
+    let created = request(
+        &endpoint.socket,
+        as_channel_client(
+            &authority,
+            Operation::Channels {
+                request: ChannelRequest::Create {
+                    workspace_id: workspace.id.clone(),
+                    name: "Authority check".into(),
+                    membership: MembershipMode::WorkspaceWide,
+                    members: Vec::new(),
+                    settings: Default::default(),
+                },
+            },
+        ),
+    )
+    .unwrap();
+    assert!(created.ok, "{:?}", created.error);
+    let Some(Payload::Channels(ChannelResponse::Channel { channel })) = created.result else {
+        panic!("expected the workspace's new channel");
+    };
     let response = request(
         &endpoint.socket,
         as_channel_client(&authority, channel_list_operation(workspace.id)),
@@ -2270,9 +2293,8 @@ fn pane_process_cannot_obtain_user_channel_authority_by_registering() {
     assert!(matches!(
         response.result,
         Some(Payload::Channels(ChannelResponse::Listed {
-            channels,
-            next_after: None,
-        })) if channels.is_empty()
+            channels, ..
+        })) if channels.iter().any(|entry| entry.id == channel.id)
     ));
     daemon.shutdown_host();
 }
