@@ -442,6 +442,7 @@ fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
             attention: false,
         },
         ChannelResponse::Posted {
+            channel_id: Some(channel()),
             message: annotated_message.message.clone(),
             wake_count: 2,
             attention: true,
@@ -1226,7 +1227,13 @@ fn native_summary_checks_spans_against_body_only_when_present() {
             let response = g::ChannelResponseMessage::create(&mut b, message);
             g::ChannelResponse::create_channel_response_message(&mut b, response)
         } else {
-            let response = g::ChannelResponsePosted::create(&mut b, metadata, 0u32, false);
+            let response = g::ChannelResponsePosted::create(
+                &mut b,
+                metadata,
+                0u32,
+                false,
+                None::<Offset<str>>,
+            );
             g::ChannelResponse::create_channel_response_posted(&mut b, response)
         };
         let result = decode_native_channel_response(&mut b, response);

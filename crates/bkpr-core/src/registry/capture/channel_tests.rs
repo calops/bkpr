@@ -865,14 +865,8 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
     assert!(channel(&registry, Some(&replacement), history(&kept)).is_err());
     assert!(channel(&registry, Some(&replacement), history(&direct_channel)).is_err());
     assert!(channel(&registry, Some(&replacement), history(&desk)).is_ok());
-    let replacement_id = replacement.channel_participant.as_ref().unwrap().clone();
-    let addressed = |key: &str| {
-        let mut request = post(&desk, key, PostIntent::Note);
-        if let ChannelRequest::Post { post, .. } = &mut request {
-            post.mentions.push(replacement_id.clone());
-        }
-        request
-    };
+    let binding = user_binding(&registry, &workspace.id, &desk, &replacement);
+    let addressed = |key| mention_as_user(&desk, key, binding.clone());
     assert!(channel(&registry, None, addressed("before exit")).is_ok());
     let process = crate::harness_process::process(replacement.root.pid)
         .unwrap()
@@ -887,11 +881,7 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
     }
     assert!(registry.capture_pane(&replacement.grant.pane_id).is_ok());
     let error = channel(&registry, None, addressed("after exit")).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("mention no longer names a current member")
-    );
+    assert!(error.to_string().contains("refresh the roster"), "{error}");
 }
 
 fn private_root() -> tempfile::TempDir {
@@ -2967,7 +2957,15 @@ fn concurrent_direct_sends_share_one_private_thread_and_keep_exact_receipts() {
     }));
     let outsider_receiver = receiver(&registry, &outsider);
     assert!(matches!(
-        channel(&registry, None, ChannelRequest::Post { channel_id, post: kickoff }).unwrap(),
+        channel(
+            &registry,
+            None,
+            ChannelRequest::Post {
+                channel_id,
+                post: kickoff
+            }
+        )
+        .unwrap(),
         ChannelResponse::Posted { wake_count: 3, .. }
     ));
     let expand = |caller: &Launch, receiver| {

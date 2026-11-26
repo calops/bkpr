@@ -117,6 +117,7 @@ fn send(to: &CaptureGrant, key: &str) -> AgentRequest {
             idempotency_key: key.into(),
             intent: Default::default(),
             mentions: Vec::new(),
+            mention_spans: Vec::new(),
             reply_to: None,
             attachments: Vec::new(),
             source: None,

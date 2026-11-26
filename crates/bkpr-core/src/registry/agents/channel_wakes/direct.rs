@@ -198,19 +198,20 @@ impl Registry {
                 if state.closing_workspaces.contains(workspace) {
                     return None;
                 }
-                live_channel_agent(
+                let (launch, agent) = live_channel_agent(
                     &state,
                     pane,
                     workspace,
                     &agents,
                     &captures,
                     Some(participant),
-                )
+                )?;
+                Some(WorkspaceParticipant {
+                    actor: channel_agent(launch, agent, &state, pane),
+                    launch_id: Some(launch.grant.launch_id.clone()),
+                    binding_revision: launch.binding_generation,
+                })
             });
-        Ok(current.map(|(launch, agent)| WorkspaceParticipant {
-            actor: channel_agent(launch, agent),
-            launch_id: Some(launch.grant.launch_id.clone()),
-            binding_revision: launch.binding_generation,
-        }))
+        Ok(current)
     }
 }

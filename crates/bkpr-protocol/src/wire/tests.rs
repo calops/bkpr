@@ -362,6 +362,7 @@ fn agent_channel_requests_append_ordinals_and_roundtrip() {
                     text: "質問\n".into(),
                     intent: crate::channels::PostIntent::Note,
                     mentions: Vec::new(),
+                    mention_spans: Vec::new(),
                     reply_to: Some(MessageId("parent".into())),
                     attachments: Vec::new(),
                     source: Some(Box::new(ChannelSource {
