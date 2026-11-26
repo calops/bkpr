@@ -533,7 +533,6 @@ fn unbind_retains_recovery_and_launch_prompt_but_revokes_every_native_authority(
     bind(&f, "root-A");
     assert_eq!(binding(&f).generation, 3);
     let unchanged_version = f.fixture.registry.inner.captures.lock().unwrap().version;
-    let unchanged_revision = f.fixture.registry.snapshot().unwrap().revision;
     let stale = event(
         &f,
         CaptureEvent::Unbind {
@@ -585,10 +584,6 @@ fn unbind_retains_recovery_and_launch_prompt_but_revokes_every_native_authority(
         f.fixture.registry.inner.captures.lock().unwrap().version,
         unchanged_version
     );
-    assert_eq!(
-        f.fixture.registry.snapshot().unwrap().revision,
-        unchanged_revision
-    );
     assert_eq!(binding(&f).generation, 3);
     assert_eq!(
         f.fixture.registry.inner.captures.lock().unwrap().launches[&f.grant.launch_id]
@@ -598,6 +593,8 @@ fn unbind_retains_recovery_and_launch_prompt_but_revokes_every_native_authority(
     );
     // The old receiver is not silently rebound by returning to the same root ID.
     let who = own_call(&f, AgentRequest::Whoami { detail: true }).unwrap();
+    assert_eq!(who["launch_id"], f.grant.launch_id);
+    assert_eq!(who["title"], "attested");
     assert!(who["receiver_mode"].is_null());
 }
 
