@@ -327,8 +327,10 @@ Font beekeeper icon. Remote hosts sit right-aligned and muted; connecting hosts
 use a colored Nerd Font spinner, and failures use a colored network-off icon.
 Healthy sessions have no status badge. Windows use the two-cell `` honeycomb
 slot and neutral labels; project colors belong to pane bees. Bright tree guides
-trace only the selected item's path to its ancestors. The active pane's title
-and metadata share one full-width highlight.
+trace only the selected item's path to its ancestors. Fancy chrome rounds each
+turn and leaves off-path arms of junctions muted. Plain chrome keeps Unicode
+guides at the same two-cell indentation. The active pane's title and metadata
+share one full-width highlight.
 In workspaces with several windows, a window with one sidebar pane is shown
 as that pane directly under the workspace.
 A single online session keeps the compact workspace tree. Hovering or browsing
@@ -1093,6 +1095,11 @@ item. Confirmed RGB clients use main's linear-light lifted material consistently
 across the highlighted item, card and border cells; tree guides disappear inside
 that item and return when the popup closes. Limited-color clients retain native
 inverse keyboard selection.
+
+Bright tree guides lead to the panes shown in the current window, whether or
+not they have keyboard focus. Detached panes and panes in other windows keep
+muted branches. Fancy guides use the same two-cell indent as Unicode guides;
+the Unicode guides remain available while graphics load or when they don't fit.
 
 Contextual hints always use a passive popup populated from the same effective
 bindings as dispatch. It stays left-anchored, overflowing only when the visible

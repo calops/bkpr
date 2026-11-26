@@ -1,6 +1,7 @@
 use crate::tiling;
 use crate::{metadata::ProjectSpan, project_colors::ProjectPalette};
 use bkpr_protocol::*;
+use bkpr_tui_framework::tree_guides::{Focus, Prefix};
 use bkpr_tui_framework::{BackgroundSpan, ForegroundSpan, Rect, Role, RoleSpan, Theme, UiSurface};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -1012,6 +1013,70 @@ pub(crate) fn sidebar_scrollbar(
     bkpr_tui_framework::scrollbar_thumb(visible as u16, tree.rows.len(), visible, tree.scroll)
 }
 
+struct SidebarRows<'a> {
+    area: Rect,
+    tree: &'a crate::tree::Tree,
+    popup: Option<&'a crate::tree::Target>,
+    count: usize,
+    width: u16,
+    scrollbar: Option<std::ops::Range<u16>>,
+}
+
+impl<'a> SidebarRows<'a> {
+    fn new(
+        tree: &'a crate::tree::Tree,
+        size: Size,
+        guide_rows: u16,
+        popup: Option<&'a crate::tree::Target>,
+    ) -> Self {
+        let area = screen_geometry(size, tree.preferred_columns).0;
+        let count = sidebar_content_rows(area, guide_rows);
+        let scrollbar = sidebar_scrollbar(tree, count);
+        let width = area.width - u16::from(scrollbar.is_some());
+        Self {
+            area,
+            tree,
+            popup,
+            count,
+            width,
+            scrollbar,
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (usize, &'a crate::tree::TreeRow, Rect, bool)> + '_ {
+        self.tree
+            .rows
+            .iter()
+            .skip(self.tree.scroll)
+            .take(self.count)
+            .enumerate()
+            .map(|(index, entry)| {
+                let bounds = Rect {
+                    x: 1,
+                    y: index as u16 + 2,
+                    width: self.width.saturating_sub(1),
+                    height: 1,
+                };
+                let highlighted = self
+                    .popup
+                    .is_some_and(|target| entry.target.as_ref() == Some(target));
+                (index, entry, bounds, highlighted)
+            })
+    }
+}
+
+pub(crate) struct GuideRow {
+    pub prefix: Prefix,
+    pub bounds: Rect,
+    pub focus: Focus,
+}
+
+#[derive(Default)]
+pub(crate) struct GuideProjection {
+    branches: Vec<usize>,
+    pub rows: Vec<GuideRow>,
+}
+
 /// Shared native formatting: the registry and row list always belong to one owner.
 fn native_row_label(
     kind: SidebarRowKind,
@@ -1030,7 +1095,7 @@ fn native_row_label(
     } = context;
     let marker_x = entry.icon_column();
     let mut label = String::with_capacity(usize::from(width) * 2);
-    entry.write_prefix(&mut label, highlighted);
+    entry.prefix().write_plain(&mut label, !highlighted);
     match kind {
         SidebarRowKind::Workspace { index, collapsed } => {
             let workspace = &registry.workspaces[index];
@@ -1249,7 +1314,8 @@ fn render_chrome(
     } = context;
     project_spans.clear();
     working_titles.clear();
-    let sidebar = screen_geometry(size, tree.preferred_columns).0;
+    let rows = SidebarRows::new(tree, size, guide_rows, tree_popup.map(|(target, _)| target));
+    let sidebar = rows.area;
     let mut lines = Vec::new();
     // Hidden cursors still determine terminal cursor trails. Only a rendered
     // keyboard selection supplies an anchor; passive hover cards never do.
@@ -1291,22 +1357,12 @@ fn render_chrome(
             lines.push(line(sidebar.width - width, 1, width, label, false));
         }
     }
-    let available = sidebar_content_rows(sidebar, guide_rows);
-    let scrollbar = sidebar_scrollbar(tree, available);
-    let row_width = sidebar.width - u16::from(scrollbar.is_some());
-    for (index, entry) in tree
-        .rows
-        .iter()
-        .skip(tree.scroll)
-        .take(available)
-        .enumerate()
-    {
+    let row_width = rows.width;
+    for (index, entry, bounds, highlighted) in rows.iter() {
         let Some(session) = tree.session(entry.owner) else {
             continue;
         };
-        let row = index as u16 + 2;
-        let highlighted =
-            tree_popup.is_some_and(|(target, _)| entry.target.as_ref() == Some(target));
+        let row = bounds.y;
         let plate = highlighted
             && tree_popup.is_some_and(|(_, background)| matches!(background, ColorSource::Rgb(_)));
         let selected = tree.active && entry.target.is_some() && entry.target == tree.cursor;
@@ -1372,7 +1428,7 @@ fn render_chrome(
             label,
             row_selected,
         ));
-        if let Some(thumb) = &scrollbar {
+        if let Some(thumb) = &rows.scrollbar {
             let glyph = if thumb.contains(&(index as u16)) {
                 "┃"
             } else {
@@ -1408,7 +1464,7 @@ pub(crate) fn theme_tree_chrome(
     context: TreeChromeContext<'_>,
     palette: &ProjectPalette,
     projects: &[ProjectSpan],
-    foregrounds: &mut Vec<ForegroundSpan>,
+    (foregrounds, guides): (&mut Vec<ForegroundSpan>, &mut GuideProjection),
 ) {
     let TreeChromeContext {
         native: context,
@@ -1433,10 +1489,12 @@ pub(crate) fn theme_tree_chrome(
         }
     }
     let size = surface.frame.size;
-    let sidebar = screen_geometry(size, tree.preferred_columns).0;
+    let rows = SidebarRows::new(tree, size, guide_rows, tree_popup.map(|(target, _)| target));
+    let sidebar = rows.area;
     let mut spans = Vec::new();
     let mut backgrounds = Vec::new();
     foregrounds.clear();
+    guides.rows.clear();
     let muted = theme.ink(Role::Muted, false);
     spans.push(RoleSpan {
         rect: Rect {
@@ -1460,15 +1518,13 @@ pub(crate) fn theme_tree_chrome(
             role: Role::Muted,
         });
     }
-    let available = sidebar_content_rows(sidebar, guide_rows);
-    let scrollbar = sidebar_scrollbar(tree, available);
-    let row_width = sidebar.width - u16::from(scrollbar.is_some());
-    if let Some(thumb) = scrollbar {
+    let row_width = rows.width;
+    if let Some(thumb) = rows.scrollbar.clone() {
         let track = Rect {
             x: row_width,
             y: 2,
             width: 1,
-            height: available as u16,
+            height: rows.count as u16,
         };
         let thumb = Rect {
             y: track.y + thumb.start,
@@ -1491,31 +1547,27 @@ pub(crate) fn theme_tree_chrome(
             );
         }
     }
-    let focus_edges = tree.focus_edges();
+    let focus_edges = tree.visible_guide_edges(active, rects, &mut guides.branches);
     let inactive_guide_ink = crate::appearance::inactive_tree_guide_ink(theme);
-    let outer_sidebar = sidebar;
     let sidebar = Rect {
         width: row_width,
-        ..outer_sidebar
+        ..sidebar
     };
-    for index in 0..available {
-        let row = index as u16 + 2;
-        let Some(entry) = tree.rows.get(tree.scroll + index) else {
-            break;
-        };
+    for (index, entry, row_rect, highlighted) in rows.iter() {
+        let row = row_rect.y;
         let Some(session) = tree.session(entry.owner) else {
             continue;
         };
-        let background = tree_popup
-            .filter(|(target, _)| entry.target.as_ref() == Some(*target))
-            .map(|(_, background)| background)
-            .or_else(|| {
-                (entry.target.is_some() && entry.target == tree.hover)
-                    .then(|| theme.background(Role::Hover, false))
-            });
-        if row_width < outer_sidebar.width
-            && let Some((target, background @ ColorSource::Rgb(_))) = tree_popup
-            && entry.target.as_ref() == Some(target)
+        let background = if highlighted {
+            tree_popup.map(|(_, background)| background)
+        } else if entry.target.is_some() && entry.target == tree.hover {
+            Some(theme.background(Role::Hover, false))
+        } else {
+            None
+        };
+        if row_width < rows.area.width
+            && highlighted
+            && let Some((_, background @ ColorSource::Rgb(_))) = tree_popup
         {
             // The joined contour leaves this cell to the text renderer.
             backgrounds.push(BackgroundSpan {
@@ -1529,12 +1581,7 @@ pub(crate) fn theme_tree_chrome(
             });
         }
         if matches!(entry.kind, crate::tree::Kind::Session) {
-            let rect = Rect {
-                x: 1,
-                y: row,
-                width: sidebar.width.saturating_sub(1),
-                height: 1,
-            };
+            let rect = row_rect;
             spans.push(RoleSpan {
                 rect,
                 role: if entry.owner == active {
@@ -1582,58 +1629,28 @@ pub(crate) fn theme_tree_chrome(
             | SidebarRowKind::Spacer => Role::Muted,
         };
         spans.push(RoleSpan {
-            rect: Rect {
-                x: 1,
-                y: row,
-                width: sidebar.width.saturating_sub(1),
-                height: 1,
-            },
+            rect: row_rect,
             role,
         });
-        let row_rect = Rect {
-            x: 1,
-            y: row,
-            width: sidebar.width.saturating_sub(1),
-            height: 1,
-        };
         if let Some(background) = background {
             backgrounds.push(BackgroundSpan {
                 rect: row_rect,
                 background,
             });
         }
-        let prefix_width = if matches!(kind, SidebarRowKind::Spacer) {
-            entry.depth * 3
-        } else if matches!(
-            kind,
-            SidebarRowKind::Projects { .. } | SidebarRowKind::Detail { .. }
-        ) {
-            entry.content_column().saturating_sub(1)
-        } else {
-            entry.icon_column().saturating_sub(1)
-        };
-        for level in 1..=prefix_width.div_ceil(3) {
-            let x = 1 + (level - 1) * 3;
-            let rect = Rect {
-                x,
-                width: 3
-                    .min(prefix_width - (x - 1))
-                    .min(sidebar.width.saturating_sub(x)),
-                ..row_rect
-            };
-            let bright = focus_edges.iter().flatten().any(|edge| {
-                edge.depth == level && (edge.start..=edge.end).contains(&(tree.scroll + index))
-            });
-            spans.push(RoleSpan {
-                rect,
-                role: if bright { Role::Base } else { Role::Muted },
-            });
-            if !bright {
-                foregrounds.push(ForegroundSpan {
-                    rect,
-                    foreground: inactive_guide_ink,
-                });
+        if !highlighted {
+            let index = tree.scroll + index;
+            let mut focus = Focus::at(&focus_edges, index);
+            if guides.branches.binary_search(&index).is_ok() {
+                focus = focus.with_turn(entry.depth);
             }
+            let prefix = entry.prefix();
+            prefix.plain_styles(row_rect, focus, inactive_guide_ink, &mut spans, foregrounds);
+            guides.rows.push(GuideRow {
+                prefix,
+                bounds: row_rect,
+                focus,
+            });
         }
         let ci_status = match kind {
             SidebarRowKind::Detail { index } => registry.panes[index]
@@ -1788,7 +1805,7 @@ pub(crate) fn theme_tree_chrome(
             }
         }
     }
-    let sidebar = outer_sidebar;
+    let sidebar = rows.area;
     for (id, rect) in rects
         .iter()
         .filter(|(id, _)| state.focused.as_ref() != Some(id))
@@ -1852,40 +1869,30 @@ pub(crate) fn theme_tree_chrome(
             background: theme.background(Role::Base, false),
         });
     }
-    for (index, entry) in tree
-        .rows
-        .iter()
-        .skip(tree.scroll)
-        .take(available)
-        .enumerate()
-    {
+    for (_, entry, bounds, highlighted) in rows.iter() {
         let Some(session) = tree.session(entry.owner) else {
             continue;
         };
         // A rich attached popup owns its rounded item outline. Do not
         // extend its flat plate into the sidebar's exterior padding.
-        if !pane_graphics.is_empty()
-            && tree_popup.is_some_and(|(target, _)| entry.target.as_ref() == Some(target))
-        {
+        if !pane_graphics.is_empty() && highlighted {
             continue;
         }
         let selected = tree.active && entry.target.is_some() && entry.target == tree.cursor;
-        let background = tree_popup
-            .filter(|(target, _)| entry.target.as_ref() == Some(*target))
-            .map(|(_, background)| background)
-            .or_else(|| {
-                (selected || focused_tree_pane(entry, session, active))
-                    .then(|| theme.background(Role::Base, true))
-            })
-            .or_else(|| {
-                (entry.target.is_some() && entry.target == tree.hover)
-                    .then(|| theme.background(Role::Hover, false))
-            });
+        let background = if highlighted {
+            tree_popup.map(|(_, background)| background)
+        } else if selected || focused_tree_pane(entry, session, active) {
+            Some(theme.background(Role::Base, true))
+        } else if entry.target.is_some() && entry.target == tree.hover {
+            Some(theme.background(Role::Hover, false))
+        } else {
+            None
+        };
         if let Some(background) = background {
             backgrounds.push(BackgroundSpan {
                 rect: Rect {
                     x: sidebar.x,
-                    y: index as u16 + 2,
+                    y: bounds.y,
                     width: sidebar
                         .width
                         .saturating_add(u16::from(sidebar.width < size.cols)),
@@ -2304,7 +2311,7 @@ mod tests {
             },
             palette,
             projects,
-            foregrounds,
+            (foregrounds, &mut Default::default()),
         );
     }
 
@@ -2483,7 +2490,7 @@ mod tests {
             },
             &ProjectPalette::default(),
             &[],
-            &mut Vec::new(),
+            (&mut Vec::new(), &mut Default::default()),
         );
         assert_eq!(
             surface.frame.rows[usize::from(native_row)].cells[1]
@@ -3232,7 +3239,7 @@ mod tests {
     }
 
     #[test]
-    fn focused_guides_end_at_each_ancestor_and_leave_window_labels_neutral() {
+    fn bright_guides_follow_visible_splits_and_skip_detached_panes() {
         let (mut pane, snapshot) = capture_fixture();
         pane.project = Some(project_fixture());
         let mut registry = capture_registry(&pane);
@@ -3245,6 +3252,15 @@ mod tests {
         let mut sibling = pane.clone();
         sibling.id = "sibling".into();
         registry.panes.push(sibling);
+        let mut visible_split = pane.clone();
+        visible_split.id = "visible-split".into();
+        registry.workspaces[0].windows[0].layout = Some(LayoutNode::Split {
+            axis: Axis::Horizontal,
+            ratio: 500,
+            first: Box::new(leaf(&pane.id)),
+            second: Box::new(leaf(&visible_split.id)),
+        });
+        registry.panes.push(visible_split);
         let mut other_sibling = other.clone();
         other_sibling.id = "other-sibling".into();
         registry.panes.push(other_sibling);
@@ -3252,7 +3268,7 @@ mod tests {
         let mut state = Controller::new(&registry);
         state.sidebar.cursor = Some(SidebarTarget::Pane {
             workspace: "work".into(),
-            pane: pane.id.clone(),
+            pane: "sibling".into(),
         });
         let mut surface = capture_surface();
         let host = bkpr_tui_framework::ColorProbe {
@@ -3263,12 +3279,23 @@ mod tests {
         };
         let mut theme = Theme::default();
         crate::appearance::update_theme(&mut theme, &host);
+        let mut rects = Vec::new();
+        super::layout_rects(
+            registry.workspaces[0].windows[0].layout.as_ref(),
+            Rect {
+                x: 40,
+                y: 0,
+                width: 30,
+                height: 10,
+            },
+            &mut rects,
+        );
         let context = FixtureChrome {
             sidebar_popup: None,
             size: surface.frame.size,
             state: &state,
             registry: &registry,
-            rects: &[],
+            rects: &rects,
             pane_graphics: &[],
             guide_rows: 0,
         };
@@ -3304,6 +3331,14 @@ mod tests {
             index: 0,
             collapsed: false,
         });
+        let detached_y = row(SidebarRowKind::Pane {
+            index: 1,
+            projected: false,
+        });
+        let split_y = row(SidebarRowKind::Pane {
+            index: 2,
+            projected: true,
+        });
         let other_y = row(SidebarRowKind::Window {
             workspace: 0,
             index: 1,
@@ -3329,11 +3364,15 @@ mod tests {
             );
         }
         assert_ne!(bright, muted);
-        assert_eq!(ink(window_y, icon_x - 3), bright);
-        assert_eq!(ink(pane_y, icon_x - 3), muted);
-        assert_eq!(ink(detail_y, icon_x - 3), muted);
+        assert_eq!(ink(window_y, icon_x - 2), bright);
+        assert_eq!(ink(pane_y, icon_x - 2), muted);
+        assert_eq!(ink(detail_y, icon_x - 2), muted);
         assert_eq!(ink(pane_y, icon_x), bright);
-        assert_eq!(ink(other_y, icon_x - 3), muted);
+        assert_eq!(ink(pane_y, icon_x + 1), bright);
+        assert_eq!(ink(detached_y, icon_x), bright);
+        assert_eq!(ink(detached_y, icon_x + 1), muted);
+        assert_eq!(ink(split_y, icon_x + 1), bright);
+        assert_eq!(ink(other_y, icon_x - 2), muted);
         assert_eq!(ink(window_y, icon_x), bright);
         assert_eq!(ink(other_y, icon_x), bright);
     }
@@ -4745,13 +4784,9 @@ mod tests {
                         .all(|cell| cell.style.background_source == expected)
                 );
                 if visible {
-                    assert!(cells[1..4].iter().all(|cell| cell.text == " "));
+                    assert_eq!(cells[1].text, " ");
                 } else if matches!(entry.kind, SidebarRowKind::Pane { .. }) {
-                    assert!(
-                        cells[1..4]
-                            .iter()
-                            .any(|cell| matches!(cell.text.as_str(), "╰" | "├"))
-                    );
+                    assert!(matches!(cells[1].text.as_str(), "╰" | "├"));
                 }
             }
             assert_eq!(
@@ -4814,10 +4849,6 @@ mod tests {
                 .iter()
                 .any(|cell| cell.text != " " && cell.style.inverse)
         );
-        assert!(
-            surface.frame.rows[row].cells[1..4]
-                .iter()
-                .all(|cell| cell.text == " ")
-        );
+        assert_eq!(surface.frame.rows[row].cells[1].text, " ");
     }
 }

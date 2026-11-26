@@ -137,6 +137,24 @@ impl ChromeGraphics {
     pub(crate) fn set_enabled(&mut self, enabled: bool) -> bool {
         self.0.set_enabled(enabled)
     }
+    pub(crate) fn prepare_tree_guides(&mut self, theme: &bkpr_tui_framework::Theme) {
+        self.0.tree_guide_inks([
+            theme.ink(bkpr_tui_framework::Role::Base, false),
+            crate::appearance::inactive_tree_guide_ink(theme),
+        ]);
+    }
+
+    pub(crate) fn draw_tree_guides(
+        &self,
+        rows: &[crate::controller::GuideRow],
+        artwork: &mut bkpr_tui_framework::CellArtwork,
+    ) {
+        for row in rows {
+            row.prefix
+                .paint_fancy(&self.0, artwork, row.bounds, row.focus);
+        }
+    }
+
     pub(crate) fn prepare(&mut self, host: &ColorProbe, size: Size, sources: &[ColorSource]) {
         if !self.0.is_enabled() {
             return;

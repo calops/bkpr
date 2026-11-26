@@ -3,7 +3,10 @@
 use crate::controller::{SessionGroup, SessionStatus, SidebarRow, SidebarRowKind, SidebarTarget};
 use crate::project_colors::{ProjectColors, ProjectHost, ProjectSlots};
 use bkpr_protocol::{PaneSnapshot, RegistrySnapshot};
-use bkpr_tui_framework::{Navigation, NavigationRow};
+use bkpr_tui_framework::{
+    Navigation, NavigationRow,
+    tree_guides::{FocusEdge, Prefix},
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -39,12 +42,6 @@ pub(crate) struct TreeRow {
     parent_row: Option<usize>,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct FocusEdge {
-    pub depth: u16,
-    pub start: usize,
-    pub end: usize,
-}
 impl TreeRow {
     fn branch(&self) -> bool {
         matches!(
@@ -58,39 +55,23 @@ impl TreeRow {
     }
 
     pub fn icon_column(&self) -> u16 {
-        1 + self.depth * 3
+        1 + self.prefix().width()
     }
 
     pub fn content_column(&self) -> u16 {
-        if self.branch() {
-            self.icon_column() + 2
-        } else {
-            3 + self.depth.saturating_sub(1) * 3
-        }
+        self.icon_column() + if self.branch() { 2 } else { 0 }
     }
 
-    pub fn write_prefix(&self, label: &mut String, highlighted: bool) {
-        let spacer = matches!(self.kind, Kind::Native(SidebarRowKind::Spacer));
-        let end = self.depth + u16::from(spacer);
-        for level in 1..end {
-            label.push_str(if !highlighted && self.continuations & (1 << level) != 0 {
-                "│  "
-            } else {
-                "   "
-            });
-        }
-        if self.branch() && self.depth > 0 {
-            label.push_str(if highlighted {
-                "   "
-            } else if self.last_sibling {
-                "╰─╴"
-            } else {
-                "├─╴"
-            });
-        } else if matches!(self.kind, Kind::Native(SidebarRowKind::Projects { .. })) {
-            label.push_str(if highlighted { "  " } else { "│ " });
-        } else if matches!(self.kind, Kind::Native(SidebarRowKind::Detail { .. })) {
-            label.push_str("  ");
+    pub fn prefix(&self) -> Prefix {
+        match self.kind {
+            Kind::Native(SidebarRowKind::Spacer) => Prefix::spacer(self.depth, self.continuations),
+            Kind::Native(SidebarRowKind::Projects { .. }) => {
+                Prefix::secondary(self.depth, self.continuations, true)
+            }
+            Kind::Native(SidebarRowKind::Detail { .. }) => {
+                Prefix::secondary(self.depth, self.continuations, false)
+            }
+            _ => Prefix::node(self.depth, self.continuations, self.last_sibling),
         }
     }
 }
@@ -125,6 +106,7 @@ pub(crate) struct Tree {
     sessions: Vec<Arc<Session>>,
     collapsed: HashSet<Target>,
     projects: ProjectColors,
+    pane_rows: HashMap<Owner, HashMap<String, usize>>,
     session_roots: bool,
 }
 impl std::ops::Deref for Tree {
@@ -157,17 +139,48 @@ impl Tree {
             |session| self.projects.slots(&session.project_host),
         )
     }
-    pub fn focus_edges(&self) -> [Option<FocusEdge>; 3] {
+    pub fn visible_guide_edges(
+        &self,
+        owner: Owner,
+        rects: &[(String, bkpr_tui_framework::Rect)],
+        branches: &mut Vec<usize>,
+    ) -> [Option<FocusEdge>; 3] {
+        branches.clear();
+        if let Some(rows) = self.pane_rows.get(&owner) {
+            branches.extend(rects.iter().filter_map(|(id, _)| rows.get(id).copied()));
+        }
+        branches.sort_unstable();
+        // All projected panes belong to the same window. Their guide spines
+        // share a parent; the last pane gives the union of those spans.
+        let child = branches.last().copied().or_else(|| {
+            if rects.is_empty() {
+                return None;
+            }
+            let session = self.session(owner)?;
+            self.rows.iter().position(|row| {
+                row.owner == owner
+                    && match (&row.kind, row.target.as_ref().map(|target| &target.node)) {
+                        (
+                            Kind::Native(SidebarRowKind::Window {
+                                collapsed: true, ..
+                            }),
+                            Some(Node::Native(SidebarTarget::Window { workspace, window })),
+                        ) => {
+                            session.workspace.as_ref() == Some(workspace)
+                                && session.window.as_ref() == Some(window)
+                        }
+                        (
+                            Kind::Native(SidebarRowKind::Workspace {
+                                collapsed: true, ..
+                            }),
+                            Some(Node::Native(SidebarTarget::Workspace(workspace))),
+                        ) => session.workspace.as_ref() == Some(workspace),
+                        _ => false,
+                    }
+            })
+        });
         let mut edges = [None; 3];
-        let Some(cursor) = self.cursor.as_ref() else {
-            return edges;
-        };
-        let Some(mut child) = self.rows.iter().position(|row| {
-            row.target.as_ref() == Some(cursor)
-                && (row.branch() || matches!(row.kind, Kind::Session))
-        }) else {
-            return edges;
-        };
+        let Some(mut child) = child else { return edges };
         for edge in &mut edges {
             let Some(parent) = self.rows[child].parent_row else {
                 break;
@@ -367,6 +380,7 @@ impl Tree {
     }
     fn rebuild(&mut self) {
         self.navigation.rows.clear();
+        self.pane_rows.clear();
         let multi = self.sessions.len() > 1 || self.session_roots;
         for session in &self.sessions {
             let owner = session.owner;
@@ -507,6 +521,19 @@ impl Tree {
         let mut ancestors = [None; 4];
         for (index, row) in self.navigation.rows.iter_mut().enumerate() {
             let depth = usize::from(row.depth);
+            if let (
+                Kind::Native(SidebarRowKind::Pane { .. }),
+                Some(Target {
+                    node: Node::Native(SidebarTarget::Pane { pane, .. }),
+                    ..
+                }),
+            ) = (&row.kind, &row.target)
+            {
+                self.pane_rows
+                    .entry(row.owner)
+                    .or_default()
+                    .insert(pane.clone(), index);
+            }
             row.parent_row = depth
                 .checked_sub(1)
                 .and_then(|depth| ancestors.get(depth).copied().flatten());

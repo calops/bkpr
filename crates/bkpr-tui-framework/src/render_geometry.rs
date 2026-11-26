@@ -5,6 +5,8 @@ const MAX_RASTER_WORKING_BYTES: usize = 128 * 1024 * 1024;
 // Tagged Kitty 0.49.2 rejects uploaded image dimensions above 10000. Larger
 // visible projections are represented by bounded, phase-preserving tiles.
 const MAX_TILE_DIMENSION: u32 = 10000;
+pub(super) const MAX_IMAGES: usize = 1024;
+pub(super) const MAX_PLACEMENTS: usize = 4096;
 
 /// A half-open image rectangle in pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -263,7 +265,7 @@ fn project(
 /// Every referenced image generation must be resident in the frame.
 /// Rejects invalid resources/crops, zero cell metrics, overflow and excessive working sets.
 pub(super) fn prepare<'a>(frame: &'a Frame, viewport: Size) -> Result<Prepared<'a>> {
-    if frame.images.len() > 1024 || frame.placements.len() > 4096 {
+    if frame.images.len() > MAX_IMAGES || frame.placements.len() > MAX_PLACEMENTS {
         bail!("image projection resource count limit");
     }
     if frame.size.cell_width == 0
