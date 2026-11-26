@@ -226,7 +226,9 @@ impl Registry {
                     max_body_bytes.map(|maximum| maximum as usize),
                     include_source,
                     crate::channels::ChannelWakeAccess {
-                        admit: &|workspace| self.channel_authority(workspace, Some(launch), false),
+                        admit: &|workspace| {
+                            self.channel_authority(workspace, Some(launch), false, connected)
+                        },
                         author_mention: &|workspace, author| {
                             self.channel_author_mention(workspace, launch, author)
                         },
@@ -295,7 +297,7 @@ impl Registry {
                 let wake = store.claim_wakes(&claim, &|workspace| {
                     ensure!(connected(), "subscription transport disconnected");
                     self.with_current_agent_receiver(launch, &receiver.id, |_| ())?;
-                    self.channel_authority(workspace, Some(launch), false)
+                    self.channel_authority(workspace, Some(launch), false, connected)
                 });
                 if !matches!(wake, Ok(Some(_))) {
                     service.release_channel_dispatch(recipient.launch, &batch_id, generation);
@@ -361,7 +363,7 @@ impl Registry {
                     deadline: 0,
                 };
                 store.channel_wake_current(&claim, now(), &|workspace| {
-                    self.channel_authority(workspace, Some(launch), false)
+                    self.channel_authority(workspace, Some(launch), false, &|| true)
                 })
             },
         )?;
