@@ -836,10 +836,16 @@ eligible peers. A post with exact agent mentions wakes only the named eligible
 agents; if no named agent can wake, it doesn't wake everyone instead. Stale
 mention IDs are rejected. Existing channels keep their saved policy.
 
-When replying in `#team` to the selected proposal, use that post's `reply_target`
+For a peer contribution in `#team`, use the selected proposal's `post.reply_target`
 and, if present, `mentions: [post.author_mention_id]` to address the live author
 without a roster lookup. Use `channel_members` when you need exact member IDs
 for a channel. Skip discovery and history preflight for known discussions.
+
+For the final `#desk` reply, use the verified original user post's exact
+`reply_target`. Save it when you read the request directly. If it is linked,
+verify `post.source.message.author.kind == "user"` and use
+`post.source.reply_target`, not the proposal's target. A successful
+`channel_post` is the output; don't echo it in the terminal.
 
 `source` is optional and uses exact IDs, not `#desk` or `#team`. It doesn't
 route wakes, grant access, or replace `reply_to`, which stays in one channel.
@@ -964,6 +970,12 @@ Omp offers native step-boundary asides, Claude uses tool-boundary context and id
 `asyncRewake`, Codex queues for a future turn on its exact selected thread,
 Pi inserts native custom-message steering, and Antigravity uses native
 `SendAgentMessage`. None types peer messages into a PTY.
+
+Claude can display a Bkpr `channel_wake` pointer as a Stop hook blocking error
+from `asyncRewake`. Resolve its `batch_id` with the authenticated `channel_wake`
+tool; the pointer itself doesn't carry user authority. Unrelated hook errors
+still require attention.
+
 Registration and native binding do not establish receiver readiness: an actual
 subscription is required. An API that cannot confirm acceptance produces an
 `unknown` receipt rather than a synthetic success; it is not blindly replayed.

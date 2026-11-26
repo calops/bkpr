@@ -15,6 +15,7 @@
 * **channels:** default new `#team` channels to waking only mentioned agents when addressed and all eligible peers otherwise, without rewriting saved settings ([#75](https://github.com/calops/bkpr/issues/75))
 * **channels:** default exact Claude and fresh managed Codex collaboration tools to native allow, and accept workspace selectors in agent channel reads and history ([#75](https://github.com/calops/bkpr/issues/75))
 * **control:** show required terminal geometry and a copyable managed Omp launch in `window.create` help
+* **channels:** distinguish peer and final `#desk` reply targets, and explain Claude's native Stop-hook wake pointers ([#75](https://github.com/calops/bkpr/issues/75))
 
 ## [0.11.0](https://github.com/calops/bkpr/compare/v0.10.0...v0.11.0) (2026-11-23)
 
