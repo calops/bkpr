@@ -223,6 +223,94 @@ fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
 }
 
 #[test]
+fn source_post_frames_fail_legacy_header_admission_without_breaking_ordinary_posts() {
+    const LEGACY_CAPABILITIES: u64 = 7;
+
+    fn check_frames(payload: &[u8], has_source: bool) -> Request {
+        let mut frame = encode_frame(Kind::Request, payload).unwrap();
+        let mut written = Vec::new();
+        write_frame(&mut written, Kind::Request, payload).unwrap();
+        assert_eq!(written, frame);
+        let header = &frame[..HEADER_LEN];
+        let required = u64::from_le_bytes(header[16..].try_into().unwrap());
+        let expected = if has_source {
+            LEGACY_CAPABILITIES | framing::CAP_CHANNEL_POST_SOURCE
+        } else {
+            LEGACY_CAPABILITIES
+        };
+        assert_eq!(required, expected);
+        assert_eq!(
+            frame_payload_len(header, Kind::Request, MAX_REQUEST).unwrap(),
+            payload.len()
+        );
+        let legacy_admission = framing::frame_payload_len_with_capabilities(
+            header,
+            Kind::Request,
+            MAX_REQUEST,
+            LEGACY_CAPABILITIES,
+        );
+        if has_source {
+            assert!(
+                legacy_admission
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unsupported required native capabilities")
+            );
+        } else {
+            assert_eq!(legacy_admission.unwrap(), payload.len());
+        }
+
+        // Source-capable agents from before the guard wrote only the baseline mask.
+        frame[16..HEADER_LEN].copy_from_slice(&LEGACY_CAPABILITIES.to_le_bytes());
+        let payload = read_frame(&mut frame.as_slice(), Kind::Request, MAX_REQUEST).unwrap();
+        decode_request(&payload).unwrap()
+    }
+
+    let mut codec = Codec::new();
+    let authority = ClientAuthority {
+        client_id: "client".into(),
+        token: "secret".into(),
+    };
+    for has_source in [false, true] {
+        let request = ChannelRequest::Post {
+            channel_id: channel(),
+            post: ChannelPost {
+                source: has_source.then(source),
+                ..post()
+            },
+        };
+        let user = Operation::Channels {
+            request: request.clone(),
+        };
+        check_frames(
+            codec.encode_client_request(&authority, &user).unwrap(),
+            has_source,
+        );
+        check_frames(
+            codec.encode_request(&Request::new(user)).unwrap(),
+            has_source,
+        );
+        let agent = Request::new(Operation::Agent {
+            launch_id: "launch".into(),
+            token: "secret".into(),
+            guard: None,
+            request: crate::AgentRequest::Channels {
+                request: Box::new(request.clone()),
+            },
+        });
+        let decoded = check_frames(codec.encode_request(&agent).unwrap(), has_source);
+        let Operation::Agent {
+            request: crate::AgentRequest::Channels { request: actual },
+            ..
+        } = decoded.operation
+        else {
+            panic!("expected agent channel post");
+        };
+        assert_eq!(*actual, request);
+    }
+}
+
+#[test]
 fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
     let attachment = descriptor();
     let mut linked_message = renderable_message();

@@ -12,27 +12,35 @@ pub(super) fn is_channel_batch(id: &str) -> bool {
 #[derive(Default)]
 pub(super) struct ChannelLane {
     pub(super) pending_binding: Option<u64>,
+    pub(super) revision: u64,
     pub(super) last_generation: u64,
     pub(super) active: Option<ChannelDispatch>,
 }
 
 pub(super) struct ChannelDispatch {
     batch_id: String,
-    deadline: u64,
+    deadline: Option<u64>,
     generation: u64,
 }
 
+pub(super) enum ChannelClaimPoll {
+    Empty,
+    Deferred,
+    Ready(Value),
+}
+
 impl ChannelLane {
-    pub(super) fn availability(state: &AgentState, launch: &Launch) -> (bool, bool) {
+    pub(super) fn availability(state: &AgentState, launch: &Launch) -> (bool, bool, u64) {
         state
             .channel_lanes
             .get(&launch.grant.launch_id)
-            .map_or((false, false), |lane| {
+            .map_or((false, false, 0), |lane| {
                 (
                     lane.pending_binding == Some(launch.binding_generation),
-                    lane.active
-                        .as_ref()
-                        .is_some_and(|active| now() < active.deadline),
+                    lane.active.as_ref().is_some_and(|active| {
+                        active.deadline.is_none_or(|deadline| now() < deadline)
+                    }),
+                    lane.revision,
                 )
             })
     }
@@ -59,6 +67,7 @@ impl Agents {
                 .is_none_or(|binding| binding < target.binding)
             {
                 lane.pending_binding = Some(target.binding);
+                lane.revision = lane.revision.wrapping_add(1);
                 changed = true;
             }
         }
@@ -76,6 +85,7 @@ impl Agents {
                 .is_some_and(|active| active.generation == generation && active.batch_id == batch)
         {
             lane.active = None;
+            lane.revision = lane.revision.wrapping_add(1);
             self.changed.notify_all();
         }
     }
@@ -117,7 +127,7 @@ impl Registry {
             .is_some_and(|launch| {
                 launch.binding_generation == binding
                     && launch.managed.conversation.is_some()
-                    && launch.control.is_valid()
+                    && launch.channel_launch_alive()
             })
     }
 
@@ -134,11 +144,18 @@ impl Registry {
                 (1..=MCP_PAGE).contains(limit),
                 "channel page limit must be between 1 and 10"
             ),
-            ChannelRequest::Post { post, .. } => ensure!(
-                !post.text.contains(&launch.grant.token)
-                    && !post.idempotency_key.contains(&launch.grant.token),
-                "channel post contains a private capability"
-            ),
+            ChannelRequest::Post { post, .. } => {
+                let token = &launch.grant.token;
+                ensure!(
+                    !post.text.contains(token)
+                        && !post.idempotency_key.contains(token)
+                        && post.source.as_ref().is_none_or(|source| {
+                            !source.channel_id.as_ref().contains(token)
+                                && !source.message_id.as_ref().contains(token)
+                        }),
+                    "channel post contains a private capability"
+                );
+            }
             ChannelRequest::Create { name, .. } => ensure!(
                 !name.contains(&launch.grant.token),
                 "channel name contains a private capability"
@@ -250,43 +267,47 @@ impl Registry {
         peer: &Peer,
         receiver: &Receiver,
         connected: &dyn Fn() -> bool,
-    ) -> Result<Option<Value>> {
+        wait_until: Instant,
+    ) -> Result<ChannelClaimPoll> {
         let recipient = recipient(launch)?;
         let service = &self.inner.agents;
-        let claimed = self.inner.channels.with_delivery_store(
+        let (batch_id, generation) = {
+            let _writer = match service.writer.try_lock() {
+                Ok(writer) => writer,
+                Err(std::sync::TryLockError::WouldBlock) => return Ok(ChannelClaimPoll::Deferred),
+                Err(std::sync::TryLockError::Poisoned(_)) => bail!("agent writer poisoned"),
+            };
+            self.with_current_agent_receiver(launch, &receiver.id, |_| ())?;
+            let mut state = service.state.lock().unwrap();
+            let (pending, active, _) = ChannelLane::availability(&state, launch);
+            let agent = &state.store.agents[recipient.launch];
+            if !pending || active || agent.notification.is_some() {
+                return Ok(ChannelClaimPoll::Empty);
+            }
+            let last = agent.generation;
+            let lane = state
+                .channel_lanes
+                .get_mut(recipient.launch)
+                .expect("pending channel work");
+            let generation = last
+                .max(lane.last_generation)
+                .checked_add(1)
+                .context("notification generation exhausted")?;
+            let batch_id = format!("{BATCH_PREFIX}{}", Uuid::new_v4());
+            lane.last_generation = generation;
+            lane.active = Some(ChannelDispatch {
+                batch_id: batch_id.clone(),
+                deadline: None,
+                generation,
+            });
+            (batch_id, generation)
+        };
+        let claimed = self.inner.channels.with_wake_claim_store(
+            wait_until,
             &|| !connected() || self.session_end_requested(),
             &|workspace| self.delivery_workspace_open(workspace),
             |store| {
                 let deadline = wake_deadline(now());
-                let batch_id = format!("{BATCH_PREFIX}{}", Uuid::new_v4());
-                let generation = {
-                    // Reserve the existing native wake slot before SQLite I/O. A slow
-                    // channel commit must not hold up DM sends to unrelated launches.
-                    let _writer = service.callback_guard()?;
-                    self.with_current_agent_receiver(launch, &receiver.id, |_| ())?;
-                    let mut state = service.state.lock().unwrap();
-                    let (pending, active) = ChannelLane::availability(&state, launch);
-                    let agent = &state.store.agents[recipient.launch];
-                    if !pending || active || agent.notification.is_some() {
-                        return Ok(None);
-                    }
-                    let last = agent.generation;
-                    let lane = state
-                        .channel_lanes
-                        .get_mut(recipient.launch)
-                        .expect("pending channel work");
-                    let generation = last
-                        .max(lane.last_generation)
-                        .checked_add(1)
-                        .context("notification generation exhausted")?;
-                    lane.last_generation = generation;
-                    lane.active = Some(ChannelDispatch {
-                        batch_id: batch_id.clone(),
-                        deadline,
-                        generation,
-                    });
-                    generation
-                };
                 let claim = ChannelClaim {
                     recipient,
                     batch_id: &batch_id,
@@ -294,35 +315,44 @@ impl Registry {
                     generation,
                     deadline,
                 };
-                let wake = store.claim_wakes(&claim, &|workspace| {
-                    ensure!(connected(), "subscription transport disconnected");
-                    self.with_current_agent_receiver(launch, &receiver.id, |_| ())?;
-                    self.channel_authority(workspace, Some(launch), false, connected)
-                });
-                if !matches!(wake, Ok(Some(_))) {
-                    service.release_channel_dispatch(recipient.launch, &batch_id, generation);
-                    if matches!(wake, Ok(None)) {
-                        let mut state = service.state.lock().unwrap();
-                        if let Some(lane) = state.channel_lanes.get_mut(recipient.launch)
-                            && lane.pending_binding == Some(recipient.binding)
-                        {
-                            lane.pending_binding = None;
-                        }
-                        service.changed.notify_all();
+                let wake = store.claim_wakes(
+                    &claim,
+                    &|workspace| {
+                        self.with_current_agent_receiver(launch, &receiver.id, |_| ())?;
+                        self.channel_authority(workspace, Some(launch), false, connected)
+                    },
+                    || {
+                        ensure!(connected(), "subscription transport disconnected");
+                        self.admit_channel_receiver(launch, peer, &receiver.id)
+                    },
+                )?;
+                let mut state = service.state.lock().unwrap();
+                if let Some(lane) = state.channel_lanes.get_mut(recipient.launch) {
+                    if wake.is_none() && lane.pending_binding == Some(recipient.binding) {
+                        // Publication and this empty probe both own the channel store.
+                        lane.pending_binding = None;
+                        lane.revision = lane.revision.wrapping_add(1);
+                    }
+                    if let Some(active) = &mut lane.active
+                        && active.generation == generation
+                    {
+                        active.deadline = Some(deadline);
                     }
                 }
-                let wake = wake?;
-                Ok(wake.map(|wake| (wake, generation, deadline)))
+                Ok(wake.map(|wake| (wake, deadline)))
             },
-        )?;
-        let Some((wake, generation, deadline)) = claimed else {
-            return Ok(None);
+        );
+        if !matches!(claimed, Ok(Some(Some(_)))) {
+            service.release_channel_dispatch(recipient.launch, &batch_id, generation);
+        }
+        let (wake, deadline) = match claimed? {
+            None => return Ok(ChannelClaimPoll::Deferred),
+            Some(None) => return Ok(ChannelClaimPoll::Empty),
+            Some(Some(delivery)) => delivery,
         };
         if now() >= deadline
             || !connected()
-            || self
-                .agent_receiver_peer(launch, peer, &receiver.id)
-                .is_err()
+            || self.channel_receiver_live(launch, &receiver.id).is_err()
         {
             self.channel_subscription_disconnected(
                 recipient.launch,
@@ -332,12 +362,31 @@ impl Registry {
             )?;
             bail!("channel subscriber changed before wake response");
         }
-        Ok(Some(json!({"notification": {
+        Ok(ChannelClaimPoll::Ready(json!({"notification": {
             "notification_id": wake.batch_id, "generation": generation,
             "session_id": receiver.session_id, "mode": receiver.mode,
             "message_count": wake.pending_count, "unread_count": wake.pending_count,
             "channel_wake": wake,
         }})))
+    }
+
+    fn admit_channel_receiver(&self, launch: &Launch, peer: &Peer, receiver: &str) -> Result<()> {
+        self.agent_receiver_peer(launch, peer, receiver)?;
+        self.channel_receiver_live(launch, receiver)
+    }
+
+    fn channel_receiver_live(&self, launch: &Launch, receiver: &str) -> Result<()> {
+        self.with_current_agent_receiver(launch, receiver, |current| {
+            ensure!(
+                current
+                    .lifetime
+                    .as_ref()
+                    .is_some_and(|life| life.is_alive())
+                    && launch.channel_launch_alive(),
+                "native channel receiver or launch exited"
+            );
+            Ok(())
+        })?
     }
 
     pub(super) fn channel_wake_current(
@@ -349,12 +398,10 @@ impl Registry {
         generation: u64,
     ) -> Result<bool> {
         let recipient = recipient(launch)?;
-        self.agent_receiver_peer(launch, peer, receiver_id)?;
         let current = self.inner.channels.with_delivery_store(
             &|| self.session_end_requested(),
             &|workspace| self.delivery_workspace_open(workspace),
             |store| {
-                self.with_current_agent_receiver(launch, receiver_id, |_| ())?;
                 let claim = ChannelClaim {
                     recipient,
                     batch_id,
@@ -362,9 +409,15 @@ impl Registry {
                     generation,
                     deadline: 0,
                 };
-                store.channel_wake_current(&claim, now(), &|workspace| {
+                let current = store.channel_wake_current(&claim, now(), &|workspace| {
                     self.channel_authority(workspace, Some(launch), false, &|| true)
-                })
+                })?;
+                #[cfg(test)]
+                self.inner
+                    .agents
+                    .wait_channel_barrier(ChannelTestPause::Validate);
+                self.admit_channel_receiver(launch, peer, receiver_id)?;
+                Ok(current)
             },
         )?;
         if !current {
@@ -395,12 +448,11 @@ impl Registry {
                 && !reason.contains(&launch.grant.token)),
             "invalid safe wake reason"
         );
-        self.agent_receiver_peer(launch, peer, receiver)?;
         let recorded = self.inner.channels.with_delivery_store(
             &|| self.session_end_requested(),
             &|workspace| self.delivery_workspace_open(workspace),
             |store| {
-                self.with_current_agent_receiver(launch, receiver, |_| ())?;
+                self.admit_channel_receiver(launch, peer, receiver)?;
                 store.settle_channel_wake(
                     &launch.grant.launch_id,
                     receiver,
@@ -408,6 +460,7 @@ impl Registry {
                     generation,
                     outcome,
                     reason,
+                    || self.channel_receiver_live(launch, receiver),
                 )
             },
         )?;
@@ -435,6 +488,7 @@ impl Registry {
                     generation,
                     "unknown",
                     Some("subscription transport disconnected before native confirmation"),
+                    || Ok(()),
                 )
             },
         )?;

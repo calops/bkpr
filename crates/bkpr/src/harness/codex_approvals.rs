@@ -115,9 +115,7 @@ impl ThreadDefaults<'_> {
             return None;
         }
         let params = message.get_mut("params")?.as_object_mut()?;
-        if params
-            .get("threadSource")
-            .is_some_and(|source| !source.is_null() && source.as_str() != Some("user"))
+        if params.get("threadSource").and_then(Value::as_str) != Some("user")
             || params
                 .get("environments")
                 .is_some_and(|value| !value.is_null())
@@ -374,6 +372,19 @@ mod tests {
             assert!(
                 defaults
                     .rewrite_with(&serde_json::to_vec(&selection)?, |_| unreachable!())
+                    .is_none()
+            );
+        }
+        for source in [None, Some(Value::Null), Some(json!("thread_title"))] {
+            let mut non_user = request.clone();
+            let params = non_user["params"].as_object_mut().unwrap();
+            params.remove("threadSource");
+            if let Some(source) = source {
+                params.insert("threadSource".into(), source);
+            }
+            assert!(
+                defaults
+                    .rewrite_with(&serde_json::to_vec(&non_user)?, |_| unreachable!())
                     .is_none()
             );
         }

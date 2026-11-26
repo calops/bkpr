@@ -1,5 +1,6 @@
 use super::{
-    ChannelAccessLost, ChannelAuthority, ChannelEngine, MAX_SUBSCRIBERS, WorkspaceParticipant,
+    ChannelAccessLost, ChannelAuthority, ChannelClaim, ChannelEngine, ChannelRecipient,
+    ChannelWakeAccess, MAX_SUBSCRIBERS, WorkspaceParticipant,
     store::{MAX_ARCHIVE_CANDIDATES, MAX_STAGED_BYTES, MAX_STAGING_RECLAIM},
 };
 use anyhow::{Result, ensure};
@@ -181,6 +182,38 @@ impl Fixture {
             .unwrap();
     }
 
+    fn drop_ordered_wake_schema(&self) {
+        self.sql(
+            "DROP INDEX pending_launch_enqueue;
+             DROP INDEX pending_channel_sequence;
+             DROP INDEX wake_batch_membership;
+             DROP INDEX active_batch_launch;
+             DROP INDEX unsettled_batch_deadline;
+             ALTER TABLE channel_batches DROP COLUMN revoked;
+             ALTER TABLE notification_work DROP COLUMN enqueue_ordinal;
+             ALTER TABLE notification_work DROP COLUMN channel_sequence;",
+        );
+    }
+
+    fn drop_wake_schema(&self) {
+        self.drop_ordered_wake_schema();
+        self.sql(
+            "DROP INDEX claimed_wake_items;
+             ALTER TABLE notification_work DROP COLUMN batch_id;
+             ALTER TABLE notification_work DROP COLUMN binding_revision;
+             DROP TABLE channel_batches;",
+        );
+    }
+
+    fn restore_legacy_wake_indexes(&self) {
+        self.drop_ordered_wake_schema();
+        self.sql(
+            "CREATE UNIQUE INDEX active_batch_launch ON channel_batches(launch_id) WHERE outcome IS NULL;
+             CREATE INDEX pending_launch_wakes ON notification_work(launch_id,binding_revision,channel_id)
+                 WHERE pending=1 AND launch_id IS NOT NULL;",
+        );
+    }
+
     fn work(&self, message: &MessageId) -> Vec<(String, Option<String>, bool, bool)> {
         self.engine.with_store(|store| {
             let mut query = store.connection.prepare(
@@ -190,6 +223,93 @@ impl Fixture {
                 .collect::<rusqlite::Result<_>>()?)
         }).unwrap()
     }
+
+    fn wake_claim<'a>(&'a self, batch_id: &'a str, generation: u64) -> ChannelClaim<'a> {
+        ChannelClaim {
+            recipient: ChannelRecipient {
+                launch: "launch-a",
+                binding: 1,
+                participant: self.a.id.as_ref(),
+            },
+            batch_id,
+            receiver_id: "receiver",
+            generation,
+            deadline: u64::MAX / 2,
+        }
+    }
+
+    fn claim(&self, claim: &ChannelClaim<'_>) -> Option<ChannelWake> {
+        self.engine
+            .with_store(|store| {
+                store.claim_wakes(
+                    claim,
+                    &|workspace| self.authority(&self.a, workspace),
+                    || Ok(()),
+                )
+            })
+            .unwrap()
+    }
+
+    fn wake_current(&self, claim: &ChannelClaim<'_>) -> bool {
+        self.engine
+            .with_store(|store| {
+                store
+                    .channel_wake_current(claim, 1, &|workspace| self.authority(&self.a, workspace))
+            })
+            .unwrap()
+    }
+
+    fn settle(
+        &self,
+        claim: &ChannelClaim<'_>,
+        outcome: &str,
+        reason: Option<&str>,
+        recheck: impl FnOnce() -> Result<()>,
+    ) -> Result<bool> {
+        self.engine.with_store(|store| {
+            store.settle_channel_wake(
+                claim.recipient.launch,
+                claim.receiver_id,
+                claim.batch_id,
+                claim.generation,
+                outcome,
+                reason,
+                recheck,
+            )
+        })
+    }
+
+    fn wake_record(&self, batch_id: &str) -> (bool, Option<String>, Option<String>) {
+        self.engine
+            .with_store(|store| {
+                Ok(store.connection.query_row(
+                    "SELECT revoked,outcome,reason FROM channel_batches WHERE id=?1",
+                    [batch_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?)
+            })
+            .unwrap()
+    }
+
+    fn wake_lookup(
+        &self,
+        claim: &ChannelClaim<'_>,
+        maximum: Option<usize>,
+    ) -> Result<serde_json::Value> {
+        self.engine.with_store(|store| {
+            store.channel_wake_lookup(
+                claim.recipient,
+                claim.batch_id.to_owned(),
+                maximum,
+                false,
+                ChannelWakeAccess {
+                    admit: &|workspace| self.authority(&self.a, workspace),
+                    author_mention: &|_, _| unreachable!("fixture posts are user-authored"),
+                    connected: &|| true,
+                },
+            )
+        })
+    }
 }
 
 fn quiet() -> ChannelSettings {
@@ -197,6 +317,13 @@ fn quiet() -> ChannelSettings {
         user_wake: WakePolicy::None,
         agent_wake: WakePolicy::None,
         ..ChannelSettings::default()
+    }
+}
+
+fn waking() -> ChannelSettings {
+    ChannelSettings {
+        user_wake: WakePolicy::All,
+        ..quiet()
     }
 }
 
@@ -525,8 +652,6 @@ fn typed_mentions_and_policy_select_only_current_agents_and_preserve_unread_atte
 
 #[test]
 fn wake_source_rechecks_read_authority_and_omits_unavailable_links() {
-    use super::{ChannelClaim, ChannelRecipient};
-
     let f = Fixture::new();
     let source_channel = f.create(
         &f.user,
@@ -577,6 +702,7 @@ fn wake_source_rechecks_read_authority_and_omits_unavailable_links() {
                         deadline: u64::MAX / 2,
                     },
                     &admit,
+                    || Ok(()),
                 )
             })
             .unwrap()
@@ -598,9 +724,14 @@ fn wake_source_rechecks_read_authority_and_omits_unavailable_links() {
         })
     };
     let accessible = linked("accessible", source_channel.clone(), original.id.clone());
+    let expanded = lookup(&accessible, true, &|| true).unwrap();
     assert_eq!(
-        lookup(&accessible, true, &|| true).unwrap()["post"]["source"]["message"]["id"],
+        expanded["post"]["source"]["message"]["id"],
         original.id.as_ref()
+    );
+    assert_eq!(
+        expanded["post"]["source"]["reply_target"],
+        serde_json::json!({"channel_id": source_channel, "reply_to": original.id})
     );
     let only_destination = || {
         let first = AtomicBool::new(true);
@@ -647,6 +778,220 @@ fn wake_source_rechecks_read_authority_and_omits_unavailable_links() {
     let revoked = lookup(&accessible, true, &|| true).unwrap();
     assert!(revoked["post"].get("source").is_none());
     assert_eq!(revoked, lookup(&accessible, false, &|| true).unwrap());
+}
+
+#[test]
+fn wake_claim_uses_oldest_channel_and_caps_each_batch_in_sequence_order() {
+    let f = Fixture::new();
+    let first = f.wide(quiet());
+    f.request(send(&first, post("quiet-history"))).unwrap();
+    f.request(ChannelRequest::SetSettings {
+        channel_id: first.clone(),
+        settings: waking(),
+    })
+    .unwrap();
+    let desk = f
+        .list(&f.user)
+        .into_iter()
+        .find(|c| c.name == "#desk")
+        .unwrap()
+        .id;
+    let older = posted(f.request(send(&first, post("first"))).unwrap());
+    let between = posted(f.request(send(&desk, post("between"))).unwrap());
+    let mut remaining = vec![older.id];
+    for sequence in 2..=33 {
+        let mut next = post(&format!("post-{sequence}"));
+        if matches!(sequence, 2 | 32 | 33) {
+            next.mentions.push(f.a.id.clone());
+        }
+        remaining.push(posted(f.request(send(&first, next)).unwrap()).id);
+    }
+
+    let claim = f.wake_claim("first-32", 1);
+    let first_batch = f.claim(&claim).unwrap();
+    assert_eq!(first_batch.channel_id, first);
+    assert_eq!(first_batch.pending_count, 32);
+    assert_eq!(
+        first_batch.addressed_message_id.as_ref(),
+        Some(&remaining[31])
+    );
+    let lookup = f.wake_lookup(&claim, None).unwrap();
+    let messages = lookup["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 32);
+    for (index, item) in messages.iter().enumerate() {
+        assert_eq!(item["id"], remaining[index].as_ref());
+        assert_eq!(item["sequence"], index + 2);
+    }
+
+    let claim = f.wake_claim("between", 2);
+    let second = f.claim(&claim).unwrap();
+    assert_eq!(second.channel_id, desk);
+    assert_eq!(second.pending_count, 1);
+    let expanded = f.wake_lookup(&claim, Some(16)).unwrap();
+    let exact = f
+        .engine
+        .with_store(|store| {
+            store.compact_message(
+                ChannelRequest::Read {
+                    channel_id: ChannelId("#desk".into()),
+                    message_id: between.id.clone(),
+                },
+                &|workspace| f.authority(&f.a, workspace),
+                0,
+                16,
+                Some(WORKSPACE),
+            )
+        })
+        .unwrap();
+    assert_eq!(exact["reply_target"], expanded["post"]["reply_target"]);
+    assert_eq!(
+        exact["reply_target"],
+        serde_json::json!({"channel_id": desk, "reply_to": between.id})
+    );
+
+    let tail = f.claim(&f.wake_claim("tail", 3)).unwrap();
+    assert_eq!(tail.channel_id, first);
+    assert_eq!(tail.pending_count, 1);
+    assert_eq!(tail.addressed_message_id.as_ref(), Some(&remaining[32]));
+    assert!(f.claim(&f.wake_claim("no-replay", 4)).is_none());
+}
+
+#[test]
+fn wake_revocation_refunds_capacity_without_losing_exact_native_confirmation() {
+    let f = Fixture::new();
+    let channel = f.create(
+        &f.user,
+        WORKSPACE,
+        MembershipMode::Explicit,
+        vec![f.a.id.clone()],
+        waking(),
+    );
+    let recorded = f.wake_claim("recorded", 1);
+    f.request(send(&channel, post("recorded"))).unwrap();
+    f.claim(&recorded).unwrap();
+    assert!(f.settle(&recorded, "accepted", None, || Ok(())).unwrap());
+    assert!(f.wake_lookup(&recorded, None).is_ok());
+
+    let active = f.wake_claim("active", 2);
+    f.request(send(&channel, post("active"))).unwrap();
+    f.claim(&active).unwrap();
+    assert!(f.wake_current(&active));
+    assert!(f.wake_lookup(&active, None).is_ok());
+    let queued = posted(f.request(send(&channel, post("not-yet-claimed"))).unwrap());
+
+    let membership = |members| ChannelRequest::SetMembership {
+        channel_id: channel.clone(),
+        membership: MembershipMode::Explicit,
+        members,
+    };
+    f.request(membership(Vec::new())).unwrap();
+    assert!(!f.wake_current(&active));
+    assert!(
+        f.wake_lookup(&active, None)
+            .unwrap_err()
+            .is::<ChannelAccessLost>()
+    );
+    assert!(f.work(&queued.id).iter().all(|entry| !entry.3));
+    assert_eq!(
+        f.wake_record(recorded.batch_id),
+        (true, Some("accepted".into()), None)
+    );
+    assert_eq!(f.wake_record(active.batch_id), (true, None, None));
+
+    f.request(membership(vec![f.a.id.clone()])).unwrap();
+    assert!(f.as_actor(&f.a, messages(&channel, None, 3)).is_ok());
+    for claim in [&recorded, &active] {
+        assert!(!f.wake_current(claim));
+        assert!(
+            f.wake_lookup(claim, None)
+                .unwrap_err()
+                .is::<ChannelAccessLost>()
+        );
+    }
+    assert!(f.claim(&f.wake_claim("no-replay", 3)).is_none());
+
+    // Leave just one pending slot. The revoked batch must not consume it or be settled by reclaim.
+    f.sql(
+        "WITH RECURSIVE fill(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM fill WHERE x<4095)
+         INSERT INTO notification_work(channel_id,message_id,participant_id,launch_id,addressed)
+         SELECT p.channel_id,p.id,'extra-'||x,'launch-b',0 FROM fill CROSS JOIN posts p
+         WHERE p.request_key='not-yet-claimed';",
+    );
+    f.request(send(&channel, post("after-readd"))).unwrap();
+    let next = f.wake_claim("after-readd", 4);
+    assert_eq!(f.claim(&next).unwrap().pending_count, 1);
+    assert!(f.wake_current(&next));
+    assert_eq!(f.wake_record(active.batch_id), (true, None, None));
+    assert!(
+        f.settle(&active, "failed", Some("native rejection"), || Ok(()))
+            .unwrap()
+    );
+    assert_eq!(
+        f.wake_record(active.batch_id),
+        (true, Some("failed".into()), Some("native rejection".into()))
+    );
+    assert!(f.wake_current(&next));
+    assert!(f.claim(&f.wake_claim("still-no-replay", 5)).is_none());
+}
+
+#[test]
+fn wake_native_outcomes_are_exact_durable_and_not_overwritten() {
+    let f = Fixture::new();
+    let channel = f.wide(waking());
+    for (generation, outcome, reason) in [
+        (1, "accepted", None),
+        (2, "failed", Some("native rejected")),
+        (3, "unknown", Some("native returned no result")),
+    ] {
+        let claim = f.wake_claim(outcome, generation);
+        let message = posted(f.request(send(&channel, post(outcome))).unwrap());
+        let reject = || anyhow::bail!("receiver replaced before commit");
+        assert!(
+            f.engine
+                .with_store(|store| {
+                    store.claim_wakes(&claim, &|workspace| f.authority(&f.a, workspace), reject)
+                })
+                .is_err()
+        );
+        assert!(f.work(&message.id).iter().all(|work| work.3));
+        f.claim(&claim).unwrap();
+
+        let stale = ChannelClaim {
+            receiver_id: "replaced-receiver",
+            ..f.wake_claim(outcome, generation)
+        };
+        assert!(
+            !f.settle(&stale, "accepted", None, || unreachable!())
+                .unwrap()
+        );
+        assert!(f.settle(&claim, outcome, reason, reject).is_err());
+        assert_eq!(f.wake_record(claim.batch_id), (false, None, None));
+        assert!(f.settle(&claim, outcome, reason, || Ok(())).unwrap());
+        let stored = (false, Some(outcome.into()), reason.map(str::to_owned));
+        assert_eq!(f.wake_record(claim.batch_id), stored);
+        assert!(
+            !f.settle(&claim, "unknown", Some("duplicate"), || unreachable!())
+                .unwrap()
+        );
+        assert_eq!(f.wake_record(claim.batch_id), stored);
+    }
+
+    let late = ChannelClaim {
+        deadline: 0,
+        ..f.wake_claim("expired", 4)
+    };
+    f.request(send(&channel, post("expired"))).unwrap();
+    f.claim(&late).unwrap();
+    assert!(!f.wake_current(&late));
+    assert!(!f.settle(&late, "accepted", None, || Ok(())).unwrap());
+    assert_eq!(
+        f.wake_record(late.batch_id),
+        (
+            false,
+            Some("unknown".into()),
+            Some("native confirmation deadline elapsed".into())
+        )
+    );
 }
 
 #[test]
@@ -1783,13 +2128,9 @@ fn visibility_index_migration_preserves_member_access_and_durable_history() {
     );
     let original = post("migrated");
     let accepted = f.as_actor(&f.a, send(&id, original.clone())).unwrap();
+    f.drop_wake_schema();
     f.sql(
-        "DROP INDEX pending_launch_wakes;
-         DROP INDEX claimed_wake_items;
-         DROP TABLE channel_batches;
-         ALTER TABLE notification_work DROP COLUMN batch_id;
-         ALTER TABLE notification_work DROP COLUMN binding_revision;
-         DROP INDEX visible_explicit_channels;
+        "DROP INDEX visible_explicit_channels;
          DROP TABLE staged_attachments;
          DROP TABLE attachment_budget;
          DROP INDEX workspace_wide_channels;
@@ -1813,7 +2154,111 @@ fn visibility_index_migration_preserves_member_access_and_durable_history() {
             ))
         })
         .unwrap();
-    assert_eq!((sync, version), (3, 8));
+    assert_eq!((sync, version), (3, 9));
+}
+
+#[test]
+fn version_seven_migration_keeps_history_and_staged_png_but_retires_pending_work() {
+    let f = Fixture::new();
+    let id = f.wide(waking());
+    let original = post("version-seven");
+    let accepted = f.request(send(&id, original.clone())).unwrap();
+    let message = posted(accepted.clone());
+    let bytes = png();
+    let staged = uploaded(f.request(upload(&id, bytes.clone())).unwrap());
+    let pending = f.work(&message.id);
+    assert_eq!(pending.len(), 2);
+    assert!(pending.iter().all(|work| work.3));
+    // Version 7 had this same history and staging schema, without the wake tables and columns.
+    f.drop_wake_schema();
+    f.sql("PRAGMA user_version=7;");
+
+    let f = f.reopen();
+    assert_eq!(f.request(send(&id, original)).unwrap(), accepted);
+    assert!(matches!(
+        f.request(messages(&id, None, 2)).unwrap(),
+        ChannelResponse::History { messages, .. } if messages[0].message == message
+    ));
+    assert_eq!(f.staged_bytes(), u64::from(staged.byte_len));
+    assert_eq!(
+        f.request(ChannelRequest::GetAttachment {
+            channel_id: id.clone(),
+            attachment_id: staged.id.clone(),
+        })
+        .unwrap(),
+        ChannelResponse::Attachment {
+            attachment: staged.clone(),
+            bytes: bytes.into()
+        }
+    );
+    let retired = f.work(&message.id);
+    assert_eq!(retired.len(), pending.len());
+    assert!(retired.iter().all(|work| !work.3));
+    assert!(f.claim(&f.wake_claim("old-work", 1)).is_none());
+    let mut next = post("after-migration");
+    next.attachments.push(staged.id);
+    f.request(send(&id, next)).unwrap();
+    assert_eq!(f.staged_bytes(), 0);
+    assert_eq!(
+        f.claim(&f.wake_claim("fresh-work", 2))
+            .unwrap()
+            .pending_count,
+        1
+    );
+}
+
+#[test]
+fn version_eight_migration_separates_legacy_revocation_from_native_outcomes() {
+    let f = Fixture::new();
+    let id = f.create(
+        &f.user,
+        WORKSPACE,
+        MembershipMode::Explicit,
+        vec![f.a.id.clone()],
+        waking(),
+    );
+    let accepted = f.wake_claim("legacy-accepted", 1);
+    f.request(send(&id, post("legacy-accepted"))).unwrap();
+    f.claim(&accepted).unwrap();
+    assert!(f.settle(&accepted, "accepted", None, || Ok(())).unwrap());
+
+    let revoked = f.wake_claim("legacy-revoked", 2);
+    f.request(send(&id, post("legacy-revoked"))).unwrap();
+    f.claim(&revoked).unwrap();
+    f.sql("UPDATE channel_batches SET outcome='revoked' WHERE id='legacy-revoked';");
+    let unresolved = f.wake_claim("legacy-unresolved", 3);
+    f.request(send(&id, post("legacy-unresolved"))).unwrap();
+    f.claim(&unresolved).unwrap();
+    f.request(send(&id, post("legacy-pending"))).unwrap();
+
+    f.restore_legacy_wake_indexes();
+    f.sql("PRAGMA user_version=8;");
+    let f = f.reopen();
+    assert_eq!(
+        f.wake_record("legacy-accepted"),
+        (false, Some("accepted".into()), None)
+    );
+    assert_eq!(
+        f.wake_record("legacy-revoked"),
+        (true, Some("unknown".into()), None)
+    );
+    assert_eq!(
+        f.wake_record("legacy-unresolved"),
+        (false, Some("unknown".into()), None)
+    );
+    let accepted = f.wake_claim("legacy-accepted", 1);
+    assert!(f.wake_lookup(&accepted, None).is_ok());
+    let revoked = f.wake_claim("legacy-revoked", 2);
+    assert!(
+        f.wake_lookup(&revoked, None)
+            .unwrap_err()
+            .is::<ChannelAccessLost>()
+    );
+    assert!(
+        !f.settle(&revoked, "failed", Some("stale"), || unreachable!())
+            .unwrap()
+    );
+    assert!(f.claim(&f.wake_claim("no-old-work", 4)).is_none());
 }
 
 #[test]
@@ -1835,6 +2280,7 @@ fn legacy_attachment_migration_caps_staged_bytes_and_retains_posted_history() {
     let message = posted(f.request(send(&original, attached)).unwrap());
     // A legacy store has the full budget plus one extra unreferenced row.
     // Only the two small real PNGs will be fetched or posted.
+    f.restore_legacy_wake_indexes();
     f.sql(
         "DROP TABLE staged_attachments;
          DROP TABLE attachment_budget;

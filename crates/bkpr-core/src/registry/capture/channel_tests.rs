@@ -38,6 +38,7 @@ fn channel_peer_fixture() {
             .unwrap(),
     );
     await_file(&home.join("native-ready"));
+    fs::write(home.join("native-pid"), _native.0.id().to_string()).unwrap();
     let response = wire(
         &socket,
         Operation::HarnessEvent {
@@ -86,6 +87,7 @@ fn launch_spec(root: &Path, name: &str, native: &str) -> PaneSpawnSpec {
     let _ = fs::remove_file(home.join("bound"));
     let _ = fs::remove_file(home.join("channel-stage"));
     let _ = fs::remove_file(home.join("native-ready"));
+    let _ = fs::remove_file(home.join("native-pid"));
     let executable = home.join("native/omp");
     if !executable.exists() {
         fs::create_dir(home.join("native")).unwrap();
@@ -575,6 +577,25 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
         ]
     );
     drop(work);
+    let wake = subscribe(&registry, &recovered, &recovered_receiver);
+    assert_eq!(wake["channel_wake"]["channel_id"], kept.0);
+    assert_eq!(wake["channel_wake"]["pending_count"], 1);
+    assert_eq!(
+        settle_wake(&registry, &recovered, &recovered_receiver, &wake)["recorded"],
+        true
+    );
+    assert!(
+        channel(
+            &registry,
+            None,
+            post(
+                &kept,
+                "pending when recovered launch ends",
+                PostIntent::Note
+            ),
+        )
+        .is_ok()
+    );
     registry
         .request_authenticated(
             Request::new(Operation::HarnessEvent {
@@ -599,9 +620,17 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
         .unwrap();
     assert_eq!(pending, 0);
     drop(db);
-    let wake = subscribe(&registry, &recovered, &recovered_receiver);
-    assert_eq!(wake["channel_wake"]["channel_id"], kept.0);
-    assert_eq!(wake["channel_wake"]["pending_count"], 1);
+    assert!(
+        agent_result(
+            &registry,
+            &recovered,
+            AgentRequest::ReceiverSubscribe {
+                receiver_id: recovered_receiver,
+                wait_ms: 0,
+            },
+        )
+        .is_err()
+    );
     drop(server);
     drop(registry);
 
@@ -934,6 +963,10 @@ fn authenticated_compact_channel_reads_resolve_only_workspace_builtins() {
         let message_id = bkpr_protocol::channels::MessageId(summary["id"].as_str().unwrap().into());
         let first = read(&selector, message_id.clone(), None, Some(4)).unwrap();
         assert_eq!(first["message"], *summary);
+        assert_eq!(
+            first["reply_target"],
+            json!({"channel_id": exact_id, "reply_to": message_id})
+        );
         assert_eq!(first["text"], "東");
         assert_eq!(first["body_bytes"], body.len());
         assert_eq!(first["next_offset"], 3);
@@ -1120,6 +1153,41 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     )
     .unwrap();
     assert_eq!(passive["wake_count"], 0);
+    for source in [
+        ChannelSource {
+            channel_id: ChannelId(sender.grant.token.clone()),
+            message_id: MessageId("ordinary-dangling".into()),
+        },
+        ChannelSource {
+            channel_id: desk_id.clone(),
+            message_id: MessageId(sender.grant.token.clone()),
+        },
+    ] {
+        let ChannelRequest::Post {
+            channel_id,
+            mut post,
+        } = post(
+            &desk,
+            "must not share a capture credential",
+            PostIntent::Note,
+        )
+        else {
+            unreachable!()
+        };
+        post.source = Some(Box::new(source));
+        let error = agent_channel(
+            &registry,
+            &sender,
+            ChannelRequest::Post { channel_id, post },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("private capability"));
+        assert!(!error.to_string().contains(&sender.grant.token));
+    }
+    assert_eq!(
+        agent_channel(&registry, &sender, history(&desk)).unwrap()["messages"],
+        json!([passive["message"]])
+    );
     let addressed_post = |text| {
         let ChannelRequest::Post {
             channel_id,
@@ -1198,6 +1266,15 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     assert_eq!(next_broadcast["wake_count"], 2);
     let a_receiver = receiver(&registry, &a);
     let b_receiver = receiver(&registry, &b);
+    registry
+        .inner
+        .channels
+        .with_delivery_store(&|| false, &|_| true, |_| {
+            // Claim admission cannot reach SQLite while this operation owns the writer.
+            assert!(subscribe(&registry, &a, &a_receiver).is_null());
+            Ok(())
+        })
+        .unwrap();
     let a_wake = subscribe(&registry, &a, &a_receiver);
     let b_wake = subscribe(&registry, &b, &b_receiver);
     let a_pointer = &a_wake["channel_wake"];
@@ -1573,6 +1650,130 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         }),
         1
     );
+}
+
+#[test]
+fn channel_subscription_sees_empty_to_pending_and_rechecks_an_exiting_receiver() {
+    use crate::registry::{SpawnBarrier, agents::ChannelTestPause};
+    use std::sync::mpsc::sync_channel;
+
+    let root = private_root();
+    let root = root.path();
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.join("omp")).unwrap();
+    let (registry, _server) = open(root);
+    let spec = launch_spec(root, "receiver", NATIVE_ID);
+    send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: Some(spec.clone()),
+        },
+    );
+    let launch = live(&registry, &spec.home);
+    let inbox = agent_channel(&registry, &launch, history(&ChannelId("#desk".into()))).unwrap();
+    let desk = ChannelId(inbox["cursor"]["channel_id"].as_str().unwrap().into());
+    let native_pid: i32 = fs::read_to_string(spec.home.join("native-pid"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_ne!(native_pid, launch.root.pid);
+    let native = crate::harness_process::process(native_pid)
+        .unwrap()
+        .unwrap();
+    let lifetime = crate::control_lease::ProcessLifetime::observe(&native).unwrap();
+    let registered = agent(
+        &registry,
+        &launch,
+        AgentRequest::ReceiverRegister {
+            session_id: NATIVE_ID.into(),
+            mode: AgentReceiverMode::ActiveTurn,
+            pid: native_pid.try_into().unwrap(),
+        },
+    );
+    let receiver = registered["receiver_id"].as_str().unwrap();
+    channel(&registry, None, post(&desk, "first", PostIntent::Note)).unwrap();
+    let first = subscribe(&registry, &launch, receiver);
+    assert_eq!(
+        settle_wake(&registry, &launch, receiver, &first)["recorded"],
+        true
+    );
+
+    let pause = |phase| {
+        let (entered, notice) = sync_channel(0);
+        let (resume, resume_rx) = sync_channel(0);
+        registry.inner.agents.pause_channel(
+            phase,
+            Arc::new(SpawnBarrier {
+                entered,
+                resume: Mutex::new(resume_rx),
+            }),
+        );
+        (notice, resume)
+    };
+    let second = thread::scope(|scope| {
+        let (notice, resume) = pause(ChannelTestPause::EmptyClaim);
+        let registry_ref = &registry;
+        let launch_ref = &launch;
+        let waiting = scope.spawn(move || {
+            agent(
+                registry_ref,
+                launch_ref,
+                AgentRequest::ReceiverSubscribe {
+                    receiver_id: receiver.into(),
+                    wait_ms: 5000,
+                },
+            )["notification"]
+                .take()
+        });
+        notice.recv_timeout(Duration::from_secs(5)).unwrap();
+        channel(
+            &registry,
+            None,
+            post(&desk, "committed during empty probe", PostIntent::Note),
+        )
+        .unwrap();
+        resume.send(()).unwrap();
+        waiting.join().unwrap()
+    });
+    assert_eq!(second["channel_wake"]["channel_id"], desk.0);
+    assert_eq!(second["channel_wake"]["pending_count"], 1);
+
+    thread::scope(|scope| {
+        let (notice, resume) = pause(ChannelTestPause::Validate);
+        let req = AgentRequest::WakeValidate {
+            receiver_id: receiver.into(),
+            notification_id: second["notification_id"].as_str().unwrap().into(),
+            generation: second["generation"].as_u64().unwrap(),
+        };
+        let registry_ref = &registry;
+        let launch_ref = &launch;
+        let validating = scope.spawn(move || agent_result(registry_ref, launch_ref, req));
+        notice.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(unsafe { libc::kill(native.pid, libc::SIGKILL) }, 0);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while lifetime.is_alive() {
+            assert!(
+                Instant::now() < deadline,
+                "fixture native receiver did not exit"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        resume.send(()).unwrap();
+        assert!(validating.join().unwrap().is_err());
+    });
+    assert!(launch.channel_launch_alive());
+    let replacement = self::receiver(&registry, &launch);
+    assert_ne!(replacement, receiver);
+    assert!(subscribe(&registry, &launch, &replacement).is_null());
+    channel(
+        &registry,
+        None,
+        post(&desk, "after receiver replacement", PostIntent::Note),
+    )
+    .unwrap();
+    let next = subscribe(&registry, &launch, &replacement);
+    assert_eq!(next["channel_wake"]["pending_count"], 1);
+    assert!(next["generation"].as_u64().unwrap() > second["generation"].as_u64().unwrap());
 }
 
 #[test]

@@ -102,12 +102,13 @@ fn launch_plan(arguments: &[OsString]) -> Result<LaunchPlan> {
                         .context("Codex --config requires key=value")?
                         .clone()
                 };
-                let (local_only, permissions) = config_boundaries(&value);
+                let (local_only, permissions, approval) = config_boundaries(&value);
                 if local_only {
                     plan.passthrough = true;
                     return Ok(plan);
                 }
                 permission_override |= permissions;
+                plan.native_approval_override |= approval;
                 plan.overrides.extend([OsString::from("-c"), value]);
             }
             "--enable" | "--disable" => {
@@ -165,12 +166,13 @@ fn launch_plan(arguments: &[OsString]) -> Result<LaunchPlan> {
             }
             _ if option.starts_with("-c") && !option.starts_with("--") => {
                 let value = OsString::from(&argument[2..]);
-                let (local_only, permissions) = config_boundaries(&value);
+                let (local_only, permissions, approval) = config_boundaries(&value);
                 if local_only {
                     plan.passthrough = true;
                     return Ok(plan);
                 }
                 permission_override |= permissions;
+                plan.native_approval_override |= approval;
                 plan.overrides.extend([OsString::from("-c"), value]);
             }
             _ if option.starts_with("-p") && !option.starts_with("--") => profile = true,
@@ -213,9 +215,9 @@ fn launch_plan(arguments: &[OsString]) -> Result<LaunchPlan> {
 }
 
 // These are native remote-mode restrictions, not a new Bkpr permission policy.
-fn config_boundaries(value: &std::ffi::OsStr) -> (bool, bool) {
+fn config_boundaries(value: &std::ffi::OsStr) -> (bool, bool, bool) {
     let Some((key, value)) = value.to_str().and_then(|value| value.split_once('=')) else {
-        return (false, false);
+        return (false, false, false);
     };
     let key = key.trim();
     let local_only = key == "sandbox_workspace_write.writable_roots"
@@ -224,7 +226,7 @@ fn config_boundaries(value: &std::ffi::OsStr) -> (bool, bool) {
                 .parse::<toml::Value>()
                 .ok()
                 .is_some_and(|parsed| parsed.get("writable_roots").is_some()));
-    let root = key.split('.').next().unwrap_or(key);
+    let root = key.split('.').next().unwrap_or(key).trim();
     let permissions = matches!(
         root,
         "approval_policy"
@@ -235,7 +237,8 @@ fn config_boundaries(value: &std::ffi::OsStr) -> (bool, bool) {
             | "permissions"
             | "network"
     );
-    (local_only, permissions)
+    let approval = matches!(root, "approval_policy" | "approvals_reviewer");
+    (local_only, permissions, approval)
 }
 
 fn native_tui_arguments(
@@ -588,11 +591,30 @@ mod tests {
     }
 
     #[test]
-    fn explicit_native_review_never_acquires_collaboration_defaults() -> Result<()> {
+    fn equivalent_native_approval_flags_and_config_never_acquire_defaults() -> Result<()> {
         for flag in ["--approve-for-me", "--not-so-yolo"] {
             assert!(launch_plan(&args(&[flag]))?.native_approval_override);
             assert!(launch_plan(&args(&[flag, "resume"]))?.passthrough);
         }
+        for values in [
+            vec!["-a", "on-request"],
+            vec!["-aon-request"],
+            vec!["--ask-for-approval=on-request"],
+            vec!["-c", "approval_policy=\"on-request\""],
+            vec!["-c=approval_policy=\"on-request\""],
+            vec!["-capproval_policy=\"on-request\""],
+            vec!["--config", "approval_policy=\"on-request\""],
+            vec!["--config= approval_policy =\"on-request\""],
+            vec!["-c", "approval_policy.granular.mcp_elicitations=true"],
+            vec!["--config=approvals_reviewer=\"user\""],
+        ] {
+            let plan = launch_plan(&args(&values))?;
+            assert!(plan.native_approval_override, "{values:?}");
+            assert!(!plan.passthrough, "{values:?}");
+        }
+        assert!(!launch_plan(&args(&["--sandbox", "workspace-write"]))?.native_approval_override);
+        assert!(!launch_plan(&args(&["-c", "model=\"fixture\""]))?.native_approval_override);
+        assert!(!launch_plan(&args(&["--", "--ask-for-approval=never"]))?.native_approval_override);
         Ok(())
     }
 

@@ -22,8 +22,8 @@ use uuid::Uuid;
 mod wakes;
 
 const APPLICATION_ID: i64 = 0x424b4348;
-// Versions 1–6 predate staging. Version 7 contains staging but no wakes.
-const STORE_VERSION: i64 = 8;
+// Versions 1–6 predate staging. Version 7 predates wakes; version 8 combined revocation and outcome.
+const STORE_VERSION: i64 = 9;
 const STORE_NAME: &str = "channels.sqlite3";
 const MAX_PENDING: usize = 4096;
 const READ_POST: &str = "SELECT summary,body FROM posts WHERE channel_id=?1 AND id=?2";
@@ -67,6 +67,24 @@ const ATTACHMENT_STAGING_SCHEMA: &str = "
     ) STRICT;
     INSERT INTO attachment_budget VALUES(1,0);";
 
+const RETIRE_OLD_WAKE_WORK: &str = "
+    UPDATE notification_work SET pending=0 WHERE pending=1;
+    UPDATE channel_batches SET outcome='unknown' WHERE outcome IS NULL;";
+
+const WAKE_QUEUE_SCHEMA: &str = "
+    ALTER TABLE channel_batches ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE notification_work ADD COLUMN enqueue_ordinal INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE notification_work ADD COLUMN channel_sequence INTEGER NOT NULL DEFAULT 0;
+    DROP INDEX IF EXISTS pending_launch_wakes;
+    DROP INDEX IF EXISTS active_batch_launch;
+    CREATE UNIQUE INDEX active_batch_launch ON channel_batches(launch_id) WHERE outcome IS NULL AND revoked=0;
+    CREATE INDEX unsettled_batch_deadline ON channel_batches(deadline) WHERE outcome IS NULL;
+    CREATE INDEX pending_launch_enqueue ON notification_work(launch_id,binding_revision,participant_id,enqueue_ordinal,channel_id)
+        WHERE pending=1 AND launch_id IS NOT NULL;
+    CREATE INDEX pending_channel_sequence ON notification_work(launch_id,binding_revision,participant_id,channel_id,channel_sequence,addressed)
+        WHERE pending=1 AND launch_id IS NOT NULL;
+    CREATE INDEX wake_batch_membership ON channel_batches(channel_id,participant_id) WHERE revoked=0;";
+
 pub(crate) struct Store {
     pub(super) connection: Connection,
     pub(super) retirement_epoch: u64,
@@ -83,11 +101,18 @@ struct StoredChannel {
 }
 
 #[derive(serde::Serialize)]
+struct ReplyTarget<'a> {
+    channel_id: &'a ChannelId,
+    reply_to: &'a MessageId,
+}
+
+#[derive(serde::Serialize)]
 struct MessagePage<'a> {
     message: MessageSummary,
     text: &'a str,
     body_bytes: usize,
     next_offset: Option<usize>,
+    reply_target: ReplyTarget<'a>,
 }
 
 impl Store {
@@ -138,36 +163,41 @@ impl Store {
             let tx = connection.transaction()?;
             tx.execute_batch(include_str!("schema.sql"))?;
             tx.execute_batch(include_str!("wakes.sql"))?;
+            tx.execute_batch(WAKE_QUEUE_SCHEMA)?;
             tx.execute_batch(ATTACHMENT_STAGING_SCHEMA)?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
             tx.pragma_update(None, "user_version", STORE_VERSION)?;
             tx.commit()?;
             directory.sync_all()?;
-        } else {
-            if version < STORE_VERSION {
-                let tx = connection.transaction()?;
-                if version == 1 {
-                    tx.execute_batch(
-                        "ALTER TABLE members ADD COLUMN workspace_id TEXT NOT NULL DEFAULT '';
-                         UPDATE members SET workspace_id=(SELECT workspace_id FROM channels WHERE id=members.channel_id);
-                         CREATE INDEX workspace_wide_channels ON channels(workspace_id,id) WHERE workspace_wide=1;
-                         CREATE INDEX visible_explicit_channels ON members(workspace_id,participant_id,channel_id);",
-                    )?;
-                }
-                if matches!(version, 1 | 2 | 7) {
-                    tx.execute_batch(include_str!("wakes.sql"))?;
-                }
-                if version < 7 {
-                    migrate_attachment_staging(&tx)?;
-                }
-                tx.pragma_update(None, "user_version", STORE_VERSION)?;
-                tx.commit()?;
+        } else if version < STORE_VERSION {
+            let tx = connection.transaction()?;
+            if version == 1 {
+                tx.execute_batch(
+                    "ALTER TABLE members ADD COLUMN workspace_id TEXT NOT NULL DEFAULT '';
+                     UPDATE members SET workspace_id=(SELECT workspace_id FROM channels WHERE id=members.channel_id);
+                     CREATE INDEX workspace_wide_channels ON channels(workspace_id,id) WHERE workspace_wide=1;
+                     CREATE INDEX visible_explicit_channels ON members(workspace_id,participant_id,channel_id);",
+                )?;
             }
-            // A new runtime may inspect history, but never adopts another runtime's work.
-            connection.execute_batch(
-                "UPDATE notification_work SET pending=0 WHERE pending=1;
-                 UPDATE channel_batches SET outcome='unknown' WHERE outcome IS NULL;",
-            )?;
+            if matches!(version, 1 | 2 | 7) {
+                tx.execute_batch(include_str!("wakes.sql"))?;
+            }
+            if version < 7 {
+                migrate_attachment_staging(&tx)?;
+            }
+            // Prior work cannot be offered by a new runtime, so its new order fields need no backfill.
+            tx.execute_batch(RETIRE_OLD_WAKE_WORK)?;
+            tx.execute_batch(WAKE_QUEUE_SCHEMA)?;
+            if matches!(version, 3 | 8) {
+                tx.execute(
+                    "UPDATE channel_batches SET revoked=1,outcome='unknown' WHERE outcome='revoked'",
+                    [],
+                )?;
+            }
+            tx.pragma_update(None, "user_version", STORE_VERSION)?;
+            tx.commit()?;
+        } else {
+            connection.execute_batch(RETIRE_OLD_WAKE_WORK)?;
         }
         Ok(Self {
             connection,
@@ -185,7 +215,7 @@ impl Store {
                 "SELECT c.workspace_id FROM notification_work w
                  JOIN channels c ON c.id=w.channel_id WHERE w.pending=1
                  UNION SELECT c.workspace_id FROM channel_batches b
-                 JOIN channels c ON c.id=b.channel_id WHERE b.outcome IS NULL",
+                 JOIN channels c ON c.id=b.channel_id WHERE b.outcome IS NULL AND b.revoked=0",
             )?;
             let mut rows = statement.query([])?;
             while let Some(row) = rows.next()? {
@@ -208,7 +238,7 @@ impl Store {
                 statement.execute([id])?;
             }
             let mut batches = tx.prepare(
-                "UPDATE channel_batches SET outcome='revoked' WHERE outcome IS NULL AND channel_id IN
+                "UPDATE channel_batches SET revoked=1 WHERE outcome IS NULL AND revoked=0 AND channel_id IN
                     (SELECT id FROM channels WHERE workspace_id=?1)",
             )?;
             for id in &closed {
@@ -715,7 +745,7 @@ impl Store {
                     [id.as_ref()],
                 )?;
                 tx.execute(
-                    "UPDATE channel_batches SET outcome='revoked' WHERE channel_id=?1 AND outcome IS NULL
+                    "UPDATE channel_batches SET revoked=1 WHERE channel_id=?1 AND revoked=0
                      AND NOT EXISTS(SELECT 1 FROM members WHERE channel_id=?1 AND participant_id=channel_batches.participant_id)",
                     [id.as_ref()],
                 )?;
@@ -898,9 +928,11 @@ impl Store {
             params![id.as_ref(), sequence, attention],
         )?;
         if needed != 0 {
+            // `posts` is the last rowid table inserted into by this transaction.
+            let enqueue_ordinal = tx.last_insert_rowid();
             let mut insert = tx.prepare(
-                "INSERT INTO notification_work(channel_id,message_id,participant_id,launch_id,addressed,pending,binding_revision)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                "INSERT INTO notification_work(channel_id,message_id,participant_id,launch_id,addressed,pending,binding_revision,enqueue_ordinal,channel_sequence)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             )?;
             for wake in &wakes {
                 insert.execute(params![
@@ -911,6 +943,8 @@ impl Store {
                     wake.addressed,
                     pending_work,
                     wake.binding,
+                    enqueue_ordinal,
+                    sequence,
                 ])?;
             }
             if attention {
@@ -922,6 +956,8 @@ impl Store {
                     false,
                     pending_work,
                     0,
+                    enqueue_ordinal,
+                    sequence,
                 ])?;
             }
         }
@@ -1157,6 +1193,10 @@ impl Store {
             text: &text[offset..end],
             body_bytes: text.len(),
             next_offset: (end < text.len()).then_some(end),
+            reply_target: ReplyTarget {
+                channel_id,
+                reply_to: message_id,
+            },
         })
         .map(Some)
     }

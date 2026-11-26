@@ -12,9 +12,6 @@ CREATE TABLE channel_batches (
     outcome TEXT CHECK(outcome IN ('accepted','failed','unknown','revoked')),
     reason TEXT
 ) STRICT;
-CREATE UNIQUE INDEX active_batch_launch ON channel_batches(launch_id) WHERE outcome IS NULL;
 ALTER TABLE notification_work ADD COLUMN binding_revision INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE notification_work ADD COLUMN batch_id TEXT REFERENCES channel_batches(id);
-CREATE INDEX pending_launch_wakes ON notification_work(launch_id,binding_revision,channel_id)
-    WHERE pending=1 AND launch_id IS NOT NULL;
 CREATE INDEX claimed_wake_items ON notification_work(batch_id) WHERE batch_id IS NOT NULL;

@@ -849,7 +849,10 @@ mod tests {
             let mut child = Command::new(server)
                 .env_clear()
                 .env("HOME", &daemon_home)
-                .env("PATH", "/usr/bin:/bin")
+                .env(
+                    "PATH",
+                    std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()),
+                )
                 .env("TERM", "xterm-256color")
                 .args(["--socket"])
                 .arg(&host.socket)

@@ -12,9 +12,9 @@ Managed launches obtain authority through the backend's verified launcher/PTY an
 
 `harness/assets.rs` owns private credential files; `integration/shared/native.ts` owns native callback subprocesses. Shared MCP belongs to `harness/agent.rs`; extensions bind native sessions and receivers rather than duplicating tools. Ordinary execution never edits native profiles. Explicit durable operations belong to `harness/install.rs` and its native definitions; preserve unrelated configuration and refuse conflicts. Inspect/dry-run must not create files or invoke onboarding.
 
-`harness/collaboration.rs` owns the exact default native tool names for Claude and Codex. Defaults cannot replace native ask/deny/filter policy or approve control, terminal input or file transfers. Keep user rules separate from installer-owned entries.
+`harness/collaboration.rs` owns the exact default native tool names for Claude and Codex. Defaults cannot replace native ask/deny/filter policy or approve control, terminal input or file transfers. Claude defaults stay launch-local alongside the exact verified MCP registration; preserve external MCP sources and never write account-wide name-only grants. Explicit update/uninstall may remove only identifiable legacy owned rules, respecting the schema-1 journal's preserved entries.
 
-Codex thread defaults query the existing private app server through a loopback WebSocket; use Tungstenite's handshake-only build (no TLS) for that client. The 0.30 release reuses the workspace's existing `rand` 0.10 and `http` 1 dependencies.
+Codex thread defaults query the existing private app server through a loopback WebSocket only after admitting an exact fresh user selection. Recheck its connection and sequence after unlocked config I/O. Use Tungstenite's handshake-only build (no TLS); the 0.30 release reuses the workspace's existing `rand` 0.10 and `http` 1 dependencies.
 
 Channel file tools open explicit local paths in the launch-local MCP helper or authenticated Codex relay. Only typed attachment bytes and channel IDs cross the daemon transport; MCP replies carry metadata. Fetch publishes a fresh file without clobbering an existing name.
 

@@ -213,17 +213,19 @@ fn tap_connection(
                     let message: RequestMetadata<'_> =
                         serde_json::from_slice(bytes).context("parse Codex native request")?;
                     let rewritten =
-                        if unfragmented && message.method.as_deref() == Some("thread/start") {
-                            defaults.and_then(|defaults| defaults.rewrite(bytes))
-                        } else {
-                            None
-                        };
-                    let mut state = selections.lock();
-                    state.request_on(connection, &message)?;
-                    if let Some(thread) = state.prompt_on(connection, &message) {
-                        selected.lock()("turn/start", &thread)?;
-                    }
-                    Ok(rewritten)
+                        inspect_request(selections, connection, &message, selected, || {
+                            if unfragmented
+                                && !stopped.load(Ordering::Acquire)
+                                && !control.stopped.load(Ordering::Acquire)
+                            {
+                                defaults.and_then(|defaults| defaults.rewrite(bytes))
+                            } else {
+                                None
+                            }
+                        })?;
+                    Ok(rewritten.filter(|_| {
+                        !stopped.load(Ordering::Acquire) && !control.stopped.load(Ordering::Acquire)
+                    }))
                 },
             );
             stopped.store(true, Ordering::Release);
@@ -260,6 +262,39 @@ fn tap_connection(
     })
 }
 
+fn inspect_request(
+    selections: &Mutex<Selections>,
+    connection: u64,
+    message: &RequestMetadata<'_>,
+    selected: &Mutex<impl FnMut(&str, &str) -> Result<()>>,
+    preflight: impl FnOnce() -> Option<Vec<u8>>,
+) -> Result<Option<Vec<u8>>> {
+    let admitted_start = {
+        let mut state = selections.lock();
+        let admitted_start = state.request_on(connection, message)?;
+        if let Some(thread) = state.prompt_on(connection, message) {
+            selected.lock()("turn/start", &thread)?;
+        }
+        admitted_start
+    };
+    let Some(sequence) = admitted_start else {
+        return Ok(None);
+    };
+    // Native config read may block independently of TUI selection traffic.
+    // An old request still goes to Codex verbatim if another selection won.
+    let Some(rewritten) = preflight() else {
+        return Ok(None);
+    };
+    let state = selections.lock();
+    Ok((state.connection == connection
+        && state.sequence == sequence
+        && state
+            .pending
+            .values()
+            .any(|selection| selection.sequence == sequence))
+    .then_some(rewritten))
+}
+
 #[derive(serde::Deserialize)]
 struct RequestMetadata<'a> {
     id: Option<Value>,
@@ -294,7 +329,12 @@ struct Selection {
 }
 
 impl Selections {
-    fn request_on(&mut self, connection: u64, message: &RequestMetadata<'_>) -> Result<()> {
+    /// Return the exact admission sequence only for an accepted fresh user start.
+    fn request_on(
+        &mut self,
+        connection: u64,
+        message: &RequestMetadata<'_>,
+    ) -> Result<Option<u64>> {
         let source = message
             .params
             .as_ref()
@@ -303,11 +343,11 @@ impl Selections {
             Some("thread/start") if source == Some("user") => "thread/start",
             Some("thread/fork") if source == Some("user") => "thread/fork",
             Some("thread/resume") => "thread/resume",
-            _ => return Ok(()),
+            _ => return Ok(None),
         };
         // An abandoned picker connection cannot reclaim selection authority.
         if connection < self.connection {
-            return Ok(());
+            return Ok(None);
         }
         self.connection = connection;
         let id = request_id(message.id.as_ref())
@@ -346,7 +386,7 @@ impl Selections {
         {
             bail!("Codex reused an outstanding thread selection request ID");
         }
-        Ok(())
+        Ok((method == "thread/start").then_some(self.sequence))
     }
 
     fn response_on(
@@ -406,7 +446,8 @@ impl Selections {
     #[cfg(test)]
     fn request(&mut self, message: &Value) -> Result<()> {
         let bytes = serde_json::to_vec(message)?;
-        self.request_on(0, &serde_json::from_slice(&bytes)?)
+        self.request_on(0, &serde_json::from_slice(&bytes)?)?;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1058,6 +1099,55 @@ mod tests {
                 |_, _| Ok(None),
             )
         })?;
+        Ok(())
+    }
+
+    #[test]
+    fn approval_preflight_requires_the_admitted_user_start_and_rechecks_its_epoch() -> Result<()> {
+        let selections = Mutex::new(Selections::default());
+        let selected =
+            Mutex::new(|_: &str, _: &str| -> Result<()> { panic!("no prompts in fixture") });
+        let start: RequestMetadata<'_> = serde_json::from_slice(
+            br#"{"id":1,"method":"thread/start","params":{"threadSource":"user"}}"#,
+        )?;
+        let resume: RequestMetadata<'_> = serde_json::from_slice(
+            br#"{"id":1,"method":"thread/resume","params":{"threadId":"new"}}"#,
+        )?;
+        assert_eq!(
+            inspect_request(&selections, 2, &start, &selected, || Some(vec![1]))?,
+            Some(vec![1])
+        );
+        assert!(inspect_request(&selections, 1, &start, &selected, || unreachable!())?.is_none());
+        for request in [
+            br#"{"id":2,"method":"thread/start","params":{}}"#.as_slice(),
+            br#"{"id":2,"method":"thread/start","params":{"threadSource":null}}"#,
+            br#"{"id":2,"method":"thread/start","params":{"threadSource":"thread_title"}}"#,
+        ] {
+            let message = serde_json::from_slice(request)?;
+            assert!(
+                inspect_request(&selections, 3, &message, &selected, || unreachable!())?.is_none()
+            );
+        }
+        let superseded = inspect_request(&selections, 3, &start, &selected, || {
+            let mut state = selections
+                .try_lock()
+                .expect("preflight must not hold the selection lock");
+            state.request_on(4, &resume).unwrap();
+            Some(vec![2])
+        })?;
+        assert!(superseded.is_none());
+        assert!(
+            selections
+                .lock()
+                .response_on(3, &json!({"id":1,"result":{"thread":{"id":"old"}}}))?
+                .is_none()
+        );
+        assert_eq!(
+            selections
+                .lock()
+                .response_on(4, &json!({"id":1,"result":{"thread":{"id":"new"}}}))?,
+            Some(("thread/resume", "new".into()))
+        );
         Ok(())
     }
 

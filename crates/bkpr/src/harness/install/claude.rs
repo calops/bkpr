@@ -8,7 +8,6 @@ use bkpr_protocol::HarnessKind;
 use serde_json::{Value, json};
 
 use super::types::{Asset, Bundle, Definition, Entry, Format, Paths, read_native, shell_command};
-use crate::harness::collaboration;
 
 const CALLBACK_EVENTS: &[&str] = &[
     "SessionStart",
@@ -19,6 +18,22 @@ const CALLBACK_EVENTS: &[&str] = &[
     "StopFailure",
 ];
 const WAIT_EVENTS: &[&str] = &["SessionStart", "UserPromptSubmit", "Stop"];
+
+fn managed_path(name: &str) -> PathBuf {
+    Path::new(if cfg!(target_os = "macos") {
+        "/Library/Application Support/ClaudeCode"
+    } else {
+        "/etc/claude-code"
+    })
+    .join(name)
+}
+
+fn managed_settings(paths: &Paths) -> Result<PathBuf> {
+    paths.env_path(
+        "CLAUDE_CODE_MANAGED_SETTINGS_PATH",
+        managed_path("managed-settings.json"),
+    )
+}
 
 fn native_paths(paths: &Paths) -> Result<(PathBuf, PathBuf)> {
     let override_directory = paths
@@ -70,7 +85,7 @@ fn read_settings(path: &Path) -> Result<Option<Value>> {
     Ok(Some(value))
 }
 
-fn check_policy(settings: &[Value], command: &Value) -> Result<()> {
+fn check_policy<'a>(settings: impl IntoIterator<Item = &'a Value>, command: &Value) -> Result<()> {
     let mut allowed = Vec::new();
     let mut has_allowlist = false;
     for value in settings {
@@ -136,43 +151,149 @@ fn matches_server(entry: &Value, command: &Value) -> bool {
         || entry.get("serverCommand") == Some(command)
 }
 
+/// Build the exact MCP command shared by durable installation and the launch pin.
+pub(in crate::harness) fn registration(
+    program: &Path,
+    installation: Option<&Path>,
+) -> Result<Value> {
+    let program = program
+        .to_str()
+        .context("Claude MCP executable path is not UTF-8")?;
+    let mut args = vec!["capture"];
+    if let Some(installation) = installation {
+        args.extend([
+            "installed-mcp",
+            "--harness",
+            "claude",
+            "--installation",
+            installation
+                .to_str()
+                .context("Claude installation record path is not UTF-8")?,
+        ]);
+    } else {
+        args.extend(["mcp", "--harness", "claude"]);
+    }
+    Ok(json!({"type":"stdio", "command":program, "args":args}))
+}
+
+fn command(registration: &Value) -> Value {
+    let mut command = vec![registration["command"].clone()];
+    command.extend(registration["args"].as_array().unwrap().iter().cloned());
+    Value::Array(command)
+}
+
+fn has_bkpr_server(value: &Value) -> bool {
+    value["mcpServers"].get("bkpr").is_some() || value["managedMcpServers"].get("bkpr").is_some()
+}
+
+fn approval_opt_out(settings: &Value) -> bool {
+    settings.get("agent").is_some()
+        || settings["allowManagedPermissionRulesOnly"].as_bool() == Some(true)
+        || settings["permissions"]["denyInsteadOfPrompting"].as_bool() == Some(true)
+        || matches!(
+            settings["permissions"]["defaultMode"].as_str(),
+            Some("dontAsk" | "plan")
+        )
+}
+
+fn server_disabled(settings: &Value) -> bool {
+    ["disabledMcpServers", "disabledMcpjsonServers"]
+        .into_iter()
+        .any(|key| {
+            settings[key]
+                .as_array()
+                .is_some_and(|servers| servers.iter().any(|server| server.as_str() == Some("bkpr")))
+        })
+}
+
+/// Whether a verified managed launch can safely add its own MCP registration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::harness) enum LaunchMcp {
+    /// Keep native MCP source selection and approvals unchanged.
+    #[default]
+    Native,
+    /// The Bkpr registration is safe, but native approval choices are explicit.
+    Register,
+    /// The exact registration can be pinned with launch-local tool defaults.
+    Approve,
+}
+
+/// Determine whether a launch can pin Bkpr without adopting a competing
+/// registration or opting out of native approval and MCP policy.
+pub(super) fn launch_mcp(
+    paths: &Paths,
+    settings: &Value,
+    registration: &Value,
+) -> Result<LaunchMcp> {
+    let native_command = command(registration);
+    if managed_path("managed-mcp.json").try_exists()?
+        || has_bkpr_server(settings)
+        || server_disabled(settings)
+        || native_command
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|arg| arg.as_str().is_some_and(|arg| arg.contains("${")))
+    {
+        return Ok(LaunchMcp::Native);
+    }
+    let mut approve = !approval_opt_out(settings);
+    let (settings_file, global_file) = native_paths(paths)?;
+    if let Some(global) = read_settings(&global_file)? {
+        if server_disabled(&global)
+            || global["mcpServers"]
+                .get("bkpr")
+                .is_some_and(|candidate| candidate != registration)
+            || global["projects"]
+                .as_object()
+                .is_some_and(|projects| projects.values().any(has_bkpr_server))
+        {
+            return Ok(LaunchMcp::Native);
+        }
+        approve &= !approval_opt_out(&global);
+    }
+    let mut policy = Vec::new();
+    for file in
+        [settings_file, managed_settings(paths)?]
+            .into_iter()
+            .chain(paths.cwd.ancestors().flat_map(|directory| {
+                [
+                    directory.join(".mcp.json"),
+                    directory.join(".claude/settings.json"),
+                    directory.join(".claude/settings.local.json"),
+                ]
+            }))
+    {
+        if let Some(value) = read_settings(&file)? {
+            if has_bkpr_server(&value) || server_disabled(&value) {
+                return Ok(LaunchMcp::Native);
+            }
+            approve &= !approval_opt_out(&value);
+            policy.push(value);
+        }
+    }
+    Ok(
+        if check_policy(std::iter::once(settings).chain(&policy), &native_command).is_err() {
+            LaunchMcp::Native
+        } else if approve {
+            LaunchMcp::Approve
+        } else {
+            LaunchMcp::Register
+        },
+    )
+}
+
 /// Describe credential-free native Claude registration for the current account.
 pub(super) fn definition(paths: &Paths) -> Result<Definition> {
     let (settings_file, global_file) = native_paths(paths)?;
     let manifest = paths.manifest(HarnessKind::Claude, &[&settings_file, &global_file]);
+    let mcp = registration(&paths.program, Some(&manifest))?;
+    let native_command = command(&mcp);
     let installation = manifest
         .to_str()
         .context("Claude installation record path is not UTF-8")?;
-    let program = paths
-        .program
-        .to_str()
-        .context("Claude MCP executable path is not UTF-8")?;
-    let mcp = json!({
-        "type": "stdio",
-        "command": program,
-        "args": ["capture", "installed-mcp", "--harness", "claude", "--installation", installation]
-    });
-    let native_command = json!([
-        program,
-        "capture",
-        "installed-mcp",
-        "--harness",
-        "claude",
-        "--installation",
-        installation
-    ]);
     let mut settings = Vec::new();
-    for file in [
-        settings_file.clone(),
-        paths.env_path(
-            "CLAUDE_CODE_MANAGED_SETTINGS_PATH",
-            PathBuf::from(if cfg!(target_os = "macos") {
-                "/Library/Application Support/ClaudeCode/managed-settings.json"
-            } else {
-                "/etc/claude-code/managed-settings.json"
-            }),
-        )?,
-    ] {
+    for file in [settings_file.clone(), managed_settings(paths)?] {
         if let Some(value) = read_settings(&file)? {
             settings.push(value);
         }
@@ -181,12 +302,7 @@ pub(super) fn definition(paths: &Paths) -> Result<Definition> {
     if let Err(error) = check_policy(&settings, &native_command) {
         blockers.push(error.to_string());
     }
-    let managed_mcp = PathBuf::from(if cfg!(target_os = "macos") {
-        "/Library/Application Support/ClaudeCode/managed-mcp.json"
-    } else {
-        "/etc/claude-code/managed-mcp.json"
-    });
-    if managed_mcp.try_exists()? {
+    if managed_path("managed-mcp.json").try_exists()? {
         blockers.push("Claude enterprise MCP configuration has exclusive server ownership".into());
     }
     let mut entries = vec![Entry::value(
@@ -242,17 +358,6 @@ pub(super) fn definition(paths: &Paths) -> Result<Definition> {
             }))?,
         )],
     )?;
-    entries.extend(collaboration::claude_rules().map(|rule| {
-        Entry::array(
-            &format!("approval-{rule}"),
-            settings_file.clone(),
-            Format::Json,
-            &["permissions", "allow"],
-            json!(rule),
-            rule.clone(),
-        )
-        .with_default()
-    }));
     Ok(Definition {
         kind: HarnessKind::Claude,
         bundle,
@@ -262,7 +367,7 @@ pub(super) fn definition(paths: &Paths) -> Result<Definition> {
         blockers,
         notes: vec![
             "Start a new managed Claude session to load the configured MCP and hooks; existing sessions are unchanged.".into(),
-            "Only named Bkpr collaboration tools get default allow rules. Native ask, deny, server policy and trust still apply; outside a managed launch the hooks and MCP are inactive.".into(),
+            "Installation does not grant tool approval or workspace trust. Update or uninstall removes unchanged allow rules owned by older Bkpr installs.".into(),
         ],
     })
 }
@@ -372,5 +477,70 @@ mod tests {
             .is_err()
         );
         assert!(check_policy(&[json!({"disableAllHooks":true})], &command).is_err());
+    }
+
+    #[test]
+    fn managed_launch_preserves_project_policy_and_competing_mcp_registrations() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let mut paths = paths(root.path());
+        let project = root.path().join("project");
+        paths.cwd = project.join("child");
+        fs::create_dir_all(&paths.cwd)?;
+        fs::create_dir(&paths.home)?;
+        let definition = definition(&paths)?;
+        let entry = &definition.entries[0];
+        let installed = &entry.value;
+        let write_json = |path: &Path, value: &Value| -> Result<()> {
+            fs::write(path, serde_json::to_vec(value)?)?;
+            Ok(())
+        };
+        let account = json!({"mcpServers":{"bkpr":installed}});
+        write_json(&entry.file, &account)?;
+        let settings = json!({"permissions":{
+            "ask":["mcp__bkpr__send_message"],
+            "deny":["mcp__bkpr__channel_create"]
+        }});
+        let project_mcp = project.join(".mcp.json");
+        write_json(
+            &project_mcp,
+            &json!({"mcpServers":{"other":{"command":"foreign"}}}),
+        )?;
+        assert_eq!(
+            launch_mcp(&paths, &settings, installed)?,
+            LaunchMcp::Approve
+        );
+        let project_settings = project.join(".claude/settings.local.json");
+        fs::create_dir(project_settings.parent().unwrap())?;
+        write_json(
+            &project_settings,
+            &json!({"permissions":{"defaultMode":"dontAsk"}}),
+        )?;
+        assert_eq!(
+            launch_mcp(&paths, &settings, installed)?,
+            LaunchMcp::Register
+        );
+        write_json(
+            &project_settings,
+            &json!({"allowedMcpServers":[{"serverCommand":["/different"]}]}),
+        )?;
+        assert_eq!(launch_mcp(&paths, &settings, installed)?, LaunchMcp::Native);
+        fs::remove_file(project_settings)?;
+        let competing = json!({"mcpServers":{"bkpr":{"command":"foreign"}}});
+        write_json(&project_mcp, &competing)?;
+        assert_eq!(launch_mcp(&paths, &settings, installed)?, LaunchMcp::Native);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&project_mcp)?)?,
+            competing
+        );
+        fs::remove_file(project_mcp)?;
+        let mut project_account = account.clone();
+        project_account["projects"][project.to_str().unwrap()] = competing;
+        write_json(&entry.file, &project_account)?;
+        assert_eq!(launch_mcp(&paths, &settings, installed)?, LaunchMcp::Native);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&entry.file)?)?,
+            project_account
+        );
+        Ok(())
     }
 }

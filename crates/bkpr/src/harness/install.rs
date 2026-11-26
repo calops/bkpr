@@ -9,6 +9,8 @@ mod opencode;
 mod pi;
 mod types;
 
+pub(super) use claude::{LaunchMcp as ClaudeMcp, registration as claude_registration};
+
 use anyhow::{Context, Result, bail, ensure};
 use bkpr_protocol::HarnessKind;
 use fs2::FileExt;
@@ -49,12 +51,26 @@ pub(super) struct RuntimeInstall {
     _lease: Lease,
 }
 
+/// The verified Claude installation and the native configuration roots of this invocation.
+pub(super) struct ClaudeRuntime {
+    /// Owned persistent registration, if one is configured.
+    pub installation: Option<RuntimeInstall>,
+    paths: Paths,
+}
+
+impl ClaudeRuntime {
+    /// Preserve native MCP selection if the launch configuration cannot be verified.
+    pub fn mcp_policy(&self, settings: &Value, registration: &Value) -> ClaudeMcp {
+        claude::launch_mcp(&self.paths, settings, registration).unwrap_or_default()
+    }
+}
+
 /// Shared public CLI definition for explicit native integration maintenance.
 pub(crate) fn command() -> clap::Command {
     use clap::{Arg, ArgAction, ArgGroup};
     clap::Command::new("install")
         .about("Install a supported harness's native Bkpr integration")
-        .long_about("Manage the current account/profile's native integration. Credentials remain launch-local. Claude and Codex get exact Bkpr collaboration defaults without changing broader native approval modes. This command does not restart harnesses. Inspect and dry-run never write files.")
+        .long_about("Manage the current account/profile's native integration. Credentials remain launch-local. Installation does not grant tool approval or workspace trust. This command does not restart harnesses. Inspect and dry-run never write files.")
         .arg(Arg::new("harness").required(true).value_parser(["claude", "codex", "omp", "pi", "opencode", "opencode2", "agy", "antigravity"]))
         .arg(Arg::new("inspect").long("inspect").action(ArgAction::SetTrue).help("Inspect configuration, ownership and known native policy restrictions"))
         .arg(Arg::new("dry-run").long("dry-run").action(ArgAction::SetTrue).help("Validate and show installation changes without writing"))
@@ -112,6 +128,7 @@ struct Plan {
     changes: Vec<Change>,
     target: Manifest,
     journal: Journal,
+    retired_claude_approvals: usize,
 }
 struct Lease(File);
 impl Drop for Lease {
@@ -139,6 +156,16 @@ fn paths() -> Result<Paths> {
         program: env::current_exe()?,
         cwd: env::current_dir()?,
         environment: env::vars_os().collect(),
+    })
+}
+
+/// Resolve Claude's persistent integration and retain its profile roots for launch policy.
+pub(super) fn claude_runtime() -> Result<ClaudeRuntime> {
+    let paths = paths()?;
+    let installation = runtime_at(&paths, HarnessKind::Claude, &[])?;
+    Ok(ClaudeRuntime {
+        paths,
+        installation,
     })
 }
 fn definition(paths: &Paths, kind: HarnessKind, overlays: &[PathBuf]) -> Result<Definition> {
@@ -199,8 +226,7 @@ fn stored(definition: &Definition, program: &Path) -> Manifest {
     }
 }
 
-fn same_required_installation(manifest: &Manifest, mut expected: Manifest) -> bool {
-    expected.entries.retain(|entry| !entry.default);
+fn same_required_installation(manifest: &Manifest, expected: Manifest) -> bool {
     manifest.schema == expected.schema
         && manifest.kind == expected.kind
         && manifest.program == expected.program
@@ -208,11 +234,7 @@ fn same_required_installation(manifest: &Manifest, mut expected: Manifest) -> bo
         && manifest.root == expected.root
         && manifest.assets == expected.assets
         && manifest.files == expected.files
-        && manifest
-            .entries
-            .iter()
-            .filter(|entry| !entry.default)
-            .eq(&expected.entries)
+        && manifest.entries == expected.entries
 }
 
 fn safe_path(path: &Path) -> Result<()> {
@@ -537,7 +559,7 @@ fn verify_record(manifest: &Manifest) -> Result<()> {
     }
     let mut documents = BTreeMap::new();
     let known: Vec<_> = manifest.entries.iter().collect();
-    for entry in manifest.entries.iter().filter(|entry| !entry.default) {
+    for entry in &manifest.entries {
         if !documents.contains_key(&entry.file) {
             let before = read(&entry.file)?;
             documents.insert(
@@ -555,34 +577,30 @@ fn verify_record(manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
-enum DefaultSlot {
-    Empty,
-    Matching(usize),
-    Foreign,
-}
-
-fn default_slot(document: &config::Document, entry: &Entry) -> Result<DefaultSlot> {
+// Exact, unique members of the retired Claude allow list are the only ones we
+// can remove. A user may have edited or duplicated one since installation.
+fn legacy_claude_rule(document: &config::Document, entry: &Entry) -> Result<Option<usize>> {
     let Some(value) = document.get(&entry.keys)? else {
-        return Ok(DefaultSlot::Empty);
+        return Ok(None);
     };
-    let values = value
-        .as_array()
-        .context("native integration list is not an array")?;
+    let Some(values) = value.as_array() else {
+        return Ok(None);
+    };
     let mut exact = None;
     for (index, value) in values.iter().enumerate() {
         if value == &entry.value {
             if exact.replace(index).is_some() {
-                return Ok(DefaultSlot::Foreign);
+                return Ok(None);
             }
         } else if entry
             .marker
             .as_deref()
             .is_some_and(|marker| contains_marker(value, marker))
         {
-            return Ok(DefaultSlot::Foreign);
+            return Ok(None);
         }
     }
-    Ok(exact.map_or(DefaultSlot::Empty, DefaultSlot::Matching))
+    Ok(exact)
 }
 
 fn retained_paths(value: &Value, prefix: &str, paths: &mut Vec<String>) {
@@ -631,15 +649,23 @@ pub(super) fn runtime(kind: HarnessKind, invocation: Invocation) -> Result<Optio
             "native working directory is not a directory"
         );
     }
-    let definition = definition(&paths, kind, &invocation.config_files)?;
-    let path = location(&paths, &definition);
+    runtime_at(&paths, kind, &invocation.config_files)
+}
+
+fn runtime_at(
+    paths: &Paths,
+    kind: HarnessKind,
+    overlays: &[PathBuf],
+) -> Result<Option<RuntimeInstall>> {
+    let definition = definition(paths, kind, overlays)?;
+    let path = location(paths, &definition);
     ensure!(
         !path.with_file_name("pending.json").exists(),
         "integration update is incomplete; run bkpr install {} --update",
         kind.as_str()
     );
     let Some(manifest) = record(&path, kind)? else {
-        if legacy_agy(&definition, &paths)?.is_none() {
+        if legacy_agy(&definition, paths)?.is_none() {
             check_unowned(&definition)?;
         }
         return Ok(None);
@@ -689,11 +715,11 @@ pub(super) fn validate_command(path: &Path, kind: HarnessKind) -> Result<()> {
 }
 
 fn plan(definition: &Definition, paths: &Paths, owners: &[Manifest], mode: Mode) -> Result<Plan> {
-    let mut target = stored(definition, &paths.program);
-    let mut preserved_defaults = BTreeMap::new();
+    let target = stored(definition, &paths.program);
     let removing = mode == Mode::Uninstall;
     let mut changes = Vec::new();
     let mut used_owners = BTreeSet::new();
+    let mut retired_claude_approvals = 0;
     let mut formats = BTreeMap::new();
     for entry in target
         .entries
@@ -774,32 +800,38 @@ fn plan(definition: &Definition, paths: &Paths, owners: &[Manifest], mode: Mode)
                     old.file == entry.file
                         && old.keys == entry.keys
                         && old.array == entry.array
-                        && old.default == entry.default,
+                        && old.legacy_default == entry.legacy_default,
                     "unsupported native setting ownership migration"
                 );
                 candidates.push(old);
             }
-            if entry.default {
-                let last = old.last().map(|(entry, owner)| (*entry, *owner));
-                let slot = default_slot(&document, entry)?;
-                match (last, slot) {
-                    (None, DefaultSlot::Empty) if !removing && new.is_some() => {
-                        document.array_change(&entry.keys, None, Some(&entry.value))?;
-                    }
-                    (Some((owned, owner)), DefaultSlot::Matching(index))
-                        if !owned.preserved && owned.value == entry.value =>
+            if entry.legacy_default {
+                ensure!(
+                    definition.kind == HarnessKind::Claude
+                        && new.is_none()
+                        && entry.format == Format::Json
+                        && entry.array
+                        && entry.keys == ["permissions", "allow"]
+                        && entry.value.as_str().is_some_and(|rule| {
+                            rule.starts_with("mcp__bkpr__")
+                                && entry.marker.as_deref() == Some(rule)
+                                && entry.id.strip_prefix("approval-") == Some(rule)
+                                && candidates
+                                    .iter()
+                                    .all(|entry| entry.value.as_str() == Some(rule))
+                        }),
+                    "unsupported legacy Claude approval record"
+                );
+                // The last journal generation may mark a formerly owned rule
+                // as user-owned. Keep that decision through another interruption.
+                if let Some((latest, owner)) = old.last() {
+                    used_owners.insert(*owner);
+                    if !latest.legacy_preserved
+                        && let Some(index) = legacy_claude_rule(&document, entry)?
                     {
-                        used_owners.insert(owner);
-                        if removing || new.is_none() {
-                            document.array_change(&entry.keys, Some(index), None)?;
-                        }
+                        document.array_change(&entry.keys, Some(index), None)?;
+                        retired_claude_approvals += 1;
                     }
-                    _ if !removing => {
-                        let mut preserved = entry.clone();
-                        preserved.preserved = true;
-                        preserved_defaults.insert(preserved.id.clone(), preserved);
-                    }
-                    _ => {}
                 }
                 continue;
             }
@@ -946,12 +978,6 @@ fn plan(definition: &Definition, paths: &Paths, owners: &[Manifest], mode: Mode)
             });
         }
     }
-    for entry in &mut target.entries {
-        if let Some(preserved) = preserved_defaults.remove(&entry.id) {
-            *entry = preserved;
-        }
-    }
-    target.entries.extend(preserved_defaults.into_values());
     let mut journal_owners: Vec<_> = used_owners
         .into_iter()
         .map(|index| owners[index].clone())
@@ -969,6 +995,7 @@ fn plan(definition: &Definition, paths: &Paths, owners: &[Manifest], mode: Mode)
         journal: Journal {
             owners: journal_owners,
         },
+        retired_claude_approvals,
     })
 }
 
@@ -1242,6 +1269,12 @@ pub(super) fn run(arguments: Vec<OsString>) -> Result<i32> {
         publish_bundle(&definition)?;
     }
     commit(&plan, &manifest_path, mode == Mode::Uninstall)?;
+    if plan.retired_claude_approvals != 0 {
+        report.notes.push(format!(
+            "Removed {} legacy Claude allow rule(s) identified as Bkpr-owned.",
+            plan.retired_claude_approvals
+        ));
+    }
     match gc::collect(&paths, kind, mode == Mode::Uninstall) {
         Ok(notes) => report.notes.extend(notes),
         Err(_) => report.notes.push("Native commit succeeded; obsolete-bundle cleanup could not be completed safely. Existing files were retained.".into()),
@@ -1252,7 +1285,7 @@ pub(super) fn run(arguments: Vec<OsString>) -> Result<i32> {
         "configured"
     }
     .into();
-    report.notes.push("Native configuration is durable; already running harnesses were not restarted. No approval or trust decision was granted.".into());
+    report.notes.push("Native configuration changes are durable; already running harnesses were not restarted. No tool approval or workspace trust was granted.".into());
     print_report(&report, matches.get_flag("json"))?;
     Ok(0)
 }
@@ -1438,7 +1471,7 @@ mod tests;
 
 fn check_unowned(definition: &Definition) -> Result<()> {
     let mut documents = BTreeMap::new();
-    for entry in definition.entries.iter().filter(|entry| !entry.default) {
+    for entry in &definition.entries {
         if !documents.contains_key(&entry.file) {
             let bytes = types::read_native(&entry.file)?;
             documents.insert(

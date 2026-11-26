@@ -166,12 +166,12 @@ pub(super) struct Entry {
     pub array: bool,
     /// Conservative marker for detecting edited or unknown owned-looking array members.
     pub marker: Option<String>,
-    /// Install this optional preference only if the native slot is unclaimed.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub default: bool,
-    /// The user supplied, edited, or removed the default; never claim it again.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub preserved: bool,
+    /// Schema-1 recovery metadata for the retired Claude allow-list installer.
+    #[serde(default, rename = "default", skip_serializing_if = "is_false")]
+    pub legacy_default: bool,
+    /// Schema-1 records distinguish foreign or relinquished Claude rules.
+    #[serde(default, rename = "preserved", skip_serializing_if = "is_false")]
+    pub legacy_preserved: bool,
 }
 impl Entry {
     /// Describe a single owned object or table slot.
@@ -184,8 +184,8 @@ impl Entry {
             value,
             array: false,
             marker: None,
-            default: false,
-            preserved: false,
+            legacy_default: false,
+            legacy_preserved: false,
         }
     }
     /// Describe one owned member without replacing the surrounding native array.
@@ -205,14 +205,9 @@ impl Entry {
             value,
             array: true,
             marker: Some(marker),
-            default: false,
-            preserved: false,
+            legacy_default: false,
+            legacy_preserved: false,
         }
-    }
-    /// Mark an exact native preference as an optional installer default.
-    pub fn with_default(mut self) -> Self {
-        self.default = true;
-        self
     }
 }
 

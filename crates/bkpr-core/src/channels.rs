@@ -267,6 +267,24 @@ impl ChannelEngine {
         writer.run(workspace_open, work)
     }
 
+    /// Defer only admission backpressure. Once work starts, its errors retain their meaning.
+    pub(crate) fn with_wake_claim_store<T>(
+        &self,
+        deadline: Instant,
+        cancelled: &impl Fn() -> bool,
+        workspace_open: &impl Fn(&str) -> bool,
+        work: impl FnOnce(&mut store::Store) -> Result<T>,
+    ) -> Result<Option<T>> {
+        let Some(_permit) = Permit::try_acquire(&self.requests, MAX_REQUESTS) else {
+            return Ok(None);
+        };
+        match self.acquire_store(deadline.min(Instant::now() + STORE_WAIT), cancelled) {
+            Ok(mut writer) => writer.run(workspace_open, work).map(Some),
+            Err(StoreAdmission::Busy) => Ok(None),
+            Err(error) => Err(error.into_error()),
+        }
+    }
+
     /// Wake waiters to recheck authority after workspace, attachment or session invalidation.
     /// This never opens storage or acquires the channel writer.
     pub fn invalidate(&self) {
@@ -477,15 +495,17 @@ struct Permit<'a>(&'a AtomicUsize);
 
 impl<'a> Permit<'a> {
     fn acquire(active: &'a AtomicUsize, limit: usize) -> Result<Self> {
-        ensure!(
-            active
-                .fetch_update(Ordering::Acquire, Ordering::Relaxed, |active| {
-                    (active < limit).then_some(active + 1)
-                })
-                .is_ok(),
-            "channel request capacity exceeded"
-        );
-        Ok(Self(active))
+        Self::try_acquire(active, limit)
+            .ok_or_else(|| anyhow::anyhow!("channel request capacity exceeded"))
+    }
+
+    fn try_acquire(active: &'a AtomicUsize, limit: usize) -> Option<Self> {
+        active
+            .fetch_update(Ordering::Acquire, Ordering::Relaxed, |active| {
+                (active < limit).then_some(active + 1)
+            })
+            .ok()
+            .map(|_| Self(active))
     }
 }
 

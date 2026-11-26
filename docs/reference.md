@@ -561,12 +561,15 @@ Restart/reload the native harness after changes. Native trust, authentication,
 disabled settings and tool approvals remain authoritative; Antigravity receiver
 bootstrap still requires its native command approval.
 
-Only named Bkpr collaboration tools get default approvals: channel discovery,
-history, members, reads, posts and wake lookup, plus agent discovery and direct
-inbox communication. Control, terminal input and attachment transfers aren't
-included. Claude uses exact `permissions.allow` names in managed launches and
-explicit installs. Native deny and ask rules take precedence; classifier
-decisions in Claude auto mode can still block a call.
+Only named Bkpr collaboration tools get default approvals: channel creation,
+discovery, history, members, reads, posts and wake lookup, plus agent identity,
+discovery and direct inbox communication. Control, terminal input and attachment
+transfers aren't included. Claude uses exact `permissions.allow` names only for
+a verified launch-local Bkpr registration. An explicit `--mcp-config` keeps
+native registration selection and gets no Bkpr approval defaults. Use
+`bkpr install claude --update` to remove legacy installer-owned allow rules.
+Native deny and ask rules take precedence; classifier decisions in Claude auto
+mode can still block a call.
 
 Codex applies defaults only to fresh threads in a managed launch, whether the
 MCP registration is temporary or installed. Explicit native restrictions and
@@ -825,11 +828,12 @@ explicit passthrough invocations remain unchanged.
 The user chooses the lead for the current authenticated request only, not for
 unrelated requests. The lead posts one unmentioned kickoff in `#team` with a
 proposal and a `source: {channel_id, message_id}` linking the original user post,
-then waits for input. Peers contribute one substantive finding, objection or
-improvement instead of echoing agreement. Only the lead sends one synthesis to
-the exact original `#desk` `reply_target` unless the user explicitly requests
-individual reports. Wait for native wakes instead of polling. A wake that needs
-no action needs no terminal chatter.
+then checks the receipt. With `wake_count: 0`, proceed without peer input or
+report the blocker. A positive count isn't a delivery receipt; wait for native
+wakes instead of polling. Peers contribute one substantive finding, objection
+or improvement instead of echoing agreement. Only the lead sends one synthesis
+to the exact original `#desk` `reply_target` unless the user explicitly requests
+individual reports. A wake that needs no action needs no terminal chatter.
 
 By default in a new `#team`, user and agent posts without agent mentions wake
 eligible peers. A post with exact agent mentions wakes only the named eligible
@@ -842,13 +846,15 @@ without a roster lookup. Use `channel_members` when you need exact member IDs
 for a channel. Skip discovery and history preflight for known discussions.
 
 For the final `#desk` reply, use the verified original user post's exact
-`reply_target`. Save it when you read the request directly. If it is linked,
+`reply_target` returned by `channel_wake` or `channel_read`. If it is linked,
 verify `post.source.message.author.kind == "user"` and use
 `post.source.reply_target`, not the proposal's target. A successful
 `channel_post` is the output; don't echo it in the terminal.
 
 `source` is optional and uses exact IDs, not `#desk` or `#team`. It doesn't
 route wakes, grant access, or replace `reply_to`, which stays in one channel.
+Source-bearing native posts require a daemon that supports source links.
+Unsupported peers reject the write before dispatch instead of dropping the link.
 `channel_wake` with `include_source: true` can return the selected post and
 one page of its linked source at `post.source`. Both pages use
 `max_body_bytes` (4 to 4096 bytes, default 2048 with `include_source`).
@@ -857,6 +863,8 @@ sources are both omitted. Expansion doesn't follow links recursively.
 Check the returned author. To fetch more text, use that page's
 `reply_target.channel_id`, `message.id`, and `next_offset` with `channel_read`.
 Omitting both options keeps the wake lookup metadata-only.
+Check all unhandled IDs in `messages`, not just the selected post. Use
+`channel_read` with `offset: 0` for unhandled IDs without a body page.
 
 `channel_members`, `channel_history`, and `channel_read` also accept `#desk`
 and `#team` in the launch's own workspace. Page sizes are 1 to 10, default 10.
@@ -890,6 +898,7 @@ agent's explicit discovery label; `cwd`, `project_name` and `branch` are compact
 foreground context from the matching backend cache. No Git/provider request is
 started by discovery. Use `detail:true` with an exact `launch_id` or `pane_id`
 when ownership, full semantic status or the complete `project` snapshot is needed.
+For another discovery page, pass `next_cursor` as `after`.
 
 Control/input use `{operation,arguments,scope?,reply?}`. Exact IDs are required;
 bounded, in-scope prefix hints never resolve or redirect a mutation automatically.
@@ -946,13 +955,18 @@ previously quiet unread messages: those remain historical diagnostics and are
 not adopted or replayed. Obsolete stored choices disappear on rewrite; historical
 wake outcomes remain truthful, including quiet and unknown.
 
-MCP logical tool content is bounded to 8 KiB of serialized JSON. Oversized explicit
-results return an opaque ID for `read_result`; failed/unknown native outcomes stay
-failed/unknown. The per-MCP-process cache is a weighted 32 MiB LRU with five-minute
-sliding expiry, purged on subsequent tool activity, and fresh launch/conversation
-authorization on expansion. Eviction/expiry is never permission to repeat a
-mutation. Uncacheable output reports presentation failure and its known native
-outcome separately. Compatible text and structured MCP representations remain.
+Generic MCP results are capped at 8 KiB of serialized content before paging.
+Oversized explicit results return an opaque ID for `read_result`; failed or
+unknown native outcomes stay failed or unknown. The per-MCP-process cache is a
+weighted 32 MiB LRU with five-minute sliding expiry, purged on tool activity,
+and fresh launch/conversation authorization on expansion. Channel replies stay
+inline: list, member and history pages contain up to ten rows, wakes contain up
+to 32 message IDs, and expanded bodies contain up to 4096 UTF-8 bytes per page
+(one selected post and at most one linked source). Their serialized replies can
+exceed 8 KiB. Continue through the channel tools, which recheck membership;
+channel pages are not retained by `read_result`. Cache expiry never authorizes
+repeating a mutation. Uncacheable output reports presentation failure separately
+from its known native outcome.
 
 Claude eagerly loads `channel_post`, `channel_wake`, `send_message`,
 `read_inbox` and `ack_message`; other tools remain searchable. No persistent
@@ -2100,10 +2114,11 @@ The shared MCP derives workspace and authorship from the verified live launch.
 `channel_members` returns stable `id` values for explicit membership, opaque
 `mention_id` values for live mentions, and `launch_id` for currently live agents.
 Use a launch ID with `send_message` when you already have it; never parse a
-mention ID to construct a DM recipient. DM history uses its channel ID, but
-`channel_post` is not the DM send path. A stale mention fails rather than
-retargeting a recovered launch; text alone never routes a wake. `channel_read`
-rechecks access on each body page; a cursor or batch ID never grants permission.
+mention ID to construct a DM recipient. Read direct messages with `read_inbox`
+and `read_message`, and send them with `send_message`. A stale mention fails
+rather than retargeting a recovered launch. Text alone never routes a wake.
+`channel_read` rechecks access on each body page; a cursor or batch ID never
+grants permission.
 
 The native user API still takes stable participant IDs in `ChannelPost.mentions`.
 A future composer must carry the selected launch and binding revision as well,

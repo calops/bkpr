@@ -22,36 +22,11 @@ struct ChannelWakeLookup<'a> {
 #[derive(Serialize)]
 struct WakePost<'a> {
     #[serde(flatten)]
-    page: WakePage<'a>,
+    page: &'a MessagePage<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     author_mention_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    source: Option<WakePage<'a>>,
-}
-
-#[derive(Serialize)]
-struct WakePage<'a> {
-    #[serde(flatten)]
-    page: &'a MessagePage<'a>,
-    reply_target: ReplyTarget<'a>,
-}
-
-#[derive(Serialize)]
-struct ReplyTarget<'a> {
-    channel_id: &'a ChannelId,
-    reply_to: &'a MessageId,
-}
-
-impl<'a> WakePage<'a> {
-    fn new(page: &'a MessagePage<'a>, channel_id: &'a ChannelId, reply_to: &'a MessageId) -> Self {
-        Self {
-            page,
-            reply_target: ReplyTarget {
-                channel_id,
-                reply_to,
-            },
-        }
-    }
+    source: Option<MessagePage<'a>>,
 }
 
 #[derive(Debug)]
@@ -103,7 +78,7 @@ impl Store {
         let count = |connection: &rusqlite::Connection| -> rusqlite::Result<usize> {
             connection.query_row(
                 "SELECT (SELECT count(*) FROM notification_work WHERE pending=1)
-                   + (SELECT COALESCE(sum(pending_count),0) FROM channel_batches WHERE outcome IS NULL)",
+                   + (SELECT COALESCE(sum(pending_count),0) FROM channel_batches WHERE outcome IS NULL AND revoked=0)",
                 [],
                 |row| row.get(0),
             )
@@ -151,23 +126,28 @@ impl Store {
         Ok(())
     }
 
+    /// Claims the oldest pending channel, superseding only earlier unrevoked work.
     pub(crate) fn claim_wakes(
         &mut self,
         claim: &ChannelClaim<'_>,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+        recheck: impl FnOnce() -> Result<()>,
     ) -> Result<Option<ChannelWake>> {
         let ChannelRecipient {
             launch,
             binding,
             participant,
         } = claim.recipient;
-        let channel = self.connection.query_row(
-            "SELECT w.channel_id FROM notification_work w JOIN posts p ON p.id=w.message_id
-               WHERE w.pending=1 AND w.launch_id=?1 AND w.binding_revision=?2 AND w.participant_id=?3
-               ORDER BY p.rowid LIMIT 1",
-            params![launch, binding, participant],
-            |row| Ok(ChannelId(row.get(0)?)),
-        ).optional()?;
+        let channel = self
+            .connection
+            .query_row(
+                "SELECT channel_id FROM notification_work
+               WHERE pending=1 AND launch_id=?1 AND binding_revision=?2 AND participant_id=?3
+               ORDER BY enqueue_ordinal LIMIT 1",
+                params![launch, binding, participant],
+                |row| Ok(ChannelId(row.get(0)?)),
+            )
+            .optional()?;
         let Some(channel_id) = channel else {
             return Ok(None);
         };
@@ -175,9 +155,9 @@ impl Store {
         let tx = self.connection.transaction()?;
         let items = {
             let mut statement = tx.prepare(
-                "SELECT w.message_id,p.sequence,w.addressed FROM notification_work w JOIN posts p ON p.id=w.message_id
-                   WHERE w.pending=1 AND w.launch_id=?1 AND w.binding_revision=?2 AND w.participant_id=?3 AND w.channel_id=?4
-                   ORDER BY p.sequence LIMIT ?5",
+                "SELECT message_id,channel_sequence,addressed FROM notification_work
+                   WHERE pending=1 AND launch_id=?1 AND binding_revision=?2 AND participant_id=?3 AND channel_id=?4
+                   ORDER BY channel_sequence LIMIT ?5",
             )?;
             statement
                 .query_map(
@@ -193,7 +173,7 @@ impl Store {
             .find(|item| item.addressed)
             .map(|item| item.id.as_ref());
         tx.execute(
-            "UPDATE channel_batches SET outcome='unknown' WHERE outcome IS NULL AND launch_id=?1",
+            "UPDATE channel_batches SET outcome='unknown' WHERE outcome IS NULL AND revoked=0 AND launch_id=?1",
             [launch],
         )?;
         tx.execute(
@@ -213,6 +193,7 @@ impl Store {
                 );
             }
         }
+        recheck()?;
         tx.commit()?;
         Ok(Some(ChannelWake {
             batch_id: claim.batch_id.to_owned(),
@@ -222,6 +203,7 @@ impl Store {
         }))
     }
 
+    /// Checks the exact unresolved batch, its deadline, and current recipient channel access.
     pub(crate) fn channel_wake_current(
         &self,
         claim: &ChannelClaim<'_>,
@@ -231,7 +213,7 @@ impl Store {
         let recipient = claim.recipient;
         let id = self.connection.query_row(
             "SELECT channel_id FROM channel_batches WHERE id=?1 AND launch_id=?2 AND binding_revision=?3
-              AND participant_id=?4 AND receiver_id=?5 AND generation=?6 AND outcome IS NULL AND deadline>?7",
+              AND participant_id=?4 AND receiver_id=?5 AND generation=?6 AND outcome IS NULL AND revoked=0 AND deadline>?7",
             params![claim.batch_id, recipient.launch, recipient.binding, recipient.participant,
                 claim.receiver_id, claim.generation, timestamp],
             |row| Ok(ChannelId(row.get(0)?)),
@@ -246,24 +228,39 @@ impl Store {
         }
     }
 
+    /// Records one exact native confirmation before its deadline, independently of lookup revocation.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Exact receiver and batch settlement fence"
+    )]
     pub(crate) fn settle_channel_wake(
-        &self,
+        &mut self,
         launch: &str,
         receiver: &str,
         batch: &str,
         generation: u64,
         outcome: &str,
         reason: Option<&str>,
+        recheck: impl FnOnce() -> Result<()>,
     ) -> Result<bool> {
-        Ok(self.connection.query_row(
-            "UPDATE channel_batches SET
-                outcome=CASE WHEN deadline <= unixepoch('subsec') * 1000 THEN 'unknown' ELSE ?5 END,
-                reason=CASE WHEN deadline <= unixepoch('subsec') * 1000 THEN 'native confirmation deadline elapsed' ELSE ?6 END
-              WHERE id=?1 AND launch_id=?2 AND receiver_id=?3 AND generation=?4 AND outcome IS NULL
-              RETURNING deadline > unixepoch('subsec') * 1000",
-            params![batch, launch, receiver, generation, outcome, reason],
-            |row| row.get(0),
-        ).optional()?.unwrap_or(false))
+        let tx = self.connection.transaction()?;
+        let recorded = tx
+            .query_row(
+                "UPDATE channel_batches SET
+                    outcome=CASE WHEN deadline <= unixepoch('subsec') * 1000 THEN 'unknown' ELSE ?5 END,
+                    reason=CASE WHEN deadline <= unixepoch('subsec') * 1000 THEN 'native confirmation deadline elapsed' ELSE ?6 END
+                  WHERE id=?1 AND launch_id=?2 AND receiver_id=?3 AND generation=?4 AND outcome IS NULL
+                  RETURNING deadline > unixepoch('subsec') * 1000",
+                params![batch, launch, receiver, generation, outcome, reason],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(recorded) = recorded else {
+            return Ok(false);
+        };
+        recheck()?;
+        tx.commit()?;
+        Ok(recorded)
     }
 
     /// Returns the recipient's retained batch and, when requested, bounded authorized body pages.
@@ -286,7 +283,7 @@ impl Store {
         };
         let (channel_id, pending_count, addressed_message_id) = self.connection.query_row(
             "SELECT channel_id,pending_count,addressed_message_id FROM channel_batches
-               WHERE id=?1 AND launch_id=?2 AND binding_revision=?3 AND participant_id=?4 AND outcome IS NOT 'revoked'",
+               WHERE id=?1 AND launch_id=?2 AND binding_revision=?3 AND participant_id=?4 AND revoked=0",
             params![batch_id, recipient.launch, recipient.binding, recipient.participant],
             |row| Ok((ChannelId(row.get(0)?), row.get(1)?, row.get::<_, Option<String>>(2)?.map(MessageId))),
         ).optional()?.context(ChannelAccessLost)?;
@@ -325,12 +322,12 @@ impl Store {
                 } else {
                     None
                 };
-                let project = |source: Option<WakePage<'_>>| {
+                let project = |source: Option<MessagePage<'_>>| {
                     wake_reply(
                         &wake,
                         &messages,
                         Some(WakePost {
-                            page: WakePage::new(&page, &wake.channel_id, id),
+                            page: &page,
                             author_mention_id: author_mention_id.as_deref(),
                             source,
                         }),
@@ -351,7 +348,7 @@ impl Store {
         link: &ChannelSource,
         maximum: usize,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
-        project: impl Fn(Option<WakePage<'_>>) -> Result<serde_json::Value>,
+        project: impl Fn(Option<MessagePage<'_>>) -> Result<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         match self.access(&link.channel_id, admit) {
             Ok(_) => (),
@@ -366,11 +363,7 @@ impl Store {
             maximum,
             |mut page| {
                 page.message.source = None;
-                project(Some(WakePage::new(
-                    &page,
-                    &link.channel_id,
-                    &link.message_id,
-                )))
+                project(Some(page))
             },
         )? {
             Ok(reply)
