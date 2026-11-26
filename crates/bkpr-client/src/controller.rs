@@ -1531,6 +1531,7 @@ pub(crate) fn theme_tree_chrome(
         active,
     } = context;
     let ChromeContext {
+        rects,
         pane_graphics,
         guide_rows,
         ..
@@ -2448,7 +2449,7 @@ mod tests {
                 context(),
                 &ProjectPalette::default(),
                 &[],
-                &mut Vec::new(),
+                (&mut Vec::new(), &mut GuideProjection::default()),
             );
         };
         let corner = usize::from(outer.x);
