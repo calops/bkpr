@@ -305,7 +305,10 @@ fn coordinator_alias_fences_tenure_without_changing_named_mentions_or_retries() 
         else {
             panic!("expected exactly one addressed wake: {response:?}");
         };
-        assert_eq!(message.mentions, [expected.participant_id.clone()]);
+        assert_eq!(
+            message.mentions,
+            std::slice::from_ref(&expected.participant_id)
+        );
         response
     };
     let restricted = alias(&private, "cannot access @coordinator", &target, &tenure);
