@@ -1178,11 +1178,11 @@ Focused overlays faint the underlying text without changing canonical pane
 styles or images. Passive cards and the key guide never take keyboard focus.
 
 Hovering or keyboard-selecting sidebar items opens passive, scrollable metadata.
-Pointer motion selects the hovered item, with continuous handoff into its popup;
-keyboard navigation takes ownership again on the next navigation key. Structured
-rows preserve status, repository/worktree details, semantic colors and stale/error
-labels. Workspace summaries group linked worktrees without repeating the project
-name. These popups use already-held facts, never hidden view attachments or
+The popup stays open when you click its item and follows the pointer into the
+popup itself. Keyboard navigation takes ownership again on the next navigation
+key. Rows preserve status, repository and worktree details, semantic colors,
+and stale or error labels. Workspace summaries group linked worktrees without
+repeating the project name. These popups use already-held facts, never hidden view attachments or
 provider/filesystem work on the render path. Contradictory foreground identities
 hide retired harness facts. The popup's first content row aligns with its source
 item. Confirmed RGB clients use main's linear-light lifted material consistently

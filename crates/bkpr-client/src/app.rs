@@ -934,8 +934,6 @@ impl App {
         {
             let mut tree = self.tree.lock().unwrap();
             tree.active = false;
-            tree.hover(None);
-            tree.pointer_row = None;
             tree.leave_session_roots(self.tree_owner());
             tree.follow_active(self.tree_owner());
         }
