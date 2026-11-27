@@ -18,6 +18,7 @@
 * **channels:** color exact inline agent mentions in newly authored posts and in the picker using the participant's transcript color.
 * **roles:** let managed agents request the workspace Coordinator role, with exact user approval, private tenure threads and live delegation checks ([#109](https://github.com/calops/bkpr/issues/109))
 * **channels:** add an exact live agent to an explicit channel without overwriting other members ([#109](https://github.com/calops/bkpr/issues/109))
+* **tui:** approve Coordinator requests, grant or clear the role from the channel composer, and browse live channel members ([#110](https://github.com/calops/bkpr/issues/110)).
 
 ### Bug Fixes
 

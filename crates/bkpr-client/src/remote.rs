@@ -467,6 +467,10 @@ impl RemoteSession {
         }
         result
     }
+
+    pub(crate) fn take_role_events(&mut self) -> crate::transport::client_lifetime::RoleInvalidation {
+        self.client.take_role_events()
+    }
     /// Close this attachment's authority/SSH without joining or detaching any
     /// other native client. No daemon or application process is terminated.
     pub fn cancel(&mut self) {

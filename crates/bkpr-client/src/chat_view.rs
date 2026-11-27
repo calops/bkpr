@@ -1,4 +1,5 @@
 use super::{Active, Anchor, Chat, Draft, Send, chat_images};
+use super::super::roles_ui;
 use bkpr_protocol::{
     ColorSource, Cursor, CursorShape, Frame, SelectionSpan, Size, Style, channels::*,
 };
@@ -55,6 +56,7 @@ impl Entry {
         usize::from(meta.intent != PostIntent::Note)
             + usize::from(meta.reply_to.is_some())
             + usize::from(!meta.mentions.is_empty())
+            + usize::from(meta.role.is_some())
     }
 
     fn len(&self, compact: bool, graphics: bool) -> usize {
@@ -163,11 +165,17 @@ fn is_channel_button(hit: Hit) -> bool {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum MemberGroup {
+    Coordinator,
     Agents,
     Users,
 }
 
 pub(super) fn member_group(entry: &ChannelRosterEntry) -> MemberGroup {
+    if let Some(attribution) = &entry.role {
+        return match attribution.role {
+            bkpr_protocol::roles::WorkspaceRole::Coordinator => MemberGroup::Coordinator,
+        };
+    }
     match entry.participant.kind {
         ParticipantKind::Agent => MemberGroup::Agents,
         ParticipantKind::User => MemberGroup::Users,
@@ -175,10 +183,11 @@ pub(super) fn member_group(entry: &ChannelRosterEntry) -> MemberGroup {
 }
 
 impl MemberGroup {
-    const ALL: [Self; 2] = [Self::Agents, Self::Users];
+    const ALL: [Self; 3] = [Self::Coordinator, Self::Agents, Self::Users];
 
     fn label(self) -> &'static str {
         match self {
+            Self::Coordinator => roles_ui::label(bkpr_protocol::roles::WorkspaceRole::Coordinator),
             Self::Agents => "Agents",
             Self::Users => "Users",
         }
@@ -1040,7 +1049,11 @@ impl Chat {
             && let Some(active) = &self.active
             && let Some(summary) = self.catalog.get(&active.id)
         {
-            paint_members(paint, theme, full, list_background, summary, active, offset);
+            let mut title = format!("Members · {}", channel_name(summary));
+            if self.roles_enabled == Some(false) {
+                title.push_str(" · Live updates unavailable");
+            }
+            paint_members(paint, theme, full, list_background, &title, active, offset);
             return;
         }
         let split = (!list_only && size.cols >= LIST_MIN_WIDTH)
@@ -1061,14 +1074,14 @@ impl Chat {
             .active
             .as_ref()
             .and_then(|active| self.catalog.get(&active.id));
-        let writing = !read_only && summary.is_some_and(|summary| !summary.direct);
+        let writing = !read_only && summary.is_some_and(Self::can_write);
         let can_create = !read_only && self.catalog_ready && self.catalog_error.is_none();
         if let Some(outer) = list {
             let body = paint.inlay(theme, outer, list_background, None);
             paint.target(outer, Hit::List);
             let reserved = 1 + u16::from(!self.ids.is_empty());
-            let has_settings = writing && body.height > reserved;
-            let has_members = summary.is_some_and(|summary| !summary.direct)
+            let has_settings = !read_only && summary.is_some_and(Self::can_manage) && body.height > reserved;
+            let has_members = summary.is_some_and(|channel| self.can_show_members(channel))
                 && body.height > reserved + u16::from(has_settings);
             let has_create = can_create
                 && body.height >= reserved + 2 + u16::from(has_settings) + u16::from(has_members);
@@ -1217,6 +1230,7 @@ impl Chat {
         let status = if let Some(send) = self.sends.get(&active.id) {
             let (role, label) = match send {
                 Send::Pending { .. } => (Role::Info, "Sending…"),
+                Send::SettingRole => (Role::Info, "Updating Coordinator…"),
                 Send::Unknown(_) => (
                     Role::Error,
                     "Send outcome unknown · Ctrl-r retries the same post",
@@ -1529,7 +1543,7 @@ fn paint_members(
     theme: &Theme,
     outer: Rect,
     background: ColorSource,
-    summary: &ChannelSummary,
+    title: &str,
     active: &Active,
     offset: &mut usize,
 ) {
@@ -1550,7 +1564,7 @@ fn paint_members(
     paint.card_line(
         theme,
         row(body.x, body.y, body.width - back),
-        &format!("Members · {}", channel_name(summary)),
+        title,
         Role::Title,
         false,
         background,
@@ -1857,6 +1871,13 @@ fn paint_history(
         let relative =
             |line: usize| (line >= upper && line < lower).then(|| area.y + (line - start) as u16);
         let mut line = at + usize::from(compact);
+        if let Some(attribution) = &meta.role {
+            if let Some(y) = relative(line) {
+                let label = format!("Posted as {}", roles_ui::label(attribution.role));
+                paint.line(theme, row(x, y, width), &label, Role::Muted, false);
+            }
+            line += 1;
+        }
         if meta.intent != PostIntent::Note {
             let (label, role) = if meta.intent == PostIntent::Question {
                 ("? Question", Role::Warning)
@@ -2041,12 +2062,14 @@ fn check_copy_size(bytes: usize, limit: usize) -> anyhow::Result<()> {
 }
 
 fn channel_name(summary: &ChannelSummary) -> String {
-    let name = safe_text(&summary.name);
-    if summary.direct || name.starts_with('#') {
-        name
-    } else {
-        format!("#{name}")
+    let mut name = safe_text(&summary.name);
+    if !summary.direct && !name.starts_with('#') {
+        name.insert(0, '#');
     }
+    if summary.role_thread.is_some_and(|thread| thread.archived) {
+        name.push_str(" (archived)");
+    }
+    name
 }
 
 fn sender_role(participant: &Participant) -> Role {

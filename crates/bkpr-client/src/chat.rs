@@ -2,6 +2,7 @@ use super::{chat_controls, chat_draft::Draft, chat_images, transport};
 use crate::keyguide::{self, Action, ChatAction, Context, HistoryAction, Navigation};
 use anyhow::{Result, bail};
 use bkpr_protocol::{KeyAction, KeyEvent, Operation, Payload, channels::*};
+use bkpr_protocol::roles::{RoleRequest, RoleResponse, WorkspaceRole};
 use bkpr_tui_framework::{Role, UiSurface, safe_text};
 use std::collections::{HashMap, VecDeque};
 
@@ -52,6 +53,7 @@ struct Active {
     roster_next: Option<Option<ParticipantId>>,
     roster_error: Option<String>,
     roster_ready: bool,
+    workspace_roster: bool,
 }
 
 impl Active {
@@ -66,10 +68,12 @@ impl Active {
             roster_next: None,
             roster_error: None,
             roster_ready: false,
+            workspace_roster: false,
         }
     }
 
-    fn refresh_roster(&mut self) {
+    fn refresh_roster(&mut self, workspace_roster: bool) {
+        self.workspace_roster = workspace_roster;
         self.roster.clear();
         self.roster_next = Some(None);
         self.roster_error = None;
@@ -88,6 +92,7 @@ enum Send {
         retry: bool,
     },
     Unknown(ChannelRequest),
+    SettingRole,
 }
 
 #[derive(PartialEq, Eq)]
@@ -102,6 +107,7 @@ pub(super) enum JobKind {
         through: u64,
     },
     Send(ChannelId),
+    RoleSet(ChannelId),
     EditorRead(u64),
     EditorWrite(u64),
     Image {
@@ -112,6 +118,7 @@ pub(super) enum JobKind {
 
 pub(super) enum Job {
     Request(ChannelRequest),
+    Role(RoleRequest),
     Image(ChannelId, AttachmentId),
 }
 
@@ -121,6 +128,7 @@ pub(super) enum Job {
 )]
 pub(super) enum Completion {
     Response(ChannelResponse),
+    Role(RoleResponse),
     Image(chat_images::Loaded),
     History {
         entries: Vec<view::Entry>,
@@ -149,6 +157,7 @@ impl Job {
                     response => Completion::Response(response),
                 })
             }
+            Self::Role(request) => super::roles_ui::request(endpoint, request).map(Completion::Role),
             Self::Image(channel, attachment) => {
                 chat_images::load(endpoint, channel, attachment).map(Completion::Image)
             }
@@ -176,6 +185,7 @@ pub(super) struct Chat {
     ids: Vec<ChannelId>,
     channel_chooser: bool,
     members_scroll: Option<usize>,
+    roles_enabled: Option<bool>,
     list_cursor: usize,
     drafts: HashMap<ChannelId, Draft>,
     sends: HashMap<ChannelId, Send>,
@@ -201,11 +211,11 @@ impl Chat {
     }
 
     pub(super) fn dialog_open(&self) -> bool {
-        self.editor.is_some() || self.channel_chooser || self.members_scroll.is_some()
+        self.editor.is_some() || self.channel_chooser
     }
 
     pub(super) fn is_attending(&self) -> bool {
-        self.visible() && !self.dialog_open()
+        self.visible() && !self.dialog_open() && self.members_scroll.is_none()
     }
 
     pub(super) fn channel(&self, workspace: &str, channel: &ChannelId) -> Option<&ChannelSummary> {
@@ -353,6 +363,7 @@ impl Chat {
             old.name != summary.name
                 || old.workspace_id != summary.workspace_id
                 || old.direct != summary.direct
+                || old.role_thread != summary.role_thread
         });
         let before = old.is_some_and(|entry| entry.unread_attention);
         let mut badge_changed = false;
@@ -520,7 +531,7 @@ impl Chat {
             let Some(active) = &mut self.active else {
                 return;
             };
-            active.refresh_roster();
+            active.refresh_roster(false);
             if let Some(draft) = self.drafts.get_mut(&active.id) {
                 draft.completion = None;
             }
@@ -529,6 +540,27 @@ impl Chat {
         self.members_scroll = open.then_some(0);
         self.paint.invalidate_hits();
         self.redraw();
+    }
+
+    pub(super) fn set_roles_enabled(&mut self, enabled: bool) {
+        if self.roles_enabled != Some(enabled) {
+            self.roles_enabled = Some(enabled);
+            self.invalidate_roster();
+        }
+    }
+
+    pub(super) fn invalidate_roster(&mut self) {
+        if let Some(active) = &mut self.active
+            && (self.members_scroll.is_some()
+                || self
+                    .drafts
+                    .get_mut(&active.id)
+                    .is_some_and(Draft::invalidate_completion))
+        {
+            active.refresh_roster(active.workspace_roster);
+            self.paint.invalidate_hits();
+            self.redraw();
+        }
     }
 
     fn scroll_members(&mut self, delta: isize) {
@@ -540,8 +572,20 @@ impl Chat {
         }
     }
 
+    fn can_show_members(&self, channel: &ChannelSummary) -> bool {
+        !channel.direct || self.roles_enabled == Some(true)
+    }
+
+    fn can_manage(channel: &ChannelSummary) -> bool {
+        !channel.direct && channel.role_thread.is_none()
+    }
+
+    fn can_write(channel: &ChannelSummary) -> bool {
+        channel.role_thread.map_or(!channel.direct, |thread| !thread.archived)
+    }
+
     fn writable(&self, read_only: bool) -> bool {
-        !read_only && self.summary().is_some_and(|channel| !channel.direct)
+        !read_only && self.summary().is_some_and(Self::can_write)
     }
 
     fn draft(&mut self) -> Option<&mut Draft> {
@@ -626,7 +670,7 @@ impl Chat {
         }
         match hit {
             Hit::Create if self.supports(ChatAction::Create, read_only) => self.start_editor(true),
-            Hit::Manage if self.writable(read_only) => self.start_editor(false),
+            Hit::Manage if self.supports(ChatAction::Manage, read_only) => self.start_editor(false),
             Hit::Members if self.supports(ChatAction::Members, read_only) => {
                 self.set_members(self.members_scroll.is_none());
             }
@@ -688,8 +732,8 @@ impl Chat {
             .and_then(|active| self.sends.get(&active.id));
         match action {
             ChatAction::Create => !read_only && self.catalog_ready && self.catalog_error.is_none(),
-            ChatAction::Manage => self.writable(read_only),
-            ChatAction::Members => self.summary().is_some_and(|summary| !summary.direct),
+            ChatAction::Manage => !read_only && self.summary().is_some_and(Self::can_manage),
+            ChatAction::Members => self.summary().is_some_and(|channel| self.can_show_members(channel)),
             ChatAction::MarkRead => !read_only && self.active.is_some(),
             ChatAction::Retry => self.writable(read_only) && matches!(send, Some(Send::Unknown(_))),
             ChatAction::Send | ChatAction::Newline | ChatAction::Edit(_) => {
@@ -869,7 +913,7 @@ impl Chat {
             self.redraw_composer();
         } else if mods & !1 == 0 && event.text.chars().any(|ch| !ch.is_control()) {
             if draft.insert(&event.text, event.action == KeyAction::Press) {
-                active.refresh_roster();
+                active.refresh_roster(draft.completing_role_target());
             }
             self.redraw_composer();
         }
@@ -883,13 +927,43 @@ impl Chat {
             Some(Send::Unknown(request)) if retry => request.clone(),
             Some(_) => return Effect::None,
             None if retry => return Effect::None,
-            None => match self.drafts.entry(id.clone()).or_default().post(id.clone()) {
-                Ok(request) => request,
-                Err(error) => {
-                    self.drafts.get_mut(&id).unwrap().error = Some(error.into());
-                    return Effect::None;
+            None => {
+                let draft = self.drafts.entry(id.clone()).or_default();
+                if let Some(target) = draft.role_target() {
+                    let target = match target {
+                        Ok(target) if self.roles_enabled == Some(true) => target.cloned(),
+                        Ok(_) => {
+                            draft.error = Some(if self.roles_enabled.is_none() {
+                                "Checking workspace role support; submit again when ready"
+                            } else {
+                                "Workspace roles unavailable on this session"
+                            }.into());
+                            return Effect::None;
+                        }
+                        Err(error) => {
+                            draft.error = Some(error.into());
+                            return Effect::None;
+                        }
+                    };
+                    let workspace_id = self.catalog[&id].workspace_id.clone();
+                    self.sends.insert(id.clone(), Send::SettingRole);
+                    return Effect::Submit(
+                        JobKind::RoleSet(id),
+                        Job::Role(RoleRequest::Set {
+                            workspace_id,
+                            role: WorkspaceRole::Coordinator,
+                            target,
+                        }),
+                    );
                 }
-            },
+                match draft.post(id.clone()) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        draft.error = Some(error.into());
+                        return Effect::None;
+                    }
+                }
+            }
         };
         self.sends.insert(
             id.clone(),
@@ -1103,7 +1177,7 @@ impl Chat {
                 JobKind::Roster(epoch),
                 Job::Request(ChannelRequest::UserRoster {
                     workspace_id: summary.workspace_id.clone(),
-                    channel_id: Some(channel.clone()),
+                    channel_id: (!active.workspace_roster).then(|| channel.clone()),
                     after,
                     limit: MAX_PAGE_LIMIT,
                 }),
@@ -1153,7 +1227,7 @@ impl Chat {
     pub(super) fn is_shutdown_write(&self, key: &str) -> bool {
         matches!(
             self.pending.get(key),
-            Some(JobKind::Send(_) | JobKind::EditorWrite(_) | JobKind::Mark { .. })
+            Some(JobKind::Send(_) | JobKind::RoleSet(_) | JobKind::EditorWrite(_) | JobKind::Mark { .. })
         )
     }
 
@@ -1188,6 +1262,9 @@ impl Chat {
                 }
             }
             return None;
+        }
+        if let JobKind::RoleSet(channel) = kind {
+            return self.complete_role_set(channel, result);
         }
         let result = match kind {
             JobKind::Image {
@@ -1361,6 +1438,44 @@ impl Chat {
         None
     }
 
+    fn complete_role_set(
+        &mut self,
+        channel: ChannelId,
+        result: Result<Completion>,
+    ) -> Option<(String, anyhow::Error)> {
+        if !matches!(self.sends.remove(&channel), Some(Send::SettingRole)) {
+            return None;
+        }
+        let error = match result {
+            Ok(Completion::Role(RoleResponse::Updated { grant })) => {
+                self.drafts.remove(&channel);
+                if self.active.as_ref().is_some_and(|active| active.id == channel) {
+                    let notice = grant.map_or_else(
+                        || "Coordinator cleared".into(),
+                        |grant| format!("Coordinator set to {}", safe_text(&grant.display_name)),
+                    );
+                    self.notice = Some((Role::Success, notice));
+                }
+                return None;
+            }
+            Err(error) => error,
+            _ => transport::mark_outcome_unknown(anyhow::anyhow!("unexpected role command receipt")),
+        };
+        if transport::outcome_unknown(&error) {
+            // Unlike chat posts, a role command has no idempotency key.
+            self.drafts.remove(&channel);
+            if self.active.as_ref().is_some_and(|active| active.id == channel) {
+                self.notice = Some((
+                    Role::Warning,
+                    "Role command outcome unknown · check Members".into(),
+                ));
+            }
+        } else if let Some(draft) = self.drafts.get_mut(&channel) {
+            draft.error = Some(format!("Role command rejected: {}", error_text(&error)));
+        }
+        Some(("Couldn't confirm the workspace role command.".into(), error))
+    }
+
     pub(super) fn transports(&mut self) -> Vec<bkpr_tui_framework::PreparedTransport> {
         std::mem::take(&mut self.transports)
     }
@@ -1437,11 +1552,13 @@ impl History {
 }
 
 fn channel_order(channel: &ChannelSummary) -> (u8, &str, &ChannelId) {
-    let order = match (channel.direct, channel.name.as_str()) {
-        (false, "#desk") => 0,
-        (false, "#team") => 1,
-        (false, _) => 2,
-        (true, _) => 3,
+    let order = match (channel.role_thread, channel.direct, channel.name.as_str()) {
+        (_, false, "#desk") => 0,
+        (_, false, "#team") => 1,
+        (Some(thread), _, _) if !thread.archived => 2,
+        (None, false, _) => 3,
+        (None, true, _) => 4,
+        (Some(_), _, _) => 5,
     };
     (order, channel.name.as_str(), &channel.id)
 }
@@ -1476,6 +1593,31 @@ mod tests {
         chat.replace_catalog(HashMap::from([(id.clone(), summary)]));
         chat.open("workspace".into());
         (chat, id)
+    }
+
+    #[test]
+    fn a_role_command_cannot_fall_back_to_a_post_or_retry_an_unknown_write() {
+        let (mut chat, id) = open_chat();
+        chat.drafts.entry(id.clone()).or_default().paste("/role coordinator none");
+        assert!(matches!(chat.send(false), Effect::None));
+        chat.set_roles_enabled(true);
+        let Effect::Submit(
+            kind,
+            Job::Role(RoleRequest::Set {
+                workspace_id,
+                role: WorkspaceRole::Coordinator,
+                target: None,
+            }),
+        ) = chat.send(false)
+        else {
+            panic!("the reserved command should be a role mutation");
+        };
+        assert_eq!(workspace_id, "workspace");
+        let key = chat.track(kind);
+        let error = transport::mark_outcome_unknown(anyhow::anyhow!("receipt lost"));
+        assert!(chat.complete(&key, Err(error), true).is_some());
+        assert!(matches!(chat.send(true), Effect::None));
+        assert!(matches!(chat.send(false), Effect::None));
     }
 
     fn posted(sequence: u64) -> MessageSummary {

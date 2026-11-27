@@ -32,6 +32,8 @@ pub enum Context {
     Menu,
     Details,
     ClipboardConsent,
+    /// A backend-assigned permission prompt for a workspace role.
+    RoleConsent,
     History,
     Search,
     Resize,
@@ -60,6 +62,8 @@ pub enum ModalContext {
     Menu,
     Details,
     ClipboardConsent,
+    /// The session user can decide the displayed role request.
+    RoleConsent,
 }
 
 /// Resolve overlapping frontend state before both dispatch and guide construction.
@@ -91,6 +95,7 @@ impl ContextState {
                 ModalContext::Menu => Context::Menu,
                 ModalContext::Details => Context::Details,
                 ModalContext::ClipboardConsent => Context::ClipboardConsent,
+                ModalContext::RoleConsent => Context::RoleConsent,
             };
         }
         if self.resizing {
@@ -202,6 +207,10 @@ pub enum Action {
     Cancel,
     AllowClipboard,
     DenyClipboard,
+    /// Approve the exact workspace role request shown in the modal.
+    ApproveRole,
+    /// Deny the exact workspace role request shown in the modal.
+    DenyRole,
     Edit(EditAction),
     Detach,
     StartSearch,
@@ -242,17 +251,19 @@ impl Action {
             Self::RefreshCi => "refresh checks",
             Self::LeaveSidebar => "return to app",
             Self::Navigate(Navigation::Previous)
-                if matches!(context, Context::Details | Context::RecoveryDetails) =>
+                if matches!(context, Context::Details | Context::RecoveryDetails | Context::ChatMembers) =>
             {
                 "scroll up"
             }
             Self::Navigate(Navigation::Next)
-                if matches!(context, Context::Details | Context::RecoveryDetails) =>
+                if matches!(context, Context::Details | Context::RecoveryDetails | Context::ChatMembers) =>
             {
                 "scroll down"
             }
             Self::Navigate(Navigation::Previous) => "select previous",
             Self::Navigate(Navigation::Next) => "select next",
+            Self::Navigate(Navigation::First) if context == Context::ChatMembers => "scroll to top",
+            Self::Navigate(Navigation::Last) if context == Context::ChatMembers => "scroll to bottom",
             Self::Navigate(Navigation::First) => "first item",
             Self::Navigate(Navigation::Last) => "last item",
             Self::Navigate(Navigation::PagePrevious) if context == Context::Finder => {
@@ -303,6 +314,8 @@ impl Action {
             },
             Self::AllowClipboard => "allow clipboard access",
             Self::DenyClipboard => "deny clipboard access",
+            Self::ApproveRole => "approve role",
+            Self::DenyRole => "deny role",
             Self::Edit(EditAction::Left) => "cursor left",
             Self::Edit(EditAction::Right) => "cursor right",
             Self::Edit(EditAction::WordLeft) => "previous word",
@@ -415,6 +428,7 @@ const CHAT_CHANNELS: u32 = 1 << 19;
 const CHAT_MENTION: u32 = 1 << 20;
 const CHAT_CONTROLS: u32 = 1 << 21;
 const CHAT_MEMBERS: u32 = 1 << 22;
+const ROLE_CONSENT: u32 = 1 << 23;
 const CHAT_COMPOSER: u32 = CHAT | CHAT_MENTION;
 const CHAT_VIEW: u32 = CHAT_COMPOSER | CHAT_CHANNELS;
 const ALT: u16 = 4;
@@ -466,6 +480,7 @@ impl Context {
             Self::Menu => MENU,
             Self::Details => DETAILS,
             Self::ClipboardConsent => CLIPBOARD_CONSENT,
+            Self::RoleConsent => ROLE_CONSENT,
             Self::Chat => CHAT,
             Self::ChatChannels => CHAT_CHANNELS,
             Self::ChatMention => CHAT_MENTION,
@@ -495,6 +510,7 @@ impl Context {
             Self::Menu => "Context menu",
             Self::Details => "Details",
             Self::ClipboardConsent => "Clipboard permission",
+            Self::RoleConsent => "Role permission",
             Self::Chat => "Channel",
             Self::ChatChannels => "Channels",
             Self::ChatMention => "Mention an agent",
@@ -1071,6 +1087,10 @@ static BINDINGS: &[Binding] = &[
     text(CLIPBOARD_CONSENT, "N", A::DenyClipboard, 0),
     text(CLIPBOARD_CONSENT, "y", A::AllowClipboard, 1),
     text(CLIPBOARD_CONSENT, "Y", A::AllowClipboard, 1),
+    text(ROLE_CONSENT, "n", A::DenyRole, 0),
+    text(ROLE_CONSENT, "N", A::DenyRole, 0),
+    text(ROLE_CONSENT, "y", A::ApproveRole, 1),
+    text(ROLE_CONSENT, "Y", A::ApproveRole, 1),
     physical(
         CREATE | EDIT | FINDER | SEARCH | THEME | RECOVERY,
         "Backspace",
