@@ -5311,6 +5311,7 @@ impl App {
                 }
                 if event_button == MouseButton::Left
                     && action == MouseAction::Press
+                    && !self.options.read_only
                     && self.chat.begin_divider_drag(point)
                 {
                     self.pointer_capture = Some(PointerCapture::Ui);

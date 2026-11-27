@@ -556,15 +556,19 @@ impl Chat {
     }
 
     pub(super) fn begin_divider_drag(&mut self, point: (u16, u16)) -> bool {
-        let rect = self.geometry();
-        self.divider_drag = match self.paint.hit(
-            point.0.saturating_sub(rect.x),
-            point.1.saturating_sub(rect.y),
-        ) {
-            Some(Hit::Divider(axis)) => Some(axis),
-            _ => None,
-        };
+        self.divider_drag = self.divider(point).map(|(_, axis)| axis);
         self.divider_drag.is_some()
+    }
+
+    pub(super) fn divider(
+        &self,
+        point: (u16, u16),
+    ) -> Option<(bkpr_tui_framework::Rect, bkpr_protocol::Axis)> {
+        if self.visible() {
+            self.paint.divider(point)
+        } else {
+            None
+        }
     }
 
     pub(super) fn update_divider_drag(&mut self, point: (u16, u16), release: bool) {

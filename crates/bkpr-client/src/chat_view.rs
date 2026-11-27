@@ -393,6 +393,22 @@ impl Paint {
             .map(|(_, hit)| *hit)
     }
 
+    pub(super) fn divider(&self, point: (u16, u16)) -> Option<(Rect, bkpr_protocol::Axis)> {
+        let x = point.0.checked_sub(self.outer.x)?;
+        let y = point.1.checked_sub(self.outer.y)?;
+        self.hits.iter().rev().find_map(|(rect, hit)| match hit {
+            Hit::Divider(axis) if rect.contains(x, y) => Some((
+                Rect {
+                    x: rect.x + self.outer.x,
+                    y: rect.y + self.outer.y,
+                    ..*rect
+                },
+                *axis,
+            )),
+            _ => None,
+        })
+    }
+
     pub(super) fn page_rows(&self) -> u16 {
         self.history.height.saturating_sub(1)
     }

@@ -70,6 +70,7 @@ pub(super) struct State {
     gesture: Option<Gesture>,
     flight: Option<Commit>,
     hover: Option<Hover>,
+    chat_hover: Option<(u16, u16)>,
     click: Option<DividerClick>,
 }
 impl State {
@@ -377,6 +378,7 @@ impl App {
 
     pub(super) fn clear_resize_hover(&mut self) {
         self.resizing.hover = None;
+        self.resizing.chat_hover = None;
     }
 
     pub(super) fn resize_click_pointer(&mut self, x: u16, y: u16, eligible: bool) {
@@ -393,17 +395,26 @@ impl App {
     pub(super) fn update_resize_hover(&mut self, size: Size, position: Option<(u16, u16)>) -> bool {
         let position = position.filter(|_| {
             !self.options.read_only
-                && !self.chat.visible()
                 && self.host_focused
                 && self.state.form.is_none()
                 && !self.picker_open()
-                && !self
-                    .consent
-                    .as_ref()
-                    .is_some_and(|consent| !consent.state.allowed && !consent.state.sent)
+                && !self.consent_prompt_open()
+                && !self.chat.editor_open()
+                && !self.diagnostic_active()
+                && self.image_viewer.is_none()
                 && self.resizing.gesture.is_none()
                 && self.resizing.flight.is_none()
         });
+        let previous = self
+            .resizing
+            .chat_hover
+            .take()
+            .and_then(|point| self.chat.divider(point));
+        if self.chat.visible() {
+            self.resizing.hover = None;
+            self.resizing.chat_hover = position;
+            return previous != position.and_then(|point| self.chat.divider(point));
+        }
         let area = self.screen_geometry(size).1;
         let context = position.and_then(|position| {
             let workspace = self.state.current(&self.registry)?;
@@ -451,6 +462,13 @@ impl App {
     pub(super) fn resize_feedback(&self, size: Size) -> Vec<Rect> {
         if self.options.read_only || !self.host_focused {
             return Vec::new();
+        }
+        if self.chat.visible() {
+            return self
+                .resizing
+                .chat_hover
+                .and_then(|point| self.chat.divider(point))
+                .map_or_else(Vec::new, |(rect, _)| vec![rect]);
         }
         let area = self.screen_geometry(size).1;
         let Some(workspace) = self.state.current(&self.registry) else {
@@ -722,6 +740,7 @@ mod tests {
                 layout: layout(600),
             }),
             hover: None,
+            chat_hover: None,
             click: None,
         }
     }
