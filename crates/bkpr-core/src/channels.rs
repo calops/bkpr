@@ -256,6 +256,7 @@ impl ChannelEngine {
                 fence_user_mentions: &|_, _| Ok(fence.lock().unwrap()),
             },
         )
+        .map(|(response, _)| response)
     }
 
     pub(crate) fn request_routed(
@@ -265,7 +266,7 @@ impl ChannelEngine {
         workspace_open: impl Fn(&str) -> bool,
         cancelled: impl Fn() -> bool,
         routes: ChannelRoutes<'_>,
-    ) -> Result<ChannelResponse> {
+    ) -> Result<(ChannelResponse, bool)> {
         request.validate()?;
         if let ChannelRequest::Subscribe {
             channel_id,
@@ -275,18 +276,20 @@ impl ChannelEngine {
         } = request
         {
             let _permit = Permit::acquire(&self.subscriptions, MAX_SUBSCRIBERS)?;
-            return self.subscribe(
-                Subscription {
-                    channel_id,
-                    after,
-                    limit,
-                    wait_ms,
-                },
-                admit,
-                workspace_open,
-                cancelled,
-                routes.workspace,
-            );
+            return self
+                .subscribe(
+                    Subscription {
+                        channel_id,
+                        after,
+                        limit,
+                        wait_ms,
+                    },
+                    admit,
+                    workspace_open,
+                    cancelled,
+                    routes.workspace,
+                )
+                .map(|response| (response, false));
         }
         let _permit = Permit::acquire(&self.requests, MAX_REQUESTS)?;
         let with_store = |deadline| {
@@ -328,7 +331,7 @@ impl ChannelEngine {
             {
                 wake.signal(&self.root);
             }
-            Ok(response)
+            Ok((response, changed))
         })
     }
 

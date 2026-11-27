@@ -2110,6 +2110,14 @@ sequence when catching up, and mark read independently. Saved explicit member
 IDs are separate from the current mention roster. Explicit membership restricts
 agent access, not the session user's access.
 
+Use `InviteUser` to add one current agent to an ordinary explicit channel. Pass
+the channel's exact ID and the exact binding from the owning workspace's
+`UserRoster`. A stale binding is rejected even if its participant was already
+saved. A current member returns the channel without another change. A new member
+produces a `Membership` change and invalidates the roster without replacing
+other members. Workspace-wide channels, direct threads and role tenure threads
+do not accept invites.
+
 Direct threads are read-only for the session user. Their agent participants
 post with the same channel tools as for ordinary channels.
 

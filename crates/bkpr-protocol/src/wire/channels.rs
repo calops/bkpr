@@ -146,6 +146,12 @@ pub(super) fn write_request(
             );
             G::create_channel_request_set_membership(b, offset)
         }
+        ChannelRequest::InviteUser { channel_id, target } => {
+            let channel = write_text(b, channel_id.as_ref(), budget)?;
+            let target = write_mention_binding(b, target, budget, depth)?;
+            let offset = g::ChannelRequestInviteUser::create(b, channel, target);
+            G::create_channel_request_invite_user(b, offset)
+        }
         ChannelRequest::Post { channel_id, post } => {
             let channel = write_text(b, channel_id.as_ref(), budget)?;
             let post = write_post(b, post, budget, depth)?;
@@ -300,6 +306,10 @@ pub(super) fn read_request(
             channel_id: ChannelId(read_id(v.channel_id()?, budget)?),
             membership: v.membership()?.into(),
             members: read_ids(v.members()?, MAX_MEMBERS, ParticipantId, budget)?,
+        },
+        R::ChannelRequestInviteUser(v) => ChannelRequest::InviteUser {
+            channel_id: ChannelId(read_id(v.channel_id()?, budget)?),
+            target: read_mention_binding(v.target()?, budget, depth)?,
         },
         R::ChannelRequestPost(v) => ChannelRequest::Post {
             channel_id: ChannelId(read_id(v.channel_id()?, budget)?),

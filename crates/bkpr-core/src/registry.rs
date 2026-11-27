@@ -1018,7 +1018,10 @@ impl Registry {
         let exact_mentions = caller
             .filter(|_| matches!(projection, ChannelProjection::Agent))
             .map(|launch| (launch.grant.launch_id.as_str(), launch.binding_generation));
-        let roster_changed = matches!(&request, ChannelRequest::SetMembership { .. });
+        let roster_mutation = matches!(
+            &request,
+            ChannelRequest::SetMembership { .. } | ChannelRequest::InviteUser { .. }
+        );
         if let Some(caller) = exact_mentions
             && matches!(request, ChannelRequest::ListMembers { .. })
         {
@@ -1044,35 +1047,31 @@ impl Registry {
                 .map(Payload::Control);
         }
 
-        let response = self
-            .inner
-            .channels
-            .request_routed(
-                request,
-                admit,
-                workspace_open,
-                cancelled,
-                crate::channels::ChannelRoutes {
-                    workspace: workspace.as_deref(),
-                    exact_mentions,
-                    publish: &|targets| self.inner.agents.publish_channel_work(targets),
-                    binding_live: &|launch, binding| self.channel_binding_live(launch, binding),
-                    direct_peer: &|participant| match caller {
-                        Some(launch) => self.channel_direct_peer(launch, participant, connected),
-                        None => Ok(None),
-                    },
-                    fence_user_mentions: &|workspace, bindings| {
-                        let guard = self.fence_user_mentions(workspace, bindings)?;
-                        ensure!(connected(), "channel request disconnected");
-                        Ok(guard)
-                    },
+        let (response, changed) = self.inner.channels.request_routed(
+            request,
+            admit,
+            workspace_open,
+            cancelled,
+            crate::channels::ChannelRoutes {
+                workspace: workspace.as_deref(),
+                exact_mentions,
+                publish: &|targets| self.inner.agents.publish_channel_work(targets),
+                binding_live: &|launch, binding| self.channel_binding_live(launch, binding),
+                direct_peer: &|participant| match caller {
+                    Some(launch) => self.channel_direct_peer(launch, participant, connected),
+                    None => Ok(None),
                 },
-            )
-            .map(Payload::Channels)?;
-        if roster_changed {
+                fence_user_mentions: &|workspace, bindings| {
+                    let guard = self.fence_user_mentions(workspace, bindings)?;
+                    ensure!(connected(), "channel request disconnected");
+                    Ok(guard)
+                },
+            },
+        )?;
+        if changed && roster_mutation {
             self.role_roster_changed();
         }
-        Ok(response)
+        Ok(Payload::Channels(response))
     }
 
     fn request_for_client(
