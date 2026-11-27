@@ -952,20 +952,16 @@ impl Editor {
         if self.painted_size.replace(size) != Some(size) {
             self.cancel_press();
         }
-        let status_len = self
-            .status_lines(size.cols, writable)
-            .map_or(0, |(lines, _)| {
-                u16::try_from(lines.len()).unwrap_or(u16::MAX)
-            });
+        let status = self.status_lines(size.cols, writable);
+        let status_len = status.as_ref().map_or(0, |(lines, _)| {
+            u16::try_from(lines.len()).unwrap_or(u16::MAX)
+        });
         let status_rows = status_len.min(size.rows / 2);
         let header = u16::from(size.rows.saturating_sub(status_rows) >= 2);
         let body = size.rows - header - status_rows;
-        self.nav.viewport(usize::from(body));
         let mut lines = Vec::with_capacity(2 * usize::from(size.rows));
         let mut spans = Vec::with_capacity(lines.capacity());
         let mut buttons = Vec::new();
-        let mut hits = std::mem::take(&mut self.painted_hits);
-        hits.clear();
         let mut cursor = None;
         let mut popup = None;
         let viewport = Rect {
@@ -985,6 +981,27 @@ impl Editor {
         if header > 0 {
             add((full_row(0), self.title.clone(), false), Role::Title);
         }
+        if status_rows > 0
+            && let Some((messages, role)) = status
+        {
+            for (index, line) in messages
+                .into_iter()
+                .take(usize::from(status_rows))
+                .enumerate()
+            {
+                add(
+                    (
+                        full_row(size.rows - status_rows + index as u16),
+                        line.into_owned(),
+                        false,
+                    ),
+                    role,
+                );
+            }
+        }
+        self.nav.viewport(usize::from(body));
+        let mut hits = std::mem::take(&mut self.painted_hits);
+        hits.clear();
         let create = self.is_create();
         let total = self.nav.rows.len();
         let mut start = self.nav.scroll;
@@ -1143,24 +1160,6 @@ impl Editor {
             }
             if hittable && rect.width != 0 {
                 hits.push(hit);
-            }
-        }
-        if status_rows > 0
-            && let Some((messages, role)) = self.status_lines(size.cols, writable)
-        {
-            for (index, line) in messages
-                .into_iter()
-                .take(usize::from(status_rows))
-                .enumerate()
-            {
-                add(
-                    (
-                        full_row(size.rows - status_rows + index as u16),
-                        line.into_owned(),
-                        false,
-                    ),
-                    role,
-                );
             }
         }
         let choice_rect = popup.map(|(field, menu, value, layout, active)| {

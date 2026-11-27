@@ -76,7 +76,10 @@ struct Editor {
 }
 
 enum Send {
-    Pending(ChannelRequest),
+    Pending {
+        request: ChannelRequest,
+        retry: bool,
+    },
     Unknown(ChannelRequest),
 }
 
@@ -304,14 +307,43 @@ impl Chat {
         self.redraw();
     }
 
-    pub(super) fn upsert(&mut self, mut summary: ChannelSummary) -> bool {
+    pub(super) fn upsert(&mut self, summary: ChannelSummary) -> bool {
+        let (badge_changed, rebuild, projected) = self.update_catalog_entry(summary);
+        self.refresh_catalog_projection(rebuild, projected);
+        badge_changed
+    }
+
+    /// Apply ordered catalog changes and refresh the channel projection once per page.
+    pub(super) fn apply_catalog_changes(&mut self, changes: Vec<ChannelCatalogChange>) -> bool {
+        let (mut badge_changed, mut rebuild, mut projected) = (false, false, false);
+        for change in changes {
+            match change {
+                ChannelCatalogChange::Upsert { channel } => {
+                    let (badge, list, visible) = self.update_catalog_entry(channel);
+                    badge_changed |= badge;
+                    rebuild |= list;
+                    projected |= visible;
+                }
+                ChannelCatalogChange::WorkspaceClosed { workspace_id } => {
+                    badge_changed |= self.workspace_closed(&workspace_id);
+                }
+            }
+        }
+        self.refresh_catalog_projection(rebuild, projected);
+        badge_changed
+    }
+
+    fn update_catalog_entry(&mut self, mut summary: ChannelSummary) -> (bool, bool, bool) {
         let old = self.catalog.get(&summary.id);
         if let Some(previous) = old {
             summary.last_sequence = summary.last_sequence.max(previous.last_sequence);
             summary.read_through = summary.read_through.max(previous.read_through);
         }
-        let rebuild = old
-            .is_none_or(|old| old.name != summary.name || old.workspace_id != summary.workspace_id);
+        let rebuild = old.is_none_or(|old| {
+            old.name != summary.name
+                || old.workspace_id != summary.workspace_id
+                || old.direct != summary.direct
+        });
         let before = old.is_some_and(|entry| entry.unread_attention);
         let mut badge_changed = false;
         if before != summary.unread_attention {
@@ -332,13 +364,16 @@ impl Chat {
         }
         let projected = self.workspace() == Some(summary.workspace_id.as_str());
         self.catalog.insert(summary.id.clone(), summary);
-        if rebuild && projected {
+        (badge_changed, rebuild && projected, projected)
+    }
+
+    fn refresh_catalog_projection(&mut self, rebuild: bool, projected: bool) {
+        if rebuild {
             self.refresh_channels();
         }
         if projected {
             self.redraw();
         }
-        badge_changed
     }
 
     pub(super) fn workspace_closed(&mut self, workspace: &str) -> bool {
@@ -462,6 +497,7 @@ impl Chat {
                 .unwrap_or(0);
         }
         self.paint.invalidate_hits();
+        self.redraw();
     }
 
     fn writable(&self, read_only: bool) -> bool {
@@ -614,10 +650,11 @@ impl Chat {
             ChatAction::Choose if !self.channel_chooser && self.completing() => {
                 self.active.as_ref().is_some_and(|active| {
                     active.roster_ready
-                        && self
-                            .drafts
-                            .get(&active.id)
-                            .is_some_and(|draft| draft.choices(&active.roster).next().is_some())
+                        && self.drafts.get(&active.id).is_some_and(|draft| {
+                            draft
+                                .choices(&active.roster, self.paint.completion_capacity())
+                                .any(|(_, _, chosen)| chosen)
+                        })
                 })
             }
             ChatAction::Choose => !self.ids.is_empty(),
@@ -644,30 +681,39 @@ impl Chat {
                     self.set_channel_chooser(false);
                 } else if self.completing() {
                     self.draft().unwrap().completion = None;
+                    self.redraw_composer();
                 } else {
                     return Effect::Native;
                 }
             }
             Some(Action::Chat(ChatAction::Create)) => self.start_editor(true),
             Some(Action::Chat(ChatAction::Manage)) => self.start_editor(false),
-            Some(Action::Chat(ChatAction::MarkRead)) => self.explicit_read(),
-            Some(Action::Chat(ChatAction::Retry)) => return self.send(true),
-            Some(Action::Chat(ChatAction::Send)) => return self.send(false),
+            Some(Action::Chat(ChatAction::MarkRead)) => {
+                self.redraw();
+                self.explicit_read();
+            }
+            Some(Action::Chat(action @ (ChatAction::Retry | ChatAction::Send))) => {
+                self.redraw();
+                return self.send(action == ChatAction::Retry);
+            }
             Some(Action::Chat(ChatAction::Newline)) => {
                 if let Some(draft) = self.draft() {
                     draft.insert("\n", false);
+                    self.redraw_composer();
                 }
             }
             Some(Action::Chat(ChatAction::Edit(edit))) => {
                 if let Some(draft) = self.draft() {
                     draft.edit(edit);
+                    self.redraw_composer();
                 }
             }
             Some(Action::Chat(ChatAction::Choose)) if !self.channel_chooser => {
                 if let Some(active) = &self.active
                     && let Some(draft) = self.drafts.get_mut(&active.id)
                 {
-                    draft.select_mention(&active.roster, None);
+                    draft.select_mention(&active.roster, self.paint.completion_capacity(), None);
+                    self.redraw_composer();
                 }
             }
             Some(Action::Chat(ChatAction::Choose)) => {
@@ -677,12 +723,17 @@ impl Chat {
                 self.set_channel_chooser(false);
             }
             Some(Action::History(HistoryAction::PageUp)) => {
-                self.scroll(-(self.paint.page_rows().max(1) as isize))
+                self.redraw();
+                self.scroll(-(self.paint.page_rows().max(1) as isize));
             }
             Some(Action::History(HistoryAction::PageDown)) => {
-                self.scroll(self.paint.page_rows().max(1) as isize)
+                self.redraw();
+                self.scroll(self.paint.page_rows().max(1) as isize);
             }
-            Some(Action::History(HistoryAction::Live)) => self.live_tail(),
+            Some(Action::History(HistoryAction::Live)) => {
+                self.redraw();
+                self.live_tail();
+            }
             Some(Action::Navigate(navigation)) => self.navigate(navigation),
             _ if !self.channel_chooser && self.writable(read_only) => self.composer_key(event),
             _ => {}
@@ -693,6 +744,8 @@ impl Chat {
     fn navigate(&mut self, navigation: Navigation) {
         if !self.channel_chooser {
             if let Some(active) = &self.active
+                && active.roster_ready
+                && self.paint.completion_capacity() > 0
                 && let Some(draft) = self.drafts.get_mut(&active.id)
             {
                 let delta = if navigation == Navigation::Previous {
@@ -701,6 +754,7 @@ impl Chat {
                     1
                 };
                 draft.move_completion(delta, &active.roster);
+                self.redraw_composer();
             }
         } else {
             let last = self.ids.len().saturating_sub(1);
@@ -711,6 +765,7 @@ impl Chat {
                 Navigation::Last => last,
                 _ => self.list_cursor,
             };
+            self.redraw();
         }
     }
 
@@ -733,14 +788,15 @@ impl Chat {
         if mods == 0 && matches!(event.key.as_str(), "ArrowUp" | "ArrowDown") {
             let delta = if event.key == "ArrowUp" { -1 } else { 1 };
             draft.move_vertical(usize::from(self.paint.composer_width()), delta);
-        } else if mods & !1 == 0
-            && event.text.chars().any(|ch| !ch.is_control())
-            && draft.insert(&event.text, event.action == KeyAction::Press)
-        {
-            active.roster.clear();
-            active.roster_next = Some(None);
-            active.roster_error = None;
-            active.roster_ready = false;
+            self.redraw_composer();
+        } else if mods & !1 == 0 && event.text.chars().any(|ch| !ch.is_control()) {
+            if draft.insert(&event.text, event.action == KeyAction::Press) {
+                active.roster.clear();
+                active.roster_next = Some(None);
+                active.roster_error = None;
+                active.roster_ready = false;
+            }
+            self.redraw_composer();
         }
     }
 
@@ -760,8 +816,13 @@ impl Chat {
                 }
             },
         };
-        self.sends
-            .insert(id.clone(), Send::Pending(request.clone()));
+        self.sends.insert(
+            id.clone(),
+            Send::Pending {
+                request: request.clone(),
+                retry,
+            },
+        );
         Effect::Submit(JobKind::Send(id), Job::Request(request))
     }
 
@@ -769,7 +830,11 @@ impl Chat {
         let Some(summary) = self.summary() else {
             return;
         };
-        self.mark = Some((summary.id.clone(), summary.last_sequence));
+        if summary.last_sequence > summary.read_through
+            && self.should_queue_mark(&summary.id, summary.last_sequence)
+        {
+            self.mark = Some((summary.id.clone(), summary.last_sequence));
+        }
     }
 
     pub(super) fn attend(&mut self, physical_focus: bool, read_only: bool) {
@@ -781,15 +846,23 @@ impl Chat {
             return;
         };
         let through = active.history.visible_through;
-        if through > summary.read_through && active.history.read_failed != Some(through) {
-            let through = through.max(
-                self.mark
-                    .as_ref()
-                    .filter(|(id, _)| id == &summary.id)
-                    .map_or(0, |(_, through)| *through),
-            );
+        if through > summary.read_through
+            && active.history.read_failed != Some(through)
+            && self.should_queue_mark(&summary.id, through)
+        {
             self.mark = Some((summary.id.clone(), through));
         }
+    }
+
+    fn should_queue_mark(&self, channel: &ChannelId, through: u64) -> bool {
+        !self
+            .mark
+            .as_ref()
+            .is_some_and(|(id, queued)| id == channel && *queued >= through)
+            && !self.pending.values().any(|kind| {
+                matches!(kind, JobKind::Mark { channel: pending, through: sent }
+                if pending == channel && *sent >= through)
+            })
     }
 
     fn live_tail(&mut self) {
@@ -869,9 +942,14 @@ impl Chat {
             (B::Left, A::Press, Some(Hit::OpenChannels)) => self.set_channel_chooser(true),
             (B::Left, A::Press, Some(Hit::Mention(index))) if writable => {
                 if let Some(active) = &self.active
+                    && active.roster_ready
                     && let Some(draft) = self.drafts.get_mut(&active.id)
                 {
-                    draft.select_mention(&active.roster, Some(index));
+                    draft.select_mention(
+                        &active.roster,
+                        self.paint.completion_capacity(),
+                        Some(index),
+                    );
                 }
             }
             (B::Left, A::Press, Some(Hit::Latest)) => self.live_tail(),
@@ -992,6 +1070,21 @@ impl Chat {
         key
     }
 
+    /// Whether shutdown must drain this job's write receipt.
+    pub(super) fn is_shutdown_write(&self, key: &str) -> bool {
+        matches!(
+            self.pending.get(key),
+            Some(JobKind::Send(_) | JobKind::EditorWrite(_) | JobKind::Mark { .. })
+        )
+    }
+
+    /// Whether an original post still has an unresolved outcome.
+    pub(super) fn has_unknown_send(&self) -> bool {
+        self.sends
+            .values()
+            .any(|send| matches!(send, Send::Unknown(_) | Send::Pending { retry: true, .. }))
+    }
+
     pub(super) fn complete(
         &mut self,
         key: &str,
@@ -1003,6 +1096,10 @@ impl Chat {
             if epoch == self.epoch
                 && let Some(active) = &mut self.active
             {
+                // Repeated scrolling can queue the same boundary before this page arrives.
+                if active.history.load.as_ref() == Some(&load) {
+                    active.history.load = None;
+                }
                 match result {
                     Ok(Completion::History { entries, older }) => {
                         active.history.apply(load, entries, older)
@@ -1039,26 +1136,29 @@ impl Chat {
         match kind {
             JobKind::Roster(epoch) if epoch == self.epoch => {
                 let active = self.active.as_mut().expect("current roster owner");
+                if active.roster_next == Some(None) {
+                    return None;
+                }
                 match result {
                     Ok(ChannelResponse::UserRoster {
-                        mut participants,
+                        participants,
                         next_after,
                     }) => {
-                        if active.roster_next != Some(None) {
-                            participants.truncate(MAX_MEMBERS.saturating_sub(active.roster.len()));
-                            active.roster.extend(participants);
-                            active.roster_next = next_after
-                                .filter(|_| active.roster.len() < MAX_MEMBERS)
-                                .map(Some);
-                            if active.roster_next.is_none() {
-                                active.roster_ready = true;
-                                active.roster.sort_by(|a, b| {
-                                    a.participant
-                                        .display_name
-                                        .cmp(&b.participant.display_name)
-                                        .then_with(|| a.participant.id.cmp(&b.participant.id))
-                                });
-                            }
+                        active
+                            .roster
+                            .extend(participants.into_iter().filter(|entry| {
+                                entry.participant.kind == ParticipantKind::Agent
+                                    && entry.binding.is_some()
+                            }));
+                        active.roster_next = next_after.map(Some);
+                        if active.roster_next.is_none() {
+                            active.roster_ready = true;
+                            active.roster.sort_unstable_by(|a, b| {
+                                a.participant
+                                    .display_name
+                                    .cmp(&b.participant.display_name)
+                                    .then_with(|| a.participant.id.cmp(&b.participant.id))
+                            });
                         }
                     }
                     Err(error) => active.roster_error = Some(error_text(&error)),
@@ -1066,12 +1166,12 @@ impl Chat {
                 }
             }
             JobKind::Mark { channel, through } => match result {
-                Ok(ChannelResponse::ReadPosition { through }) => {
+                Ok(ChannelResponse::ReadPosition { through: applied }) if applied >= through => {
                     if let Some(summary) = self.catalog.get_mut(&channel) {
-                        summary.read_through = summary.read_through.max(through);
+                        summary.read_through = summary.read_through.max(applied);
                     }
                 }
-                _ => {
+                result => {
                     if let Some(active) = &mut self.active
                         && active.id == channel
                     {
@@ -1079,14 +1179,24 @@ impl Chat {
                         self.notice =
                             Some((Role::Warning, "Could not mark read; Alt-m retries".into()));
                     }
+                    let error = result.err().unwrap_or_else(|| {
+                        transport::mark_outcome_unknown(anyhow::anyhow!(
+                            "unexpected mark-read response"
+                        ))
+                    });
+                    return Some(("Couldn't confirm a channel read position.".into(), error));
                 }
             },
             JobKind::Send(channel) => {
-                let Some(Send::Pending(request)) = self.sends.remove(&channel) else {
+                let Some(Send::Pending { request, retry }) = self.sends.remove(&channel) else {
                     return None;
                 };
                 match result {
-                    Ok(ChannelResponse::Posted { message, .. }) => {
+                    Ok(ChannelResponse::Posted {
+                        channel_id,
+                        message,
+                        ..
+                    }) if channel_id.as_ref().is_none_or(|id| id == &channel) => {
                         self.drafts.remove(&channel);
                         if let Some(summary) = self.catalog.get_mut(&channel) {
                             summary.last_sequence = summary.last_sequence.max(message.sequence);
@@ -1100,12 +1210,17 @@ impl Chat {
                         });
                         let unknown = transport::outcome_unknown(&error);
                         let draft = self.drafts.entry(channel.clone()).or_default();
-                        draft.error = Some(if unknown {
+                        draft.error = Some(if retry && !unknown {
+                            format!(
+                                "Retry rejected: {} · Original outcome unknown · Ctrl-r retries the identical post",
+                                error_text(&error)
+                            )
+                        } else if unknown {
                             "Send outcome unknown · Ctrl-r retries the identical post".into()
                         } else {
                             format!("Send rejected: {}", error_text(&error))
                         });
-                        if unknown {
+                        if retry || unknown {
                             self.sends.insert(channel, Send::Unknown(request));
                         }
                         return Some(("Couldn't confirm a channel post.".into(), error));
@@ -1134,7 +1249,12 @@ impl Chat {
                                 editor.form.finish(EditorResult::Applied(&channel));
                                 editor.form.is_create()
                             });
-                        self.upsert(channel);
+                        if select && !self.catalog.contains_key(&id) {
+                            let mut provisional = channel;
+                            // Let the ordered catalog publish any badge transition.
+                            provisional.unread_attention = false;
+                            self.upsert(provisional);
+                        }
                         if select {
                             self.editor = None;
                             self.select(id);
@@ -1258,27 +1378,278 @@ fn error_text(error: &anyhow::Error) -> String {
 mod tests {
     use super::*;
 
+    fn channel(id: &str) -> ChannelSummary {
+        ChannelSummary {
+            id: ChannelId(id.into()),
+            workspace_id: "workspace".into(),
+            name: format!("#{id}"),
+            membership: MembershipMode::WorkspaceWide,
+            settings: ChannelSettings::default(),
+            last_sequence: 12,
+            read_through: 0,
+            unread_attention: false,
+            direct: false,
+        }
+    }
+
+    fn open_chat() -> (Chat, ChannelId) {
+        let mut chat = Chat::default();
+        let summary = channel("desk");
+        let id = summary.id.clone();
+        chat.replace_catalog(HashMap::from([(id.clone(), summary)]));
+        chat.open("workspace".into());
+        (chat, id)
+    }
+
+    fn posted(sequence: u64) -> MessageSummary {
+        MessageSummary {
+            id: MessageId(format!("message-{sequence}")),
+            sequence,
+            author: Participant {
+                id: ParticipantId("user".into()),
+                kind: ParticipantKind::User,
+                display_name: "User".into(),
+            },
+            posted_at_ms: 0,
+            intent: PostIntent::default(),
+            mentions: Vec::new(),
+            reply_to: None,
+            attachments: Vec::new(),
+            mention_spans: Vec::new(),
+            source: None,
+        }
+    }
+
+    #[test]
+    fn a_rejected_retry_does_not_unlock_an_unknown_original_post() {
+        let (mut chat, id) = open_chat();
+        chat.drafts
+            .entry(id.clone())
+            .or_default()
+            .insert("hello", false);
+        let Effect::Submit(kind, Job::Request(original)) = chat.send(false) else {
+            panic!("expected an original post");
+        };
+        let key = chat.track(kind);
+        let error = transport::mark_outcome_unknown(anyhow::anyhow!("lost receipt"));
+        assert!(chat.complete(&key, Err(error), true).is_some());
+
+        for error in ["not admitted", "binding changed"] {
+            let Effect::Submit(kind, Job::Request(retry)) = chat.send(true) else {
+                panic!("expected an idempotent retry");
+            };
+            assert_eq!(retry, original);
+            let key = chat.track(kind);
+            assert!(chat.is_shutdown_write(&key));
+            assert!(chat.has_unknown_send());
+            assert!(
+                chat.complete(&key, Err(anyhow::anyhow!("{error}")), true)
+                    .is_some()
+            );
+            assert!(matches!(chat.send(false), Effect::None));
+            assert!(chat.has_unknown_send());
+        }
+
+        let Effect::Submit(kind, Job::Request(retry)) = chat.send(true) else {
+            panic!("expected an idempotent retry");
+        };
+        assert_eq!(retry, original);
+        let key = chat.track(kind);
+        let response = ChannelResponse::Posted {
+            channel_id: Some(id.clone()),
+            message: posted(13),
+            wake_count: 0,
+            attention: false,
+        };
+        assert!(
+            chat.complete(&key, Ok(Completion::Response(response)), true)
+                .is_none()
+        );
+        assert!(!chat.has_unknown_send());
+        assert!(!chat.drafts.contains_key(&id));
+    }
+
+    #[test]
+    fn management_receipt_cannot_replace_ordered_policy_or_consume_a_badge_transition() {
+        let (mut chat, id) = open_chat();
+        chat.start_editor(false);
+        let key = chat.track(JobKind::EditorWrite(chat.editor.as_ref().unwrap().token));
+        let mut latest = channel("desk");
+        latest.membership = MembershipMode::Explicit;
+        latest.settings.attention_reports = !latest.settings.attention_reports;
+        assert!(
+            !chat.apply_catalog_changes(vec![ChannelCatalogChange::Upsert {
+                channel: latest.clone(),
+            }])
+        );
+
+        let mut stale = channel("desk");
+        stale.unread_attention = true;
+        let receipt = Completion::Response(ChannelResponse::Channel { channel: stale });
+        assert!(chat.complete(&key, Ok(receipt), true).is_none());
+        assert_eq!(chat.catalog[&id], latest);
+        assert_eq!(chat.attention().count(), 0);
+
+        latest.unread_attention = true;
+        assert!(chat.apply_catalog_changes(vec![ChannelCatalogChange::Upsert { channel: latest }]));
+        assert_eq!(chat.attention().collect::<Vec<_>>(), ["workspace"]);
+    }
+
+    #[test]
+    fn create_receipt_only_seeds_missing_entry_without_publishing_attention() {
+        let (mut chat, _) = open_chat();
+        chat.start_editor(true);
+        let key = chat.track(JobKind::EditorWrite(chat.editor.as_ref().unwrap().token));
+        let mut created = channel("created");
+        created.unread_attention = true;
+        let receipt = Completion::Response(ChannelResponse::Channel {
+            channel: created.clone(),
+        });
+        assert!(chat.complete(&key, Ok(receipt), true).is_none());
+        assert_eq!(chat.summary().map(|entry| &entry.id), Some(&created.id));
+        assert_eq!(chat.attention().count(), 0);
+        assert!(chat.upsert(created.clone()));
+
+        chat.start_editor(true);
+        let key = chat.track(JobKind::EditorWrite(chat.editor.as_ref().unwrap().token));
+        let receipt = Completion::Response(ChannelResponse::Channel {
+            channel: channel("created"),
+        });
+        assert!(chat.complete(&key, Ok(receipt), true).is_none());
+        assert_eq!(chat.summary(), Some(&created));
+    }
+
+    #[test]
+    fn repeated_history_boundary_does_not_request_the_same_page_twice() {
+        let (mut chat, _) = open_chat();
+        let boundary = Load::Older(6);
+        let history = &mut chat.active.as_mut().unwrap().history;
+        history.anchor = Some(Anchor {
+            sequence: 6,
+            line: 0,
+        });
+        history.load = Some(boundary.clone());
+        let (kind, _) = chat.next_job(false).unwrap();
+        let key = chat.track(kind);
+        chat.active.as_mut().unwrap().history.load = Some(boundary);
+        assert!(chat.next_job(false).is_none());
+        let entry = view::Entry::new(ChannelMessage {
+            message: posted(5),
+            text: "older".into(),
+            attachments: Vec::new(),
+        });
+        let page = Completion::History {
+            entries: vec![entry],
+            older: true,
+        };
+        assert!(chat.complete(&key, Ok(page), true).is_none());
+        assert!(chat.next_job(false).is_none());
+    }
+
+    #[test]
+    fn same_mark_read_is_not_requeued_behind_its_in_flight_request() {
+        let (mut chat, _) = open_chat();
+        let history = &mut chat.active.as_mut().unwrap().history;
+        history.load = None;
+        history.anchor = Some(Anchor {
+            sequence: 12,
+            line: 0,
+        });
+        history.visible_through = 12;
+        chat.attend(true, false);
+        let (kind, _) = chat.next_job(false).unwrap();
+        let key = chat.track(kind);
+        chat.attend(true, false);
+        chat.explicit_read();
+        assert!(
+            chat.complete(&key, Err(anyhow::anyhow!("rejected")), true)
+                .is_some()
+        );
+        chat.attend(true, false);
+        assert!(chat.next_job(false).is_none());
+        chat.explicit_read();
+        assert!(matches!(
+            chat.next_job(false),
+            Some((JobKind::Mark { through: 12, .. }, _))
+        ));
+    }
+
+    #[test]
+    fn mention_roster_follows_empty_and_over_membership_cap_pages() {
+        let (mut chat, id) = open_chat();
+        let draft = chat.drafts.entry(id).or_default();
+        assert!(draft.insert("@", true));
+        let active = chat.active.as_mut().unwrap();
+        active.history.load = None;
+        active.history.anchor = Some(Anchor {
+            sequence: 12,
+            line: 0,
+        });
+        active.roster_next = Some(None);
+
+        let limit = usize::from(MAX_PAGE_LIMIT);
+        let bound_pages = MAX_MEMBERS.div_ceil(limit);
+        let mut cursor = None;
+        for page in 0..=bound_pages + 1 {
+            let (kind, Job::Request(ChannelRequest::UserRoster { after, limit, .. })) =
+                chat.next_job(false).unwrap()
+            else {
+                panic!("expected a roster continuation");
+            };
+            assert_eq!(after, cursor);
+            assert_eq!(limit, MAX_PAGE_LIMIT);
+            let key = chat.track(kind);
+            let participants = if page == 0 {
+                Vec::new()
+            } else {
+                (0..usize::from(limit))
+                    .map(|index| {
+                        let id = ParticipantId(format!("p-{page:04}-{index:04}"));
+                        let live = page <= bound_pages || index == 0;
+                        ChannelRosterEntry {
+                            participant: Participant {
+                                id: id.clone(),
+                                kind: if live || index == 1 {
+                                    ParticipantKind::Agent
+                                } else {
+                                    ParticipantKind::User
+                                },
+                                display_name: id.0.clone(),
+                            },
+                            binding: live.then(|| ChannelMentionBinding {
+                                participant_id: id,
+                                launch_id: "launch".into(),
+                                binding_generation: 1,
+                            }),
+                        }
+                    })
+                    .collect()
+            };
+            cursor = (page <= bound_pages).then(|| ParticipantId(format!("p-{page:04}-zzzz")));
+            let response = ChannelResponse::UserRoster {
+                participants,
+                next_after: cursor.clone(),
+            };
+            assert!(
+                chat.complete(&key, Ok(Completion::Response(response)), true)
+                    .is_none()
+            );
+            assert_eq!(chat.active.as_ref().unwrap().roster_ready, cursor.is_none());
+        }
+        let roster = &chat.active.as_ref().unwrap().roster;
+        assert_eq!(roster.len(), bound_pages * limit + 1);
+        assert_eq!(
+            roster.last().unwrap().participant.id.0,
+            format!("p-{:04}-0000", bound_pages + 1)
+        );
+        assert!(chat.next_job(false).is_none());
+    }
+
     #[test]
     fn revisiting_a_channel_keeps_its_anchor_but_catalog_reset_retires_history() {
         let mut chat = Chat::default();
-        let desk = ChannelId("desk".into());
-        let team = ChannelId("team".into());
-        let catalog = [(&desk, "#desk"), (&team, "#team")].map(|(id, name)| {
-            (
-                id.clone(),
-                ChannelSummary {
-                    id: id.clone(),
-                    workspace_id: "workspace".into(),
-                    name: name.into(),
-                    membership: MembershipMode::WorkspaceWide,
-                    settings: ChannelSettings::default(),
-                    last_sequence: 12,
-                    read_through: 0,
-                    unread_attention: false,
-                    direct: false,
-                },
-            )
-        });
+        let catalog = [channel("desk"), channel("team")].map(|entry| (entry.id.clone(), entry));
+        let [(desk, _), (team, _)] = &catalog;
         chat.replace_catalog(catalog.clone().into_iter().collect());
         chat.open("workspace".into());
         let history = &mut chat.active.as_mut().unwrap().history;
@@ -1289,7 +1660,7 @@ mod tests {
         });
         chat.select(team.clone());
         assert!(!chat.active.as_ref().unwrap().history.loaded);
-        chat.select(desk);
+        chat.select(desk.clone());
         assert!(
             chat.active
                 .as_ref()

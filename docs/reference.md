@@ -1397,8 +1397,10 @@ changes do not rename chat participants. Posts retain the author label saved
 when they were sent.
 In history, authenticated inline agent mentions use the same participant color
 as the agent's nickname. Identical pasted text or code does not inherit that color.
-The mention picker shows wake scope when space permits. `#desk` starts with
-addressed agents or all if none are selected; `#team` starts with all eligible agents.
+The mention picker shows wake scope when space permits. In new `#desk` and
+`#team` channels, user posts request wakes for selected agents, or for all
+eligible agents if none are selected.
+Agent posts in new `#team` channels follow the same rule, excluding the author.
 Use **+ New channel** below the channel list or press Ctrl-n to open the create
 dialog. Use **Settings** or Alt-e to edit wake policy, attention or membership.
 Tab moves between controls. Enter opens a floating dropdown; use the arrows
@@ -2092,7 +2094,7 @@ Historical versions remain in [CHANGELOG.md](../CHANGELOG.md).
 `Operation::Channels` is session-scoped. User requests use the owning session's
 registered, active client attachment. Bare socket requests and daemon-owned pane
 processes cannot act as the user. The daemon derives the author; there is no
-caller-supplied author or launch ID. Older daemons reject the additive operation
+caller-supplied author identity. Older daemons reject the additive operation
 without changing the native protocol family.
 
 Create an ordinary channel with explicit or workspace-wide membership and
@@ -2177,11 +2179,11 @@ exact channel ID for subsequent posts and reads, and the post's canonical
 recovered launch. Text alone never routes a wake. `channel_read` rechecks access
 on each body page; a cursor or batch ID never grants permission.
 
-The native user API still takes stable participant IDs in `ChannelPost.mentions`.
-A future composer must carry the selected launch and binding revision as well,
-and validate them against the current roster before resolving that mention to its
-stable participant ID. Reuse the launch and binding check used by the MCP route;
-don't submit a saved participant ID as a live selection.
+For a native user post that mentions an agent, fetch `UserRoster` for the
+channel and send `PostUser` rather than `Post`. Put the stable participant IDs
+in `post.mentions` and include the selected entries' exact `participant_id`,
+`launch_id` and `binding_generation` in `bindings`. These identify recipients,
+not the author. A stale binding rejects the post instead of retargeting it.
 
 The existing native receiver takes up to 32 queued posts for one channel and
 one recipient per wake. A wake carries compact `channel_wake` JSON with a

@@ -4573,7 +4573,6 @@ impl App {
             if matches!(self.pointer_capture, Some(PointerCapture::ChatSelection)) {
                 self.chat.clear_history_selection();
             }
-            self.chat.redraw();
             let effect = self.chat.key(&event, self.options.read_only);
             self.chat_effect(effect);
             if self.chat.editor_open() {
@@ -5860,7 +5859,11 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         let mut image_surface = UiSurface::new(initial_size);
         let mut image_effects = graphics_frame(initial_size);
         let mut channel_form_effects = graphics_frame(initial_size);
-        let mut channel_choice_surface = UiSurface::new(initial_size);
+        let mut channel_choice_surface = UiSurface::new(Size {
+            cols: 1,
+            rows: 1,
+            ..initial_size
+        });
         let mut channel_choice_effects = graphics_frame(initial_size);
         let mut chat_button_effects = graphics_frame(initial_size);
         let mut guide_effects = graphics_frame(initial_size);
@@ -6940,7 +6943,10 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     &theme,
                     graphics.button_painter(true),
                 );
-                terminal.register_prepared_transports(&app.chat.transports());
+                let transports = app.chat.transports();
+                if !transports.is_empty() {
+                    terminal.register_prepared_transports(&transports);
+                }
                 app.schedule_chat();
             }
             app.history_clipboard(&mut out)?;
@@ -7033,6 +7039,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     view.transports.clear();
                 }
             }
+            let mut hits = None;
             let hits = loop {
                 title_animation.apply(&mut chrome_surface.frame);
                 let mut surfaces = vec![Surface {
@@ -7696,15 +7703,17 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     &mut terminal,
                     Some(&tree_artwork),
                 )?;
-                let hits = scene.hit_map();
-                if chat_rect.is_some() {
-                    app.chat.attend(
-                        chat_focused
-                            && tooltip.is_none()
-                            && terminal.observed_focus() == Some(true),
-                        app.options.read_only,
-                    );
-                    app.schedule_chat();
+                if hits.is_none() {
+                    hits = Some(scene.hit_map());
+                    if chat_rect.is_some() {
+                        app.chat.attend(
+                            chat_focused
+                                && tooltip.is_none()
+                                && terminal.observed_focus() == Some(true),
+                            app.options.read_only,
+                        );
+                        app.schedule_chat();
+                    }
                 }
                 let ready = unsafe {
                     libc::poll(
@@ -7722,7 +7731,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 if ready == 0 && now < presentation_deadline && title_animation.clock.advance(now) {
                     continue;
                 }
-                break hits;
+                break hits.expect("the first presentation determines hit geometry");
             };
             let mut resized = [0u8; 64];
             let mut geometry_changed = false;
@@ -7855,6 +7864,31 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
     result.and(sessions.finish())
 }
 
+fn finish_chat_write(
+    chat: &mut chat::Chat,
+    completion: jobs::Completion<Background>,
+) -> Result<()> {
+    if !chat.is_shutdown_write(&completion.key) {
+        return Ok(());
+    }
+    let result = completion.result.and_then(|value| match value {
+        Background::Chat(result) => *result,
+        _ => bail!("chat job returned an unrelated completion"),
+    });
+    chat.complete(&completion.key, result, true)
+        .map_or(Ok(()), |(summary, error)| {
+            Err(anyhow::anyhow!("{summary} {error:#}"))
+        })
+}
+
+fn unresolved_chat_send(chat: &chat::Chat) -> Result<()> {
+    anyhow::ensure!(
+        !chat.has_unknown_send(),
+        "A channel post may have been committed without a receipt. Check channel history before resending."
+    );
+    Ok(())
+}
+
 fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
     app.cancel_recovery();
     let endpoint = app.socket.clone();
@@ -7865,6 +7899,13 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
         match app.jobs.finish() {
             Ok(completions) => {
                 for completion in completions {
+                    if completion.key.starts_with("chat:") {
+                        accumulate_cleanup(
+                            &mut finished,
+                            finish_chat_write(&mut app.chat, completion),
+                        );
+                        continue;
+                    }
                     accumulate_cleanup(
                         &mut finished,
                         shutdown_result(completion.result.map(|_| ()), socket.session_ended()),
@@ -7873,6 +7914,7 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
             }
             Err(error) => accumulate_cleanup(&mut finished, Err(error)),
         }
+        accumulate_cleanup(&mut finished, unresolved_chat_send(&app.chat));
         accumulate_cleanup(&mut finished, app.input.finish());
         accumulate_cleanup(
             &mut finished,
@@ -7937,6 +7979,10 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
     match app.jobs.finish() {
         Ok(completions) => {
             for completion in completions {
+                if completion.key.starts_with("chat:") {
+                    accumulate_cleanup(&mut cleanup, finish_chat_write(&mut app.chat, completion));
+                    continue;
+                }
                 match completion.result {
                     Ok(Background::Attached { pane, mut attached }) => {
                         accumulate_cleanup(
@@ -7954,7 +8000,10 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
                         accumulate_cleanup(&mut cleanup, result.context(completion.key));
                     }
                     Ok(Background::Management(_) | Background::Resize(_)) => {}
-                    Ok(Background::Chat(_)) => {}
+                    Ok(Background::Chat(_)) => accumulate_cleanup(
+                        &mut cleanup,
+                        Err(anyhow::anyhow!("chat receipt escaped its owner")),
+                    ),
                     Ok(Background::Recovery(result)) => {
                         if let recovery_ui::Completion::Resumed {
                             result: Err(failure),
@@ -7982,6 +8031,7 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
         }
         Err(error) => accumulate_cleanup(&mut cleanup, Err(error)),
     }
+    accumulate_cleanup(&mut cleanup, unresolved_chat_send(&app.chat));
     for mut candidate in std::mem::take(&mut app.retiring_candidates) {
         // Never displayed, so no user input was addressed to this view.
         accumulate_cleanup(
@@ -12735,6 +12785,33 @@ pub(super) mod tests {
         assert_eq!(projected, vec!["owner-neighbor", "removed-pane"]);
         assert_eq!(serde_json::to_value(&app.registry).unwrap(), before);
         assert_eq!(app.management.len(), 1);
+    }
+
+    #[test]
+    fn detach_reports_rejected_chat_writes_but_not_canceled_observations() {
+        let (mut app, _) = fixture();
+        let key = app.chat.track(chat::JobKind::EditorWrite(1));
+        let receipt = jobs::Completion {
+            key,
+            result: Ok(Background::Chat(Box::new(Err(anyhow::anyhow!(
+                "fixture rejected channel settings"
+            ))))),
+        };
+        let error = finish_chat_write(&mut app.chat, receipt).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("fixture rejected channel settings")
+        );
+
+        let key = app.chat.track(chat::JobKind::EditorRead(1));
+        let receipt = jobs::Completion {
+            key,
+            result: Ok(Background::Chat(Box::new(Err(anyhow::anyhow!(
+                "fixture canceled channel observation"
+            ))))),
+        };
+        finish_chat_write(&mut app.chat, receipt).unwrap();
     }
 
     fn submitted_form_operation(kind: FormKind, prepare: impl FnOnce(&mut App)) -> Operation {

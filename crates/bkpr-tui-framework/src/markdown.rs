@@ -45,6 +45,83 @@ pub struct Row<'a> {
     pub join_spaces: Option<usize>,
 }
 
+/// Width-specific row ranges. Build once and borrow runs only for requested rows.
+#[derive(Debug, Default)]
+pub struct Layout {
+    columns: usize,
+    rows: Vec<RowRange>,
+}
+
+impl Layout {
+    /// Number of display rows, including empty logical lines.
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether the layout has no display rows.
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RowRange {
+    line: usize,
+    start: usize,
+    end: usize,
+}
+
+impl RowRange {
+    fn join_spaces(self, next: usize) -> usize {
+        // Replacements have an empty byte range, but consume a whole grapheme.
+        if self.start == self.end {
+            0
+        } else {
+            next - self.end
+        }
+    }
+}
+
+/// One row borrowing its text and semantic styles from the parsed document.
+pub struct RowView<'a> {
+    document: &'a Document,
+    range: RowRange,
+    prefix: [&'a str; 3],
+    /// Cell width of a repeated layout prefix on a continuation row.
+    pub continuation_prefix: usize,
+    /// Spaces hidden by the soft wrap; `None` ends the logical line.
+    pub join_spaces: Option<usize>,
+}
+
+impl<'a> RowView<'a> {
+    /// Printable runs in display order without copying text or allocating run storage.
+    pub fn runs(self) -> impl Iterator<Item = Run<'a>> {
+        let line = &self.document.lines[self.range.line];
+        let prefix_style = Style {
+            quote: line.prefix.quote,
+            ..Style::default()
+        };
+        let spans = &self.document.spans[line.spans.clone()];
+        let start = self.range.start;
+        let spans = &spans[spans.partition_point(|span| span.text.end <= start)..];
+        let replacement = (start == self.range.end && start < line.text.end).then(|| Run {
+            text: "�",
+            style: spans[0].style,
+            source: None,
+        });
+        self.prefix
+            .into_iter()
+            .filter(|text| !text.is_empty())
+            .map(move |text| Run {
+                text,
+                style: prefix_style,
+                source: None,
+            })
+            .chain(replacement)
+            .chain(self.document.row_runs(start..self.range.end, spans))
+    }
+}
+
 /// Immutable parsed content, reusable at any positive text width.
 #[derive(Debug, Default)]
 pub struct Document {
@@ -106,49 +183,94 @@ impl Document {
     /// An unpaintable grapheme gets a one-cell replacement; prefixes compact
     /// before they take the columns needed for body text.
     pub fn wrap(&self, columns: usize) -> Vec<Row<'_>> {
-        if columns == 0 {
-            return Vec::new();
+        let mut rows = Vec::with_capacity(if columns == 0 { 0 } else { self.lines.len() });
+        self.reflow(columns, |range, join_spaces| {
+            let row = self.row_view(columns, range, join_spaces);
+            rows.push(Row {
+                continuation_prefix: row.continuation_prefix,
+                join_spaces: row.join_spaces,
+                runs: row.runs().collect(),
+            });
+        });
+        rows
+    }
+
+    /// Replace the layout with compact row ranges for this document and width.
+    /// At zero columns the layout is empty.
+    pub fn layout(&self, columns: usize, layout: &mut Layout) {
+        layout.columns = columns;
+        layout.rows.clear();
+        if columns != 0 {
+            layout.rows.reserve(self.lines.len());
         }
-        let mut rows = Vec::with_capacity(self.lines.len());
-        for line in &self.lines {
+        self.reflow(columns, |range, _| layout.rows.push(range));
+    }
+
+    /// Borrow a row from a layout built for this document, or `None` out of bounds.
+    pub fn row(&self, layout: &Layout, index: usize) -> Option<RowView<'_>> {
+        let range = *layout.rows.get(index)?;
+        let join_spaces = layout
+            .rows
+            .get(index + 1)
+            .filter(|next| next.line == range.line)
+            .map(|next| range.join_spaces(next.start));
+        Some(self.row_view(layout.columns, range, join_spaces))
+    }
+
+    fn reflow(&self, columns: usize, mut emit: impl FnMut(RowRange, Option<usize>)) {
+        if columns == 0 {
+            return;
+        }
+        for (line_index, line) in self.lines.iter().enumerate() {
+            let prefix = self.prefix(&line.prefix, columns);
+            let body_columns = columns - prefix.iter().map(|text| text.len()).sum::<usize>();
             let mut spans = &self.spans[line.spans.clone()];
             let mut start = line.text.start;
             loop {
-                let mut runs = Vec::new();
-                let first = start == line.text.start;
-                let prefix = self.prefix(&line.prefix, first, columns, &mut runs);
                 let rest = &self.text[start..line.text.end];
-                let cut = row_cut(rest, columns - prefix, line.verbatim, start, spans);
-                if cut.replace {
-                    runs.push(Run {
-                        text: "�",
-                        style: span_at(&mut spans, start).style,
-                        source: None,
-                    });
-                } else {
-                    self.row_runs(start..start + cut.end, &mut spans, &mut runs);
+                if !rest.is_empty() {
+                    span_at(&mut spans, start);
                 }
-                rows.push(Row {
-                    runs,
-                    continuation_prefix: if first { 0 } else { prefix },
-                    join_spaces: (cut.next < rest.len()).then_some(cut.next - cut.end),
-                });
-                start += cut.next;
+                let cut = row_cut(rest, body_columns, line.verbatim, start, spans);
+                let next = start + cut.next;
+                let range = RowRange {
+                    line: line_index,
+                    start,
+                    end: if cut.replace { start } else { start + cut.end },
+                };
+                emit(
+                    range,
+                    (next < line.text.end).then(|| range.join_spaces(next)),
+                );
+                start = next;
                 if start == line.text.end {
                     break;
                 }
             }
         }
-        rows
     }
 
-    fn prefix<'a>(
-        &'a self,
-        prefix: &Prefix,
-        first: bool,
-        columns: usize,
-        runs: &mut Vec<Run<'a>>,
-    ) -> usize {
+    fn row_view(&self, columns: usize, range: RowRange, join_spaces: Option<usize>) -> RowView<'_> {
+        let line = &self.lines[range.line];
+        let first = range.start == line.text.start;
+        let mut prefix = self.prefix(&line.prefix, columns);
+        if !first || !line.prefix.show_marker {
+            prefix[2] = &SPACES[..prefix[2].len()];
+        }
+        RowView {
+            document: self,
+            range,
+            prefix,
+            continuation_prefix: if first {
+                0
+            } else {
+                prefix.iter().map(|text| text.len()).sum()
+            },
+            join_spaces,
+        }
+    }
+
+    fn prefix<'a>(&'a self, prefix: &Prefix, columns: usize) -> [&'a str; 3] {
         // Leave room for an ordinary double-width glyph even in nested blocks.
         let budget = columns.saturating_sub(2);
         let marker = prefix.item.as_ref().map_or("", |item| {
@@ -170,61 +292,54 @@ impl Document {
             ""
         };
         let indent = prefix.indent.min(budget - marker.len() - quote.len());
-        let style = Style {
-            quote: prefix.quote,
-            ..Style::default()
-        };
-        for text in [
-            quote,
-            &SPACES[..indent],
-            if first && prefix.show_marker {
-                marker
-            } else {
-                &SPACES[..marker.len()]
-            },
-        ] {
-            if !text.is_empty() {
-                runs.push(Run {
-                    text,
-                    style,
-                    source: None,
-                });
-            }
-        }
-        quote.len() + indent + marker.len()
+        [quote, &SPACES[..indent], marker]
     }
 
-    fn row_runs<'a>(&'a self, range: Range<usize>, spans: &mut &[Span], runs: &mut Vec<Run<'a>>) {
+    fn row_runs<'a>(
+        &'a self,
+        range: Range<usize>,
+        mut spans: &'a [Span],
+    ) -> impl Iterator<Item = Run<'a>> {
         let mut offset = range.start;
         let mut boundary = offset;
         let mut graphemes = self.text[range.clone()].graphemes(true);
-        while offset < range.end {
-            let span = span_at(spans, offset);
+        let mut cross_span = None;
+        std::iter::from_fn(move || {
+            if let Some(run) = cross_span.take() {
+                return Some(run);
+            }
+            if offset == range.end {
+                return None;
+            }
+            let start = offset;
+            let span = span_at(&mut spans, start);
             let limit = span.text.end.min(range.end);
             if limit == range.end {
-                runs.push(self.run(span, offset..limit));
-                break;
+                offset = limit;
+                return Some(self.run(span, start..limit));
             }
-            let mut aligned = offset;
+            let mut aligned = start;
             while boundary <= limit {
                 aligned = boundary;
                 boundary += graphemes.next().expect("span ends inside the row").len();
-            }
-            if aligned > offset {
-                runs.push(self.run(span, offset..aligned));
             }
             offset = aligned;
             if aligned < limit {
                 // Markdown delimiters can separate a base and its marks. Keep
                 // the complete displayed grapheme under the first span's style.
-                runs.push(Run {
+                let run = Run {
                     text: &self.text[aligned..boundary],
                     style: span.style,
                     source: None,
-                });
+                };
                 offset = boundary;
+                if aligned == start {
+                    return Some(run);
+                }
+                cross_span = Some(run);
             }
-        }
+            Some(self.run(span, start..aligned))
+        })
     }
 
     fn run(&self, span: &Span, text: Range<usize>) -> Run<'_> {
@@ -753,6 +868,38 @@ mod tests {
             doc.wrap(2).iter().map(text).collect::<Vec<_>>(),
             ["e\u{301}", "界", "x"]
         );
+    }
+
+    #[test]
+    fn a_narrow_layout_serves_tail_rows_without_materializing_offscreen_runs() {
+        let prefix = "x".repeat(4096);
+        let source = format!("{prefix}\n\n> **e**\u{301}界y");
+        let doc = Document::parse(&source);
+        let mut layout = Layout::default();
+        doc.layout(1, &mut layout);
+        assert_eq!(layout.len(), prefix.len() + 4);
+
+        let row = doc.row(&layout, prefix.len() - 1).unwrap();
+        assert_eq!(row.join_spaces, None);
+        assert_eq!(row.runs().next().unwrap().source, Some(4095..4096));
+        let row = doc.row(&layout, prefix.len()).unwrap();
+        assert!(row.runs().next().is_none());
+        let row = doc.row(&layout, prefix.len() + 1).unwrap();
+        assert_eq!(row.join_spaces, Some(0));
+        let run = row.runs().next().unwrap();
+        assert_eq!(run.text, "e\u{301}");
+        assert!(run.style.bold && run.style.quote && run.source.is_none());
+        let replacement = doc
+            .row(&layout, prefix.len() + 2)
+            .unwrap()
+            .runs()
+            .next()
+            .unwrap();
+        assert_eq!(replacement.text, "�");
+        assert!(replacement.source.is_none());
+
+        doc.layout(0, &mut layout);
+        assert!(layout.is_empty() && doc.row(&layout, 0).is_none());
     }
 
     #[test]

@@ -40,11 +40,6 @@ impl<'a, T: Copy + Eq> Dropdown<'a, T> {
         self.value(next)
     }
 
-    /// Present the current value with a trailing disclosure indicator.
-    pub fn trigger(&self, rect: Rect, value: T, open: bool) -> window::TextLine {
-        self.trigger_line(rect, value, open, None)
-    }
-
     /// Present the value and disclosure indicator with fixed side padding.
     /// A placed graphical face replaces the brackets without moving either.
     pub fn trigger_with_face(
@@ -54,16 +49,7 @@ impl<'a, T: Copy + Eq> Dropdown<'a, T> {
         open: bool,
         graphical: bool,
     ) -> window::TextLine {
-        self.trigger_line(rect, value, open, form::edges(rect, graphical))
-    }
-
-    fn trigger_line(
-        &self,
-        rect: Rect,
-        value: T,
-        open: bool,
-        edges: Option<[char; 2]>,
-    ) -> window::TextLine {
+        let edges = form::edges(rect, graphical);
         let indicator = if open { '▴' } else { '▾' };
         if rect.width == 0 {
             return (rect, String::new(), false);
@@ -348,19 +334,25 @@ mod tests {
         assert_eq!(layout.bounds(), trigger);
         assert_eq!(layout.indices(), 2..3);
         assert_eq!(OPTIONS.option(layout, 2, Choice::Some).unwrap().0, trigger);
-        assert_eq!(OPTIONS.trigger(trigger, Choice::All, false).1, "  ▾");
         assert_eq!(
             OPTIONS
-                .trigger(
+                .trigger_with_face(trigger, Choice::All, false, false)
+                .1,
+            "[▾]"
+        );
+        assert_eq!(
+            OPTIONS
+                .trigger_with_face(
                     Rect {
-                        width: 5,
+                        width: 6,
                         ..trigger
                     },
                     Choice::All,
-                    true
+                    true,
+                    false,
                 )
                 .1,
-            "全  ▴"
+            "[全 ▴]"
         );
     }
 

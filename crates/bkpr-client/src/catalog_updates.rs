@@ -79,7 +79,7 @@ async fn observe(endpoint: &Endpoint, publisher: &mut Publisher<Update>) -> Resu
                 } else {
                     continuation = None;
                     cursor = Some(baseline);
-                    more = true;
+                    more = false;
                     if !publisher
                         .send(
                             endpoint,

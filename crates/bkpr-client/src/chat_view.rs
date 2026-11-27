@@ -17,37 +17,13 @@ use unicode_width::UnicodeWidthStr as _;
 
 const MAX_NICK: u16 = 24;
 const LIST_MIN_WIDTH: u16 = 55;
+const MAX_COMPLETIONS: usize = 5;
 
 pub(in crate::app) struct Entry {
     pub(super) message: ChannelMessage,
     document: markdown::Document,
     width: u16,
-    rows: Vec<WrappedRow>,
-}
-
-struct Run {
-    text: String,
-    style: markdown::Style,
-    mention_role: Option<Role>,
-}
-
-struct WrappedRow {
-    runs: Vec<Run>,
-    continuation_prefix: u16,
-    join_spaces: Option<usize>,
-}
-
-impl WrappedRow {
-    fn glyphs(&self, x: u16) -> impl Iterator<Item = (u16, u16, &str)> {
-        self.runs
-            .iter()
-            .flat_map(|run| run.text.graphemes(true))
-            .scan(x, |col, glyph| {
-                let start = *col;
-                *col += glyph.width() as u16;
-                Some((start, *col, glyph))
-            })
-    }
+    layout: markdown::Layout,
 }
 
 impl Entry {
@@ -57,7 +33,7 @@ impl Entry {
             message,
             document,
             width: 0,
-            rows: Vec::new(),
+            layout: markdown::Layout::default(),
         }
     }
 
@@ -71,22 +47,7 @@ impl Entry {
             return;
         }
         self.width = width;
-        self.rows = self
-            .document
-            .wrap(width.into())
-            .into_iter()
-            .map(|row| {
-                let mut runs = Vec::with_capacity(row.runs.len());
-                for run in row.runs {
-                    wrap_run(&mut runs, run, &self.message.message.mention_spans);
-                }
-                WrappedRow {
-                    runs,
-                    continuation_prefix: row.continuation_prefix as u16,
-                    join_spaces: row.join_spaces,
-                }
-            })
-            .collect();
+        self.document.layout(width.into(), &mut self.layout);
     }
 
     fn meta_rows(&self) -> usize {
@@ -99,7 +60,7 @@ impl Entry {
     fn len(&self, compact: bool, graphics: bool) -> usize {
         usize::from(compact)
             + self.meta_rows()
-            + self.rows.len().max(1)
+            + self.layout.len().max(1)
             + self.message.attachments.len()
                 * (1 + if graphics {
                     chat_images::PREVIEW_ROWS as usize
@@ -109,14 +70,11 @@ impl Entry {
     }
 }
 
-fn wrap_run(runs: &mut Vec<Run>, run: markdown::Run<'_>, spans: &[ChannelResolvedMentionSpan]) {
-    let mut push = |text: &str, mention_role| {
-        runs.push(Run {
-            text: text.to_owned(),
-            style: run.style,
-            mention_role,
-        });
-    };
+fn mention_runs(
+    run: markdown::Run<'_>,
+    spans: &[ChannelResolvedMentionSpan],
+    mut push: impl FnMut(&str, Option<Role>),
+) {
     let Some(source) = run.source.filter(|_| {
         !run.style.inline_code && !run.style.fenced_code && !run.style.quote && !run.style.link
     }) else {
@@ -162,6 +120,16 @@ fn wrap_run(runs: &mut Vec<Run>, run: markdown::Run<'_>, spans: &[ChannelResolve
     push(&run.text[range_start..], active_role);
 }
 
+fn row_glyphs(row: markdown::RowView<'_>, x: u16) -> impl Iterator<Item = (u16, u16, &str)> {
+    row.runs()
+        .flat_map(|run| run.text.graphemes(true))
+        .scan(x, |col, glyph| {
+            let start = *col;
+            *col += glyph.width() as u16;
+            Some((start, *col, glyph))
+        })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Hit {
     Channel(usize),
@@ -197,11 +165,12 @@ struct HistoryRow {
 }
 
 impl HistoryRow {
-    fn text(self, entries: &VecDeque<Entry>) -> Option<&WrappedRow> {
-        let entry = entries
+    fn text(self, entries: &VecDeque<Entry>) -> Option<markdown::RowView<'_>> {
+        let index = entries
             .binary_search_by_key(&self.sequence, Entry::sequence)
             .ok()?;
-        entries[entry].rows.get(self.offset)
+        let entry = &entries[index];
+        entry.document.row(&entry.layout, self.offset)
     }
 }
 
@@ -238,7 +207,10 @@ pub(super) struct Paint {
     outer: Rect,
     images: Frame,
     history: Rect,
+    completion_capacity: usize,
     composer_width: u16,
+    composer: Option<ComposerPaint>,
+    composer_dirty: bool,
     ranges: Vec<Range>,
     start: usize,
     tail: usize,
@@ -259,6 +231,40 @@ struct PaintKey {
     graphics: bool,
     focused: bool,
     backgrounds: [ColorSource; 3],
+}
+
+#[derive(Clone, Copy)]
+struct ComposerPaint {
+    area: Rect,
+    rows: u16,
+    max_rows: u16,
+    focused: bool,
+    stable_thread: bool,
+}
+
+struct ComposerText {
+    lines: Vec<std::ops::Range<usize>>,
+    caret: usize,
+}
+
+impl ComposerText {
+    fn new(draft: Option<&Draft>, columns: u16) -> Self {
+        let (lines, caret) = draft.map_or_else(
+            || (Vec::new(), 0),
+            |draft| draft.lines(usize::from(columns)),
+        );
+        Self { lines, caret }
+    }
+
+    fn rows(&self, max: u16) -> u16 {
+        self.lines.len().max(1).min(usize::from(max)) as u16
+    }
+}
+
+fn draft_affects_thread(draft: Option<&Draft>) -> bool {
+    draft.is_some_and(|draft| {
+        draft.completion.is_some() || draft.error.is_some() || draft.input.error().is_some()
+    })
 }
 
 impl Default for Paint {
@@ -283,7 +289,10 @@ impl Default for Paint {
             outer: Rect::default(),
             images: graphics_frame(initial),
             history: Rect::default(),
+            completion_capacity: 0,
             composer_width: 1,
+            composer: None,
+            composer_dirty: false,
             ranges: Vec::new(),
             start: 0,
             tail: 0,
@@ -311,6 +320,7 @@ impl Paint {
         self.rendered.clear();
         self.ranges.clear();
         self.rows.clear();
+        self.completion_capacity = 0;
         self.clear_selection();
         self.key = None;
     }
@@ -328,6 +338,10 @@ impl Paint {
     }
     pub(super) fn composer_width(&self) -> u16 {
         self.composer_width
+    }
+
+    pub(super) fn completion_capacity(&self) -> usize {
+        self.completion_capacity
     }
 
     pub(super) fn scroll(&mut self, delta: isize) -> Option<(Anchor, bool)> {
@@ -359,7 +373,10 @@ impl Paint {
         self.key = Some(key);
         self.outer = key.outer;
         self.history = Rect::default();
+        self.completion_capacity = 0;
         self.composer_width = 1;
+        self.composer = None;
+        self.composer_dirty = false;
         self.ranges.clear();
         self.rendered.clear();
         self.hits.clear();
@@ -514,10 +531,7 @@ impl Paint {
             });
         }
         let x = x.clamp(left, row.end - 1);
-        let (start, end, _) = row
-            .text(entries)?
-            .glyphs(row.x)
-            .find(|&(_, end, _)| x < end)?;
+        let (start, end, _) = row_glyphs(row.text(entries)?, row.x).find(|&(_, end, _)| x < end)?;
         Some(Point {
             row: index,
             start,
@@ -601,6 +615,11 @@ impl Chat {
     }
     pub(in crate::app) fn redraw(&mut self) {
         self.paint.key = None;
+    }
+
+    /// Repaint the draft without rebuilding the thread when its layout is unchanged.
+    pub(super) fn redraw_composer(&mut self) {
+        self.paint.composer_dirty = true;
     }
 
     pub(in crate::app) fn hover_channel(&mut self, pointer: Option<(u16, u16)>) {
@@ -855,7 +874,8 @@ impl Chat {
                 );
             }
             let (start, end) = row.selected_columns(index, lo, hi);
-            for (left, right, glyph) in text.glyphs(row.x) {
+            let join_spaces = text.join_spaces;
+            for (left, right, glyph) in row_glyphs(text, row.x) {
                 if right > end {
                     break;
                 }
@@ -864,7 +884,7 @@ impl Chat {
                     result.extend_from_slice(glyph.as_bytes());
                 }
             }
-            previous = Some((row, text.join_spaces));
+            previous = Some((row, join_spaces));
         }
         Ok(Some(result))
     }
@@ -890,8 +910,32 @@ impl Chat {
             focused,
             backgrounds,
         };
+        let mut composer_text = None;
         if self.paint.key == Some(key) {
-            return;
+            if !self.paint.composer_dirty {
+                return;
+            }
+            let draft = self
+                .active
+                .as_ref()
+                .and_then(|active| self.drafts.get(&active.id));
+            if let Some(composer) = self
+                .paint
+                .composer
+                .filter(|composer| composer.stable_thread)
+                && !draft_affects_thread(draft)
+            {
+                let text = ComposerText::new(draft, self.paint.composer_width);
+                if text.rows(composer.max_rows) == composer.rows {
+                    let paint = &mut self.paint;
+                    clear(&mut paint.surface.frame, composer.area);
+                    paint.fill_card(theme, composer.area, backgrounds[1]);
+                    paint_composer(paint, theme, backgrounds[1], composer, draft, &text);
+                    paint.composer_dirty = false;
+                    return;
+                }
+                composer_text = Some(text);
+            }
         }
         let geometry_changed = self.paint.outer != outer || self.paint.surface.frame.size != size;
         if geometry_changed {
@@ -900,7 +944,7 @@ impl Chat {
         }
         let old_history = self.paint.history;
         self.paint.begin(key, theme);
-        self.paint_contents(screen, key, theme);
+        self.paint_contents(screen, key, theme, composer_text);
         if geometry_changed
             || self.paint.history != old_history
             || self.paint.rows != self.paint.previous_rows
@@ -909,7 +953,13 @@ impl Chat {
         }
     }
 
-    fn paint_contents(&mut self, screen: Size, key: PaintKey, theme: &Theme) {
+    fn paint_contents(
+        &mut self,
+        screen: Size,
+        key: PaintKey,
+        theme: &Theme,
+        composer_text: Option<ComposerText>,
+    ) {
         let PaintKey {
             outer,
             size,
@@ -1093,7 +1143,7 @@ impl Chat {
             .saturating_sub(history.paused_at.unwrap_or_else(|| history.latest()));
         let status = if let Some(send) = self.sends.get(&active.id) {
             let (role, label) = match send {
-                Send::Pending(_) => (Role::Info, "Sending…"),
+                Send::Pending { .. } => (Role::Info, "Sending…"),
                 Send::Unknown(_) => (
                     Role::Error,
                     "Send outcome unknown · Ctrl-r retries the same post",
@@ -1121,11 +1171,14 @@ impl Chat {
         } else {
             None
         };
-        let status_rows = u16::from(status.is_some() && size.rows > 1);
+        let catalog_rows = u16::from(self.catalog_error.is_some());
+        let detail_rows = u16::from(status.is_some() && size.rows > 1 + catalog_rows);
+        let status_rows = catalog_rows + detail_rows;
         let has_composer = writing && size.rows > 1 + status_rows;
         let inset = u16::from(has_composer && columns >= 5 && size.rows >= 6 + status_rows);
-        let history_inset =
-            u16::from(columns >= 3 && size.rows >= 3 && (!has_composer || inset != 0));
+        let history_inset = u16::from(
+            columns >= 3 && size.rows >= 3.max(2 + status_rows) && (!has_composer || inset != 0),
+        );
         let composer_columns = columns.saturating_sub(2 * inset);
         let composer_padding = u16::from(composer_columns >= 6);
         let (button, button_width) = if channels_wide {
@@ -1142,37 +1195,19 @@ impl Chat {
             narrow_channels_button(thread_columns, 34)
         };
         let history_indent = if has_composer { 0 } else { button_width };
-        let (draft_lines, caret_line) = if has_composer {
+        let max_composer_rows = if has_composer {
             paint.composer_width = composer_columns
                 .saturating_sub(button_width + composer_padding + 3)
                 .max(1);
-            draft.map_or_else(
-                || (Vec::new(), 0),
-                |draft| draft.lines(usize::from(paint.composer_width)),
-            )
-        } else {
-            (Vec::new(), 0)
-        };
-        let composer_rows = if has_composer {
-            (draft_lines.len().max(1) as u16)
-                .min(4)
-                .min(size.rows - 1 - status_rows - 2 * inset - history_inset)
+            4.min(size.rows - 1 - status_rows - 2 * inset - history_inset)
         } else {
             0
         };
+        let composer_text = composer_text.unwrap_or_else(|| {
+            ComposerText::new(draft.filter(|_| has_composer), paint.composer_width)
+        });
+        let composer_rows = composer_text.rows(max_composer_rows);
         let composer_at = size.rows - composer_rows - 2 * inset;
-        let choices = if active.roster_ready {
-            draft.map_or(0, |draft| draft.choices(&active.roster).count())
-        } else {
-            0
-        };
-        let completion_rows =
-            if has_composer && draft.is_some_and(|draft| draft.completion.is_some()) {
-                (choices.max(1) as u16)
-                    .min(composer_at.saturating_sub(1 + status_rows + 2 * history_inset))
-            } else {
-                0
-            };
         let (thread_outer, composer_outer) = if inset != 0 {
             let (thread, _, composer) = crate::tiling::partition_at(
                 thread_column,
@@ -1201,6 +1236,29 @@ impl Chat {
             paint.fill_card(theme, thread_outer, list_background);
             thread_outer
         };
+        let completion_capacity = if has_composer
+            && thread.width != 0
+            && draft.is_some_and(|draft| draft.completion.is_some())
+        {
+            usize::from(thread.height.saturating_sub(1 + status_rows)).min(MAX_COMPLETIONS)
+        } else {
+            0
+        };
+        let mut choices = [None; MAX_COMPLETIONS];
+        if completion_capacity != 0
+            && active.roster_ready
+            && let Some(draft) = draft
+        {
+            for (slot, choice) in choices
+                .iter_mut()
+                .zip(draft.choices(&active.roster, completion_capacity))
+            {
+                *slot = Some(choice);
+            }
+        }
+        let choice_count = choices.iter().flatten().count();
+        paint.completion_capacity = choice_count;
+        let completion_rows = choice_count.max(1).min(completion_capacity) as u16;
         let completion_at = thread.y + thread.height - completion_rows;
         let status_at = completion_at - status_rows;
         let history_rect = Rect {
@@ -1254,10 +1312,20 @@ impl Chat {
                 list_background,
             );
         }
-        if status_rows != 0
+        if let Some(error) = &self.catalog_error {
+            paint.card_line(
+                theme,
+                row(history_rect.x, status_at, history_rect.width),
+                &format!("Channel catalog stopped · {error}"),
+                Role::Error,
+                false,
+                list_background,
+            );
+        }
+        if detail_rows != 0
             && let Some((role, label, hit)) = status
         {
-            let bounds = row(history_rect.x, status_at, history_rect.width);
+            let bounds = row(history_rect.x, status_at + catalog_rows, history_rect.width);
             paint.card_line(theme, bounds, &label, role, false, list_background);
             if let Some(hit) = hit {
                 paint.target(bounds, hit);
@@ -1266,7 +1334,7 @@ impl Chat {
         if completion_rows > 0
             && let Some(draft) = draft
         {
-            if choices == 0 {
+            if choice_count == 0 {
                 let label = active
                     .roster_error
                     .as_deref()
@@ -1284,11 +1352,7 @@ impl Chat {
                     list_background,
                 );
             } else {
-                for (i, (index, entry, chosen)) in draft
-                    .choices(&active.roster)
-                    .take(completion_rows.into())
-                    .enumerate()
-                {
+                for (i, (index, entry, chosen)) in choices.into_iter().flatten().enumerate() {
                     let bounds = row(thread.x, completion_at + i as u16, thread.width);
                     let (label, mut hint) = Draft::selection_label(entry, index);
                     let label_width = text_width(&label).min(usize::from(bounds.width)) as u16;
@@ -1354,93 +1418,119 @@ impl Chat {
                 paint.fill_card(theme, outer, composer_background);
                 outer
             };
-            let left = body.x + button_width + composer_padding;
-            let columns = body.width - button_width - composer_padding;
-            let composer = body.y;
-            let enabled = !self.sends.contains_key(&active.id);
-            let has_composer_focus = focused && enabled;
-            let visible_from = caret_line.saturating_sub(composer_rows.saturating_sub(1) as usize);
-            paint.target(
-                Rect {
-                    x: left,
-                    width: columns,
+            let composer = ComposerPaint {
+                area: Rect {
+                    x: body.x + button_width + composer_padding,
+                    width: body.width - button_width - composer_padding,
                     ..body
                 },
-                Hit::Composer,
-            );
+                rows: composer_rows,
+                max_rows: max_composer_rows,
+                focused: focused && !self.sends.contains_key(&active.id),
+                stable_thread: !draft_affects_thread(draft),
+            };
+            paint.composer = Some(composer);
+            paint.target(composer.area, Hit::Composer);
             if button_width > 0 {
                 paint.channels_button(
                     theme,
-                    row(body.x, composer, text_width(button) as u16),
+                    row(body.x, body.y, text_width(button) as u16),
                     button,
                     Some(composer_background),
                 );
             }
-            let reply = draft.and_then(|draft| draft.reply_to.as_ref());
-            let (prompt, fallback) = if reply.is_some() {
-                ("↪", ">")
-            } else {
-                ("›", ">")
-            };
-            let lead = if columns > 1 && text_width(prompt) == 1 {
-                prompt
-            } else {
-                fallback
-            };
+            paint_composer(
+                paint,
+                theme,
+                composer_background,
+                composer,
+                draft,
+                &composer_text,
+            );
+        }
+    }
+}
+
+fn paint_composer(
+    paint: &mut Paint,
+    theme: &Theme,
+    background: ColorSource,
+    composer: ComposerPaint,
+    draft: Option<&Draft>,
+    draft_text: &ComposerText,
+) {
+    let Rect {
+        x: left,
+        y: top,
+        width: columns,
+        ..
+    } = composer.area;
+    let caret = draft_text.caret;
+    let visible_from = caret.saturating_sub(usize::from(composer.rows - 1));
+    let prompt = if draft.is_some_and(|draft| draft.reply_to.is_some()) {
+        "↪"
+    } else {
+        "›"
+    };
+    let lead = if columns > 1 && text_width(prompt) == 1 {
+        prompt
+    } else {
+        ">"
+    };
+    paint.card_line(
+        theme,
+        row(left, top, 1.min(columns)),
+        lead,
+        Role::Accent,
+        false,
+        background,
+    );
+    if let Some(draft) = draft {
+        let mention_style = card_style(theme, Role::Secondary, background);
+        for (i, line) in draft_text
+            .lines
+            .iter()
+            .enumerate()
+            .skip(visible_from)
+            .take(composer.rows.into())
+        {
+            let y = top + (i - visible_from) as u16;
+            let bounds = row(left.saturating_add(2), y, columns.saturating_sub(2));
             paint.card_line(
                 theme,
-                row(left, composer, 1.min(columns)),
-                lead,
-                Role::Accent,
+                bounds,
+                &draft.input.value[line.clone()],
+                Role::Base,
                 false,
-                composer_background,
+                background,
             );
-            if let Some(draft) = draft {
-                let mention_style = card_style(theme, Role::Secondary, composer_background);
-                for (i, line) in draft_lines
-                    .iter()
-                    .enumerate()
-                    .skip(visible_from)
-                    .take(composer_rows.into())
-                {
-                    let y = composer + (i - visible_from) as u16;
-                    let bounds = row(left.saturating_add(2), y, columns.saturating_sub(2));
-                    paint.card_line(
-                        theme,
-                        bounds,
-                        &draft.input.value[line.clone()],
-                        Role::Base,
-                        false,
-                        composer_background,
-                    );
-                    for span in draft.highlighted(line) {
-                        let x = bounds.x
-                            + (text_width(&draft.input.value[line.start..span.start]) as u16)
-                                .min(bounds.width);
-                        let width = (text_width(&draft.input.value[span]) as u16)
-                            .min(bounds.x.saturating_add(bounds.width).saturating_sub(x));
-                        style_cells(&mut paint.surface.frame, x, y, width, &mention_style, None);
-                    }
-                }
-            }
-            if has_composer_focus && columns > 2 {
-                let col = draft
-                    .and_then(|draft| {
-                        draft_lines.get(caret_line).map(|line| {
-                            text_width(&draft.input.value[line.start..draft.input.cursor])
-                        })
-                    })
-                    .unwrap_or(0);
-                paint.surface.frame.cursor = Cursor {
-                    x: left + 2 + col.min(usize::from(columns - 3)) as u16,
-                    y: composer + (caret_line - visible_from) as u16,
-                    visible: true,
-                    blinking: false,
-                    shape: CursorShape::Bar,
-                    color: None,
-                };
+            for span in draft.highlighted(line) {
+                let x = bounds.x
+                    + (text_width(&draft.input.value[line.start..span.start]) as u16)
+                        .min(bounds.width);
+                let width = (text_width(&draft.input.value[span]) as u16)
+                    .min(bounds.x.saturating_add(bounds.width).saturating_sub(x));
+                style_cells(&mut paint.surface.frame, x, y, width, &mention_style, None);
             }
         }
+    }
+    if composer.focused && columns > 2 {
+        let col = draft
+            .and_then(|draft| {
+                draft_text
+                    .lines
+                    .get(caret)
+                    .map(|line| text_width(&draft.input.value[line.start..draft.input.cursor]))
+            })
+            .unwrap_or(0);
+        paint.surface.frame.cursor = Cursor {
+            x: left + 2 + col.min(usize::from(columns - 3)) as u16,
+            y: top + (caret - visible_from) as u16,
+            visible: true,
+            blinking: false,
+            shape: CursorShape::Bar,
+            color: None,
+        };
     }
 }
 
@@ -1633,51 +1723,54 @@ fn paint_history(
             }
             line += 1;
         }
-        for (offset, wrapped) in entry
-            .rows
-            .iter()
-            .enumerate()
-            .skip(upper.saturating_sub(line))
-            .take(lower.saturating_sub(line.max(upper)))
-        {
+        let first = upper.saturating_sub(line);
+        let last = lower.saturating_sub(line).min(entry.layout.len());
+        for offset in first..last {
             let Some(y) = relative(line + offset) else {
                 continue;
             };
             let mut col = x;
-            for run in &wrapped.runs {
+            let wrapped = entry
+                .document
+                .row(&entry.layout, offset)
+                .expect("visible row");
+            let prefix = wrapped.continuation_prefix as u16;
+            for run in wrapped.runs() {
                 let style = run.style;
-                let role = if let Some(mention) = run.mention_role {
-                    mention
-                } else if style.link {
-                    Role::Info
-                } else if style.inline_code || style.fenced_code {
-                    Role::Secondary
-                } else if style.quote {
-                    Role::Muted
-                } else {
-                    Role::Base
-                };
-                col += draw(
-                    &mut paint.surface.frame,
-                    theme,
-                    col,
-                    y,
-                    &run.text,
-                    role,
-                    false,
-                    Some(style),
-                );
+                mention_runs(run, &meta.mention_spans, |value, mention_role| {
+                    let role = if let Some(mention) = mention_role {
+                        mention
+                    } else if style.link {
+                        Role::Info
+                    } else if style.inline_code || style.fenced_code {
+                        Role::Secondary
+                    } else if style.quote {
+                        Role::Muted
+                    } else {
+                        Role::Base
+                    };
+                    col += draw(
+                        &mut paint.surface.frame,
+                        theme,
+                        col,
+                        y,
+                        value,
+                        role,
+                        false,
+                        Some(style),
+                    );
+                });
             }
             paint.rows.push(HistoryRow {
                 sequence,
                 offset,
                 y,
                 x,
-                prefix: wrapped.continuation_prefix,
+                prefix,
                 end: col,
             });
         }
-        line += entry.rows.len().max(1);
+        line += entry.layout.len().max(1);
         for attachment in &entry.message.attachments {
             if let Some(y) = relative(line) {
                 let alt = attachment
@@ -1858,7 +1951,7 @@ mod tests {
     use super::*;
     use crate::app::{
         App,
-        chat::Completion,
+        chat::{Completion, Effect},
         tests::{attach_fixture, fixture, key, size},
     };
     use bkpr_tui_framework::{
@@ -1889,6 +1982,121 @@ mod tests {
                 direct: false,
             },
         )]));
+    }
+
+    fn paint_thread(chat: &mut Chat, size: Size, theme: &Theme) {
+        chat.paint(
+            Rect {
+                width: size.cols,
+                height: size.rows,
+                ..Rect::default()
+            },
+            size,
+            theme,
+            false,
+            false,
+            true,
+            BACKGROUNDS,
+        );
+    }
+
+    #[test]
+    fn only_painted_mention_rows_offer_keyboard_acceptance() {
+        let mut chat = Chat::default();
+        open_channel(&mut chat, 0);
+        let active = chat.active.as_mut().unwrap();
+        let channel = active.id.clone();
+        active.roster = ["First", "Second"]
+            .into_iter()
+            .map(|name| ChannelRosterEntry {
+                participant: Participant {
+                    id: ParticipantId(name.into()),
+                    kind: ParticipantKind::Agent,
+                    display_name: name.into(),
+                },
+                binding: Some(ChannelMentionBinding {
+                    participant_id: ParticipantId(name.into()),
+                    launch_id: name.into(),
+                    binding_generation: 1,
+                }),
+            })
+            .collect();
+        active.roster_ready = true;
+        assert!(
+            chat.drafts
+                .entry(channel.clone())
+                .or_default()
+                .insert("@", true)
+        );
+        let theme = Theme::default();
+        let tiny = Size {
+            cols: 40,
+            rows: 2,
+            ..size()
+        };
+        paint_thread(&mut chat, tiny, &theme);
+        assert!(matches!(chat.key(&key("Enter"), false), Effect::None));
+        assert_eq!(chat.drafts[&channel].input.value, "@");
+        assert!(chat.drafts[&channel].completion.is_some());
+
+        let short = Size { rows: 3, ..tiny };
+        paint_thread(&mut chat, short, &theme);
+        chat.key(&key("ArrowDown"), false);
+        paint_thread(&mut chat, short, &theme);
+        let chosen = chat.row_highlights()[1].unwrap();
+        assert_eq!(chat.paint.hit(chosen.x, chosen.y), Some(Hit::Mention(1)));
+        chat.key(&key("Enter"), false);
+        assert_eq!(chat.drafts[&channel].input.value, "@Second ");
+    }
+
+    #[test]
+    fn an_open_thread_shows_a_stopped_catalog_alongside_its_history_error() {
+        let mut chat = Chat::default();
+        open_channel(&mut chat, 0);
+        chat.active.as_mut().unwrap().history.error = Some("History unavailable".into());
+        chat.catalog_error(&anyhow::anyhow!("stream closed"));
+        paint_thread(&mut chat, size(), &Theme::default());
+        let frame = &chat.surface().frame;
+        for label in [
+            "Channel catalog stopped · stream closed",
+            "History unavailable",
+        ] {
+            assert!(frame.rows.iter().any(|row| {
+                row.cells
+                    .iter()
+                    .map(|cell| cell.text.as_str())
+                    .collect::<String>()
+                    .contains(label)
+            }));
+        }
+        assert!(frame.cursor.visible);
+    }
+
+    #[test]
+    fn same_height_typing_retains_thread_paint_but_a_new_line_reflows_it() {
+        let mut chat = Chat::default();
+        open_channel(&mut chat, 0);
+        let theme = Theme::default();
+        paint_thread(&mut chat, size(), &theme);
+        let area = chat.paint.history;
+        let old_cursor = &chat.surface().frame.cursor;
+        let (x, y) = (old_cursor.x, old_cursor.y);
+        chat.set_graphical_inlays(0, &theme);
+
+        let mut event = key("KeyE");
+        event.text = "é".into();
+        chat.key(&event, false);
+        paint_thread(&mut chat, size(), &theme);
+        let frame = &chat.surface().frame;
+        assert_eq!(frame.rows[usize::from(y)].cells[usize::from(x)].text, "é");
+        assert_eq!(frame.cursor.x, x + 1);
+        assert_eq!(chat.paint.inlay_mask, Some(0));
+        assert_eq!(chat.paint.history, area);
+
+        chat.draft().unwrap().insert("\n", false);
+        chat.redraw_composer();
+        paint_thread(&mut chat, size(), &theme);
+        assert_eq!(chat.paint.history.height + 1, area.height);
     }
 
     fn pointer(
@@ -1942,26 +2150,25 @@ mod tests {
         let document = markdown::Document::parse(text);
         for width in [8, 80] {
             let mut colored = [String::new(), String::new()];
-            for row in document.wrap(width) {
-                let original: String = row.runs.iter().map(|run| run.text).collect();
-                let mut wrapped = Vec::new();
-                for run in row.runs {
-                    wrap_run(&mut wrapped, run, &marked);
+            let mut layout = markdown::Layout::default();
+            document.layout(width, &mut layout);
+            for index in 0..layout.len() {
+                let row = document.row(&layout, index).unwrap();
+                let original: String = row.runs().map(|run| run.text).collect();
+                let mut painted = String::new();
+                let row = document.row(&layout, index).unwrap();
+                for run in row.runs() {
+                    let style = run.style;
+                    mention_runs(run, &marked, |text, role| {
+                        painted.push_str(text);
+                        if let Some(role) = role {
+                            assert!(!style.inline_code);
+                            assert_eq!(style.bold, role == sender_role(&second));
+                            colored[usize::from(role == sender_role(&second))].push_str(text);
+                        }
+                    });
                 }
-                assert_eq!(
-                    wrapped
-                        .iter()
-                        .map(|run| run.text.as_str())
-                        .collect::<String>(),
-                    original
-                );
-                for run in wrapped {
-                    if let Some(role) = run.mention_role {
-                        assert!(!run.style.inline_code);
-                        assert_eq!(run.style.bold, role == sender_role(&second));
-                        colored[usize::from(role == sender_role(&second))].push_str(&run.text);
-                    }
-                }
+                assert_eq!(painted, original);
             }
             let token = if width == 8 {
                 "@Équipe界"

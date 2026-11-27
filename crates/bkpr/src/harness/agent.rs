@@ -116,7 +116,7 @@ fn channel_tools() -> [Value; 10] {
     [
         json!({
             "name":"channel_list",
-            "description":"Page accessible workspace channels and current policy; #desk and #team work without discovery. In new #desk channels, user posts wake addressed agents or all if none were mentioned; agent posts wake only eligible agents explicitly mentioned. Questions and reports request user attention. New #team channels wake eligible agents except the author, with no user attention. Inspect current settings; continue with next_after.",
+            "description":"Page accessible workspace channels and current policy; #desk and #team work without discovery. In new #desk channels, user posts wake addressed agents or all if none were mentioned; agent posts wake only eligible agents explicitly mentioned. Questions and reports request user attention. In new #team channels, posts wake addressed agents or all eligible agents if none were mentioned, excluding the author, with no user attention. Inspect current settings; continue with next_after.",
             "inputSchema":{"type":"object","properties":{"after":id,"limit":limit},"additionalProperties":false}
         }),
         json!({

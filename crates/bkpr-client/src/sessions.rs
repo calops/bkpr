@@ -1,6 +1,9 @@
 use super::*;
 use crate::attachments::SessionTarget;
 use crate::transport::Lifecycle;
+use bkpr_protocol::channels::{
+    ChannelId, ChannelRequest, ChannelResponse, ChannelSummary, MAX_PAGE_LIMIT,
+};
 use bkpr_protocol::{ChannelNotificationSource, NotificationSource};
 use std::{io, sync::Mutex};
 use tokio_util::sync::CancellationToken;
@@ -140,6 +143,14 @@ enum StopState {
 struct PendingStop {
     target: crate::controller::SessionStopTarget,
     origin: crate::tree::Owner,
+}
+
+struct ChannelActivation {
+    origin: crate::tree::Owner,
+    origin_selection: u64,
+    owner: crate::tree::Owner,
+    target: ChannelNotificationSource,
+    lookup: crate::observation::Observer<Option<ChannelSummary>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -290,6 +301,7 @@ pub(super) struct Coordinator {
     retirement_jobs: Option<jobs::Jobs<Retirement>>,
     desktop: crate::desktop::Desktop,
     notification_turn: usize,
+    channel_activation: Option<ChannelActivation>,
     stops: HashMap<String, PendingStop>,
     stop_error: Option<anyhow::Error>,
 }
@@ -621,6 +633,7 @@ impl Coordinator {
             retirement_jobs: Some(retirement_jobs),
             desktop: crate::desktop::Desktop::default(),
             notification_turn: 0,
+            channel_activation: None,
             stops: HashMap::new(),
             stop_error: None,
         })
@@ -840,6 +853,13 @@ impl Coordinator {
 
     fn retire_current(&mut self, index: usize, graceful: bool) -> Result<()> {
         self.remember_origins();
+        if self
+            .channel_activation
+            .as_ref()
+            .is_some_and(|pending| pending.owner.slot == index || pending.origin.slot == index)
+        {
+            self.channel_activation = None;
+        }
         let session = &mut self.sessions[index];
         let mut owner = session.owner.take();
         let retirement_token = if graceful && owner.is_some() {
@@ -1238,6 +1258,7 @@ impl Coordinator {
         if self.sessions[self.selected].present && !self.app().session_navigation_allowed() {
             return Ok(());
         }
+        self.channel_activation = None;
         let old = self.selected;
         self.remember_origins();
         if let Some(app) = self.sessions[old].app.as_mut() {
@@ -1522,6 +1543,7 @@ impl Coordinator {
                 self.apply_channel_catalog(index, update);
             }
         }
+        self.complete_channel_activation(size)?;
         if self.started {
             for remote in [false, true] {
                 for index in 0..self.sessions.len() {
@@ -1580,7 +1602,6 @@ impl Coordinator {
         update: Result<crate::catalog_updates::Update>,
     ) {
         use crate::catalog_updates::Update;
-        use bkpr_protocol::channels::ChannelCatalogChange;
         let session = &mut self.sessions[index];
         let Some(app) = &mut session.app else { return };
         let owner = crate::tree::Owner {
@@ -1596,20 +1617,7 @@ impl Coordinator {
                 app.chat.reset_catalog();
                 true
             }
-            Ok(Update::Changes(changes)) => {
-                let mut changed = false;
-                for change in changes {
-                    match change {
-                        ChannelCatalogChange::Upsert { channel } => {
-                            changed |= app.chat.upsert(channel);
-                        }
-                        ChannelCatalogChange::WorkspaceClosed { workspace_id } => {
-                            changed |= app.chat.workspace_closed(&workspace_id);
-                        }
-                    }
-                }
-                changed
-            }
+            Ok(Update::Changes(changes)) => app.chat.apply_catalog_changes(changes),
             Err(error) => {
                 session.catalog.take();
                 app.chat.catalog_error(&error);
@@ -1617,12 +1625,17 @@ impl Coordinator {
             }
         };
         if replace_badges {
-            let workspaces = app.chat.attention().map(str::to_owned).collect();
-            self.tree
-                .lock()
-                .unwrap()
-                .set_channel_attention(owner, workspaces);
+            self.publish_channel_attention(owner);
         }
+    }
+
+    fn publish_channel_attention(&self, owner: crate::tree::Owner) {
+        let app = self.sessions[owner.slot].app.as_ref().unwrap();
+        let workspaces = app.chat.attention().map(str::to_owned).collect();
+        self.tree
+            .lock()
+            .unwrap()
+            .set_channel_attention(owner, workspaces);
     }
 
     pub fn append_poll_fds(&self, fds: &mut Vec<libc::pollfd>) {
@@ -1641,6 +1654,13 @@ impl Coordinator {
             events: libc::POLLIN,
             revents: 0,
         });
+        if let Some(pending) = &self.channel_activation {
+            fds.push(libc::pollfd {
+                fd: pending.lookup.wake.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            });
+        }
         for (index, session) in self.sessions.iter().enumerate() {
             if session.stop == StopState::Pending {
                 if let Some(owner) = &session.owner {
@@ -1906,51 +1926,176 @@ impl Coordinator {
         Ok(())
     }
 
-    fn open_channel_notification(
+    fn channel_notification_session(
+        &self,
+        owner: crate::tree::Owner,
+        target: &ChannelNotificationSource,
+    ) -> Option<(&Attachment, &App)> {
+        let session = self.sessions.get(owner.slot)?;
+        if !session.present
+            || session.phase != Phase::Online
+            || session.stop != StopState::None
+            || session.generation != owner.generation
+        {
+            return None;
+        }
+        session
+            .owner
+            .as_ref()
+            .zip(session.app.as_ref())
+            .filter(|(attachment, app)| {
+                !app.socket.is_revoked()
+                    && crate::desktop::source_session_is_current(&target.session, attachment.info())
+            })
+    }
+
+    fn channel_navigation_allowed(&self) -> bool {
+        let app = self.app();
+        app.session_navigation_allowed() && !app.diagnostic_active() && app.image_viewer.is_none()
+    }
+
+    fn start_channel_activation(
         &mut self,
         owner: crate::tree::Owner,
         target: ChannelNotificationSource,
-        size: Size,
-    ) -> Result<()> {
-        let current = self.sessions.get(owner.slot).is_some_and(|session| {
-            session.present
-                && session.phase == Phase::Online
-                && session.generation == owner.generation
-                && session.owner.as_ref().is_some_and(|attachment| {
-                    crate::desktop::source_session_is_current(&target.session, attachment.info())
-                })
-                && session.app.as_ref().is_some_and(|app| {
-                    app.registry
-                        .workspaces
-                        .iter()
-                        .any(|workspace| workspace.id == target.workspace_id)
-                        && app
-                            .chat
-                            .contains_channel(&target.workspace_id, &target.channel_id)
-                })
-        });
-        if !current {
+    ) {
+        let Some((attachment, app)) = self.channel_notification_session(owner, &target) else {
             self.app_mut()
                 .notify("The original channel is no longer available.".into());
-        } else if !self.app().session_navigation_allowed() {
+            return;
+        };
+        if !self.channel_navigation_allowed() {
             self.app_mut()
                 .notify("Close the active dialog before opening the channel.".into());
-        } else {
-            self.select(owner.slot, size)?;
-            if self.selected == owner.slot {
-                let app = self.app_mut();
-                app.open_chat(target.workspace_id.clone());
-                app.chat.jump(
-                    target.workspace_id,
-                    target.channel_id,
-                    target.message_id,
-                    target.sequence,
-                );
+            return;
+        }
+        let endpoint = attachment.endpoint();
+        let workspace = app
+            .chat
+            .channel(&target.workspace_id, &target.channel_id)
+            .is_none()
+            .then(|| target.workspace_id.clone());
+        let channel_id = target.channel_id.clone();
+        let message_id = target.message_id.clone();
+        let sequence = target.sequence;
+        let lookup = crate::observation::Observer::spawn(
+            "bkpr-channel-activation",
+            endpoint,
+            move |endpoint, mut publisher| async move {
+                let result = async {
+                    let summary = match workspace {
+                        Some(workspace) => Some(
+                            find_notification_channel(
+                                &endpoint,
+                                &publisher.cancellation,
+                                workspace,
+                                &channel_id,
+                            )
+                            .await?,
+                        ),
+                        None => None,
+                    };
+                    let payload = endpoint
+                        .checked_observation_payload_async(
+                            Operation::Channels {
+                                request: ChannelRequest::Read {
+                                    channel_id,
+                                    message_id: message_id.clone(),
+                                },
+                            },
+                            &publisher.cancellation,
+                        )
+                        .await?;
+                    anyhow::ensure!(
+                        matches!(payload, Payload::Channels(ChannelResponse::Message { message })
+                            if message.message.id == message_id && message.message.sequence == sequence),
+                        "channel notification does not match the retained message",
+                    );
+                    Ok(summary)
+                }
+                .await;
+                publisher.send(&endpoint, result).await;
+            },
+        );
+        match lookup {
+            Ok(lookup) => {
+                self.channel_activation = Some(ChannelActivation {
+                    origin: self.current_owner(),
+                    origin_selection: self.app().selection_epoch,
+                    owner,
+                    target,
+                    lookup,
+                });
             }
+            Err(error) => {
+                self.app()
+                    .report_failure("Couldn't open the channel notification.", &error);
+            }
+        }
+    }
+
+    fn complete_channel_activation(&mut self, size: Size) -> Result<()> {
+        let Some(pending) = self.channel_activation.as_ref() else {
+            return Ok(());
+        };
+        if pending.origin != self.current_owner()
+            || pending.origin_selection != self.app().selection_epoch
+            || !self.channel_navigation_allowed()
+            || self
+                .channel_notification_session(pending.owner, &pending.target)
+                .is_none()
+        {
+            self.channel_activation = None;
+            return Ok(());
+        }
+        let Some(result) = self.channel_activation.as_mut().unwrap().lookup.next() else {
+            return Ok(());
+        };
+        let ChannelActivation { owner, target, .. } = self.channel_activation.take().unwrap();
+        let app = self.sessions[owner.slot].app.as_ref().unwrap();
+        let missing = app
+            .chat
+            .channel(&target.workspace_id, &target.channel_id)
+            .is_none();
+        let summary = match result {
+            Ok(summary) => summary,
+            Err(error) => {
+                self.app()
+                    .report_failure("The original channel message could not be opened.", &error);
+                return Ok(());
+            }
+        };
+        if (missing && summary.is_none())
+            || !app
+                .registry
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.id == target.workspace_id)
+        {
+            self.app_mut()
+                .notify("The original channel is no longer available.".into());
+            return Ok(());
+        }
+        self.select(owner.slot, size)?;
+        if self.selected != owner.slot {
+            return Ok(());
+        }
+        let app = self.app_mut();
+        let badges_changed = missing && summary.is_some_and(|summary| app.chat.upsert(summary));
+        app.open_chat(target.workspace_id.clone());
+        app.chat.jump(
+            target.workspace_id,
+            target.channel_id,
+            target.message_id,
+            target.sequence,
+        );
+        if badges_changed {
+            self.publish_channel_attention(owner);
         }
         Ok(())
     }
 
+    /// Returns whether the caller should rebuild input geometry before dispatching more events.
     pub(super) fn notification_reply(
         &mut self,
         response: &[u8],
@@ -1966,12 +2111,14 @@ impl Coordinator {
         let Some(target) = self.desktop.take(id) else {
             return Ok(false);
         };
+        self.channel_activation = None;
         terminal.close_notification(out, id)?;
         let source = match target.source {
             NotificationSource::Pane(source) => source,
             NotificationSource::Channel(channel) => {
-                self.open_channel_notification(target.owner, channel, size)?;
-                return Ok(true);
+                self.start_channel_activation(target.owner, channel);
+                // Dispatch the rest of this input batch before completion can change focus.
+                return Ok(false);
             }
         };
         let current = self.sessions.get(target.owner.slot).is_some_and(|session| {
@@ -2096,6 +2243,22 @@ impl Coordinator {
             ClientEvent::Legacy(InputEvent::Key(key)) => Some(key_event(key.clone())),
             _ => None,
         };
+        if self.channel_activation.is_some()
+            && (key
+                .as_ref()
+                .is_some_and(|key| key.action != KeyAction::Release)
+                || matches!(
+                    event,
+                    ClientEvent::Mouse {
+                        action: MouseAction::Press,
+                        ..
+                    } | ClientEvent::Legacy(InputEvent::Paste(_))
+                )
+                || matches!(event, ClientEvent::Legacy(InputEvent::Mouse(mouse))
+                    if !mouse.mouse_buttons.is_empty()))
+        {
+            self.channel_activation = None;
+        }
         if let Some(key) = key {
             match key.action {
                 KeyAction::Press => {
@@ -2165,6 +2328,7 @@ impl Coordinator {
     }
 
     pub fn finish(mut self) -> Result<()> {
+        self.channel_activation = None;
         let replacement = self.jobs.scope()?;
         let jobs = std::mem::replace(&mut self.jobs, replacement);
         let mut stop_result = self.stop_error.take().map_or(Ok(()), Err);
@@ -2247,6 +2411,49 @@ impl Drop for Coordinator {
                 owner.cancel();
             }
         }
+    }
+}
+
+async fn find_notification_channel(
+    endpoint: &Endpoint,
+    cancellation: &CancellationToken,
+    workspace_id: String,
+    channel_id: &ChannelId,
+) -> Result<ChannelSummary> {
+    let mut after = None;
+    loop {
+        let Payload::Channels(ChannelResponse::Listed {
+            channels,
+            next_after,
+        }) = endpoint
+            .checked_observation_payload_async(
+                Operation::Channels {
+                    request: ChannelRequest::List {
+                        workspace_id: workspace_id.clone(),
+                        after: after.clone(),
+                        limit: MAX_PAGE_LIMIT,
+                    },
+                },
+                cancellation,
+            )
+            .await?
+        else {
+            bail!("unexpected channel list response");
+        };
+        if let Some(summary) = channels
+            .into_iter()
+            .find(|summary| summary.id == *channel_id && summary.workspace_id == workspace_id)
+        {
+            return Ok(summary);
+        }
+        let Some(next) = next_after.filter(|next| next < channel_id) else {
+            bail!("the original channel is no longer available");
+        };
+        anyhow::ensure!(
+            after.as_ref().is_none_or(|after| after < &next),
+            "channel list did not advance",
+        );
+        after = Some(next);
     }
 }
 
@@ -2425,6 +2632,214 @@ mod tests {
             KeyAction::Release => 3,
         };
         ClientEvent::Reply(format!("key;97;1:{action}").into_bytes())
+    }
+
+    #[test]
+    fn uncached_notification_opens_only_the_verified_target_without_stealing_new_focus() {
+        use bkpr_protocol::{
+            ChannelAttentionKind,
+            channels::{
+                ChannelMessage, MembershipMode, MessageId, MessageSummary, Participant,
+                ParticipantId, ParticipantKind, PostIntent,
+            },
+        };
+        use std::os::unix::net::{UnixListener, UnixStream};
+
+        fn wait_readable(fd: std::os::fd::RawFd) {
+            let mut ready = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            assert_eq!(unsafe { libc::poll(&mut ready, 1, 3_000) }, 1);
+        }
+
+        for (sequence, newer_input, replace_generation) in [
+            (7, false, false),
+            (8, false, false),
+            (7, true, false),
+            (7, false, true),
+        ] {
+            let (mut coordinator, _captures) = coordinator_fixture();
+            let owner = crate::tree::Owner {
+                slot: 1,
+                generation: 1,
+            };
+            let target = ChannelNotificationSource {
+                session: SessionInfo {
+                    name: "channel-owner".into(),
+                    session_id: "channel-owner-id".into(),
+                    daemon_id: "channel-daemon".into(),
+                    session_instance_id: "channel-instance".into(),
+                },
+                workspace_id: "channel-workspace".into(),
+                channel_id: ChannelId("channel-2".into()),
+                message_id: MessageId("message-7".into()),
+                sequence: 7,
+                intent: ChannelAttentionKind::Question,
+            };
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("channel.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let expected = target.clone();
+            let server = std::thread::spawn(move || {
+                let accept = || {
+                    wait_readable(listener.as_raw_fd());
+                    let (stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    stream
+                };
+                let reply = |stream: &mut UnixStream, payload: Payload| {
+                    transport::test_wire::write_response(
+                        stream,
+                        &Response {
+                            version: PROTOCOL_VERSION,
+                            ok: true,
+                            result: Some(payload),
+                            error: None,
+                            failure: None,
+                        },
+                    )
+                    .unwrap();
+                };
+                let mut probe = accept();
+                assert!(matches!(
+                    transport::test_wire::read_request(&mut probe)
+                        .unwrap()
+                        .operation,
+                    Operation::SessionInfo
+                ));
+                reply(
+                    &mut probe,
+                    serde_json::json!({"session": expected.session}).into(),
+                );
+                let mut lifetime = accept();
+                assert!(matches!(
+                    transport::test_wire::read_request(&mut lifetime).unwrap().operation,
+                    Operation::ClientRegister { session_id, daemon_id, session_instance_id }
+                        if session_id == expected.session.session_id
+                            && daemon_id == expected.session.daemon_id
+                            && session_instance_id == expected.session.session_instance_id
+                ));
+                reply(
+                    &mut lifetime,
+                    serde_json::json!({
+                        "session": expected.session,
+                        "client": {"client_id": "channel-client", "token": "fixture-token"}
+                    })
+                    .into(),
+                );
+                let read_owned = |stream: &mut UnixStream| {
+                    let Operation::Client { authority, request } =
+                        transport::test_wire::read_request(stream)
+                            .unwrap()
+                            .operation
+                    else {
+                        panic!("notification lookup lost its owner");
+                    };
+                    assert_eq!(authority.client_id, "channel-client");
+                    *request
+                };
+                let first = ChannelId("channel-1".into());
+                for after in [None, Some(first.clone())] {
+                    let mut stream = accept();
+                    assert!(matches!(read_owned(&mut stream),
+                        Operation::Channels {
+                            request: ChannelRequest::List { workspace_id, after: requested, .. },
+                        } if workspace_id == expected.workspace_id && requested == after
+                    ));
+                    let (id, next_after) = if after.is_none() {
+                        (first.clone(), Some(first.clone()))
+                    } else {
+                        (expected.channel_id.clone(), None)
+                    };
+                    reply(
+                        &mut stream,
+                        Payload::Channels(ChannelResponse::Listed {
+                            channels: vec![ChannelSummary {
+                                id,
+                                workspace_id: expected.workspace_id.clone(),
+                                name: "#review".into(),
+                                membership: MembershipMode::WorkspaceWide,
+                                settings: Default::default(),
+                                last_sequence: 8,
+                                read_through: 0,
+                                unread_attention: true,
+                                direct: false,
+                            }],
+                            next_after,
+                        }),
+                    );
+                }
+                let mut stream = accept();
+                assert!(matches!(read_owned(&mut stream),
+                    Operation::Channels { request: ChannelRequest::Read { channel_id, message_id } }
+                        if channel_id == expected.channel_id && message_id == expected.message_id
+                ));
+                reply(
+                    &mut stream,
+                    Payload::Channels(ChannelResponse::Message {
+                        message: ChannelMessage {
+                            message: MessageSummary {
+                                id: expected.message_id,
+                                sequence,
+                                author: Participant {
+                                    id: ParticipantId("agent".into()),
+                                    kind: ParticipantKind::Agent,
+                                    display_name: "Agent".into(),
+                                },
+                                posted_at_ms: 1,
+                                intent: PostIntent::Question,
+                                mentions: Vec::new(),
+                                reply_to: None,
+                                attachments: Vec::new(),
+                                mention_spans: Vec::new(),
+                                source: None,
+                            },
+                            text: "Ready for review?".into(),
+                            attachments: Vec::new(),
+                        },
+                    }),
+                );
+                lifetime
+            });
+            let client = RegisteredClient::register(&socket).unwrap();
+            let session = &mut coordinator.sessions[owner.slot];
+            session.identity = Some(client.info().clone());
+            let app = session.app.as_mut().unwrap();
+            app.socket = client.endpoint().clone();
+            app.registry.workspaces.push(Workspace {
+                id: target.workspace_id.clone(),
+                name: "Owner workspace".into(),
+                revision: 1,
+                windows: Vec::new(),
+            });
+            session.owner = Some(Attachment::Local(client));
+            coordinator.start_channel_activation(owner, target.clone());
+            assert_eq!(coordinator.selected, 0);
+            let pending = coordinator.channel_activation.as_ref().unwrap();
+            wait_readable(pending.lookup.wake.as_raw_fd());
+            let _lifetime = server.join().unwrap();
+            if newer_input {
+                assert!(
+                    !coordinator
+                        .route_release(&physical_key(KeyAction::Press), size())
+                        .unwrap()
+                );
+            }
+            if replace_generation {
+                coordinator.sessions[owner.slot].generation += 1;
+            }
+            coordinator.complete_channel_activation(size()).unwrap();
+            let should_open = sequence == target.sequence && !newer_input && !replace_generation;
+            assert_eq!(coordinator.selected, if should_open { 1 } else { 0 });
+            assert_eq!(
+                coordinator.app().chat.summary().map(|summary| &summary.id),
+                should_open.then_some(&target.channel_id),
+            );
+        }
     }
 
     #[test]

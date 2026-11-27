@@ -41,6 +41,7 @@
 * **tui:** fit channel dialogs to their content, with recessed fancy text fields and checkboxes, floating dropdowns, and matching hit geometry in plain mode.
 * **tui:** center the Channels heading and separate it from the first channel with a blank row.
 * **channels:** new `#desk` channels wake only explicitly mentioned agents for agent-authored posts; existing settings are unchanged.
+* **tui:** keep the original request when retrying an unconfirmed chat send, keep the selected mention visible, and resolve desktop alerts against the owning session even while its catalog catches up.
 
 ## [0.11.0](https://github.com/calops/bkpr/compare/v0.10.0...v0.11.0) (2026-11-23)
 

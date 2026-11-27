@@ -3,8 +3,6 @@ use bkpr_tui_framework::{EditAction, TextInput, markdown, safe_text, text_width}
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
-const COMPLETIONS: usize = 5;
-
 struct Mention {
     bytes: Range<usize>,
     binding: ChannelMentionBinding,
@@ -165,6 +163,7 @@ impl Draft {
     pub(super) fn choices<'a>(
         &self,
         roster: &'a [ChannelRosterEntry],
+        capacity: usize,
     ) -> impl Iterator<Item = (usize, &'a ChannelRosterEntry, bool)> {
         let selected = self
             .completion
@@ -172,17 +171,27 @@ impl Draft {
             .map_or(0, |completion| completion.selected);
         self.matches(roster)
             .enumerate()
-            .skip(selected.saturating_sub(COMPLETIONS - 1))
-            .take(COMPLETIONS)
+            .skip(selected.saturating_sub(capacity.saturating_sub(1)))
+            .take(capacity)
             .map(move |(index, entry)| (index, entry, index == selected))
     }
 
-    pub(super) fn select_mention(&mut self, roster: &[ChannelRosterEntry], index: Option<usize>) {
+    pub(super) fn select_mention(
+        &mut self,
+        roster: &[ChannelRosterEntry],
+        capacity: usize,
+        index: Option<usize>,
+    ) {
+        if capacity == 0 {
+            return;
+        }
         let Some(completion) = &self.completion else {
             return;
         };
-        let selected = index.unwrap_or(completion.selected);
-        let Some(entry) = self.matches(roster).nth(selected) else {
+        let Some((_, entry, _)) = self
+            .choices(roster, capacity)
+            .find(|&(choice, _, chosen)| index.map_or(chosen, |index| choice == index))
+        else {
             return;
         };
         let value = format!("@{} ", safe_text(&entry.participant.display_name));
@@ -416,7 +425,7 @@ mod tests {
                 Some("Wakes selected agents")
             );
         }
-        draft.select_mention(&twin_roster(), Some(1));
+        draft.select_mention(&twin_roster(), 2, Some(1));
         assert_eq!(
             draft.completion_wake_preview(WakePolicy::AddressedOnly),
             None
@@ -428,7 +437,7 @@ mod tests {
         let roster = twin_roster();
         let mut draft = Draft::default();
         assert!(draft.insert("@", true));
-        draft.select_mention(&roster, Some(1));
+        draft.select_mention(&roster, 2, Some(1));
         let ChannelRequest::PostUser { post, bindings, .. } =
             draft.post(ChannelId("desk".into())).unwrap()
         else {
@@ -450,6 +459,27 @@ mod tests {
     }
 
     #[test]
+    fn a_short_picker_scrolls_to_the_selected_binding_and_rejects_hidden_choices() {
+        let roster = twin_roster();
+        let mut draft = Draft::default();
+        assert!(draft.insert("@", true));
+        draft.move_completion(1, &roster);
+        let choices: Vec<_> = draft
+            .choices(&roster, 1)
+            .map(|(index, _, chosen)| (index, chosen))
+            .collect();
+        assert_eq!(choices, [(1, true)]);
+        draft.select_mention(&roster, 0, None);
+        draft.select_mention(&roster, 1, Some(0));
+        assert!(draft.completion.is_some());
+        draft.select_mention(&roster, 1, None);
+        assert_eq!(
+            draft.mentions[0].binding,
+            *roster[1].binding.as_ref().unwrap()
+        );
+    }
+
+    #[test]
     fn word_deletion_can_edit_a_query_but_cannot_keep_a_deleted_mention_marker() {
         let mut draft = Draft::default();
         assert!(draft.insert("@", true));
@@ -467,10 +497,10 @@ mod tests {
         let mut draft = Draft::default();
         draft.insert("intro\né ", false);
         assert!(draft.insert("@", true));
-        draft.select_mention(&roster, Some(0));
+        draft.select_mention(&roster, 2, Some(0));
         draft.insert("tail\n", false);
         assert!(draft.insert("@", true));
-        draft.select_mention(&roster, Some(1));
+        draft.select_mention(&roster, 2, Some(1));
         draft.insert("after", false);
 
         draft.input.cursor = "intro\né ".len();
