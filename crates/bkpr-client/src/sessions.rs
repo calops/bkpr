@@ -27,6 +27,7 @@ pub(super) enum SessionAction {
         target: crate::tree::Target,
         action: crate::keyguide::Action,
         size: Size,
+        preserve_hover: bool,
     },
     CiRefresh {
         owner: crate::tree::Owner,
@@ -1191,6 +1192,7 @@ impl Coordinator {
         target: crate::tree::Target,
         action: crate::keyguide::Action,
         size: Size,
+        preserve_hover: bool,
     ) -> Result<()> {
         use crate::{keyguide::Action, tree::Node};
         let index = target.owner.slot;
@@ -1224,7 +1226,7 @@ impl Coordinator {
         if target.node == Node::Session && action == Action::ActivateSelected {
             self.select(index, size)?;
             if self.selected == index {
-                self.app_mut().leave_sidebar();
+                self.app_mut().finish_sidebar(preserve_hover);
             }
             return Ok(());
         }
@@ -1241,7 +1243,7 @@ impl Coordinator {
             Node::Native(native) => Some(native),
             Node::Session => None,
         };
-        if let Err(error) = app.dispatch_tree_action(native, action, size) {
+        if let Err(error) = app.dispatch_tree_action(native, action, size, preserve_hover) {
             if transport::server_closing(&error) || app.socket.session_ended() {
                 self.remove(index, size, true)?;
             } else {
@@ -1310,7 +1312,8 @@ impl Coordinator {
                 target,
                 action,
                 size,
-            }) => self.dispatch_tree(target, action, size)?,
+                preserve_hover,
+            }) => self.dispatch_tree(target, action, size, preserve_hover)?,
             Some(SessionAction::CiRefresh { owner, target }) => {
                 let endpoint = self
                     .sessions
@@ -2083,6 +2086,7 @@ impl Coordinator {
         let app = self.app_mut();
         let badges_changed = missing && summary.is_some_and(|summary| app.chat.upsert(summary));
         app.open_chat(target.workspace_id.clone());
+        app.leave_sidebar();
         app.chat.jump(
             target.workspace_id,
             target.channel_id,
@@ -2155,6 +2159,7 @@ impl Coordinator {
                 },
                 crate::keyguide::Action::ActivateSelected,
                 size,
+                false,
             )?;
         } else {
             self.app_mut()
@@ -2890,11 +2895,14 @@ mod tests {
             target,
             action,
             size,
+            preserve_hover,
         }) = app.session_action.take()
         else {
             panic!("rename did not dispatch a tree action");
         };
-        coordinator.dispatch_tree(target, action, size).unwrap();
+        coordinator
+            .dispatch_tree(target, action, size, preserve_hover)
+            .unwrap();
 
         assert!(
             coordinator.sessions[0]
