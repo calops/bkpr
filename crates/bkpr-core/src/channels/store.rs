@@ -1,5 +1,6 @@
 use super::{ChannelAccessLost, ChannelAuthority, ChannelRoutes, WakeTarget, WorkspaceParticipant};
 use anyhow::{Context, Result, bail, ensure};
+use bkpr_protocol::ChannelAttentionKind;
 use bkpr_protocol::channels::{
     AttachmentDescriptor, AttachmentId, AttachmentUpload, ChannelChange, ChannelChangeKind,
     ChannelCursor, ChannelId, ChannelMessage, ChannelPost, ChannelRequest, ChannelResponse,
@@ -20,16 +21,17 @@ use std::{
 };
 use uuid::Uuid;
 
-#[path = "legacy.rs"]
-mod legacy;
 #[path = "catalog.rs"]
 pub(super) mod catalog;
+#[path = "legacy.rs"]
+mod legacy;
 #[path = "wakes.rs"]
 mod wakes;
 
 const APPLICATION_ID: i64 = 0x424b4348;
 // Versions 1–6 predate staging. Version 7 predates wakes.
-const STORE_VERSION: i64 = 15;
+const STORE_VERSION: i64 = 16;
+const ATTENTION_ORIGIN_VERSION: i64 = 16;
 const FIRST_STAGING_VERSION: i64 = 7;
 const STORE_NAME: &str = "channels.sqlite3";
 const MAX_PENDING: usize = 4096;
@@ -177,22 +179,8 @@ fn open_session_directory(root: &Path) -> Result<File> {
 
 impl Store {
     pub(super) fn open(root: &Path) -> Result<Self> {
-        let directory = open_session_directory(root)?;
-        for sidecar in [
-            "channels.sqlite3-journal",
-            "channels.sqlite3-wal",
-            "channels.sqlite3-shm",
-        ] {
-            open_private(&root.join(sidecar), false)?;
-        }
-        let path = root.join(STORE_NAME);
-        let file = open_private(&path, true)?.context("missing channel store")?;
-        let empty = file.metadata()?.len() == 0;
-        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::from_bits_retain(rusqlite::ffi::SQLITE_OPEN_NOFOLLOW);
-        let mut connection = Connection::open_with_flags(path, flags)?;
-        connection.busy_timeout(Duration::from_millis(100))?;
+        let (directory, mut connection, empty) =
+            open_channel_database(root, true)?.context("missing channel store")?;
         store_version(&connection, empty)?;
         connection.execute_batch(
             "PRAGMA trusted_schema=OFF;
@@ -269,6 +257,28 @@ impl Store {
                      ALTER TABLE notification_work ADD COLUMN acknowledged_at INTEGER;",
                 )?;
             }
+            let ordered_attention: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notification_work')
+                 WHERE name='attention_posted_ms')",
+                [],
+                |row| row.get(0),
+            )?;
+            if !ordered_attention {
+                tx.execute_batch(
+                    "ALTER TABLE notification_work ADD COLUMN attention_posted_ms INTEGER;
+                     ALTER TABLE notification_work ADD COLUMN attention_origin TEXT;
+                     UPDATE notification_work AS w
+                        SET attention_posted_ms=(SELECT json_extract(p.summary,'$.posted_at_ms')
+                            FROM posts p WHERE p.id=w.message_id)
+                        WHERE pending=1 AND launch_id IS NULL;",
+                )?;
+            }
+            tx.execute_batch(
+                "DROP INDEX pending_channel_attention;
+                 CREATE INDEX pending_channel_attention
+                    ON notification_work(attention_posted_ms,message_id)
+                    WHERE pending=1 AND launch_id IS NULL;",
+            )?;
             tx.pragma_update(None, "user_version", STORE_VERSION)?;
         }
         if version != 0 {
@@ -406,6 +416,7 @@ impl Store {
         request: ChannelRequest,
         admit: impl Fn(&str) -> Result<ChannelAuthority>,
         routes: ChannelRoutes<'_>,
+        attention_origin: Option<&str>,
         retire: impl FnOnce(&mut Self, &str) -> Result<bool>,
     ) -> Result<(ChannelResponse, bool)> {
         let mut selector = None;
@@ -537,6 +548,7 @@ impl Store {
                     authority,
                     retire,
                     routes,
+                    attention_origin,
                     (&channel_id, &fingerprint),
                     None,
                 )
@@ -918,6 +930,7 @@ impl Store {
         authority: ChannelAuthority,
         retire: impl FnOnce(&mut Self, &str) -> Result<bool>,
         routes: ChannelRoutes<'_>,
+        attention_origin: Option<&str>,
         (id, fingerprint): (&ChannelId, &[u8]),
         selected_direct: Option<(WorkspaceParticipant, bool)>,
     ) -> Result<(ChannelResponse, bool)> {
@@ -1044,10 +1057,15 @@ impl Store {
             attachments: post.attachments,
             source: post.source,
         };
-        let needed = wakes.len() + usize::from(attention);
-        let pending_work = needed != 0 && (channel.direct || !retire(self, &channel.workspace_id)?);
-        if pending_work {
-            self.reclaim_wake_capacity(needed, routes.binding_live)?;
+        // A post admitted before workspace closure still owes the host its immutable
+        // attention event. Only the live agent wake is conditional on continued access.
+        let pending_wakes =
+            !wakes.is_empty() && (channel.direct || !retire(self, &channel.workspace_id)?);
+        if pending_wakes {
+            self.reclaim_wake_capacity(wakes.len(), routes.binding_live)?;
+        }
+        if attention {
+            self.reserve_attention(message.posted_at_ms)?;
         }
         let tx = self.connection.transaction()?;
         if let Some((peer, true)) = &selected_direct {
@@ -1077,12 +1095,12 @@ impl Store {
             &post.text,
             (wake_count, attention),
         )?;
-        if needed != 0 {
+        if !wakes.is_empty() || attention {
             // `posts` is the last rowid table inserted into by this transaction.
             let enqueue_ordinal = tx.last_insert_rowid();
             let mut insert = tx.prepare(
-                "INSERT INTO notification_work(channel_id,message_id,participant_id,launch_id,addressed,pending,binding_revision,enqueue_ordinal,channel_sequence)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                "INSERT INTO notification_work(channel_id,message_id,participant_id,launch_id,addressed,pending,binding_revision,enqueue_ordinal,channel_sequence,attention_posted_ms,attention_origin)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             )?;
             for wake in &wakes {
                 insert.execute(params![
@@ -1091,10 +1109,12 @@ impl Store {
                     wake.participant,
                     wake.launch,
                     wake.addressed,
-                    pending_work,
+                    pending_wakes,
                     wake.binding,
                     enqueue_ordinal,
                     sequence,
+                    None::<u64>,
+                    None::<&str>,
                 ])?;
             }
             if attention {
@@ -1104,15 +1124,17 @@ impl Store {
                     "",
                     None::<&str>,
                     false,
-                    pending_work,
+                    true,
                     0,
                     enqueue_ordinal,
                     sequence,
+                    message.posted_at_ms,
+                    attention_origin,
                 ])?;
             }
         }
         tx.commit()?;
-        if pending_work && !wakes.is_empty() {
+        if pending_wakes {
             (routes.publish)(&wakes);
         }
         Ok((
@@ -1219,6 +1241,7 @@ impl Store {
             authority,
             |_, _| Ok(false),
             routes,
+            None,
             (&id, &fingerprint),
             Some((target, is_new)),
         )
@@ -1292,50 +1315,27 @@ impl Store {
         )? == 1)
     }
 
-    pub(super) fn next_attention(
-        &self,
-        session: &bkpr_protocol::SessionInfo,
-    ) -> Result<Option<(bkpr_protocol::ChannelNotificationSource, u64)>> {
-        use bkpr_protocol::{ChannelAttentionKind, ChannelNotificationSource};
-        let event: Option<(String, String, MessageSummary)> = self
-            .connection
-            .query_row(
-                "SELECT c.workspace_id,c.id,p.summary FROM notification_work w
-             JOIN posts p ON p.id=w.message_id JOIN channels c ON c.id=w.channel_id
-             WHERE w.pending=1 AND w.launch_id IS NULL ORDER BY w.message_id LIMIT 1",
+    fn reserve_attention(&self, posted_at_ms: u64) -> Result<()> {
+        let count = || -> rusqlite::Result<usize> {
+            self.connection.query_row(
+                "SELECT count(*) FROM notification_work WHERE pending=1 AND launch_id IS NULL",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, json(row, 2)?)),
+                |row| row.get(0),
             )
-            .optional()?;
-        event
-            .map(|(workspace_id, channel_id, post)| {
-                let intent = match post.intent {
-                    PostIntent::Question => ChannelAttentionKind::Question,
-                    PostIntent::Report => ChannelAttentionKind::Report,
-                    PostIntent::Note => {
-                        anyhow::bail!("non-attention post in channel attention work")
-                    }
-                };
-                Ok((
-                    ChannelNotificationSource {
-                        session: session.clone(),
-                        workspace_id,
-                        channel_id: ChannelId(channel_id),
-                        message_id: post.id,
-                        sequence: post.sequence,
-                        intent,
-                    },
-                    post.posted_at_ms,
-                ))
-            })
-            .transpose()
-    }
-
-    pub(super) fn finish_attention(&self, id: &MessageId) -> Result<()> {
-        self.connection.execute(
-            "UPDATE notification_work SET pending=0 WHERE message_id=?1 AND launch_id IS NULL AND pending=1",
-            [id.as_ref()],
-        )?;
+        };
+        if count()? < MAX_PENDING {
+            return Ok(());
+        }
+        if let Some(cutoff) =
+            posted_at_ms.checked_sub(crate::notifications::CHANNEL_ATTENTION_RETRY_MS)
+        {
+            self.connection.execute(
+                "UPDATE notification_work SET pending=0,attention_origin=NULL
+                 WHERE pending=1 AND launch_id IS NULL AND attention_posted_ms<=?1",
+                [cutoff],
+            )?;
+        }
+        ensure!(count()? < MAX_PENDING, "channel attention queue is full");
         Ok(())
     }
 
@@ -1743,7 +1743,7 @@ impl Store {
     }
 }
 
-fn unix_time_ms() -> Result<u64> {
+pub(super) fn unix_time_ms() -> Result<u64> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)?
         .as_millis()
@@ -2114,30 +2114,165 @@ fn exact_mention<'a>(
         .find(|actor| actor.kind == ParticipantKind::User && actor.id == *mention)
 }
 
-fn open_private(path: &Path, create: bool) -> Result<Option<File>> {
+fn private_storage_metadata(path: &Path) -> Result<Option<std::fs::Metadata>> {
     match std::fs::symlink_metadata(path) {
-        Ok(metadata) => ensure!(
-            metadata.is_file() && metadata.nlink() == 1,
-            "unsafe channel storage file"
-        ),
-        Err(error) if error.kind() == ErrorKind::NotFound => (),
-        Err(error) => return Err(error.into()),
-    }
-    match OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(create)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open(path)
-    {
-        Ok(file) => {
-            crate::registry::check_file(&file)?;
-            ensure!(file.metadata()?.nlink() == 1, "unsafe channel storage file");
-            Ok(Some(file))
+        Ok(metadata) => {
+            ensure!(
+                metadata.is_file()
+                    && metadata.nlink() == 1
+                    && metadata.uid() == unsafe { libc::geteuid() }
+                    && metadata.mode() & 0o077 == 0,
+                "unsafe channel storage file"
+            );
+            Ok(Some(metadata))
         }
-        Err(error) if !create && error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
+    }
+}
+
+fn open_channel_database(root: &Path, create: bool) -> Result<Option<(File, Connection, bool)>> {
+    let directory = open_session_directory(root)?;
+    let path = root.join(STORE_NAME);
+    // Closing raw descriptors for a live SQLite file can cancel POSIX locks
+    // held by other connections in this process. Only SQLite opens existing files.
+    let empty = match private_storage_metadata(&path)? {
+        Some(metadata) => metadata.len() == 0,
+        None if !create => return Ok(None),
+        None => {
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(&path)?;
+            true
+        }
+    };
+    if empty && !create {
+        return Ok(None);
+    }
+    for name in [
+        "channels.sqlite3-journal",
+        "channels.sqlite3-wal",
+        "channels.sqlite3-shm",
+    ] {
+        private_storage_metadata(&root.join(name))?;
+    }
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX
+        | OpenFlags::from_bits_retain(rusqlite::ffi::SQLITE_OPEN_NOFOLLOW);
+    let connection = Connection::open_with_flags(path, flags)?;
+    connection.busy_timeout(Duration::from_millis(100))?;
+    Ok(Some((directory, connection, empty)))
+}
+
+/// Attention-only connection: no workspace authority, runtime migration, or wake retirement.
+pub(super) struct AttentionStore {
+    connection: Connection,
+    ordered: bool,
+}
+
+pub(super) struct AttentionEvent {
+    pub(super) channel_id: ChannelId,
+    pub(super) workspace_id: String,
+    pub(super) message_id: MessageId,
+    pub(super) sequence: u64,
+    pub(super) posted_at_ms: u64,
+    pub(super) intent: ChannelAttentionKind,
+    pub(super) origin: Option<bkpr_protocol::SessionInfo>,
+}
+
+impl AttentionStore {
+    pub(super) fn open(root: &Path) -> Result<Option<Self>> {
+        let Some((_directory, connection, empty)) = open_channel_database(root, false)? else {
+            return Ok(None);
+        };
+        let version = store_version(&connection, empty)?;
+        if version == 0 {
+            return Ok(None);
+        }
+        connection.execute_batch("PRAGMA trusted_schema=OFF; PRAGMA synchronous=EXTRA;")?;
+        Ok(Some(Self {
+            connection,
+            ordered: version >= ATTENTION_ORIGIN_VERSION,
+        }))
+    }
+
+    pub(super) fn next(&self) -> Result<Option<AttentionEvent>> {
+        if self.ordered {
+            return Self::query(&self.connection, true);
+        }
+        // Check the schema in the same snapshot as the event. A concurrent first
+        // session open must not turn a newly committed origin into a legacy one.
+        let tx = self.connection.unchecked_transaction()?;
+        let version = store_version(&tx, false)?;
+        let event = if version >= ATTENTION_ORIGIN_VERSION {
+            Self::query(&tx, true)?
+        } else {
+            let durable: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='pending_channel_attention')",
+                [],
+                |row| row.get(0),
+            )?;
+            if durable {
+                Self::query(&tx, false)?
+            } else {
+                None
+            }
+        };
+        tx.commit()?;
+        Ok(event)
+    }
+
+    fn query(connection: &Connection, ordered: bool) -> Result<Option<AttentionEvent>> {
+        let sql = if ordered {
+            "SELECT w.channel_id,c.workspace_id,w.message_id,p.sequence,w.attention_posted_ms,
+                    json_extract(p.summary,'$.intent'),w.attention_origin FROM notification_work w
+             JOIN posts p ON p.id=w.message_id JOIN channels c ON c.id=w.channel_id
+             WHERE w.pending=1 AND w.launch_id IS NULL
+             ORDER BY w.attention_posted_ms,w.message_id LIMIT 1"
+        } else {
+            "SELECT w.channel_id,c.workspace_id,w.message_id,p.sequence,
+                    json_extract(p.summary,'$.posted_at_ms'),json_extract(p.summary,'$.intent'),NULL
+             FROM notification_work w
+             JOIN posts p ON p.id=w.message_id JOIN channels c ON c.id=w.channel_id
+             WHERE w.pending=1 AND w.launch_id IS NULL
+             ORDER BY json_extract(p.summary,'$.posted_at_ms'),w.message_id LIMIT 1"
+        };
+        Ok(connection
+            .query_row(sql, [], |row| {
+                Ok(AttentionEvent {
+                    channel_id: ChannelId(row.get(0)?),
+                    workspace_id: row.get(1)?,
+                    message_id: MessageId(row.get(2)?),
+                    sequence: row.get(3)?,
+                    posted_at_ms: row.get(4)?,
+                    intent: match row.get_ref(5)?.as_str()? {
+                        "question" => ChannelAttentionKind::Question,
+                        "report" => ChannelAttentionKind::Report,
+                        _ => return Err(rusqlite::Error::InvalidQuery),
+                    },
+                    origin: if row.get_ref(6)? == rusqlite::types::ValueRef::Null {
+                        None
+                    } else {
+                        Some(json(row, 6)?)
+                    },
+                })
+            })
+            .optional()?)
+    }
+
+    pub(super) fn finish(&self, id: &MessageId, has_origin: bool) -> Result<()> {
+        let sql = if has_origin {
+            "UPDATE notification_work SET pending=0,attention_origin=NULL
+             WHERE message_id=?1 AND participant_id='' AND launch_id IS NULL AND pending=1"
+        } else {
+            "UPDATE notification_work SET pending=0
+             WHERE message_id=?1 AND participant_id='' AND launch_id IS NULL AND pending=1"
+        };
+        self.connection.execute(sql, [id.as_ref()])?;
+        Ok(())
     }
 }
 

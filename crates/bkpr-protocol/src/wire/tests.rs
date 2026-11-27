@@ -194,11 +194,17 @@ fn notifications_roundtrip_structural_requests_and_optional_cursors() {
             }),
         ] {
             for enabled in [Vec::new(), kinds.clone()] {
-                for limit in [1, MAX_NOTIFICATION_LIMIT] {
+                for (limit, include_channel_attention) in [
+                    (1, false),
+                    (1, true),
+                    (MAX_NOTIFICATION_LIMIT, false),
+                    (MAX_NOTIFICATION_LIMIT, true),
+                ] {
                     let query = NotificationQuery {
                         scope: scope.clone(),
                         kinds: enabled.clone(),
                         limit,
+                        include_channel_attention,
                     };
                     assert_request(Operation::Notifications {
                         request: NotificationRequest::Inspect {
@@ -263,7 +269,7 @@ fn notification_validation_applies_to_both_encoder_and_untrusted_structural_deco
             None::<planus::Offset<str>>,
         );
         let kinds = builder.create_vector(kinds);
-        let query = g::NotificationQuery::create(&mut builder, scope, kinds, limit);
+        let query = g::NotificationQuery::create(&mut builder, scope, kinds, limit, false);
         let store_id = builder.create_string(store_id);
         let cursor = g::NotificationCursor::create(&mut builder, store_id, 0, 0);
         let inspect = g::NotificationRequestInspect::create(&mut builder, query, Some(cursor));
@@ -275,7 +281,13 @@ fn notification_validation_applies_to_both_encoder_and_untrusted_structural_deco
         builder.finish(root, None).to_vec()
     }
     let valid = unchecked_inspect(64, &[g::NotificationKind::Attention], "store", "session");
-    assert!(decode_request(&valid).is_ok());
+    let Operation::Notifications {
+        request: NotificationRequest::Inspect { query, .. },
+    } = decode_request(&valid).unwrap().operation
+    else {
+        panic!("expected notification inspection");
+    };
+    assert!(!query.include_channel_attention);
     for bytes in [
         unchecked_inspect(0, &[], "store", "session"),
         unchecked_inspect(65, &[], "store", "session"),

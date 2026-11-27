@@ -941,19 +941,22 @@ fn empty_filters_mute_automatic_events_without_losing_the_verified_test_route() 
 fn channel_attention_receipt_record_and_scoped_push_commit_together() {
     let (_root, mut store) = fixture();
     let event = tests::channel_source("push-message", ChannelAttentionKind::Report);
-    for (request_id, pane_id) in [("workspace-phone", None), ("pane-phone", Some("pane-a"))] {
-        let mut request = enrollment(request_id, None);
-        let PushRequest::Enroll { scope, .. } = &mut request else {
-            unreachable!()
-        };
-        *scope = NotificationScope {
-            session_id: Some(event.session.session_id.clone()),
-            workspace_id: Some(event.workspace_id.clone()),
-            pane_id: pane_id.map(str::to_owned),
-        };
-        let receipt = store.push_request(request, 1).unwrap();
-        confirm(&mut store, &receipt, 2);
-    }
+    let [workspace, pane] =
+        [("workspace-phone", None), ("pane-phone", Some("pane-a"))].map(|(request_id, pane_id)| {
+            let mut request = enrollment(request_id, None);
+            let PushRequest::Enroll { scope, .. } = &mut request else {
+                unreachable!()
+            };
+            *scope = NotificationScope {
+                session_id: Some(event.session.session_id.clone()),
+                workspace_id: Some(event.workspace_id.clone()),
+                pane_id: pane_id.map(str::to_owned),
+            };
+            let receipt = store.push_request(request, 1).unwrap();
+            confirm(&mut store, &receipt, 2);
+            revision_of(&receipt)
+        });
+    assert_ne!(workspace.destination_id, pane.destination_id);
     store
         .connection
         .execute_batch(
@@ -981,15 +984,19 @@ fn channel_attention_receipt_record_and_scoped_push_commit_together() {
     assert_eq!(store.retained().unwrap(), 1);
     let mut statement = store
         .connection
-        .prepare("SELECT payload FROM push_jobs WHERE kind='notification'")
+        .prepare("SELECT destination,generation,payload FROM push_jobs WHERE kind='notification'")
         .unwrap();
-    let payloads: Vec<Vec<u8>> = statement
-        .query_map([], |r| r.get(0))
+    let jobs: Vec<(String, u64, Vec<u8>)> = statement
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    assert_eq!(payloads.len(), 1);
-    let payload: Value = serde_json::from_slice(&payloads[0]).unwrap();
+    let [(destination, generation, payload)] = jobs.as_slice() else {
+        panic!("expected exactly one channel notification job");
+    };
+    assert_eq!(*destination, workspace.destination_id);
+    assert_eq!(*generation, workspace.generation);
+    let payload: Value = serde_json::from_slice(payload).unwrap();
     assert_eq!(payload["session_id"], "session-a");
     assert_eq!(payload["kind"], "attention");
     assert_eq!(payload["attention_kind"], Value::Null);

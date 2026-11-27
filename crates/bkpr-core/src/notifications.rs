@@ -56,6 +56,21 @@ const SHUTDOWN_WAIT: Duration = Duration::from_secs(2);
 /// Maximum age of an immutable channel post eligible for the host handoff.
 pub(crate) const CHANNEL_ATTENTION_RETRY_MS: u64 = storage::MAX_AGE_MS;
 
+/// The host kept all unexpired channel attention receipts and did not accept this post.
+#[derive(Debug)]
+pub(crate) struct ChannelAttentionCapacity {
+    /// First existing receipt's expiry in Unix milliseconds.
+    pub(crate) next_expiry_ms: u64,
+}
+
+impl std::fmt::Display for ChannelAttentionCapacity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("notification channel attention receipt capacity exceeded")
+    }
+}
+
+impl std::error::Error for ChannelAttentionCapacity {}
+
 /// An already authenticated foreground status, or withdrawal of that authority.
 ///
 /// Call only after releasing pane, published-state, registry and capture locks.
@@ -174,6 +189,7 @@ enum Reply {
     Policies(Vec<NotificationPolicy>),
     Push(serde_json::Value),
     Recorded,
+    ChannelAttentionAtCapacity(ChannelAttentionCapacity),
 }
 enum Work {
     Observation(NotificationObservation),
@@ -275,16 +291,23 @@ impl NotificationService {
     ///
     /// Call outside the channel writer with the original post timestamp on every retry.
     /// Success covers the host decision (including policy suppression) and any push
-    /// admission, not delivery. A timeout leaves the outcome unknown; retry with the
-    /// same session and message identity before the retry horizon expires.
+    /// admission, not delivery. If receipt capacity is exhausted, the error is
+    /// `ChannelAttentionCapacity`, with the next receipt expiry. Cancellation
+    /// after admission or a timeout can leave the outcome unknown; retry with the
+    /// same session and message identity before the original retry horizon expires.
     pub fn record_channel_attention(
         &self,
         source: ChannelNotificationSource,
         observed_at_ms: u64,
+        is_connected: &dyn Fn() -> bool,
     ) -> Result<()> {
         source.validate()?;
-        match self.command(Command::ChannelAttention(source, observed_at_ms), &|| true)? {
+        match self.command(
+            Command::ChannelAttention(source, observed_at_ms),
+            is_connected,
+        )? {
             Reply::Recorded => Ok(()),
+            Reply::ChannelAttentionAtCapacity(capacity) => Err(capacity.into()),
             _ => unreachable!(),
         }
     }
@@ -524,7 +547,9 @@ impl Reply {
             Self::Page(page) => serde_json::to_value(page)?,
             Self::Policies(policies) => serde_json::to_value(policies)?,
             Self::Push(value) => value,
-            Self::Recorded => unreachable!("channel attention is an internal command"),
+            Self::Recorded | Self::ChannelAttentionAtCapacity(_) => {
+                unreachable!("channel attention is an internal command")
+            }
         }))
     }
 }
@@ -716,12 +741,17 @@ fn process(store: &mut storage::Store, work: Work, shared: &Shared) {
                     }
                 }
                 Command::Push(request) => store.push_request(*request, now_ms()).map(Reply::Push),
-                Command::ChannelAttention(source, observed_at_ms) => store
-                    .record_channel_attention(source, observed_at_ms, now_ms())
-                    .map(|changed| {
-                        publish_change(store, shared, changed);
-                        Reply::Recorded
-                    }),
+                Command::ChannelAttention(source, observed_at_ms) => {
+                    match store.record_channel_attention(source, observed_at_ms, now_ms()) {
+                        Ok(changed) => {
+                            publish_change(store, shared, changed);
+                            Ok(Reply::Recorded)
+                        }
+                        Err(error) => error
+                            .downcast::<ChannelAttentionCapacity>()
+                            .map(Reply::ChannelAttentionAtCapacity),
+                    }
+                }
             };
             // Validation errors must not poison a healthy store. Storage errors mark
             // their origin inside Store, independently of request/cursor rejection.

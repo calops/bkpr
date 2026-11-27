@@ -90,13 +90,21 @@ fn page(store: &mut storage::Store, after: Option<&NotificationCursor>) -> Notif
         .unwrap()
 }
 fn inspect(service: &NotificationService) -> NotificationPage {
+    inspect_query(service, NotificationQuery::default())
+}
+
+fn channel_query() -> NotificationQuery {
+    NotificationQuery {
+        include_channel_attention: true,
+        ..Default::default()
+    }
+}
+
+fn inspect_query(service: &NotificationService, query: NotificationQuery) -> NotificationPage {
     serde_json::from_value(
         service
             .request(
-                NotificationRequest::Inspect {
-                    query: NotificationQuery::default(),
-                    after: None,
-                },
+                NotificationRequest::Inspect { query, after: None },
                 None,
                 &|| true,
             )
@@ -1097,15 +1105,146 @@ fn acknowledged_loss_cursor_can_resume_an_idle_subscription_without_repeated_gap
 }
 
 #[test]
+fn legacy_subscription_advances_past_channel_attention_and_still_reads_pane_alerts() {
+    #[derive(serde::Deserialize)]
+    struct LegacyNotification {
+        source: PaneNotificationSource,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct LegacyPage {
+        notifications: Vec<LegacyNotification>,
+        cursor: NotificationCursor,
+    }
+
+    let (_directory, root) = root();
+    let service = NotificationService::open(&root).unwrap();
+    let subscribe = |after: Option<NotificationCursor>| -> LegacyPage {
+        let request = serde_json::from_value(serde_json::json!({
+            "method": "subscribe",
+            "query": {"scope": {}, "kinds": ["attention"], "limit": 1},
+            "after": after,
+            "wait_ms": 0
+        }))
+        .unwrap();
+        serde_json::from_value(
+            service
+                .request(request, Some("session-a"), &|| true)
+                .unwrap()
+                .into_json()
+                .unwrap(),
+        )
+        .unwrap()
+    };
+
+    let baseline = subscribe(None);
+    assert_eq!(baseline.cursor.sequence, 0);
+    service
+        .record_channel_attention(
+            channel_source("hidden-report", ChannelAttentionKind::Report),
+            now_ms(),
+            &|| true,
+        )
+        .unwrap();
+    let skipped = subscribe(Some(baseline.cursor));
+    assert!(skipped.notifications.is_empty());
+    assert_eq!(skipped.cursor.sequence, 1);
+    let inspected = inspect(&service);
+    assert!(inspected.notifications.is_empty());
+    assert_eq!(inspected.cursor, skipped.cursor);
+
+    service.observe(observation(Some("blocked")));
+    let pane_alert = subscribe(Some(skipped.cursor));
+    assert_eq!(pane_alert.notifications.len(), 1);
+    assert_eq!(pane_alert.notifications[0].source, source());
+    assert_eq!(pane_alert.cursor.sequence, 2);
+    service.shutdown().unwrap();
+}
+
+#[test]
+fn channel_attention_cancellation_distinguishes_unadmitted_and_unknown_work() {
+    let (_directory, root) = root();
+    let service = NotificationService::open(&root).unwrap();
+    let resume = pause(&service);
+    let observed_at = now_ms();
+    let error = service
+        .record_channel_attention(
+            channel_source("unadmitted", ChannelAttentionKind::Question),
+            observed_at,
+            &|| false,
+        )
+        .unwrap_err();
+    assert_eq!(error.to_string(), "notification request canceled");
+
+    let pending = channel_source("pending", ChannelAttentionKind::Report);
+    let connected = AtomicBool::new(true);
+    let error = service
+        .record_channel_attention(pending.clone(), observed_at, &|| {
+            connected.swap(false, Ordering::AcqRel)
+        })
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "notification request canceled; queued work outcome unknown"
+    );
+    resume.send(()).unwrap();
+    let retained = inspect_query(&service, channel_query());
+    assert_eq!(retained.notifications.len(), 1);
+    assert_eq!(
+        retained.notifications[0].source,
+        NotificationSource::Channel(pending)
+    );
+    service.shutdown().unwrap();
+}
+
+#[test]
+fn future_dated_channel_attention_preserves_observation_without_blocking_later_posts() {
+    let (_directory, root) = root();
+    let mut store = store(&root);
+    let now = now_ms();
+    let future = now + 2 * CHANNEL_ATTENTION_RETRY_MS;
+    let future_post = channel_source("future", ChannelAttentionKind::Question);
+    assert!(
+        store
+            .record_channel_attention(future_post.clone(), future, now)
+            .unwrap()
+    );
+    let ready = channel_source("ready", ChannelAttentionKind::Report);
+    assert!(store.record_channel_attention(ready, now, now).unwrap());
+    let retained = store
+        .page(&channel_query(), None, false, now, health())
+        .unwrap();
+    assert_eq!(retained.notifications.len(), 2);
+    assert_eq!(retained.notifications[0].observed_at_ms, future);
+    assert_eq!(retained.notifications[1].observed_at_ms, now);
+    assert_eq!(
+        retained.notifications[0].expires_at_ms,
+        now + storage::MAX_AGE_MS
+    );
+
+    let retention_expiry = now + storage::MAX_AGE_MS;
+    assert!(store.expire(retention_expiry).unwrap());
+    assert_eq!(
+        store.next_expiry().unwrap(),
+        Some(future + CHANNEL_ATTENTION_RETRY_MS)
+    );
+    assert!(
+        !store
+            .record_channel_attention(future_post, future, retention_expiry)
+            .unwrap()
+    );
+}
+
+#[test]
 fn channel_attention_worker_deduplicates_sessions_and_survives_restart() {
     let (_directory, root) = root();
     let service = NotificationService::open(&root).unwrap();
     let observed_at = now_ms();
     let question = channel_source("same-message", ChannelAttentionKind::Question);
     service
-        .record_channel_attention(question.clone(), observed_at)
+        .record_channel_attention(question.clone(), observed_at, &|| true)
         .unwrap();
-    let retained = inspect(&service);
+    let retained = inspect_query(&service, channel_query());
     assert_eq!(retained.health.retained, 1);
     service.shutdown().unwrap();
 
@@ -1113,14 +1252,14 @@ fn channel_attention_worker_deduplicates_sessions_and_survives_restart() {
     let mut retry = question.clone();
     retry.session.session_instance_id = "opening-b".into();
     service
-        .record_channel_attention(retry, observed_at)
+        .record_channel_attention(retry, observed_at, &|| true)
         .unwrap();
     let mut report = channel_source("same-message", ChannelAttentionKind::Report);
     report.session.session_id = "session-b".into();
     service
-        .record_channel_attention(report.clone(), observed_at)
+        .record_channel_attention(report.clone(), observed_at, &|| true)
         .unwrap();
-    let page = inspect(&service);
+    let page = inspect_query(&service, channel_query());
     assert_eq!(page.health.retained, 2);
     assert_eq!(page.notifications[0], retained.notifications[0]);
     assert_eq!(
@@ -1214,14 +1353,24 @@ fn channel_attention_retry_does_not_restore_pruned_history() {
     drop(first);
 
     let mut reopened = store(&root);
-    let pruned = page(&mut reopened, None);
+    let pruned = reopened
+        .page(&channel_query(), None, false, now_ms(), health())
+        .unwrap();
     assert!(pruned.notifications.is_empty());
     assert!(
         !reopened
             .record_channel_attention(event, observed_at, now_ms())
             .unwrap()
     );
-    let after = page(&mut reopened, Some(&pruned.cursor));
+    let after = reopened
+        .page(
+            &channel_query(),
+            Some(&pruned.cursor),
+            false,
+            now_ms(),
+            health(),
+        )
+        .unwrap();
     assert_eq!(after.cursor, pruned.cursor);
     assert!(after.notifications.is_empty());
 }
@@ -1229,16 +1378,17 @@ fn channel_attention_retry_does_not_restore_pruned_history() {
 #[test]
 fn channel_attention_receipt_capacity_preserves_existing_retry_guarantees() {
     let (_directory, root) = root();
-    let mut store = store(&root);
+    let mut storage = store(&root);
     let now = now_ms();
+    let next_expiry_ms = now + 60 * 60 * 1000;
     let existing = channel_source("existing", ChannelAttentionKind::Question);
     let new = channel_source("new", ChannelAttentionKind::Report);
     assert!(
-        store
+        storage
             .record_channel_attention(existing.clone(), now, now)
             .unwrap()
     );
-    store
+    storage
         .connection
         .execute(
             "WITH RECURSIVE filled(id) AS (
@@ -1248,26 +1398,40 @@ fn channel_attention_receipt_capacity_preserves_existing_retry_guarantees() {
             SELECT 'fixture', CAST(id AS TEXT), ?2 FROM filled",
             rusqlite::params![
                 (storage::MAX_CHANNEL_ATTENTION_RECEIPTS - 1) as i64,
-                now + 1
+                next_expiry_ms
             ],
         )
         .unwrap();
+    drop(storage);
+
+    let service = NotificationService::open(&root).unwrap();
+    service
+        .record_channel_attention(existing.clone(), now, &|| true)
+        .unwrap();
+    let error = service
+        .record_channel_attention(new.clone(), now, &|| true)
+        .unwrap_err();
+    assert_eq!(
+        error
+            .downcast_ref::<ChannelAttentionCapacity>()
+            .unwrap()
+            .next_expiry_ms,
+        next_expiry_ms
+    );
+    assert!(service.health().healthy);
+    assert_eq!(service.health().retained, 1);
+    service.shutdown().unwrap();
+
+    let mut storage = store(&root);
     assert!(
-        !store
-            .record_channel_attention(existing.clone(), now, now)
+        storage
+            .record_channel_attention(new, now, next_expiry_ms)
             .unwrap()
     );
     assert!(
-        store
-            .record_channel_attention(new.clone(), now, now)
-            .is_err()
-    );
-    assert!(!store.failed());
-    assert!(store.record_channel_attention(new, now, now + 1).unwrap());
-    assert!(
-        !store
-            .record_channel_attention(existing, now, now + 1)
+        !storage
+            .record_channel_attention(existing, now, next_expiry_ms)
             .unwrap()
     );
-    assert_eq!(store.retained().unwrap(), 2);
+    assert_eq!(storage.retained().unwrap(), 2);
 }

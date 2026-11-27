@@ -1,4 +1,6 @@
-use super::{CHANNEL_ATTENTION_RETRY_MS, NotificationObservation, now_ms};
+use super::{
+    CHANNEL_ATTENTION_RETRY_MS, ChannelAttentionCapacity, NotificationObservation, now_ms,
+};
 use anyhow::{Context, Result, ensure};
 use bkpr_protocol::{
     ChannelNotificationSource, Notification, NotificationCursor, NotificationHealth,
@@ -52,15 +54,6 @@ impl std::fmt::Display for EpisodeCapacity {
     }
 }
 impl std::error::Error for EpisodeCapacity {}
-
-#[derive(Debug)]
-struct ChannelAttentionCapacity;
-impl std::fmt::Display for ChannelAttentionCapacity {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("notification channel attention receipt capacity exceeded")
-    }
-}
-impl std::error::Error for ChannelAttentionCapacity {}
 
 pub(super) struct Unavailable {
     _directory: File,
@@ -441,9 +434,11 @@ impl Store {
         observed_at_ms: u64,
         now: u64,
     ) -> Result<bool> {
+        // The channel commit may precede a wall-clock rollback. Keep its original
+        // observation and retry deadline; history retention starts at host acceptance.
         let expires = observed_at_ms.saturating_add(CHANNEL_ATTENTION_RETRY_MS);
         ensure!(
-            observed_at_ms <= now && now < expires,
+            now < expires,
             "channel attention timestamp is outside the retry horizon"
         );
         let result = self.record_channel_attention_inner(source, observed_at_ms, now, expires);
@@ -491,10 +486,14 @@ impl Store {
             [],
             |row| row.get(0),
         )?;
-        ensure!(
-            receipts < MAX_CHANNEL_ATTENTION_RECEIPTS,
-            ChannelAttentionCapacity
-        );
+        if receipts >= MAX_CHANNEL_ATTENTION_RECEIPTS {
+            let next_expiry_ms = transaction.query_row(
+                "SELECT MIN(expires) FROM channel_attention_receipts",
+                [],
+                |row| row.get(0),
+            )?;
+            return Err(ChannelAttentionCapacity { next_expiry_ms }.into());
+        }
         transaction.execute(
             "INSERT INTO channel_attention_receipts VALUES (?1,?2,?3)",
             params![session_id, message_id, as_i64(expires)?],
@@ -781,7 +780,9 @@ impl Store {
             for row in rows {
                 let (entry_sequence, record) = row?;
                 let notification: Notification = serde_json::from_str(&record)?;
-                let matches = matches_scope(&query.scope, &notification.source)
+                let matches = (query.include_channel_attention
+                    || notification.source.as_pane().is_some())
+                    && matches_scope(&query.scope, &notification.source)
                     && (query.kinds.is_empty() || query.kinds.contains(&notification.kind));
                 if matches
                     && (notifications.len() >= usize::from(query.limit)

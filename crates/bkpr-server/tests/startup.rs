@@ -2398,6 +2398,13 @@ fn channel_catalog_resumes_after_detach_and_restart_in_its_own_session() {
         after: None,
         limit: 1,
     };
+    let payload = |reply: Response| {
+        assert!(reply.ok, "{:?}", reply.error);
+        let Some(Payload::Channels(reply)) = reply.result else {
+            panic!("expected catalog payload");
+        };
+        reply
+    };
     let send = |endpoint: &bkpr_protocol::SessionEndpoint,
                 authority: &bkpr_protocol::ClientAuthority,
                 request_body| {
@@ -2411,11 +2418,7 @@ fn channel_catalog_resumes_after_detach_and_restart_in_its_own_session() {
             ),
         )
         .unwrap();
-        assert!(reply.ok, "{:?}", reply.error);
-        let Some(Payload::Channels(reply)) = reply.result else {
-            panic!("expected catalog payload");
-        };
-        reply
+        payload(reply)
     };
     assert!(
         !request(
@@ -2479,10 +2482,54 @@ fn channel_catalog_resumes_after_detach_and_restart_in_its_own_session() {
 
     let (second_lifetime, second) = register_channel_client(&endpoint);
     activate_channel_client(&endpoint, &second);
+    let mut waiting = UnixStream::connect(&endpoint.socket).unwrap();
+    send_request(
+        &mut waiting,
+        as_channel_client(
+            &second,
+            Operation::Channels {
+                request: ChannelRequest::CatalogSubscribe {
+                    after: cursor.clone(),
+                    limit: 4,
+                    wait_ms: bkpr_protocol::channels::MAX_WAIT_MS,
+                },
+            },
+        ),
+    )
+    .unwrap();
+    // Wait for the server to read the caught-up cursor and commit to waiting.
+    let diagnostics = fixture.state.join("diagnostics/events.jsonl");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !fs::read_to_string(&diagnostics).is_ok_and(|events| {
+        events.lines().any(|line| {
+            line.contains(r#""operation":"channels.catalog""#)
+                && line.contains(r#""outcome":"waiting""#)
+        })
+    }) {
+        assert!(Instant::now() < deadline, "catalog subscriber did not wait");
+        thread::sleep(Duration::from_millis(10));
+    }
     daemon.send(Operation::WorkspaceClose {
         workspace_id: hidden.id.clone(),
         expected_revision: hidden.revision,
     });
+    waiting
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let ChannelResponse::CatalogChanges {
+        changes,
+        cursor: after_close,
+        more: false,
+    } = payload(read_response(&mut waiting).unwrap())
+    else {
+        panic!("expected closure delta from the waiting subscriber");
+    };
+    assert_eq!(
+        changes,
+        [ChannelCatalogChange::WorkspaceClosed {
+            workspace_id: hidden.id.clone()
+        }]
+    );
     assert_eq!(
         send(
             &endpoint,
@@ -2500,20 +2547,6 @@ fn channel_catalog_resumes_after_detach_and_restart_in_its_own_session() {
             limit: 4,
             wait_ms: 0,
         };
-    let ChannelResponse::CatalogChanges {
-        changes,
-        cursor: after_close,
-        more: false,
-    } = send(&endpoint, &second, resume(&cursor))
-    else {
-        panic!("expected closure delta");
-    };
-    assert_eq!(
-        changes,
-        [ChannelCatalogChange::WorkspaceClosed {
-            workspace_id: hidden.id.clone()
-        }]
-    );
     let another = daemon.open("other-catalog", None);
     let (other_lifetime, other) = register_channel_client(&another);
     activate_channel_client(&another, &other);

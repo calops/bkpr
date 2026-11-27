@@ -56,8 +56,7 @@ impl Store {
         actor_id: &str,
         limit: u16,
     ) -> Result<ChannelResponse> {
-        // The direct-message writer has another SQLite connection. The bounds,
-        // visibility and summaries must all use the same SQLite read snapshot.
+        // Read journal bounds, visibility and summaries in one SQLite snapshot.
         let tx = self.connection.transaction()?;
         let (store_id, oldest, newest): (String, u64, u64) = tx.query_row(
             "SELECT store_id, COALESCE((SELECT min(sequence) FROM catalog_events),0),

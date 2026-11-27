@@ -2,8 +2,7 @@
 use crate::transport::Endpoint;
 use anyhow::{Context, Result};
 use bkpr_protocol::{
-    MAX_NOTIFICATION_LIMIT, MAX_NOTIFICATION_WAIT_MS, NotificationPage, NotificationQuery,
-    NotificationRequest, Operation,
+    MAX_NOTIFICATION_WAIT_MS, NotificationPage, NotificationQuery, NotificationRequest, Operation,
 };
 use std::{
     io::{Read, Write},
@@ -88,7 +87,7 @@ async fn observe(
         let operation = Operation::Notifications {
             request: NotificationRequest::Subscribe {
                 query: NotificationQuery {
-                    limit: MAX_NOTIFICATION_LIMIT,
+                    include_channel_attention: true,
                     ..NotificationQuery::default()
                 },
                 wait_ms: if after.is_none() {
@@ -232,7 +231,13 @@ mod tests {
         else {
             panic!("expected notification subscription");
         };
-        assert_eq!(query, NotificationQuery::default());
+        assert_eq!(
+            query,
+            NotificationQuery {
+                include_channel_attention: true,
+                ..NotificationQuery::default()
+            },
+        );
         assert_eq!(
             requested
                 .as_ref()

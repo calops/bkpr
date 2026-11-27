@@ -130,6 +130,7 @@ fn history(
                 binding_live: &|_, _| true,
                 direct_peer: &|_| Ok(None),
             },
+            None,
             |_, _| Ok(false),
         )
         .map(|(response, _)| response)

@@ -349,7 +349,10 @@ fn committed_channel_attention_reaches_host_once_without_post_body() {
         let value = service
             .request(
                 NotificationRequest::Inspect {
-                    query: NotificationQuery::default(),
+                    query: NotificationQuery {
+                        include_channel_attention: true,
+                        ..Default::default()
+                    },
                     after: None,
                 },
                 None,

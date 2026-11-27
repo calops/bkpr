@@ -11,33 +11,62 @@ struct SessionRecord {
     session_id: String,
 }
 
-pub(super) fn open_session(root: &Path, name: &str, daemon_id: &str) -> Result<SessionInfo> {
-    let stored = match OpenOptions::new()
+fn read_session_record(root: &Path) -> Result<Option<SessionRecord>> {
+    let mut file = match OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(root.join("session.json"))
     {
-        Ok(mut file) => {
-            check_file(&file)?;
-            let mut bytes = Vec::new();
-            Read::by_ref(&mut file)
-                .take(MAX_RECORD + 1)
-                .read_to_end(&mut bytes)?;
-            ensure!(bytes.len() as u64 <= MAX_RECORD, "session metadata limit");
-            let record: SessionRecord =
-                serde_json::from_slice(&bytes).context("decode session metadata")?;
-            ensure!(
-                record.version == 1 && Uuid::parse_str(&record.session_id).is_ok(),
-                "invalid session identity"
-            );
-            valid_session_name(&record.name)?;
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    check_file(&file)?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(MAX_RECORD + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(bytes.len() as u64 <= MAX_RECORD, "session metadata limit");
+    let record: SessionRecord =
+        serde_json::from_slice(&bytes).context("decode session metadata")?;
+    ensure!(
+        record.version == 1 && Uuid::parse_str(&record.session_id).is_ok(),
+        "invalid session identity"
+    );
+    valid_session_name(&record.name)?;
+    Ok(Some(record))
+}
+
+pub(super) fn legacy_attention_session(root: &Path, key: Option<&str>) -> Result<SessionInfo> {
+    let mut stored =
+        read_session_record(root)?.context("missing legacy attention session identity")?;
+    if let Some(key) = key {
+        ensure!(
+            session_key(&stored.name)? == key,
+            "session directory key mismatch"
+        );
+    }
+    stored.name.truncate(stored.name.floor_char_boundary(1024));
+    // Old durable rows did not record the runtime. A non-UUID placeholder cannot
+    // be confused with either of the real runtime identities allocated on open.
+    Ok(SessionInfo {
+        name: stored.name,
+        session_id: stored.session_id,
+        daemon_id: "legacy-unknown".into(),
+        session_instance_id: "legacy-unknown".into(),
+    })
+}
+
+pub(super) fn open_session(root: &Path, name: &str, daemon_id: &str) -> Result<SessionInfo> {
+    let stored = match read_session_record(root)? {
+        Some(record) => {
             ensure!(
                 record.name == name,
                 "state root belongs to a different session name"
             );
             record
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        None => {
             let record = SessionRecord {
                 version: 1,
                 name: name.to_owned(),
@@ -55,7 +84,6 @@ pub(super) fn open_session(root: &Path, name: &str, daemon_id: &str) -> Result<S
             File::open(root)?.sync_all()?;
             record
         }
-        Err(error) => return Err(error.into()),
     };
     Ok(SessionInfo {
         name: stored.name,

@@ -168,6 +168,7 @@ struct Inner {
     transaction: Mutex<()>,
     captures: Mutex<crate::harness::Captures>,
     notifications: std::sync::OnceLock<crate::notifications::NotificationService>,
+    standalone_attention: std::sync::OnceLock<notification_capture::ChannelAttentionWorker>,
     channels: crate::channels::ChannelEngine,
     channel_expiry: legacy_channels::Expiry,
     agents: Arc<agents::Agents>,
@@ -509,6 +510,9 @@ impl Drop for Registry {
             // A worker's temporary Inner reference is not an owner of the state
             // root. Join while this last public handle still retains the lease.
             self.inner.channel_expiry.stop();
+            if let Some(attention) = self.inner.standalone_attention.get() {
+                attention.stop();
+            }
             self.stop_projects();
             self.stop_ci();
         }
@@ -620,7 +624,7 @@ impl Registry {
         let (project_wake, project_events) = crossbeam_channel::bounded(1);
         let (ci_wake, ci_events) = crossbeam_channel::bounded(1);
         let agents = Arc::new(agents::Agents::new());
-        let channels = crate::channels::ChannelEngine::new(root.to_owned());
+        let channels = crate::channels::ChannelEngine::for_session(root.to_owned(), &session);
         let legacy_expiry = legacy_channels::migrate(root, &record, &channels)?;
         if !record.registry.workspaces.is_empty() {
             channels.provision(record.registry.workspaces.iter().map(|w| w.id.as_str()));
@@ -652,6 +656,7 @@ impl Registry {
                 transaction: Mutex::new(()),
                 captures: Mutex::new(crate::harness::Captures::default()),
                 notifications: std::sync::OnceLock::new(),
+                standalone_attention: std::sync::OnceLock::new(),
                 channels,
                 channel_expiry: legacy_channels::Expiry::default(),
                 agents,
@@ -2429,6 +2434,9 @@ impl Registry {
         };
         self.inner.channels.invalidate();
         self.inner.channel_expiry.stop();
+        if let Some(attention) = self.inner.standalone_attention.get() {
+            attention.stop();
+        }
         self.detach_all_clients("shutdown");
         self.inner.agents.shutdown();
         let forwarding = self.inner.ssh_agent.lock().unwrap().clone();

@@ -198,22 +198,25 @@ pub struct Notification {
     /// Observation time in Unix milliseconds, not a storage-commit receipt.
     pub observed_at_ms: u64,
     /// Retention expiry in Unix milliseconds.
+    /// Channel retention uses the host acceptance clock, which can precede the
+    /// original post time after a clock rollback.
     pub expires_at_ms: u64,
 }
 impl Notification {
-    /// Validate bounded source identities, nonzero sequence, attention category and expiry.
+    /// Validate bounded source identities, nonzero sequence, attention category and pane expiry.
     pub fn validate(&self) -> Result<()> {
         self.source.validate()?;
         valid_id(&self.id)?;
         ensure!(self.sequence > 0, "notification sequence must be nonzero");
-        ensure!(
-            self.expires_at_ms >= self.observed_at_ms,
-            "notification expiry precedes observation"
-        );
         if matches!(&self.source, NotificationSource::Channel(_)) {
             ensure!(
                 self.kind == NotificationKind::Attention && self.attention_kind.is_none(),
                 "channel notifications require attention kind without a pane attention category"
+            );
+        } else {
+            ensure!(
+                self.expires_at_ms >= self.observed_at_ms,
+                "notification expiry precedes observation"
             );
         }
         if let Some(kind) = &self.attention_kind {
@@ -284,6 +287,10 @@ pub struct NotificationQuery {
     pub kinds: Vec<NotificationKind>,
     /// Maximum returned records, from 1 through 64 inclusive.
     pub limit: u16,
+    /// Include channel attention alongside pane notifications, subject to the same filters.
+    /// Defaults to false to preserve the pane-only response expected by older readers.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_channel_attention: bool,
 }
 impl Default for NotificationQuery {
     fn default() -> Self {
@@ -291,6 +298,7 @@ impl Default for NotificationQuery {
             scope: NotificationScope::default(),
             kinds: Vec::new(),
             limit: MAX_NOTIFICATION_LIMIT,
+            include_channel_attention: false,
         }
     }
 }
@@ -958,6 +966,8 @@ mod tests {
             expires_at_ms: 200,
         };
         assert!(notification.validate().is_ok());
+        notification.expires_at_ms = 99;
+        assert!(notification.validate().is_ok());
         notification.attention_kind = Some("question".into());
         assert!(notification.validate().is_err());
         notification.attention_kind = None;
@@ -990,6 +1000,24 @@ mod tests {
         assert!(policy.validate().is_ok());
         policy.kinds = vec![NotificationKind::Attention; 2];
         assert!(policy.validate().is_err());
+    }
+
+    #[test]
+    fn legacy_notification_query_json_stays_pane_only() {
+        let mut json = serde_json::json!({
+            "scope": {"session_id": null, "workspace_id": null, "pane_id": null},
+            "kinds": [],
+            "limit": 64,
+        });
+        let query = serde_json::from_value::<NotificationQuery>(json.clone()).unwrap();
+        assert_eq!(query, NotificationQuery::default());
+        assert!(!query.include_channel_attention);
+        assert_eq!(serde_json::to_value(query).unwrap(), json);
+
+        json["include_channel_attention"] = serde_json::json!(true);
+        let query = serde_json::from_value::<NotificationQuery>(json.clone()).unwrap();
+        assert!(query.include_channel_attention);
+        assert_eq!(serde_json::to_value(query).unwrap(), json);
     }
 
     #[test]

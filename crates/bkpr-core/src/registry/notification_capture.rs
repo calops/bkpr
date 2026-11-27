@@ -1,7 +1,10 @@
 use super::*;
+use crate::channels::{AttentionWaker, deliver_channel_attention};
 use crate::notifications::{NotificationObservation, NotificationService};
 use bkpr_protocol::PaneNotificationSource;
 use bkpr_terminal_engine::ProgramStatusView;
+use crossbeam_channel::{Sender, TryRecvError, bounded, select_biased};
+use std::thread::{self, JoinHandle};
 
 #[derive(Default)]
 pub(crate) struct Capture {
@@ -96,54 +99,249 @@ impl Drop for Flush<'_> {
     }
 }
 
-impl Registry {
-    /// Attach the host-owned notification service before starting session panes.
-    /// Rejects a second attachment or attachment after bootstrap has started.
-    pub fn configure_notifications(&self, service: NotificationService) -> Result<()> {
-        let state = self.inner.state.lock().unwrap();
-        ensure!(
-            !state.bootstrap_started && state.live.is_empty() && state.spawning == 0,
-            "notifications must be configured before pane startup"
-        );
-        self.inner
-            .notifications
-            .set(service)
-            .map_err(|_| anyhow::anyhow!("notifications already configured"))?;
-        let weak = Arc::downgrade(&self.inner);
-        let wake = self.inner.channels.attention_waker();
-        std::thread::Builder::new()
+/// One scheduler per host, not one worker (or retained Registry) per session.
+/// The channel databases are the durable work list. Scans stream session roots
+/// one at a time; an empty pass sleeps until another committed attention post.
+pub(crate) struct ChannelAttentionWorker {
+    wake: AttentionWaker,
+    running: Mutex<Option<(Sender<()>, JoinHandle<()>)>>,
+}
+
+enum AttentionScope {
+    Host(PathBuf),
+    Single(PathBuf),
+}
+
+impl ChannelAttentionWorker {
+    pub(crate) fn host(sessions_root: PathBuf, service: NotificationService) -> Result<Self> {
+        Self::start(AttentionScope::Host(sessions_root), service)
+    }
+
+    fn start(scope: AttentionScope, service: NotificationService) -> Result<Self> {
+        let (roots, woken) = bounded::<Arc<Path>>(64);
+        let (overflow, rescanning) = bounded(1);
+        let (stop, stopped) = bounded(0);
+        let worker = thread::Builder::new()
             .name("bkpr-channel-attention".into())
             .spawn(move || {
+                let cancelled = || stopped.try_recv() == Err(TryRecvError::Disconnected);
+                let mut host_retry_at = 0;
+                let mut next = scope.scan(&service, &mut host_retry_at, &cancelled);
                 loop {
-                    let Some(inner) = weak.upgrade() else { break };
-                    let cancelled = || inner.state.lock().unwrap().closing;
-                    if cancelled() {
-                        break;
-                    }
-                    let service = inner.notifications.get().unwrap();
-                    let delivered =
-                        inner
-                            .channels
-                            .deliver_attention(service, &inner.session, &cancelled);
-                    drop(inner);
-                    match delivered {
-                        Ok(true) => continue,
-                        Err(_) => {
-                            crate::diagnostics::record("channels.attention", None, "deferred");
-                            if wake.recv_timeout(Duration::from_secs(1)).is_err()
-                                && weak.strong_count() == 0
-                            {
-                                break;
+                    let deadline = next.map_or_else(crossbeam_channel::never, |at| {
+                        crossbeam_channel::after(Duration::from_millis(at.saturating_sub(now_ms())))
+                    });
+                    select_biased! {
+                        recv(stopped) -> _ => break,
+                        recv(deadline) -> _ => {
+                            next = scope.scan(&service, &mut host_retry_at, &cancelled);
+                        },
+                        recv(rescanning) -> _ => {
+                            next = scope.scan(&service, &mut host_retry_at, &cancelled);
+                        },
+                        recv(woken) -> root => match root {
+                            Ok(root) => {
+                                let at = scope.scan_woken(
+                                    &root,
+                                    &service,
+                                    &mut host_retry_at,
+                                    &cancelled,
+                                );
+                                next = next.into_iter().chain(at).min();
                             }
-                        }
-                        Ok(false) => {
-                            if wake.recv().is_err() {
-                                break;
-                            }
-                        }
+                            Err(_) => break,
+                        },
                     }
                 }
             })?;
+        Ok(Self {
+            wake: AttentionWaker { roots, overflow },
+            running: Mutex::new(Some((stop, worker))),
+        })
+    }
+
+    pub(crate) fn stop(&self) {
+        let mut running = self.running.lock().unwrap();
+        let Some((stop, worker)) = running.take() else {
+            return;
+        };
+        drop(stop);
+        let _ = worker.join();
+    }
+}
+
+impl Drop for ChannelAttentionWorker {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn scan_attention_root(
+    root: &Path,
+    key: Option<&str>,
+    service: &NotificationService,
+    host_retry_at: &mut u64,
+    cancelled: &impl Fn() -> bool,
+) -> Option<u64> {
+    match deliver_channel_attention(
+        root,
+        service,
+        || sessions::legacy_attention_session(root, key),
+        host_retry_at,
+        cancelled,
+    ) {
+        Ok(at) => at,
+        Err(error) if !cancelled() => {
+            crate::diagnostics::record("channels.attention_store", None, "deferred");
+            let transient = error
+                .downcast_ref::<rusqlite::Error>()
+                .is_some_and(|error| {
+                    matches!(
+                        error.sqlite_error_code(),
+                        Some(
+                            rusqlite::ErrorCode::DatabaseBusy
+                                | rusqlite::ErrorCode::DatabaseLocked
+                                | rusqlite::ErrorCode::SystemIoFailure
+                                | rusqlite::ErrorCode::DiskFull
+                                | rusqlite::ErrorCode::CannotOpen
+                        )
+                    )
+                });
+            transient.then(|| now_ms().saturating_add(1_000))
+        }
+        Err(_) => None,
+    }
+}
+
+impl AttentionScope {
+    fn scan_woken(
+        &self,
+        root: &Path,
+        service: &NotificationService,
+        host_retry_at: &mut u64,
+        cancelled: &impl Fn() -> bool,
+    ) -> Option<u64> {
+        let key = match self {
+            Self::Host(sessions) => {
+                if root.parent() != Some(sessions.as_path()) {
+                    return None;
+                }
+                Some(root.file_name()?.to_str()?)
+            }
+            Self::Single(session) => {
+                if root != session.as_path() {
+                    return None;
+                }
+                None
+            }
+        };
+        scan_attention_root(root, key, service, host_retry_at, cancelled)
+    }
+
+    fn scan(
+        &self,
+        service: &NotificationService,
+        host_retry_at: &mut u64,
+        cancelled: &impl Fn() -> bool,
+    ) -> Option<u64> {
+        match self {
+            Self::Single(root) => {
+                scan_attention_root(root, None, service, host_retry_at, cancelled)
+            }
+            Self::Host(sessions) => {
+                let mut next = None;
+                let entries = (|| -> Result<_> {
+                    let meta = fs::symlink_metadata(sessions)?;
+                    ensure!(
+                        meta.is_dir()
+                            && meta.uid() == unsafe { libc::geteuid() }
+                            && meta.mode() & 0o077 == 0,
+                        "unsafe host sessions root"
+                    );
+                    Ok(fs::read_dir(sessions)?)
+                })();
+                let Ok(entries) = entries else {
+                    crate::diagnostics::record("channels.attention_scan", None, "unavailable");
+                    return Some(now_ms().saturating_add(1_000));
+                };
+                for entry in entries {
+                    if cancelled() {
+                        break;
+                    }
+                    let Ok(entry) = entry else { continue };
+                    let name = entry.file_name();
+                    let Some(key) = name.to_str().filter(|key| {
+                        key.len() == 64
+                            && key
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    }) else {
+                        continue;
+                    };
+                    if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                        let at = scan_attention_root(
+                            &entry.path(),
+                            Some(key),
+                            service,
+                            host_retry_at,
+                            cancelled,
+                        );
+                        next = next.into_iter().chain(at).min();
+                    }
+                }
+                next
+            }
+        }
+    }
+}
+
+impl Registry {
+    /// Attach the notification service before starting session panes.
+    /// Rejects a second attachment or attachment after bootstrap has started.
+    pub fn configure_notifications(&self, service: NotificationService) -> Result<()> {
+        self.attach_notifications(service, None)
+    }
+
+    pub(crate) fn configure_host_notifications(
+        &self,
+        service: NotificationService,
+        attention: &ChannelAttentionWorker,
+    ) -> Result<()> {
+        self.attach_notifications(service, Some(attention))
+    }
+
+    fn attach_notifications(
+        &self,
+        service: NotificationService,
+        attention: Option<&ChannelAttentionWorker>,
+    ) -> Result<()> {
+        let state = self.inner.state.lock().unwrap();
+        ensure!(
+            !state.closing
+                && !state.bootstrap_started
+                && state.live.is_empty()
+                && state.spawning == 0,
+            "notifications must be configured before pane startup"
+        );
+        ensure!(
+            self.inner.notifications.get().is_none(),
+            "notifications already configured"
+        );
+        let attention = match attention {
+            Some(attention) => attention,
+            None => {
+                let worker = ChannelAttentionWorker::start(
+                    AttentionScope::Single(self.inner.root.clone()),
+                    service.clone(),
+                )?;
+                assert!(self.inner.standalone_attention.set(worker).is_ok());
+                self.inner.standalone_attention.get().unwrap()
+            }
+        };
+        assert!(self.inner.notifications.set(service).is_ok());
+        self.inner
+            .channels
+            .set_attention_waker(attention.wake.clone());
         Ok(())
     }
 
