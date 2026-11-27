@@ -1,5 +1,5 @@
-use super::{Active, Anchor, Chat, Draft, Send, chat_images};
 use super::super::roles_ui;
+use super::{Active, Anchor, Chat, Draft, Send, chat_images};
 use bkpr_protocol::{
     ColorSource, Cursor, CursorShape, Frame, SelectionSpan, Size, Style, channels::*,
 };
@@ -1080,8 +1080,10 @@ impl Chat {
             let body = paint.inlay(theme, outer, list_background, None);
             paint.target(outer, Hit::List);
             let reserved = 1 + u16::from(!self.ids.is_empty());
-            let has_settings = !read_only && summary.is_some_and(Self::can_manage) && body.height > reserved;
-            let has_members = summary.is_some_and(|channel| self.can_show_members(channel))
+            let has_settings =
+                !read_only && summary.is_some_and(Self::can_manage) && body.height > reserved;
+            let has_members = summary
+                .is_some_and(|channel| Self::can_show_members(channel, self.roles_enabled))
                 && body.height > reserved + u16::from(has_settings);
             let has_create = can_create
                 && body.height >= reserved + 2 + u16::from(has_settings) + u16::from(has_members);

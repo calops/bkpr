@@ -468,7 +468,9 @@ impl RemoteSession {
         result
     }
 
-    pub(crate) fn take_role_events(&mut self) -> crate::transport::client_lifetime::RoleInvalidation {
+    pub(crate) fn take_role_events(
+        &mut self,
+    ) -> crate::transport::client_lifetime::RoleInvalidation {
         self.client.take_role_events()
     }
     /// Close this attachment's authority/SSH without joining or detaching any

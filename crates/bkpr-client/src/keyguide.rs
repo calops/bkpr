@@ -251,19 +251,27 @@ impl Action {
             Self::RefreshCi => "refresh checks",
             Self::LeaveSidebar => "return to app",
             Self::Navigate(Navigation::Previous)
-                if matches!(context, Context::Details | Context::RecoveryDetails | Context::ChatMembers) =>
+                if matches!(
+                    context,
+                    Context::Details | Context::RecoveryDetails | Context::ChatMembers
+                ) =>
             {
                 "scroll up"
             }
             Self::Navigate(Navigation::Next)
-                if matches!(context, Context::Details | Context::RecoveryDetails | Context::ChatMembers) =>
+                if matches!(
+                    context,
+                    Context::Details | Context::RecoveryDetails | Context::ChatMembers
+                ) =>
             {
                 "scroll down"
             }
             Self::Navigate(Navigation::Previous) => "select previous",
             Self::Navigate(Navigation::Next) => "select next",
             Self::Navigate(Navigation::First) if context == Context::ChatMembers => "scroll to top",
-            Self::Navigate(Navigation::Last) if context == Context::ChatMembers => "scroll to bottom",
+            Self::Navigate(Navigation::Last) if context == Context::ChatMembers => {
+                "scroll to bottom"
+            }
             Self::Navigate(Navigation::First) => "first item",
             Self::Navigate(Navigation::Last) => "last item",
             Self::Navigate(Navigation::PagePrevious) if context == Context::Finder => {

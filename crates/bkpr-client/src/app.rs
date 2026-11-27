@@ -201,7 +201,7 @@ enum Background {
     SessionStop(Result<()>),
     Recovery(Box<recovery_ui::Completion>),
     Chat(Box<Result<chat::Completion>>),
-    Role(Box<Result<bkpr_protocol::roles::RoleResponse>>),
+    Role(bkpr_protocol::roles::RoleResponse),
     CiRefresh {
         owner: TreeOwner,
         target: bkpr_protocol::CiRefreshTarget,
@@ -5048,8 +5048,7 @@ impl App {
                 PointerRoute::Target {
                     id: "ui:modal",
                     content: true,
-                } if self.theme_picker.is_some() && !consent_open =>
-                {
+                } if self.theme_picker.is_some() && !consent_open => {
                     let rect = self.overlays.layer("ui:modal").unwrap().placement.content;
                     let event = MouseEvent {
                         x: f32::from(mouse.x - rect.x),
@@ -5070,8 +5069,7 @@ impl App {
                 PointerRoute::Target {
                     id: "ui:modal",
                     content: true,
-                } if self.finder.is_some() && !consent_open =>
-                {
+                } if self.finder.is_some() && !consent_open => {
                     let rect = self.overlays.layer("ui:modal").unwrap().placement.content;
                     self.button_pointer = Some(("ui:modal", point));
                     let event = MouseEvent {
