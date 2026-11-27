@@ -2738,6 +2738,7 @@ fn first_direct_post_accepts_descending_pair_and_replays_without_resolving_targe
                         publish: &|_| {},
                         binding_live: &|_, _| true,
                         direct_peer: &|_| Ok(None),
+                        fence_user_mentions: &|_, _| unreachable!("agent direct post"),
                     },
                     || resolve_target(&f),
                 )
