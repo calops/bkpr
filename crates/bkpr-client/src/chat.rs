@@ -714,6 +714,16 @@ impl Chat {
                 self.set_members(self.members_scroll.is_none());
             }
             Hit::MemberBack => self.set_members(false),
+            Hit::Invite if !read_only => {
+                if let Some(form) = self.summary().and_then(chat_controls::Editor::invite) {
+                    self.next = self.next.wrapping_add(1);
+                    self.editor = Some(Editor {
+                        token: self.next,
+                        form,
+                    });
+                    self.redraw();
+                }
+            }
             _ => {}
         }
     }
@@ -1450,6 +1460,10 @@ impl Chat {
                 match result {
                     Ok(ChannelResponse::Channel { channel }) => {
                         let id = channel.id.clone();
+                        let invite = self
+                            .editor
+                            .as_ref()
+                            .is_some_and(|editor| editor.token == token && editor.form.is_invite());
                         let select = self
                             .editor
                             .as_mut()
@@ -1463,6 +1477,10 @@ impl Chat {
                             // Let the ordered catalog publish any badge transition.
                             provisional.unread_attention = false;
                             self.upsert(provisional);
+                        }
+                        if invite {
+                            self.editor = None;
+                            self.invalidate_roster();
                         }
                         if select {
                             self.editor = None;
