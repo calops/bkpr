@@ -8,7 +8,7 @@ use std::collections::{HashMap, VecDeque};
 
 #[path = "chat_view.rs"]
 mod view;
-use view::{Hit, Paint};
+use view::{Hit, Paint, Surfaces};
 
 const PAGE: u16 = 32;
 const HISTORY_ROWS: usize = 160;
@@ -177,6 +177,7 @@ pub(super) struct Chat {
     attention: HashMap<String, usize>,
     catalog_error: Option<String>,
     workspace: Option<String>,
+    surfaces: Surfaces,
     active: Option<Active>,
     recent_history: VecDeque<(ChannelId, History)>,
     selected: HashMap<String, ChannelId>,
@@ -198,7 +199,6 @@ pub(super) struct Chat {
     paint: Paint,
     images: chat_images::Cache,
     transports: Vec<bkpr_tui_framework::PreparedTransport>,
-    images_wanted: Vec<AttachmentId>,
     mark: Option<(ChannelId, u64)>,
     notice: Option<(Role, String)>,
 }
@@ -260,16 +260,15 @@ impl Chat {
         if self.workspace.is_none() {
             return;
         }
+        self.park_surface();
         self.retain_active_history();
         self.workspace = None;
         self.channel_chooser = false;
         self.members_scroll = None;
         self.editor = None;
-        self.images_wanted.clear();
         self.mark = None;
         self.notice = None;
-        self.hover_channel(None);
-        self.paint.invalidate_hits();
+        self.divider_drag = None;
         self.epoch = self.epoch.wrapping_add(1);
     }
 
@@ -302,6 +301,7 @@ impl Chat {
     }
 
     pub(super) fn replace_catalog(&mut self, catalog: HashMap<ChannelId, ChannelSummary>) {
+        self.surfaces.clear();
         self.attention.clear();
         for entry in catalog.values().filter(|entry| entry.unread_attention) {
             *self
@@ -324,6 +324,7 @@ impl Chat {
     }
 
     pub(super) fn catalog_error(&mut self, error: &anyhow::Error) {
+        self.surfaces.clear();
         self.catalog_error = Some(error_text(error));
         self.attention.clear();
         self.redraw();
@@ -367,6 +368,19 @@ impl Chat {
                 || old.direct != summary.direct
                 || old.role_thread != summary.role_thread
         });
+        let changed = old.is_none_or(|old| {
+            rebuild
+                || old.membership != summary.membership
+                || old.settings != summary.settings
+                || old.last_sequence != summary.last_sequence
+                || old.unread_attention != summary.unread_attention
+        });
+        if changed {
+            self.surfaces.remove(&summary.workspace_id);
+            if let Some(old) = old.filter(|old| old.workspace_id != summary.workspace_id) {
+                self.surfaces.remove(&old.workspace_id);
+            }
+        }
         let before = old.is_some_and(|entry| entry.unread_attention);
         let mut badge_changed = false;
         if before != summary.unread_attention {
@@ -385,7 +399,9 @@ impl Chat {
                 }
             }
         }
-        let projected = self.workspace() == Some(summary.workspace_id.as_str());
+        let projected = changed
+            && (self.workspace() == Some(summary.workspace_id.as_str())
+                || old.is_some_and(|old| self.workspace() == Some(old.workspace_id.as_str())));
         self.catalog.insert(summary.id.clone(), summary);
         (badge_changed, rebuild && projected, projected)
     }
@@ -403,6 +419,7 @@ impl Chat {
         if self.workspace() == Some(workspace) {
             self.close();
         }
+        self.surfaces.remove(workspace);
         self.selected.remove(workspace);
         self.drafts.retain(|id, _| {
             self.catalog
@@ -488,7 +505,7 @@ impl Chat {
         self.members_scroll = None;
         self.editor = None;
         self.notice = None;
-        self.images_wanted.clear();
+        self.divider_drag = None;
         self.mark = None;
         self.paint.invalidate_hits();
         self.epoch = self.epoch.wrapping_add(1);
@@ -551,6 +568,7 @@ impl Chat {
     pub(super) fn set_roles_enabled(&mut self, enabled: bool) {
         if self.roles_enabled != Some(enabled) {
             self.roles_enabled = Some(enabled);
+            self.redraw();
             self.invalidate_roster();
         }
     }
@@ -590,13 +608,16 @@ impl Chat {
     }
 
     pub(super) fn invalidate_roster(&mut self) {
+        let completing = self.completing();
         if let Some(active) = &mut self.active {
             if let Some(draft) = self.drafts.get_mut(&active.id) {
                 draft.invalidate_completion();
             }
             active.refresh_roster(active.workspace_roster);
-            self.paint.invalidate_hits();
-            self.redraw();
+            if completing {
+                self.paint.invalidate_hits();
+            }
+            self.redraw_roster();
         }
     }
 
@@ -1125,7 +1146,7 @@ impl Chat {
                     .rail_members_scroll
                     .saturating_add_signed(if button == B::WheelUp { -3 } else { 3 })
                     .min(self.paint.members_max_scroll());
-                self.redraw();
+                self.redraw_roster();
             }
             (B::WheelUp | B::WheelDown, _, _) if self.members_scroll.is_some() => {
                 self.scroll_members(if button == B::WheelUp { -3 } else { 3 });
@@ -1263,7 +1284,7 @@ impl Chat {
                 }),
             ));
         }
-        for id in &self.images_wanted {
+        for id in self.paint.images_wanted() {
             if self.images.begin(channel, id) {
                 return Some((
                     JobKind::Image {
@@ -1326,6 +1347,7 @@ impl Chat {
                     Err(error) => active.history.error = Some(error_text(&error)),
                     _ => active.history.error = Some("Unexpected history response".into()),
                 }
+                self.redraw();
             }
             return None;
         }
@@ -1357,6 +1379,7 @@ impl Chat {
         };
         match kind {
             JobKind::Roster(epoch) if epoch == self.epoch => {
+                self.redraw_roster();
                 let active = self.active.as_mut().expect("current roster owner");
                 if active.roster_next == Some(None) {
                     return None;
@@ -1397,6 +1420,7 @@ impl Chat {
                         active.history.read_failed = Some(through);
                         self.notice =
                             Some((Role::Warning, "Could not mark read; Alt-m retries".into()));
+                        self.redraw();
                     }
                     let error = result.err().unwrap_or_else(|| {
                         transport::mark_outcome_unknown(anyhow::anyhow!(
@@ -1407,6 +1431,7 @@ impl Chat {
                 }
             },
             JobKind::Send(channel) => {
+                self.redraw_channel(&channel);
                 let Some(Send::Pending { request, retry }) = self.sends.remove(&channel) else {
                     return None;
                 };
@@ -1517,6 +1542,7 @@ impl Chat {
         channel: ChannelId,
         result: Result<Completion>,
     ) -> Option<(String, anyhow::Error)> {
+        self.redraw_channel(&channel);
         if !matches!(self.sends.remove(&channel), Some(Send::SettingRole)) {
             return None;
         }
@@ -1558,6 +1584,19 @@ impl Chat {
 
     pub(super) fn transports(&mut self) -> Vec<bkpr_tui_framework::PreparedTransport> {
         std::mem::take(&mut self.transports)
+    }
+
+    fn redraw_channel(&mut self, channel: &ChannelId) {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.id == *channel)
+        {
+            self.redraw();
+        }
+        if let Some(summary) = self.catalog.get(channel) {
+            self.surfaces.remove(&summary.workspace_id);
+        }
     }
 
     pub(super) fn surface(&self) -> &UiSurface {

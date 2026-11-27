@@ -1641,7 +1641,6 @@ impl App {
     }
 
     fn complete_chat(&mut self, key: &str, result: Result<chat::Completion>, admitted: bool) {
-        self.chat.redraw();
         if let Some((summary, error)) = self.chat.complete(key, result, admitted) {
             self.report_failure(&summary, &error);
         }

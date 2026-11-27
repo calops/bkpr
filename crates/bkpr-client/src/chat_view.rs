@@ -12,6 +12,7 @@ use std::{
     borrow::Cow,
     collections::{HashMap, VecDeque},
     hash::{DefaultHasher, Hash, Hasher},
+    mem::{size_of, size_of_val},
 };
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
@@ -19,6 +20,61 @@ use unicode_width::UnicodeWidthStr as _;
 const MAX_NICK: u16 = 24;
 const LIST_MIN_WIDTH: u16 = 55;
 const MAX_COMPLETIONS: usize = 5;
+const PARKED_BYTES: usize = 8 * 1024 * 1024;
+const PARKED_WORKSPACES: usize = 3;
+
+#[derive(Default)]
+pub(super) struct Surfaces {
+    entries: VecDeque<Parked>,
+    bytes: usize,
+}
+
+struct Parked {
+    workspace: String,
+    channel: ChannelId,
+    paint: Paint,
+    bytes: usize,
+}
+
+impl Surfaces {
+    pub(super) fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+    }
+
+    pub(super) fn remove(&mut self, workspace: &str) {
+        self.take(workspace);
+    }
+
+    fn take(&mut self, workspace: &str) -> Option<Parked> {
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| entry.workspace == workspace)?;
+        let entry = self.entries.remove(index).expect("parked chat index");
+        self.bytes -= entry.bytes;
+        Some(entry)
+    }
+
+    fn insert(&mut self, workspace: String, channel: ChannelId, paint: Paint) {
+        self.remove(&workspace);
+        let bytes =
+            size_of::<Parked>() + workspace.capacity() + channel.0.capacity() + paint.heap_bytes();
+        if bytes > PARKED_BYTES {
+            return;
+        }
+        while self.entries.len() == PARKED_WORKSPACES || self.bytes + bytes > PARKED_BYTES {
+            self.bytes -= self.entries.pop_front().expect("parked bytes").bytes;
+        }
+        self.entries.push_back(Parked {
+            workspace,
+            channel,
+            paint,
+            bytes,
+        });
+        self.bytes += bytes;
+    }
+}
 
 pub(in crate::app) struct Entry {
     pub(super) message: ChannelMessage,
@@ -258,13 +314,18 @@ pub(super) struct Paint {
     painted_buttons: [Option<(ButtonState, bool)>; CHANNEL_BUTTONS.len()],
     hovered_channel: Option<ChannelId>,
     row_highlights: [Option<Rect>; 2],
+    hover_dirty: bool,
     inlays: Vec<(Rect, Rect, Option<u8>)>,
     inlay_mask: Option<u8>,
     outer: Rect,
     images: Frame,
+    images_wanted: Vec<AttachmentId>,
+    preview_revision: Option<u64>,
     history: Rect,
     completion_capacity: usize,
     member_page_rows: usize,
+    member_rows: Option<(Rect, ColorSource)>,
+    roster_dirty: bool,
     members_max_scroll: usize,
     composer_width: u16,
     composer: Option<ComposerPaint>,
@@ -288,6 +349,10 @@ struct PaintKey {
     read_only: bool,
     graphics: bool,
     focused: bool,
+    roles_enabled: Option<bool>,
+    rail_width: Option<u16>,
+    channels_height: Option<u16>,
+    list_cursor: usize,
     backgrounds: [ColorSource; 3],
 }
 
@@ -328,8 +393,8 @@ fn draft_affects_thread(draft: Option<&Draft>) -> bool {
 impl Default for Paint {
     fn default() -> Self {
         let initial = Size {
-            cols: 1,
-            rows: 1,
+            cols: 0,
+            rows: 0,
             cell_width: 1,
             cell_height: 1,
         };
@@ -341,15 +406,20 @@ impl Default for Paint {
             button_press: None,
             painted_buttons: [None; CHANNEL_BUTTONS.len()],
             hovered_channel: None,
+            hover_dirty: false,
             row_highlights: [None; 2],
-            inlays: Vec::with_capacity(2),
+            inlays: Vec::new(),
             inlay_mask: None,
             outer: Rect::default(),
             images: graphics_frame(initial),
+            images_wanted: Vec::new(),
+            preview_revision: None,
             history: Rect::default(),
             completion_capacity: 0,
             member_page_rows: 0,
             members_max_scroll: 0,
+            member_rows: None,
+            roster_dirty: false,
             composer_width: 1,
             composer: None,
             composer_dirty: false,
@@ -367,6 +437,62 @@ impl Default for Paint {
 }
 
 impl Paint {
+    fn heap_bytes(&self) -> usize {
+        fn buffer<T>(items: &Vec<T>) -> usize {
+            items.capacity() * size_of::<T>()
+        }
+        let frame = &self.surface.frame;
+        let cells = frame
+            .rows
+            .iter()
+            .map(|row| {
+                buffer(&row.cells)
+                    + row
+                        .cells
+                        .iter()
+                        .map(|cell| {
+                            usize::from(cell.text.is_heap_allocated()) * cell.text.capacity()
+                        })
+                        .sum::<usize>()
+            })
+            .sum::<usize>();
+        // Charge shared previews at full cost even if the worker cache also owns them.
+        let images = self
+            .images
+            .images
+            .iter()
+            .map(|image| {
+                size_of_val(image.as_ref())
+                    + image.pixels.capacity()
+                    + image.source.as_ref().map_or(0, |source| {
+                        size_of_val(source.as_ref()) + source.bytes.len()
+                    })
+            })
+            .sum::<usize>();
+        buffer(&frame.rows)
+            + cells
+            + buffer(&self.rendered)
+            + buffer(&self.hits)
+            + buffer(&self.inlays)
+            + buffer(&self.images.images)
+            + buffer(&self.images.placements)
+            + images
+            + buffer(&self.images_wanted)
+            + self
+                .images_wanted
+                .iter()
+                .map(|id| id.0.capacity())
+                .sum::<usize>()
+            + buffer(&self.rows)
+            + buffer(&self.previous_rows)
+            + buffer(&self.ranges)
+            + buffer(&self.selection_spans)
+    }
+
+    pub(super) fn images_wanted(&self) -> &[AttachmentId] {
+        &self.images_wanted
+    }
+
     fn button_at(&self, (x, y): (u16, u16)) -> Option<(Rect, Hit)> {
         self.hits.iter().rev().find_map(|&(rect, hit)| {
             (is_channel_button(hit) && rect.contains(x, y)).then_some((rect, hit))
@@ -374,6 +500,7 @@ impl Paint {
     }
 
     pub(super) fn invalidate_hits(&mut self) {
+        self.images_wanted.clear();
         self.hits.clear();
         self.button_press = None;
         self.button_pointer = None;
@@ -383,6 +510,42 @@ impl Paint {
         self.completion_capacity = 0;
         self.clear_selection();
         self.key = None;
+    }
+
+    fn channel_row(
+        &mut self,
+        theme: &Theme,
+        bounds: Rect,
+        summary: &ChannelSummary,
+        background: ColorSource,
+        (selected, chosen, hovered): (bool, bool, bool),
+    ) {
+        let lead = if summary.unread_attention { "!" } else { " " };
+        let name = if summary.role_thread.is_some_and(|thread| thread.archived) {
+            let short: String = summary.id.as_ref().chars().take(6).collect();
+            format!("Archive {}", safe_text(&short))
+        } else {
+            channel_name(summary)
+        };
+        let full = format!("{lead}{name}");
+        let role = if summary.unread_attention {
+            Role::Warning
+        } else if selected {
+            Role::Accent
+        } else {
+            Role::Base
+        };
+        if hovered {
+            self.row_highlights[0] = Some(bounds);
+            let hover = crate::appearance::hover_background(theme, background);
+            self.fill_card(theme, bounds, hover);
+            self.card_line(theme, bounds, &full, role, false, hover);
+        } else {
+            if chosen {
+                self.row_highlights[1] = Some(bounds);
+            }
+            self.card_line(theme, bounds, &full, role, chosen, background);
+        }
     }
 
     pub(super) fn hit(&self, x: u16, y: u16) -> Option<Hit> {
@@ -444,6 +607,8 @@ impl Paint {
         self.completion_capacity = 0;
         self.member_page_rows = 0;
         self.members_max_scroll = 0;
+        self.member_rows = None;
+        self.roster_dirty = false;
         self.composer_width = 1;
         self.composer = None;
         self.composer_dirty = false;
@@ -451,11 +616,14 @@ impl Paint {
         self.rendered.clear();
         self.hits.clear();
         self.painted_buttons = [None; CHANNEL_BUTTONS.len()];
+        self.hover_dirty = false;
         self.row_highlights = [None; 2];
         self.inlays.clear();
         self.inlay_mask = None;
         self.images.images.clear();
         self.images.placements.clear();
+        self.images_wanted.clear();
+        self.preview_revision = None;
         self.start = 0;
         self.tail = 0;
         self.surface.paint(key.size, Vec::new(), None);
@@ -644,6 +812,73 @@ impl HistoryRow {
 }
 
 impl Chat {
+    pub(super) fn park_surface(&mut self) {
+        let mut paint = std::mem::take(&mut self.paint);
+        if !self.is_attending()
+            || self.notice.is_some()
+            || paint.key.is_none()
+            || paint.composer_dirty
+            || self.completing()
+        {
+            return;
+        }
+        let (Some(workspace), Some(active)) = (&self.workspace, &self.active) else {
+            return;
+        };
+        if !active.history.loaded
+            || active.history.error.is_some()
+            || self.sends.contains_key(&active.id)
+        {
+            return;
+        }
+        paint.button_press = None;
+        paint.button_pointer = None;
+        paint.hovered_channel = None;
+        paint.hover_dirty = paint.row_highlights[0].is_some();
+        paint.clear_selection();
+        self.surfaces
+            .insert(workspace.clone(), active.id.clone(), paint);
+    }
+
+    fn restore_surface(&mut self, key: PaintKey) {
+        let (Some(workspace), Some(active)) = (&self.workspace, &mut self.active) else {
+            return;
+        };
+        let Some(entry) = self.surfaces.take(workspace) else {
+            return;
+        };
+        if entry.channel != active.id || !active.history.loaded {
+            return;
+        }
+        let composer_dirty = self.paint.composer_dirty;
+        self.paint = entry.paint;
+        if self.paint.key != Some(key)
+            || self.channel_chooser
+            || self.members_scroll.is_some()
+            || self.editor.is_some()
+            || self
+                .paint
+                .preview_revision
+                .is_some_and(|revision| revision != self.images.revision())
+        {
+            self.paint.invalidate_hits();
+            return;
+        }
+        self.paint.composer_dirty |= composer_dirty;
+        active.history.visible_through = self.paint.rendered.last().copied().unwrap_or(0);
+        self.images.start_frame();
+        self.images.touch(&active.id, self.paint.images_wanted());
+        // Reopening requests a fresh roster; nothing from the old one is actionable.
+        self.paint.roster_dirty = true;
+    }
+
+    pub(super) fn redraw_roster(&mut self) {
+        self.paint.roster_dirty = true;
+        if self.completing() {
+            self.redraw();
+        }
+    }
+
     pub(in crate::app) fn inlays(&self) -> &[(Rect, Rect, Option<u8>)] {
         &self.paint.inlays
     }
@@ -684,6 +919,11 @@ impl Chat {
         }
     }
     pub(in crate::app) fn redraw(&mut self) {
+        if self.paint.outer.width == 0
+            && let Some(workspace) = &self.workspace
+        {
+            self.surfaces.remove(workspace);
+        }
         self.paint.key = None;
     }
 
@@ -706,7 +946,11 @@ impl Chat {
         });
         if self.paint.hovered_channel.as_ref() != hovered {
             self.paint.hovered_channel = hovered.cloned();
-            self.redraw();
+            if self.channel_chooser {
+                self.redraw();
+            } else {
+                self.paint.hover_dirty = true;
+            }
         }
     }
 
@@ -978,10 +1222,27 @@ impl Chat {
             read_only,
             graphics,
             focused,
+            roles_enabled: self.roles_enabled,
+            rail_width: self.rail_width,
+            channels_height: self.channels_height,
+            list_cursor: self.list_cursor,
             backgrounds,
         };
+        if self.paint.outer.width == 0 && self.paint.key.is_none() {
+            self.restore_surface(key);
+        }
+        let previews_current = self
+            .paint
+            .preview_revision
+            .is_none_or(|revision| revision == self.images.revision());
         let mut composer_text = None;
-        if self.paint.key == Some(key) {
+        if self.paint.key == Some(key) && previews_current {
+            if std::mem::take(&mut self.paint.hover_dirty) {
+                self.paint_channel_hover(theme, backgrounds[0]);
+            }
+            if std::mem::take(&mut self.paint.roster_dirty) {
+                self.paint_roster_rows(theme);
+            }
             if !self.paint.composer_dirty {
                 return;
             }
@@ -1023,6 +1284,45 @@ impl Chat {
         }
     }
 
+    fn paint_roster_rows(&mut self, theme: &Theme) {
+        let paint = &mut self.paint;
+        let (Some((rows, background)), Some(active)) = (paint.member_rows, &self.active) else {
+            return;
+        };
+        clear(&mut paint.surface.frame, rows);
+        paint.fill_card(theme, rows, background);
+        let offset = self
+            .members_scroll
+            .as_mut()
+            .unwrap_or(&mut self.rail_members_scroll);
+        paint_member_rows(paint, theme, rows, background, active, offset);
+    }
+
+    fn paint_channel_hover(&mut self, theme: &Theme, background: ColorSource) {
+        let paint = &mut self.paint;
+        let old = paint.row_highlights[0].take();
+        let selected = self.active.as_ref().map(|active| &active.id);
+        for index in 0..paint.hits.len() {
+            let (rect, Hit::Channel(channel)) = paint.hits[index] else {
+                continue;
+            };
+            let bounds = rail_content(rect);
+            let id = &self.ids[channel];
+            let hovered = paint.hovered_channel.as_ref() == Some(id);
+            if hovered || old == Some(bounds) {
+                clear(&mut paint.surface.frame, bounds);
+                paint.fill_card(theme, bounds, background);
+                paint.channel_row(
+                    theme,
+                    bounds,
+                    &self.catalog[id],
+                    background,
+                    (selected == Some(id), false, hovered),
+                );
+            }
+        }
+    }
+
     fn paint_contents(
         &mut self,
         screen: Size,
@@ -1040,7 +1340,6 @@ impl Chat {
             ..
         } = key;
         self.images.start_frame();
-        self.images_wanted.clear();
         let paint = &mut self.paint;
         if let Some(active) = &mut self.active {
             active.history.visible_through = 0;
@@ -1184,35 +1483,18 @@ impl Chat {
                 .take(list_height.into())
                 .enumerate()
             {
-                let summary = &self.catalog[id];
-                let lead = if summary.unread_attention { "!" } else { " " };
-                let name = if summary.role_thread.is_some_and(|thread| thread.archived) {
-                    let short: String = id.as_ref().chars().take(6).collect();
-                    format!("Archive {}", safe_text(&short))
-                } else {
-                    channel_name(summary)
-                };
-                let full = format!("{lead}{name}");
                 let bounds = row(body.x, body.y + first_channel + line as u16, body.width);
-                let chosen = list_only && self.list_cursor == index;
-                let role = if summary.unread_attention {
-                    Role::Warning
-                } else if selected == Some(id) {
-                    Role::Accent
-                } else {
-                    Role::Base
-                };
-                if paint.hovered_channel.as_ref() == Some(id) {
-                    paint.row_highlights[0] = Some(bounds);
-                    let hover = crate::appearance::hover_background(theme, list_background);
-                    paint.fill_card(theme, bounds, hover);
-                    paint.card_line(theme, bounds, &full, role, false, hover);
-                } else {
-                    if chosen {
-                        paint.row_highlights[1] = Some(bounds);
-                    }
-                    paint.card_line(theme, bounds, &full, role, chosen, list_background);
-                }
+                paint.channel_row(
+                    theme,
+                    bounds,
+                    &self.catalog[id],
+                    list_background,
+                    (
+                        selected == Some(id),
+                        list_only && self.list_cursor == index,
+                        paint.hovered_channel.as_ref() == Some(id),
+                    ),
+                );
                 paint.target(
                     row(frame_body.x, bounds.y, frame_body.width),
                     Hit::Channel(index),
@@ -1448,7 +1730,6 @@ impl Chat {
             paint,
             &mut history.entries,
             &mut self.images,
-            &mut self.images_wanted,
             &active.id,
             history.anchor,
             theme,
@@ -1663,7 +1944,26 @@ fn paint_members(
             Hit::Invite,
         );
     }
-    let rows = usize::from(body.height - 1 - u16::from(invite));
+    let roster = Rect {
+        y: body.y + 1,
+        height: body.height - 1 - u16::from(invite),
+        ..body
+    };
+    paint.member_rows = Some((roster, background));
+    paint_member_rows(paint, theme, roster, background, active, offset);
+}
+
+fn paint_member_rows(
+    paint: &mut Paint,
+    theme: &Theme,
+    body: Rect,
+    background: ColorSource,
+    active: &Active,
+    offset: &mut usize,
+) {
+    paint.member_page_rows = 0;
+    paint.members_max_scroll = 0;
+    let rows = usize::from(body.height);
     if rows == 0 {
         return;
     }
@@ -1681,7 +1981,7 @@ fn paint_members(
     if let Some((status, role)) = status {
         paint.card_line(
             theme,
-            row(body.x, body.y + 1, body.width),
+            row(body.x, body.y, body.width),
             status,
             role,
             false,
@@ -1703,9 +2003,9 @@ fn paint_members(
     paint.member_page_rows = rows;
     paint.members_max_scroll = (active.roster.len() + headings).saturating_sub(rows);
     *offset = (*offset).min(paint.members_max_scroll);
-    let mut y = body.y + 1;
+    let mut y = body.y;
     let mut skip = *offset;
-    let end = body.y + body.height - u16::from(invite);
+    let end = body.y + body.height;
     for (group, entries) in groups
         .into_iter()
         .filter(|(_, entries)| !entries.is_empty())
@@ -1830,7 +2130,6 @@ fn paint_history(
     paint: &mut Paint,
     entries: &mut VecDeque<Entry>,
     images: &mut chat_images::Cache,
-    wanted: &mut Vec<AttachmentId>,
     channel: &ChannelId,
     anchor: Option<Anchor>,
     theme: &Theme,
@@ -2071,6 +2370,9 @@ fn paint_history(
         line += entry.layout.len().max(1);
         for attachment in &entry.message.attachments {
             if let Some(y) = relative(line) {
+                if graphics {
+                    paint.preview_revision = Some(images.revision());
+                }
                 let alt = attachment
                     .alt_text
                     .as_deref()
@@ -2093,7 +2395,8 @@ fn paint_history(
             if graphics {
                 let preview = usize::from(chat_images::PREVIEW_ROWS);
                 if line < end && line + preview > start {
-                    wanted.push(attachment.id.clone());
+                    paint.preview_revision = Some(images.revision());
+                    paint.images_wanted.push(attachment.id.clone());
                     images.append(
                         &mut paint.images,
                         channel,
@@ -2299,6 +2602,130 @@ mod tests {
             true,
             BACKGROUNDS,
         );
+    }
+
+    fn frame_has(chat: &Chat, text: &str) -> bool {
+        chat.surface().frame.rows.iter().any(|row| {
+            row.cells
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+                .contains(text)
+        })
+    }
+
+    fn finish_empty_history(chat: &mut Chat) {
+        let (kind, _) = chat.next_job(false).expect("initial history request");
+        assert!(matches!(kind, super::super::JobKind::History { .. }));
+        let job = chat.track(kind);
+        chat.complete(
+            &job,
+            Ok(Completion::History {
+                entries: vec![],
+                older: false,
+            }),
+            true,
+        );
+    }
+
+    fn finish_roster(chat: &mut Chat, name: &str) {
+        let (kind, _) = chat.next_job(false).expect("fresh roster request");
+        assert!(matches!(kind, super::super::JobKind::Roster(epoch) if epoch == chat.epoch));
+        let job = chat.track(kind);
+        chat.complete(
+            &job,
+            Ok(Completion::Response(ChannelResponse::UserRoster {
+                participants: vec![ChannelRosterEntry {
+                    participant: Participant {
+                        id: ParticipantId(name.into()),
+                        kind: ParticipantKind::User,
+                        display_name: name.into(),
+                    },
+                    binding: None,
+                    role: None,
+                }],
+                next_after: None,
+            })),
+            true,
+        );
+    }
+
+    #[test]
+    fn reopened_surface_paints_only_current_roster_and_retires_hover_and_press() {
+        let mut chat = Chat::default();
+        open_channel(&mut chat, 0);
+        finish_empty_history(&mut chat);
+        finish_roster(&mut chat, "Retired member");
+        let theme = Theme::default();
+        let size = size();
+        paint_thread(&mut chat, size, &theme);
+        assert!(frame_has(&chat, "Retired member"));
+
+        let channel = chat
+            .paint
+            .hits
+            .iter()
+            .find(|(_, hit)| *hit == Hit::Channel(0))
+            .unwrap()
+            .0;
+        chat.hover_channel(Some((channel.x, channel.y)));
+        paint_thread(&mut chat, size, &theme);
+        assert!(chat.row_highlights()[0].is_some());
+        let settings = chat
+            .paint
+            .hits
+            .iter()
+            .find(|(_, hit)| *hit == Hit::Manage)
+            .unwrap()
+            .0;
+        chat.update_button_pointer(Some((settings.x, settings.y)));
+        assert!(chat.press_button());
+        chat.close();
+        chat.open("workspace".into());
+        assert!(chat.paint.hit(settings.x, settings.y).is_none());
+        paint_thread(&mut chat, size, &theme);
+        assert!(frame_has(&chat, "No messages yet"));
+        assert!(frame_has(&chat, "Loading members"));
+        assert!(!frame_has(&chat, "Retired member"));
+        assert!(chat.row_highlights()[0].is_none());
+        chat.update_button_pointer(Some((settings.x, settings.y)));
+        chat.release_button(false);
+        assert!(!chat.editor_open());
+
+        finish_roster(&mut chat, "Current member");
+        paint_thread(&mut chat, size, &theme);
+        assert!(frame_has(&chat, "Current member"));
+        let warm = chat.surface().frame.clone();
+        chat.redraw();
+        paint_thread(&mut chat, size, &theme);
+        assert_eq!(chat.surface().frame, warm);
+    }
+
+    #[test]
+    fn hidden_catalog_change_retires_painted_write_controls() {
+        let mut chat = Chat::default();
+        open_channel(&mut chat, 0);
+        finish_empty_history(&mut chat);
+        chat.draft().unwrap().insert("retained draft", false);
+        let theme = Theme::default();
+        let size = size();
+        paint_thread(&mut chat, size, &theme);
+        assert!(frame_has(&chat, "retained draft"));
+        let mut summary = chat.summary().unwrap().clone();
+        chat.close();
+        summary.direct = true;
+        chat.upsert(summary);
+        chat.open("workspace".into());
+        paint_thread(&mut chat, size, &theme);
+        assert!(!frame_has(&chat, "retained draft"));
+        assert!(
+            chat.paint
+                .hits
+                .iter()
+                .all(|(_, hit)| !matches!(hit, Hit::Composer | Hit::Manage))
+        );
+        assert!(matches!(chat.key(&key("Enter"), false), Effect::None));
+        assert_eq!(chat.draft().unwrap().input.value, "retained draft");
     }
 
     #[test]

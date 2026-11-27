@@ -118,6 +118,7 @@ fn png_bytes(image: &Image) -> usize {
 pub(super) struct Cache {
     channels: HashMap<ChannelId, HashMap<AttachmentId, Slot>>,
     frame: u64,
+    revision: u64,
     count: usize,
     decoded: usize,
     encoded: usize,
@@ -128,6 +129,21 @@ impl Cache {
     /// until the next rebuild, so simultaneous visible attachments cannot evict each other.
     pub(super) fn start_frame(&mut self) {
         self.frame = self.frame.wrapping_add(1);
+    }
+
+    pub(super) fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub(super) fn touch(&mut self, channel: &ChannelId, attachments: &[AttachmentId]) {
+        let Some(slots) = self.channels.get_mut(channel) else {
+            return;
+        };
+        for id in attachments {
+            if let Some(slot) = slots.get_mut(id) {
+                slot.last_visible = self.frame;
+            }
+        }
     }
 
     /// Reserve one worker job for a visible, previously uncached attachment.
@@ -186,6 +202,7 @@ impl Cache {
         {
             return None;
         }
+        self.revision = self.revision.wrapping_add(1);
         let loaded = result.ok().filter(|loaded| self.reserve(&loaded.image));
         let slot = self.slot(channel, attachment).unwrap();
         if let Some(Loaded { image, transport }) = loaded {
@@ -285,6 +302,7 @@ impl Cache {
             self.encoded -= png_bytes(&image);
         }
         self.count -= 1;
+        self.revision = self.revision.wrapping_add(1);
         self.channels.retain(|_, entries| !entries.is_empty());
         true
     }

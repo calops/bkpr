@@ -32,6 +32,7 @@
 * **channels:** return canonical reply targets on exact reads and reject source-linked writes on older native peers before dispatch ([#75](https://github.com/calops/bkpr/issues/75))
 * **agents:** scope native collaboration approvals to verified managed Claude registrations and fresh, admitted Codex threads
 * **tui:** retain recent channel history when switching. Shift-Enter is the only newline shortcut.
+* **tui:** reuse valid workspace chat paint on reopen and refresh the member rail without repainting the thread ([#114](https://github.com/calops/bkpr/issues/114)).
 * **tui:** copy chat history without leaving the composer, edit drafts with readline shortcuts, and keep author and mention labels independent of transient terminal titles.
 * **tui:** preserve Markdown paragraph spacing and blank code lines when displaying and copying chat posts.
 * **tui:** keep chat in one pane with recessed sections. Use slightly lighter section interiors, tint the full composer, and match the edge materials to the pane and section fills.
