@@ -337,6 +337,150 @@ fn appended_notification_union_preserves_existing_operation_ordinals() {
 }
 
 #[test]
+fn agent_channel_requests_append_ordinals_and_roundtrip() {
+    use crate::channels::{ChannelId, ChannelRequest, MessageId};
+
+    let mut codec = Codec::new();
+    for (request, tag) in [
+        (
+            AgentRequest::ReadMessage {
+                message_id: "dm".into(),
+                offset: None,
+                max_bytes: None,
+            },
+            13,
+        ),
+        (
+            AgentRequest::Channels {
+                request: Box::new(ChannelRequest::History {
+                    channel_id: ChannelId("channel".into()),
+                    before: None,
+                    after: Some(0),
+                    limit: 10,
+                }),
+            },
+            14,
+        ),
+        (
+            AgentRequest::ChannelWake {
+                batch_id: "wake:1".into(),
+                max_body_bytes: None,
+                include_source: false,
+            },
+            15,
+        ),
+        (
+            AgentRequest::ChannelWake {
+                batch_id: "wake:1".into(),
+                max_body_bytes: Some(4),
+                include_source: false,
+            },
+            15,
+        ),
+        (
+            AgentRequest::ChannelWake {
+                batch_id: "wake:1".into(),
+                max_body_bytes: Some(4096),
+                include_source: true,
+            },
+            15,
+        ),
+        (
+            AgentRequest::ChannelWake {
+                batch_id: "wake:1".into(),
+                max_body_bytes: None,
+                include_source: true,
+            },
+            15,
+        ),
+        (
+            AgentRequest::ChannelRead {
+                channel_id: ChannelId("channel".into()),
+                message_id: MessageId("message".into()),
+                offset: Some(0),
+                max_bytes: Some(4096),
+            },
+            16,
+        ),
+        (
+            AgentRequest::ChannelRead {
+                channel_id: ChannelId("channel".into()),
+                message_id: MessageId("message".into()),
+                offset: None,
+                max_bytes: None,
+            },
+            16,
+        ),
+    ] {
+        let operation = Operation::Agent {
+            launch_id: "launch".into(),
+            token: "secret".into(),
+            guard: None,
+            request,
+        };
+        let framed = Request::new(operation);
+        let bytes = codec.encode_request(&framed).unwrap();
+        let (_, operation_value) = root_field(bytes, 2);
+        let (_, agent_request_tag) = table_field(bytes, indirect(bytes, operation_value), 2);
+        assert_eq!(bytes[agent_request_tag], tag);
+        let decoded = decode_request(bytes).unwrap();
+        assert_eq!(
+            serde_json::to_value(framed).unwrap(),
+            serde_json::to_value(decoded).unwrap()
+        );
+    }
+}
+
+#[test]
+fn channel_wake_optional_fields_default_away_when_absent() {
+    let operation = |max_body_bytes, include_source| Operation::Agent {
+        launch_id: "launch".into(),
+        token: "secret".into(),
+        guard: None,
+        request: AgentRequest::ChannelWake {
+            batch_id: "wake:1".into(),
+            max_body_bytes,
+            include_source,
+        },
+    };
+    let mut codec = Codec::new();
+    let encoded = codec
+        .encode_request(&Request::new(operation(Some(4), true)))
+        .unwrap()
+        .to_vec();
+    let (_, operation_field) = root_field(&encoded, 2);
+    let (_, agent_request_field) = table_field(&encoded, indirect(&encoded, operation_field), 3);
+    let wake = indirect(&encoded, agent_request_field);
+    let (body_limit_entry, body_limit_field) = table_field(&encoded, wake, 1);
+    let (_, limit_value) = table_field(&encoded, indirect(&encoded, body_limit_field), 0);
+    let (_, source_field) = table_field(&encoded, wake, 2);
+    assert_eq!(encoded[source_field], 1);
+
+    // The original vtable ends after batch_id, before the new optional field.
+    let mut old = encoded.clone();
+    let vtable = body_limit_entry - 6;
+    old[vtable..vtable + 2].copy_from_slice(&6u16.to_le_bytes());
+    assert_eq!(
+        serde_json::to_value(decode_request(&old).unwrap()).unwrap(),
+        serde_json::to_value(Request::new(operation(None, false))).unwrap(),
+    );
+    let legacy = serde_json::json!({"method": "channel_wake", "batch_id": "wake:1"});
+    let decoded: AgentRequest = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), legacy);
+
+    for invalid in [3u32, 4097] {
+        let mut malformed = encoded.clone();
+        malformed[limit_value..limit_value + 4].copy_from_slice(&invalid.to_le_bytes());
+        assert!(decode_request(&malformed).is_err());
+        assert!(
+            codec
+                .encode_request(&Request::new(operation(Some(invalid), true)))
+                .is_err()
+        );
+    }
+}
+
+#[test]
 fn registration_cannot_omit_the_session_instance_fence() {
     let request = Request::new(Operation::ClientRegister {
         session_id: "persistent-session".into(),

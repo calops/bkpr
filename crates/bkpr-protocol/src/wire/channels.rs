@@ -543,6 +543,7 @@ fn write_post(
     let mentions = write_ids(b, &value.mentions, budget)?;
     let reply_to = write_optional_id(b, value.reply_to.as_ref(), budget)?;
     let attachments = write_ids(b, &value.attachments, budget)?;
+    let source = write_source(b, value.source.as_deref(), budget, depth + 1)?;
     Ok(g::ChannelPost::create(
         b,
         key,
@@ -551,6 +552,7 @@ fn write_post(
         mentions,
         reply_to,
         attachments,
+        source,
     ))
 }
 
@@ -563,7 +565,41 @@ fn read_post(v: g::ChannelPostRef<'_>, budget: &mut Budget, depth: usize) -> Res
         mentions: read_ids(v.mentions()?, MAX_MENTIONS, ParticipantId, budget)?,
         reply_to: read_optional_id(v.reply_to()?, MessageId, budget)?,
         attachments: read_ids(v.attachments()?, MAX_ATTACHMENTS, AttachmentId, budget)?,
+        source: read_source(v.source()?, budget, depth + 1)?,
     })
+}
+
+fn write_source(
+    b: &mut Builder,
+    value: Option<&ChannelSource>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Option<Offset<g::ChannelSource>>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    budget.node(depth)?;
+    let channel_id = write_text(b, value.channel_id.as_ref(), budget)?;
+    let message_id = write_text(b, value.message_id.as_ref(), budget)?;
+    Ok(Some(g::ChannelSource::create(b, channel_id, message_id)))
+}
+
+fn read_source(
+    value: Option<g::ChannelSourceRef<'_>>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Option<Box<ChannelSource>>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    budget.node(depth)?;
+    let channel_id = value.channel_id()?;
+    let message_id = value.message_id()?;
+    valid_source_ids(channel_id, message_id)?;
+    Ok(Some(Box::new(ChannelSource {
+        channel_id: ChannelId(read_text(channel_id, budget)?),
+        message_id: MessageId(read_text(message_id, budget)?),
+    })))
 }
 
 fn write_summary(
@@ -631,11 +667,15 @@ fn write_message(
     valid_id(value.id.as_ref())?;
     ensure!(value.sequence > 0, "zero channel post sequence");
     valid_references(&value.mentions, value.reply_to.as_ref(), &value.attachments)?;
+    if let Some(source) = &value.source {
+        valid_source_ids(source.channel_id.as_ref(), source.message_id.as_ref())?;
+    }
     let id = write_text(b, value.id.as_ref(), budget)?;
     let author = write_participant(b, &value.author, budget, depth + 1)?;
     let mentions = write_ids(b, &value.mentions, budget)?;
     let reply = write_optional_id(b, value.reply_to.as_ref(), budget)?;
     let attachments = write_ids(b, &value.attachments, budget)?;
+    let source = write_source(b, value.source.as_deref(), budget, depth + 1)?;
     Ok(g::ChannelMessageSummary::create(
         b,
         id,
@@ -646,6 +686,7 @@ fn write_message(
         mentions,
         reply,
         attachments,
+        source,
     ))
 }
 
@@ -670,6 +711,7 @@ fn read_message(
         mentions,
         reply_to,
         attachments,
+        source: read_source(v.source()?, budget, depth + 1)?,
     })
 }
 

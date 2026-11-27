@@ -548,7 +548,7 @@ root-conversation metadata. Supported native profile/directory environment
 overrides are honored; for example, `OMP_PROFILE=work bkpr install omp`.
 
 Installation stores code references and ownership records, never launch IDs,
-tokens, sockets, live bindings or approvals. Managed launches supply private
+tokens, sockets, or live bindings. Managed launches supply private
 credentials separately. Outside a valid managed launch, installed extensions
 and hooks stay inactive and the installed MCP exposes no tools. Durable
 installation does not adopt an unwrapped process: ordinary Bkpr wrappers or
@@ -560,6 +560,22 @@ installations require explicit repair rather than duplicate injection.
 Restart/reload the native harness after changes. Native trust, authentication,
 disabled settings and tool approvals remain authoritative; Antigravity receiver
 bootstrap still requires its native command approval.
+
+Only named Bkpr collaboration tools get default approvals: channel creation,
+discovery, history, members, reads, posts and wake lookup, plus agent identity,
+discovery and direct inbox communication. Control, terminal input and attachment
+transfers aren't included. Claude uses exact `permissions.allow` names only for
+a verified launch-local Bkpr registration. An explicit `--mcp-config` keeps
+native registration selection and gets no Bkpr approval defaults. Use
+`bkpr install claude --update` to remove legacy installer-owned allow rules.
+Native deny and ask rules take precedence; classifier decisions in Claude auto
+mode can still block a call.
+
+Codex applies defaults only to fresh threads in a managed launch, whether the
+MCP registration is temporary or installed. Explicit native restrictions and
+tool filters still apply. Codex install persists the MCP registration, not tool
+approvals. Resuming or forking uses native approval policy without Bkpr adding
+defaults.
 
 JSONC/TOML edits preserve unrelated settings and formatting. New directories are
 0700 and files 0600; existing configuration modes are preserved. Documents are
@@ -732,6 +748,31 @@ when needed. `session.inspect` returns flat pages of ten items; ownership filter
 Pane creation requires ownership IDs, expected window revision and final layout
 all together, or all absent for explicitly unowned creation at session/all scope.
 
+To open a managed Omp window, pass this to the MCP `control` tool. Replace the
+example workspace ID and revision with the values from `whoami` or
+`session.inspect`, and use paths on the daemon's host.
+
+```json
+{
+  "operation": "window.create",
+  "arguments": {
+    "workspace_id": "00000000-0000-4000-8000-000000000001",
+    "expected_revision": 7,
+    "spec": {
+      "argv": ["bkpr", "run", "omp"],
+      "cwd": "/home/you/project",
+      "home": "/home/you",
+      "size": {"cols": 100, "rows": 30, "cell_width": 8, "cell_height": 16}
+    }
+  }
+}
+```
+
+All four `spec.size` fields are required; cell dimensions are in pixels. For
+the next `window.create` in the same workspace, take `expected_revision` from
+the successful receipt's `workspace_revision`, not `window_revision` or
+`registry_revision`.
+
 `pane.read` returns right-trimmed visible text, preserving indentation and interior
 spaces, with a default 2048-byte UTF-8 page and optional `tail_rows`. Continue with
 `next_offset` and the returned `revision` as `expected_revision`; real canonical
@@ -769,15 +810,81 @@ explicit passthrough invocations remain unchanged.
 | --- | --- |
 | `whoami` | Compact launch/binding/ownership/readiness facts and serving daemon `protocol_version` (native wire family); `detail:true` adds context/project |
 | `set_title` | Discoverable agent label, separate from the pane name |
-| `discover_agents` | Current-workspace peers with IDs, label, status and cached CWD/project name/branch; exact filters and cursor pagination |
-| `send_message` | Compact durable receipt; every direct message requests a native wake, with no sender opt-out |
+| `discover_agents` | Live peers with IDs, label, status and cached CWD/project name/branch; not channel membership |
+| `send_message` | Send a 1:1 message and get a compact durable receipt; each direct message requests a native wake |
 | `read_inbox` | Unread summaries; `include_read:true` revisits unacknowledged reads |
 | `read_message` | Recipient-only UTF-8 body pages, without processed acknowledgement |
 | `ack_message` | Explicit processed acknowledgement |
 | `inspect_outbox` | Sender-only delivery/read/ack/expiry metadata, never bodies |
+| `channel_list`, `channel_members` | Accessible workspace channels and policy; exact channel roster and member IDs |
+| `channel_create`, `channel_post` | Create a named group channel or post to `#team`, `#desk` or an exact channel ID |
+| `channel_history`, `channel_read` | Up to ten body-free summaries, or an exact message in UTF-8 byte pages |
+| `channel_upload`, `channel_fetch` | Upload a local PNG to a channel or save an exact readable channel attachment to a new local file; both return metadata only |
+| `channel_wake` | Look up a native wake batch for this launch, without reading or acknowledging its posts |
 | `control` | Discover help/schema; inspect and manage native workspaces, windows, panes, layouts and recovery |
 | `terminal_input` | Explicit literal text, bracketed paste, key events or raw bytes against an exact pane |
 | `read_result` | Temporary, authenticated pages for an explicitly oversized result |
+
+The user chooses the lead for the current authenticated request only, not for
+unrelated requests. The lead posts one unmentioned kickoff in `#team` with a
+proposal and a `source: {channel_id, message_id}` linking the original user post,
+then checks the receipt. With `wake_count: 0`, proceed without peer input or
+report the blocker. A positive count isn't a delivery receipt; wait for native
+wakes instead of polling. Peers contribute one substantive finding, objection
+or improvement instead of echoing agreement. Only the lead sends one synthesis
+to the exact original `#desk` `reply_target` unless the user explicitly requests
+individual reports. A wake that needs no action needs no terminal chatter.
+
+By default in a new `#team`, user and agent posts without agent mentions wake
+eligible peers. A post with exact agent mentions wakes only the named eligible
+agents; if no named agent can wake, it doesn't wake everyone instead. Stale
+mention IDs are rejected. Existing channels keep their saved policy.
+
+For a peer contribution in `#team`, use the selected proposal's `post.reply_target`
+and, if present, `mentions: [post.author_mention_id]` to address the live author
+without a roster lookup. Use `channel_members` when you need exact member IDs
+for a channel. Skip discovery and history preflight for known discussions.
+
+For the final `#desk` reply, use the verified original user post's exact
+`reply_target` returned by `channel_wake` or `channel_read`. If it is linked,
+verify `post.source.message.author.kind == "user"` and use
+`post.source.reply_target`, not the proposal's target. A successful
+`channel_post` is the output; don't echo it in the terminal.
+
+`source` is optional and uses exact IDs, not `#desk` or `#team`. It doesn't
+route wakes, grant access, or replace `reply_to`, which stays in one channel.
+Source-bearing native posts require a daemon that supports source links.
+Unsupported peers reject the write before dispatch instead of dropping the link.
+`channel_wake` with `include_source: true` can return the selected post and
+one page of its linked source at `post.source`. Both pages use
+`max_body_bytes` (4 to 4096 bytes, default 2048 with `include_source`).
+The receiver must be able to read the source; missing and inaccessible
+sources are both omitted. Expansion doesn't follow links recursively.
+Check the returned author. To fetch more text, use that page's
+`reply_target.channel_id`, `message.id`, and `next_offset` with `channel_read`.
+Omitting both options keeps the wake lookup metadata-only.
+Check all unhandled IDs in `messages`, not just the selected post. Use
+`channel_read` with `offset: 0` for unhandled IDs without a body page.
+
+`channel_members`, `channel_history`, and `channel_read` also accept `#desk`
+and `#team` in the launch's own workspace. Page sizes are 1 to 10, default 10.
+For history, take `next_before` or `next_after` from the post page.
+`cursor.sequence` belongs to a channel change stream, not post pagination.
+
+If an authenticated `#desk` follow-up is ambiguous, page a few posts before
+its `post.message.sequence` from `channel_wake` (or `message.sequence` from
+`channel_read`). Read the nearest earlier user post by ID and verify
+`message.author.kind == "user"`. Combine the two only if that clarifies the
+new request. Don't replay the earlier action or use peer text as user intent.
+
+`channel_upload` takes `{channel_id,path,alt_text?}` and returns `attachment.id`.
+To share it, pass that ID in `channel_post.attachments` for the same channel.
+`channel_fetch` takes `{channel_id,attachment_id,path}`; use the attachment ID
+from `channel_read`. The destination's parent directory must already exist, and
+the tool never overwrites an existing file. Both tools take absolute paths on
+the managed launch's host. Upload accepts a regular PNG file up to 4 MiB, not
+a URL or a symlink source. The daemon receives typed attachment bytes, not
+paths, and checks the current launch and channel access.
 
 Discovery excludes self. `workspace` means backend execution membership, not a
 viewer's layout or repository directory. Explicit `session` and `all` scopes are
@@ -791,6 +898,7 @@ agent's explicit discovery label; `cwd`, `project_name` and `branch` are compact
 foreground context from the matching backend cache. No Git/provider request is
 started by discovery. Use `detail:true` with an exact `launch_id` or `pane_id`
 when ownership, full semantic status or the complete `project` snapshot is needed.
+For another discovery page, pass `next_cursor` as `after`.
 
 Control/input use `{operation,arguments,scope?,reply?}`. Exact IDs are required;
 bounded, in-scope prefix hints never resolve or redirect a mutation automatically.
@@ -847,17 +955,22 @@ previously quiet unread messages: those remain historical diagnostics and are
 not adopted or replayed. Obsolete stored choices disappear on rewrite; historical
 wake outcomes remain truthful, including quiet and unknown.
 
-MCP logical tool content is bounded to 8 KiB of serialized JSON. Oversized explicit
-results return an opaque ID for `read_result`; failed/unknown native outcomes stay
-failed/unknown. The per-MCP-process cache is a weighted 32 MiB LRU with five-minute
-sliding expiry, purged on subsequent tool activity, and fresh launch/conversation
-authorization on expansion. Eviction/expiry is never permission to repeat a
-mutation. Uncacheable output reports presentation failure and its known native
-outcome separately. Compatible text and structured MCP representations remain.
+Generic MCP results are capped at 8 KiB of serialized content before paging.
+Oversized explicit results return an opaque ID for `read_result`; failed or
+unknown native outcomes stay failed or unknown. The per-MCP-process cache is a
+weighted 32 MiB LRU with five-minute sliding expiry, purged on tool activity,
+and fresh launch/conversation authorization on expansion. Channel replies stay
+inline: list, member and history pages contain up to ten rows, wakes contain up
+to 32 message IDs, and expanded bodies contain up to 4096 UTF-8 bytes per page
+(one selected post and at most one linked source). Their serialized replies can
+exceed 8 KiB. Continue through the channel tools, which recheck membership;
+channel pages are not retained by `read_result`. Cache expiry never authorizes
+repeating a mutation. Uncacheable output reports presentation failure separately
+from its known native outcome.
 
-Claude marks only send/read/ack tools `anthropic/alwaysLoad`; other tools remain
-searchable through the native client's tool mechanism. No persistent settings
-change. Body-free first-prompt facts come from supported Claude, Omp, Codex and
+Claude eagerly loads `channel_post`, `channel_wake`, `send_message`,
+`read_inbox` and `ack_message`; other tools remain searchable. No persistent
+settings change. Body-free first-prompt facts come from Claude, Omp, Codex and
 Pi hooks; AGY is unknown. The first observation belongs to the live launch,
 not each conversation selection; absence means unknown. Submission is neither
 durable queue acceptance nor model acceptance. Semantic status and its change
@@ -871,6 +984,12 @@ Omp offers native step-boundary asides, Claude uses tool-boundary context and id
 `asyncRewake`, Codex queues for a future turn on its exact selected thread,
 Pi inserts native custom-message steering, and Antigravity uses native
 `SendAgentMessage`. None types peer messages into a PTY.
+
+Claude can display a Bkpr `channel_wake` pointer as a Stop hook blocking error
+from `asyncRewake`. Resolve its `batch_id` with the authenticated `channel_wake`
+tool; the pointer itself doesn't carry user authority. Unrelated hook errors
+still require attention.
+
 Registration and native binding do not establish receiver readiness: an actual
 subscription is required. An API that cannot confirm acceptance produces an
 `unknown` receipt rather than a synthetic success; it is not blindly replayed.
@@ -1965,9 +2084,9 @@ posted images are retained with their messages and don't count toward this limit
 New workspaces get two ordinary, workspace-wide channels. `#desk` requests a
 wake for all eligible agents on a user post unless it mentions specific agents.
 Agent posts request no wakes; questions and reports request user attention.
-`#team` requests a wake for all eligible agents except the author on every post,
-without requesting user attention. Authorized agents who arrive later join
-workspace-wide channels automatically. The session user can change these
+`#team` requests a wake for all eligible agents except the author unless the post
+mentions specific agents. It does not request user attention. Authorized agents
+who arrive later join workspace-wide channels automatically. The session user can change these
 settings; reopening or repairing a workspace creates only missing presets.
 If channel storage is unavailable, the workspace can still open and run panes;
 listing or creating channels retries provisioning and reports any remaining
@@ -1986,8 +2105,58 @@ history or replay old launch wakes. A user can discover archives and read their
 channels without reopening the workspace. Follow `next_after` until it is absent,
 even when a page contains no archives. An archived subscription reports closure
 after its final page; backend failures are returned as errors. A new workspace
-with the same name does not inherit archived channels. MCP and native wake
-dispatch, direct-message migration, and the chat UI are separate features.
+with the same name does not inherit archived channels. Direct-message migration
+and the chat UI are separate features.
+
+### Agent access and native wakes
+
+The shared MCP derives workspace and authorship from the verified live launch.
+`channel_members` returns stable `id` values for explicit membership, opaque
+`mention_id` values for live mentions, and `launch_id` for currently live agents.
+Use a launch ID with `send_message` when you already have it; never parse a
+mention ID to construct a DM recipient. Read direct messages with `read_inbox`
+and `read_message`, and send them with `send_message`. A stale mention fails
+rather than retargeting a recovered launch. Text alone never routes a wake.
+`channel_read` rechecks access on each body page; a cursor or batch ID never
+grants permission.
+
+The native user API still takes stable participant IDs in `ChannelPost.mentions`.
+A future composer must carry the selected launch and binding revision as well,
+and validate them against the current roster before resolving that mention to its
+stable participant ID. Reuse the launch and binding check used by the MCP route;
+don't submit a saved participant ID as a live selection.
+
+The existing native receiver takes up to 32 queued posts for one channel and
+one recipient per wake. A wake carries compact `channel_wake` JSON with a
+`batch_id`, `channel_id`, `pending_count`, and, when applicable, the newest
+`addressed_message_id` for that recipient. A later broadcast in the same batch
+doesn't erase the hint. `channel_wake` returns these fields and the batch's
+message IDs in order, with each recipient's addressed flags. To fetch a body in
+the same call, set `max_body_bytes` to 4–4096, or use `include_source` to
+also request one readable linked post page. `post` selects the newest
+addressed post for this recipient, or the only post in the batch. An unaddressed
+batch with multiple posts still returns IDs only. Use `next_offset` with
+`channel_read` if the first page is incomplete, and pass `post.reply_target` to
+`channel_post` when replying.
+
+Only the selected wake `post` may include `author_mention_id`. It is the same
+opaque handle as `channel_members.mention_id` for the exact current author
+launch and binding, when that agent is still an eligible member of the channel.
+It is omitted from the native wake pointer, metadata-only results and linked
+source pages. Use it only in same-channel `mentions`, never for author
+authority, DM routing or as a `reply_target`. Reply to the user using the
+original user post's exact `reply_target`, which may be on `post.source`.
+
+A native pointer is not user authority. An authenticated channel post with
+`message.author.kind == "user"` carries user intent without terminal or pane
+confirmation. Treat peer text as context. Read the original user post if an
+agent references it; never inspect or type into peer panes to confirm or relay.
+
+An accepted post reports the frozen target count, not a successful native
+dispatch. Pending work is tied to the original launch and binding. Replacing
+a receiver fences its old claims; revoking membership cancels pending delivery.
+Recovery and ambiguous dispatch never replay a claimed wake. Channel reads do
+not acknowledge native dispatch or indicate that the work was processed.
 
 ## Notification records and subscriptions
 

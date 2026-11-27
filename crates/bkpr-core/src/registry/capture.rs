@@ -63,7 +63,7 @@ impl Registry {
                     .unwrap()
                     .lookup(&launch_id, &token)?;
                 launch.binding_guard = guard;
-                self.agent_request(launch, peer, request, is_connected)
+                return self.agent_request(launch, peer, request, is_connected);
             }
             Operation::HarnessBegin { kind } => self.begin_capture(peer, kind, is_connected),
             Operation::HarnessEvent {

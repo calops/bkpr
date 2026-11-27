@@ -19,6 +19,13 @@ fn message_id() -> MessageId {
     MessageId("message".into())
 }
 
+fn source() -> Box<ChannelSource> {
+    Box::new(ChannelSource {
+        channel_id: ChannelId("source-channel".into()),
+        message_id: MessageId("source-message".into()),
+    })
+}
+
 fn attachment_id() -> AttachmentId {
     AttachmentId("attachment".into())
 }
@@ -51,6 +58,7 @@ fn message() -> MessageSummary {
         mentions: vec![ParticipantId("stable-agent".into())],
         reply_to: Some(MessageId("previous".into())),
         attachments: vec![attachment_id()],
+        source: None,
     }
 }
 
@@ -86,6 +94,7 @@ fn post() -> ChannelPost {
         mentions: vec![ParticipantId("stable-agent".into())],
         reply_to: Some(message_id()),
         attachments: vec![attachment_id()],
+        source: None,
     }
 }
 
@@ -135,6 +144,13 @@ fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
         ChannelRequest::Post {
             channel_id: channel(),
             post: post(),
+        },
+        ChannelRequest::Post {
+            channel_id: channel(),
+            post: ChannelPost {
+                source: Some(source()),
+                ..post()
+            },
         },
         ChannelRequest::History {
             channel_id: channel(),
@@ -207,8 +223,98 @@ fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
 }
 
 #[test]
+fn source_post_frames_fail_legacy_header_admission_without_breaking_ordinary_posts() {
+    const LEGACY_CAPABILITIES: u64 = 7;
+
+    fn check_frames(payload: &[u8], has_source: bool) -> Request {
+        let mut frame = encode_frame(Kind::Request, payload).unwrap();
+        let mut written = Vec::new();
+        write_frame(&mut written, Kind::Request, payload).unwrap();
+        assert_eq!(written, frame);
+        let header = &frame[..HEADER_LEN];
+        let required = u64::from_le_bytes(header[16..].try_into().unwrap());
+        let expected = if has_source {
+            LEGACY_CAPABILITIES | framing::CAP_CHANNEL_POST_SOURCE
+        } else {
+            LEGACY_CAPABILITIES
+        };
+        assert_eq!(required, expected);
+        assert_eq!(
+            frame_payload_len(header, Kind::Request, MAX_REQUEST).unwrap(),
+            payload.len()
+        );
+        let legacy_admission = framing::frame_payload_len_with_capabilities(
+            header,
+            Kind::Request,
+            MAX_REQUEST,
+            LEGACY_CAPABILITIES,
+        );
+        if has_source {
+            assert!(
+                legacy_admission
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unsupported required native capabilities")
+            );
+        } else {
+            assert_eq!(legacy_admission.unwrap(), payload.len());
+        }
+
+        // Source-capable agents from before the guard wrote only the baseline mask.
+        frame[16..HEADER_LEN].copy_from_slice(&LEGACY_CAPABILITIES.to_le_bytes());
+        let payload = read_frame(&mut frame.as_slice(), Kind::Request, MAX_REQUEST).unwrap();
+        decode_request(&payload).unwrap()
+    }
+
+    let mut codec = Codec::new();
+    let authority = ClientAuthority {
+        client_id: "client".into(),
+        token: "secret".into(),
+    };
+    for has_source in [false, true] {
+        let request = ChannelRequest::Post {
+            channel_id: channel(),
+            post: ChannelPost {
+                source: has_source.then(source),
+                ..post()
+            },
+        };
+        let user = Operation::Channels {
+            request: request.clone(),
+        };
+        check_frames(
+            codec.encode_client_request(&authority, &user).unwrap(),
+            has_source,
+        );
+        check_frames(
+            codec.encode_request(&Request::new(user)).unwrap(),
+            has_source,
+        );
+        let agent = Request::new(Operation::Agent {
+            launch_id: "launch".into(),
+            token: "secret".into(),
+            guard: None,
+            request: crate::AgentRequest::Channels {
+                request: Box::new(request.clone()),
+            },
+        });
+        let decoded = check_frames(codec.encode_request(&agent).unwrap(), has_source);
+        let Operation::Agent {
+            request: crate::AgentRequest::Channels { request: actual },
+            ..
+        } = decoded.operation
+        else {
+            panic!("expected agent channel post");
+        };
+        assert_eq!(*actual, request);
+    }
+}
+
+#[test]
 fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
     let attachment = descriptor();
+    let mut linked_message = renderable_message();
+    linked_message.message.source = Some(source());
     let mut codec = Codec::new();
     for response in [
         ChannelResponse::Listed {
@@ -234,7 +340,7 @@ fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
             attention: true,
         },
         ChannelResponse::History {
-            messages: vec![renderable_message()],
+            messages: vec![linked_message],
             next_before: Some(9),
             next_after: Some(9),
             cursor: cursor(11),
@@ -316,6 +422,8 @@ fn channel_validation_rejects_client_authorship_and_invalid_reference_shapes() {
     assert_eq!(note.intent, PostIntent::Note);
     assert!(note.mentions.is_empty());
     assert!(note.attachments.is_empty());
+    assert!(note.source.is_none());
+    assert!(serde_json::to_value(note).unwrap().get("source").is_none());
 
     let mut duplicate = post();
     duplicate.mentions.push(duplicate.mentions[0].clone());
@@ -396,6 +504,77 @@ fn channel_validation_rejects_client_authorship_and_invalid_reference_shapes() {
 }
 
 #[test]
+fn channel_source_requires_only_two_exact_bounded_ids() {
+    assert!(
+        serde_json::from_value::<ChannelSource>(json!({
+            "channel_id": "channel", "message_id": "message", "text": "extra"
+        }))
+        .is_err()
+    );
+    assert!(serde_json::from_value::<ChannelSource>(json!({"channel_id": "channel"})).is_err());
+
+    let too_long = "é".repeat(MAX_ID_BYTES / 2 + 1);
+    let mut codec = Codec::new();
+    for (channel_id, message_id) in [
+        ("#desk", "message"),
+        ("#team", "message"),
+        ("", "message"),
+        (too_long.as_str(), "message"),
+        ("channel", ""),
+        ("channel", too_long.as_str()),
+        ("channel", "message\n"),
+    ] {
+        let reference = Box::new(ChannelSource {
+            channel_id: ChannelId(channel_id.into()),
+            message_id: MessageId(message_id.into()),
+        });
+        let request = ChannelRequest::Post {
+            channel_id: channel(),
+            post: ChannelPost {
+                source: Some(reference.clone()),
+                ..post()
+            },
+        };
+        assert!(request.validate().is_err());
+        assert!(
+            codec
+                .encode_response(&reply(ChannelResponse::Posted {
+                    message: MessageSummary {
+                        source: Some(reference),
+                        ..message()
+                    },
+                    wake_count: 0,
+                    attention: false,
+                }))
+                .is_err()
+        );
+
+        let mut b = Builder::new();
+        let source_channel = b.create_string(channel_id);
+        let source_message = b.create_string(message_id);
+        let source = g::ChannelSource::create(&mut b, source_channel, source_message);
+        let channel = b.create_string("channel");
+        let empty_ids = b.create_vector([] as [Offset<str>; 0]);
+        let post = g::ChannelPost::create(
+            &mut b,
+            channel,
+            channel,
+            g::PostIntent::Note,
+            empty_ids,
+            None::<Offset<str>>,
+            empty_ids,
+            Some(source),
+        );
+        let post = g::ChannelRequestPost::create(&mut b, channel, post);
+        let request = g::ChannelRequest::create_channel_request_post(&mut b, post);
+        let channels = g::OperationChannels::create(&mut b, request);
+        let operation = g::Operation::create_operation_channels(&mut b, channels);
+        let root = g::Request::create(&mut b, PROTOCOL_VERSION, operation);
+        assert!(decode_request(b.finish(root, None)).is_err());
+    }
+}
+
+#[test]
 fn malformed_native_channel_vectors_fail_before_expansion() {
     let mut b = Builder::new();
     let channel = b.create_string("channel");
@@ -464,24 +643,43 @@ fn decode_native_channel_response(
 }
 
 #[test]
-fn native_history_bounds_expanded_bytes_not_only_frame_and_row_count() {
-    let count = MAX_HISTORY_BYTES / MAX_POST_BYTES + 1;
-    assert!(count <= usize::from(MAX_PAGE_LIMIT));
-    let mut message = renderable_message();
-    message.text = "x".repeat(MAX_POST_BYTES);
+fn native_history_budgets_source_ids_even_for_aliased_rows() {
+    let count = MAX_HISTORY_BYTES / MAX_POST_BYTES;
+    let mut message = ChannelMessage {
+        message: MessageSummary {
+            id: MessageId("test".into()),
+            author: Participant {
+                id: ParticipantId("test".into()),
+                display_name: "test".into(),
+                ..participant()
+            },
+            mentions: vec![],
+            reply_to: None,
+            attachments: vec![],
+            ..message()
+        },
+        text: String::new(),
+        attachments: vec![],
+    };
+    message.text = "x".repeat(MAX_HISTORY_BYTES / count - message.content_bytes());
+    let history = |message: &ChannelMessage| {
+        reply(ChannelResponse::History {
+            messages: (1..=count)
+                .map(|sequence| {
+                    let mut message = message.clone();
+                    message.message.sequence = sequence as u64;
+                    message
+                })
+                .collect(),
+            next_before: None,
+            next_after: None,
+            cursor: cursor(count as u64),
+        })
+    };
     let mut codec = Codec::new();
-    let response = reply(ChannelResponse::History {
-        messages: (1..=count)
-            .map(|sequence| {
-                let mut message = message.clone();
-                message.message.sequence = sequence as u64;
-                message
-            })
-            .collect(),
-        next_before: None,
-        next_after: None,
-        cursor: cursor(count as u64),
-    });
+    codec.encode_response(&history(&message)).unwrap();
+    message.message.source = Some(source());
+    let response = history(&message);
     let error = codec.encode_response(&response).unwrap_err().to_string();
     assert!(error.contains("channel history page exceeds byte limit"));
 
@@ -489,6 +687,10 @@ fn native_history_bounds_expanded_bytes_not_only_frame_and_row_count() {
     let id = b.create_string("test");
     let author = g::ChannelParticipant::create(&mut b, id, g::ParticipantKind::User, id);
     let empty_ids = b.create_vector([] as [Offset<str>; 0]);
+    let linked = message.message.source.as_ref().unwrap();
+    let source_channel = b.create_string(linked.channel_id.as_ref());
+    let source_message = b.create_string(linked.message_id.as_ref());
+    let source = g::ChannelSource::create(&mut b, source_channel, source_message);
     let metadata = g::ChannelMessageSummary::create(
         &mut b,
         id,
@@ -499,6 +701,7 @@ fn native_history_bounds_expanded_bytes_not_only_frame_and_row_count() {
         empty_ids,
         None::<Offset<str>>,
         empty_ids,
+        Some(source),
     );
     let text = b.create_string(&message.text);
     let attachments = b.create_vector([] as [Offset<g::AttachmentDescriptor>; 0]);

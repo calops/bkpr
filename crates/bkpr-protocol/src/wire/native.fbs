@@ -373,6 +373,10 @@ table ChannelSettings {
   attention_questions:bool;
   attention_reports:bool;
 }
+table ChannelSource {
+  channel_id:string (required);
+  message_id:string (required);
+}
 table ChannelPost {
   idempotency_key:string (required);
   text:string (required);
@@ -380,6 +384,8 @@ table ChannelPost {
   mentions:[string] (required);
   reply_to:string;
   attachments:[string] (required);
+  reserved_mention_spans:ubyte (deprecated);
+  source:ChannelSource;
 }
 table ChannelCursor { channel_id:string (required); sequence:ulong; }
 table ChannelRequestList {
@@ -744,7 +750,21 @@ table AgentRequestWakeOutcome {
   generation:ulong;
   outcome:AgentWakeOutcome (required);
 }
-union AgentRequest { AgentRequestWhoami, AgentRequestControl, AgentRequestSetTitle, AgentRequestDiscoverAgents, AgentRequestSendMessage, AgentRequestReadInbox, AgentRequestAckMessage, AgentRequestInspectOutbox, AgentRequestReceiverRegister, AgentRequestReceiverSubscribe, AgentRequestWakeValidate, AgentRequestWakeOutcome, AgentRequestReadMessage }
+table AgentRequestChannels {
+  request:ChannelRequest (required);
+}
+table AgentRequestChannelWake {
+  batch_id:string (required);
+  max_body_bytes:OptionalU32;
+  include_source:bool;
+}
+table AgentRequestChannelRead {
+  channel_id:string (required);
+  message_id:string (required);
+  offset:uint = null;
+  max_bytes:uint = null;
+}
+union AgentRequest { AgentRequestWhoami, AgentRequestControl, AgentRequestSetTitle, AgentRequestDiscoverAgents, AgentRequestSendMessage, AgentRequestReadInbox, AgentRequestAckMessage, AgentRequestInspectOutbox, AgentRequestReceiverRegister, AgentRequestReceiverSubscribe, AgentRequestWakeValidate, AgentRequestWakeOutcome, AgentRequestReadMessage, AgentRequestChannels, AgentRequestChannelWake, AgentRequestChannelRead }
 table AgentWakeOutcomeAccepted {
 
 }
@@ -762,6 +782,9 @@ table RequestFailureBusy {
   target_id:string (required);
 }
 union RequestFailure { RequestFailureSessionClosing, RequestFailureBusy }
+table OptionalU32 {
+  value:uint;
+}
 table OptionalU64 {
   value:ulong;
 }
@@ -832,6 +855,8 @@ table ChannelMessageSummary {
   mentions:[string] (required);
   reply_to:string;
   attachments:[string] (required);
+  reserved_mention_spans:ubyte (deprecated);
+  source:ChannelSource;
 }
 table ChannelChange { sequence:ulong; kind:ChannelChangeKind; }
 table AttachmentDescriptor {

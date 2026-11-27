@@ -1,15 +1,20 @@
 //! Durable launch inboxes. Only this service writes agent state; capture capabilities stay volatile.
 use super::*;
 use crate::{
+    control_lease::ProcessLifetime,
     harness::{Launch, Peer},
     harness_process as proc,
 };
 use sha2::{Digest, Sha256};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+mod channel_wakes;
+use channel_wakes::{ChannelClaimPoll, ChannelLane, is_channel_batch};
 mod messages;
 
 const RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 const WAKE_BATCH_LEASE_MS: u64 = 30_000;
+const CHANNEL_CLAIM_RETRY: Duration = Duration::from_millis(100);
 const MAX_INBOX: usize = 1000;
 const MAX_STORE_BYTES: u64 = 128 * 1024 * 1024;
 #[derive(Clone, Serialize, Deserialize)]
@@ -76,6 +81,7 @@ struct Notification {
 struct Receiver {
     id: String,
     process: proc::Process,
+    lifetime: Option<Arc<ProcessLifetime>>,
     owner: proc::Process,
     session_id: String,
     conversation_generation: u64,
@@ -85,6 +91,7 @@ struct AgentState {
     store: Store,
     receivers: BTreeMap<String, Receiver>,
     waiters: BTreeMap<String, BTreeMap<String, usize>>,
+    channel_lanes: BTreeMap<String, ChannelLane>,
     failure: Option<String>,
     closing: bool,
     maintenance_at: Option<u64>,
@@ -100,6 +107,15 @@ pub(super) struct Agents {
     fail_directory_sync: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     request_barrier: Mutex<Option<(bool, Arc<SpawnBarrier>)>>,
+    #[cfg(test)]
+    channel_barrier: Mutex<Option<(ChannelTestPause, Arc<SpawnBarrier>)>>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ChannelTestPause {
+    EmptyClaim,
+    Validate,
 }
 #[derive(Clone)]
 struct DiscoveryProject {
@@ -236,6 +252,26 @@ impl Agents {
         }
     }
     #[cfg(test)]
+    pub(super) fn pause_channel(&self, phase: ChannelTestPause, barrier: Arc<SpawnBarrier>) {
+        *self.channel_barrier.lock().unwrap() = Some((phase, barrier));
+    }
+
+    #[cfg(test)]
+    fn wait_channel_barrier(&self, phase: ChannelTestPause) {
+        let barrier = {
+            let mut pending = self.channel_barrier.lock().unwrap();
+            if pending.as_ref().is_some_and(|(at, _)| *at == phase) {
+                pending.take().map(|(_, barrier)| barrier)
+            } else {
+                None
+            }
+        };
+        if let Some(barrier) = barrier {
+            let _ = barrier.entered.send(());
+            let _ = barrier.resume.lock().unwrap().recv();
+        }
+    }
+    #[cfg(test)]
     pub(super) fn fail_next_commit(&self) {
         self.fail_directory_sync
             .store(true, std::sync::atomic::Ordering::Release);
@@ -284,6 +320,7 @@ impl Agents {
                 store,
                 receivers: BTreeMap::new(),
                 waiters: BTreeMap::new(),
+                channel_lanes: BTreeMap::new(),
                 failure: None,
                 closing: false,
                 maintenance_at: None,
@@ -295,6 +332,8 @@ impl Agents {
             fail_directory_sync: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             request_barrier: Mutex::new(None),
+            #[cfg(test)]
+            channel_barrier: Mutex::new(None),
         };
         this.transaction(|_| Ok(()))?;
         Ok(this)
@@ -502,6 +541,7 @@ impl Agents {
         let mut state = self.state.lock().unwrap();
         for id in ids {
             state.receivers.remove(id);
+            state.channel_lanes.remove(id);
         }
         self.changed.notify_all();
         Ok(())
@@ -834,6 +874,7 @@ fn live_channel_agent<'a>(
     workspace: &str,
     agents: &'a AgentState,
     captures: &'a crate::harness::Captures,
+    author: Option<&channels::ParticipantId>,
 ) -> Option<(&'a Launch, &'a Agent)> {
     if pane.workspace_id.as_deref() != Some(workspace)
         || pane.status != PaneStatus::Running
@@ -849,14 +890,42 @@ fn live_channel_agent<'a>(
     }
     let visible = pane.harness.as_ref()?.managed.as_ref()?;
     let launch = captures.launches.get(&visible.launch_id)?;
+    let participant = launch.channel_participant.as_ref()?;
+    if author.is_some_and(|author| participant != author)
+        || launch.grant.pane_id != pane.id
+        || visible.conversation.is_none()
+        || visible.conversation != launch.managed.conversation
+    {
+        return None;
+    }
     let agent = agents.store.agents.get(&visible.launch_id)?;
-    (launch.grant.pane_id == pane.id
-        && launch.channel_participant.is_some()
-        && launch.channel_launch_alive()
-        && visible.conversation.is_some()
-        && visible.conversation == launch.managed.conversation
-        && agent.exited_at.is_none())
-    .then_some((launch, agent))
+    (agent.exited_at.is_none() && launch.channel_launch_alive()).then_some((launch, agent))
+}
+
+fn channel_caller<'a>(
+    state: &State,
+    workspace: &str,
+    caller: &Launch,
+    agents: &'a AgentState,
+    captures: &'a crate::harness::Captures,
+) -> Result<(&'a Launch, &'a Agent)> {
+    captures.authorize(caller)?;
+    let (current, agent) = state
+        .record
+        .registry
+        .panes
+        .iter()
+        .find(|pane| pane.id == caller.grant.pane_id)
+        .and_then(|pane| live_channel_agent(state, pane, workspace, agents, captures, None))
+        .context("no bound participant in this workspace")?;
+    ensure!(
+        current.grant.launch_id == caller.grant.launch_id
+            && current.binding_generation == caller.binding_generation
+            && current.channel_participant == caller.channel_participant
+            && current.control.same_authority(&caller.control),
+        "channel participant binding changed"
+    );
+    Ok((current, agent))
 }
 
 fn channel_agent(launch: &Launch, agent: &Agent) -> channels::Participant {
@@ -918,21 +987,8 @@ impl Registry {
         let captures = self.inner.captures.lock().unwrap();
         let actor = if let Some(caller) = caller {
             ensure!(writable, ChannelAccessLost);
-            captures.authorize(caller).context(ChannelAccessLost)?;
-            let (current, agent) = state
-                .record
-                .registry
-                .panes
-                .iter()
-                .find(|pane| pane.id == caller.grant.pane_id)
-                .and_then(|pane| live_channel_agent(&state, pane, workspace, &agents, &captures))
+            let (current, agent) = channel_caller(&state, workspace, caller, &agents, &captures)
                 .context(ChannelAccessLost)?;
-            ensure!(
-                current.grant.launch_id == caller.grant.launch_id
-                    && current.binding_generation == caller.binding_generation
-                    && current.channel_participant == caller.channel_participant,
-                ChannelAccessLost
-            );
             channel_agent(current, agent)
         } else {
             user()
@@ -943,6 +999,7 @@ impl Registry {
                 participants.push(WorkspaceParticipant {
                     actor: user(),
                     launch_id: None,
+                    binding_revision: 0,
                 });
             }
             if healthy_agents(&agents).is_ok() {
@@ -953,7 +1010,7 @@ impl Registry {
                         .panes
                         .iter()
                         .filter_map(|pane| {
-                            live_channel_agent(&state, pane, workspace, &agents, &captures)
+                            live_channel_agent(&state, pane, workspace, &agents, &captures, None)
                         })
                         .filter(|(launch, _)| {
                             launch.channel_participant.as_ref() != Some(&actor.id)
@@ -961,6 +1018,7 @@ impl Registry {
                         .map(|(launch, agent)| WorkspaceParticipant {
                             actor: channel_agent(launch, agent),
                             launch_id: Some(launch.grant.launch_id.clone()),
+                            binding_revision: launch.binding_generation,
                         }),
                 );
             }
@@ -970,6 +1028,44 @@ impl Registry {
             writable,
             workspace_open,
             participants,
+        })
+    }
+
+    fn channel_author_mention(
+        &self,
+        workspace: &str,
+        caller: &Launch,
+        author: &channels::ParticipantId,
+    ) -> Result<Option<String>> {
+        let state = self.inner.state.lock().unwrap();
+        healthy(&state)?;
+        ensure!(
+            !state.closing
+                && !self.session_end_requested()
+                && !state.closing_workspaces.contains(workspace),
+            "channel workspace unavailable"
+        );
+        let agents = self.inner.agents.state.lock().unwrap();
+        healthy_agents(&agents)?;
+        let captures = self.inner.captures.lock().unwrap();
+        channel_caller(&state, workspace, caller, &agents, &captures)?;
+        let mut eligible = state
+            .record
+            .registry
+            .panes
+            .iter()
+            .filter_map(|pane| {
+                live_channel_agent(&state, pane, workspace, &agents, &captures, Some(author))
+            })
+            .map(|(launch, _)| launch);
+        Ok(match (eligible.next(), eligible.next()) {
+            (Some(launch), None) if launch.binding_generation != 0 => {
+                Some(crate::channels::agent_mention_id(
+                    &launch.grant.launch_id,
+                    launch.binding_generation,
+                ))
+            }
+            _ => None,
         })
     }
 
@@ -1021,6 +1117,14 @@ impl Registry {
         notification_id: &str,
         generation: u64,
     ) -> Result<()> {
+        if is_channel_batch(notification_id) {
+            return self.channel_subscription_disconnected(
+                launch_id,
+                receiver_id,
+                notification_id,
+                generation,
+            );
+        }
         self.inner.agents.transaction_maybe(|store| {
             let changed = settle_unknown(
                 store,
@@ -1313,6 +1417,11 @@ impl Registry {
                 {
                     let mut state = self.inner.agents.state.lock().unwrap();
                     state.receivers.remove(launch_id);
+                    if let Some(lane) = state.channel_lanes.get_mut(launch_id) {
+                        lane.pending_binding = None;
+                        lane.active = None;
+                        lane.revision = lane.revision.wrapping_add(1);
+                    }
                     state.revision = state.revision.wrapping_add(1);
                 }
                 let timestamp = now();
@@ -1374,14 +1483,31 @@ impl Registry {
         peer: &Peer,
         request: AgentRequest,
         is_connected: &dyn Fn() -> bool,
-    ) -> Result<Value> {
+    ) -> Result<Payload> {
         crate::harness::validate_callback(peer, &launch)?;
         self.capture_pane(&launch.grant.pane_id)?;
         self.inner.captures.lock().unwrap().admit(&mut launch)?;
-        let id = &launch.grant.launch_id;
         drop(self.agent_request_state(&launch)?);
         #[cfg(test)]
         self.inner.agents.wait_request_barrier(false);
+        let request = match request {
+            AgentRequest::Channels { request } => {
+                return self.agent_channel_request(&launch, *request, is_connected);
+            }
+            request => request,
+        };
+        self.agent_request_value(launch, peer, request, is_connected)
+            .map(Payload::Control)
+    }
+
+    fn agent_request_value(
+        &self,
+        launch: Launch,
+        peer: &Peer,
+        request: AgentRequest,
+        is_connected: &dyn Fn() -> bool,
+    ) -> Result<Value> {
+        let id = &launch.grant.launch_id;
         if let AgentRequest::SendMessage {
             to,
             text,
@@ -1411,6 +1537,30 @@ impl Registry {
             }
         }
         match request {
+            AgentRequest::ChannelRead {
+                channel_id,
+                message_id,
+                offset,
+                max_bytes,
+            } => self.agent_channel_read(
+                &launch,
+                channel_id,
+                message_id,
+                offset,
+                max_bytes,
+                is_connected,
+            ),
+            AgentRequest::ChannelWake {
+                batch_id,
+                max_body_bytes,
+                include_source,
+            } => self.agent_channel_wake_lookup(
+                &launch,
+                batch_id,
+                max_body_bytes,
+                include_source,
+                is_connected,
+            ),
             AgentRequest::Control {
                 request,
                 scope,
@@ -1515,6 +1665,16 @@ impl Registry {
                 notification_id,
                 generation,
             } => {
+                if is_channel_batch(&notification_id) {
+                    let current = self.channel_wake_current(
+                        &launch,
+                        peer,
+                        &receiver_id,
+                        &notification_id,
+                        generation,
+                    )?;
+                    return Ok(json!({"current":current}));
+                }
                 self.agent_receiver_peer(&launch, peer, &receiver_id)?;
                 let state = self.agent_request_state(&launch)?;
                 let current = state.store.agents[id]
@@ -1535,6 +1695,14 @@ impl Registry {
                 generation,
                 outcome,
             } => {
+                if is_channel_batch(&notification_id) {
+                    return self.channel_wake_outcome(
+                        &launch,
+                        peer,
+                        (&receiver_id, &notification_id, generation),
+                        outcome,
+                    );
+                }
                 self.agent_receiver_peer(&launch, peer, &receiver_id)?;
                 self.inner.agents.transaction(|store| {
                     self.authorize_agent_guard(&launch)?;
@@ -1811,6 +1979,7 @@ impl Registry {
             proc::process(pid.try_into()?)?.context("receiver process exited")?
         };
         crate::harness::ancestry(&process, &launch.root)?;
+        let lifetime = ProcessLifetime::observe(&process).ok().map(Arc::new);
         let _writer = self.inner.agents.callback_guard()?;
         self.authorize_agent_guard(launch)?;
         let current = self
@@ -1878,6 +2047,7 @@ impl Registry {
         let receiver = Receiver {
             id: Uuid::new_v4().to_string(),
             process,
+            lifetime,
             owner,
             session_id,
             conversation_generation: conversation.generation,
@@ -1887,6 +2057,9 @@ impl Registry {
             json!({"receiver_id":receiver.id,"registered":true,"notification_ready":false});
         {
             let mut state = self.inner.agents.state.lock().unwrap();
+            if let Some(lane) = state.channel_lanes.get_mut(&launch.grant.launch_id) {
+                lane.active = None;
+            }
             state
                 .receivers
                 .insert(launch.grant.launch_id.clone(), receiver);
@@ -1895,37 +2068,43 @@ impl Registry {
         self.inner.agents.changed.notify_all();
         Ok(result)
     }
-    fn agent_receiver(&self, launch: &Launch, receiver_id: &str) -> Result<Receiver> {
-        self.authorize_agent_guard(launch)?;
-        let receiver = {
-            let state = self.inner.agents.state.lock().unwrap();
-            healthy_agents(&state)?;
-            Agents::require_live(&state.store, &launch.grant.launch_id)?;
-            state
-                .receivers
-                .get(&launch.grant.launch_id)
-                .filter(|r| r.id == receiver_id)
-                .context("stale native receiver")?
-                .clone()
-        };
-        let current_launch = self
-            .inner
-            .captures
-            .lock()
-            .unwrap()
+    fn with_current_agent_receiver<T>(
+        &self,
+        launch: &Launch,
+        receiver_id: &str,
+        use_receiver: impl FnOnce(&Receiver) -> T,
+    ) -> Result<T> {
+        let state = self.inner.agents.state.lock().unwrap();
+        healthy_agents(&state)?;
+        Agents::require_live(&state.store, &launch.grant.launch_id)?;
+        let receiver = state
+            .receivers
+            .get(&launch.grant.launch_id)
+            .filter(|r| r.id == receiver_id)
+            .context("stale native receiver")?;
+        let captures = self.inner.captures.lock().unwrap();
+        captures.authorize(launch)?;
+        let current = captures
             .launches
             .get(&launch.grant.launch_id)
-            .cloned()
             .context("launch ended")?;
         ensure!(
-            current_launch
-                .managed
-                .conversation
-                .as_ref()
-                .is_some_and(|c| c.id == receiver.session_id
-                    && c.generation == receiver.conversation_generation),
+            current.binding_generation == launch.binding_generation
+                && current.control.same_authority(&launch.control)
+                && current.control.is_valid()
+                && current
+                    .managed
+                    .conversation
+                    .as_ref()
+                    .is_some_and(|conversation| conversation.id == receiver.session_id
+                        && conversation.generation == receiver.conversation_generation),
             "receiver conversation binding changed"
         );
+        Ok(use_receiver(receiver))
+    }
+
+    fn agent_receiver(&self, launch: &Launch, receiver_id: &str) -> Result<Receiver> {
+        let receiver = self.with_current_agent_receiver(launch, receiver_id, Receiver::clone)?;
         let current = proc::process(receiver.process.pid)?.context("native receiver exited")?;
         ensure!(
             current.identity == receiver.process.identity && current.tty == receiver.process.tty,
@@ -2002,6 +2181,7 @@ impl Registry {
         };
         let deadline = Instant::now() + Duration::from_millis(wait_ms.min(25000));
         let mut observed_revision = None;
+        let mut channel_retry = None;
         loop {
             // Cancellation ticks inspect socket liveness only. Process authority and
             // inbox eligibility are refreshed on state changes, never idle 1 Hz scans.
@@ -2010,28 +2190,69 @@ impl Registry {
                 let state = service.state.lock().unwrap();
                 self.authorize_agent_guard(launch)?;
                 healthy_agents(&state)?;
-                state.revision
+                (state.revision, ChannelLane::availability(&state, launch))
             };
-            if observed_revision != Some(revision) {
+            let retry_ready = channel_retry.is_some_and(|retry| retry <= Instant::now());
+            if retry_ready {
+                channel_retry = None;
+            }
+            if observed_revision != Some(revision) || (retry_ready && Instant::now() < deadline) {
                 self.agent_receiver_peer(launch, peer, &receiver_id)?;
-                let available = {
+                let (direct, channel_first, channel) = {
                     let state = service.state.lock().unwrap();
                     healthy_agents(&state)?;
-                    if state.revision != revision {
+                    if (state.revision, ChannelLane::availability(&state, launch)) != revision {
                         continue;
                     }
                     observed_revision = Some(revision);
-                    state.store.agents[id].notification.is_none()
+                    let (channel, busy, _) = revision.1;
+                    let agent = &state.store.agents[id];
+                    let free = !busy && agent.notification.is_none();
+                    let direct = free
                         && state
                             .store
                             .messages
                             .values()
-                            .any(|m| m.to == *id && claimable(m))
+                            .any(|m| m.to == *id && claimable(m));
+                    let channel = free && channel && channel_retry.is_none();
+                    let channel_first = channel
+                        && (!direct || state.channel_lanes[id].last_generation < agent.generation);
+                    (direct, channel_first, channel)
                 };
-                if available {
+                let mut claim_channel = || match self.claim_channel_wake(
+                    launch,
+                    peer,
+                    &receiver,
+                    is_connected,
+                    deadline,
+                )? {
+                    ChannelClaimPoll::Ready(wake) => Ok::<_, anyhow::Error>(Some(wake)),
+                    ChannelClaimPoll::Empty => {
+                        #[cfg(test)]
+                        service.wait_channel_barrier(ChannelTestPause::EmptyClaim);
+                        Ok(None)
+                    }
+                    ChannelClaimPoll::Deferred => {
+                        channel_retry = Some(Instant::now() + CHANNEL_CLAIM_RETRY);
+                        Ok(None)
+                    }
+                };
+                if channel_first && let Some(wake) = claim_channel()? {
+                    return Ok(wake);
+                }
+                if direct {
                     let notification = service.transaction_maybe(|store| {
                         self.authorize_agent_guard(launch)?;
                         self.agent_receiver_peer(launch, peer, &receiver_id)?;
+                        let state = service.state.lock().unwrap();
+                        if ChannelLane::availability(&state, launch).1 {
+                            return Ok((None, false));
+                        }
+                        if let Some(lane) = state.channel_lanes.get(id) {
+                            let agent = store.agents.get_mut(id).expect("admitted live agent");
+                            agent.generation = agent.generation.max(lane.last_generation);
+                        }
+                        drop(state);
                         let notification = messages::claim(store, id, &receiver_id, now())?;
                         let changed = notification.is_some();
                         Ok((notification, changed))
@@ -2043,10 +2264,18 @@ impl Registry {
                         );
                     }
                 }
+                if channel
+                    && !channel_first
+                    && let Some(wake) = claim_channel()?
+                {
+                    return Ok(wake);
+                }
             }
             let state = service.state.lock().unwrap();
             healthy_agents(&state)?;
-            if observed_revision != Some(state.revision) {
+            if observed_revision
+                != Some((state.revision, ChannelLane::availability(&state, launch)))
+            {
                 continue;
             }
             if Instant::now() >= deadline {
@@ -2057,6 +2286,7 @@ impl Registry {
                 .wait_timeout(
                     state,
                     deadline
+                        .min(channel_retry.unwrap_or(deadline))
                         .saturating_duration_since(Instant::now())
                         .min(Duration::from_millis(1000)),
                 )

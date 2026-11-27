@@ -147,7 +147,8 @@ bkpr install claude
 
 Antigravity (`agy`) requires installation. The other managed harnesses can use
 `bkpr run` without it. Run `bkpr install` on the machine and account that run
-the harness. It preserves unrelated settings and doesn't grant tool permissions.
+the harness. It preserves unrelated settings. Claude and fresh managed Codex
+threads get named Bkpr collaboration defaults; native restrictions still apply.
 
 See the [harness reference](docs/reference.md#harness-capture) for recognized
 but unmanaged harnesses, native modes that pass through without capture, and

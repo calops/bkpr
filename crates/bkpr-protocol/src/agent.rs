@@ -1,4 +1,5 @@
 //! Launch-authenticated discovery, durable messaging and native wake coordination.
+use crate::channels::{ChannelId, ChannelRequest, MessageId};
 use serde::{Deserialize, Serialize};
 
 /// Reach of discovery, messaging or supported control within the current daemon.
@@ -179,12 +180,65 @@ pub enum AgentRequest {
         /// Confirmed, failed or ambiguous native dispatch result.
         outcome: AgentWakeOutcome,
     },
+    /// Use the managed launch's workspace channel API.
+    Channels {
+        /// Operation subject to the launch channel allowlist and current membership.
+        request: Box<ChannelRequest>,
+    },
+    /// Resolve a delivered channel wake, optionally including bounded post context.
+    ChannelWake {
+        /// Exact opaque batch ID from the native notification.
+        batch_id: String,
+        /// Per-body UTF-8 page limit (4 through 4096). Omission requests metadata only
+        /// unless `include_source` is true, in which case the limit defaults to 2048.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_body_bytes: Option<u32>,
+        /// Include the selected post and, when authorized and available, one linked source page.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        include_source: bool,
+    },
+    /// Read an exact channel message in UTF-8 pages under current membership.
+    ChannelRead {
+        /// Exact owning channel.
+        channel_id: ChannelId,
+        /// Exact message within that channel.
+        message_id: MessageId,
+        /// UTF-8 byte boundary within the body; defaults to zero.
+        offset: Option<u32>,
+        /// Requested body-page byte limit, from 4 through 4096.
+        max_bytes: Option<u32>,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn channel_wake_metadata_omits_only_unavailable_address_hint() {
+        use crate::channels::ChannelWake;
+
+        let mut expected = json!({
+            "batch_id":"batch",
+            "channel_id":"channel",
+            "pending_count":2,
+        });
+        let mut wake = ChannelWake {
+            batch_id: "batch".into(),
+            channel_id: ChannelId("channel".into()),
+            pending_count: 2,
+            addressed_message_id: None,
+        };
+        assert_eq!(serde_json::to_value(&wake).unwrap(), expected);
+        wake.addressed_message_id = Some(MessageId("addressed".into()));
+        expected["addressed_message_id"] = json!("addressed");
+        assert_eq!(serde_json::to_value(&wake).unwrap(), expected);
+        assert_eq!(
+            serde_json::from_value::<ChannelWake>(expected).unwrap(),
+            wake
+        );
+    }
 
     #[test]
     fn direct_message_json_has_no_delivery_or_wake_choice() {

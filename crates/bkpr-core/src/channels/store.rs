@@ -1,4 +1,4 @@
-use super::{ChannelAccessLost, ChannelAuthority};
+use super::{ChannelAccessLost, ChannelAuthority, ChannelRoutes, WakeTarget};
 use anyhow::{Context, Result, bail, ensure};
 use bkpr_protocol::channels::{
     AttachmentDescriptor, AttachmentId, AttachmentUpload, ChannelChange, ChannelChangeKind,
@@ -18,11 +18,15 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "wakes.rs"]
+mod wakes;
+
 const APPLICATION_ID: i64 = 0x424b4348;
-// Versions 3–6 were assigned to downstream channel layers without attachment staging.
-const STORE_VERSION: i64 = 7;
+// Versions 1–6 predate staging. Version 7 predates wakes; version 8 combined revocation and outcome.
+const STORE_VERSION: i64 = 9;
 const STORE_NAME: &str = "channels.sqlite3";
 const MAX_PENDING: usize = 4096;
+const READ_POST: &str = "SELECT summary,body FROM posts WHERE channel_id=?1 AND id=?2";
 
 pub(super) const MAX_ARCHIVE_CANDIDATES: usize = 128;
 pub(super) const MAX_STAGED_BYTES: u64 = 64 * 1024 * 1024;
@@ -41,8 +45,8 @@ const PRESETS: [(&str, ChannelSettings); 2] = [
     (
         "#team",
         ChannelSettings {
-            user_wake: WakePolicy::All,
-            agent_wake: WakePolicy::All,
+            user_wake: WakePolicy::AddressedOrAll,
+            agent_wake: WakePolicy::AddressedOrAll,
             attention_questions: false,
             attention_reports: false,
         },
@@ -63,7 +67,25 @@ const ATTACHMENT_STAGING_SCHEMA: &str = "
     ) STRICT;
     INSERT INTO attachment_budget VALUES(1,0);";
 
-pub(super) struct Store {
+const RETIRE_OLD_WAKE_WORK: &str = "
+    UPDATE notification_work SET pending=0 WHERE pending=1;
+    UPDATE channel_batches SET outcome='unknown' WHERE outcome IS NULL;";
+
+const WAKE_QUEUE_SCHEMA: &str = "
+    ALTER TABLE channel_batches ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE notification_work ADD COLUMN enqueue_ordinal INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE notification_work ADD COLUMN channel_sequence INTEGER NOT NULL DEFAULT 0;
+    DROP INDEX IF EXISTS pending_launch_wakes;
+    DROP INDEX IF EXISTS active_batch_launch;
+    CREATE UNIQUE INDEX active_batch_launch ON channel_batches(launch_id) WHERE outcome IS NULL AND revoked=0;
+    CREATE INDEX unsettled_batch_deadline ON channel_batches(deadline) WHERE outcome IS NULL;
+    CREATE INDEX pending_launch_enqueue ON notification_work(launch_id,binding_revision,participant_id,enqueue_ordinal,channel_id)
+        WHERE pending=1 AND launch_id IS NOT NULL;
+    CREATE INDEX pending_channel_sequence ON notification_work(launch_id,binding_revision,participant_id,channel_id,channel_sequence,addressed)
+        WHERE pending=1 AND launch_id IS NOT NULL;
+    CREATE INDEX wake_batch_membership ON channel_batches(channel_id,participant_id) WHERE revoked=0;";
+
+pub(crate) struct Store {
     pub(super) connection: Connection,
     pub(super) retirement_epoch: u64,
 }
@@ -76,6 +98,21 @@ struct StoredChannel {
     last_sequence: u64,
     change_sequence: u64,
     last_attention: u64,
+}
+
+#[derive(serde::Serialize)]
+struct ReplyTarget<'a> {
+    channel_id: &'a ChannelId,
+    reply_to: &'a MessageId,
+}
+
+#[derive(serde::Serialize)]
+struct MessagePage<'a> {
+    message: MessageSummary,
+    text: &'a str,
+    body_bytes: usize,
+    next_offset: Option<usize>,
+    reply_target: ReplyTarget<'a>,
 }
 
 impl Store {
@@ -110,7 +147,7 @@ impl Store {
         let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
         ensure!(
             (empty && application == 0 && version == 0)
-                || (application == APPLICATION_ID && matches!(version, 1 | 2 | STORE_VERSION)),
+                || (application == APPLICATION_ID && matches!(version, 1..=3 | 7..=STORE_VERSION)),
             "foreign or unsupported channel store"
         );
         connection.execute_batch(
@@ -125,28 +162,42 @@ impl Store {
         if empty {
             let tx = connection.transaction()?;
             tx.execute_batch(include_str!("schema.sql"))?;
+            tx.execute_batch(include_str!("wakes.sql"))?;
+            tx.execute_batch(WAKE_QUEUE_SCHEMA)?;
             tx.execute_batch(ATTACHMENT_STAGING_SCHEMA)?;
             tx.pragma_update(None, "application_id", APPLICATION_ID)?;
             tx.pragma_update(None, "user_version", STORE_VERSION)?;
             tx.commit()?;
             directory.sync_all()?;
-        } else {
-            if version < STORE_VERSION {
-                let tx = connection.transaction()?;
-                if version == 1 {
-                    tx.execute_batch(
-                        "ALTER TABLE members ADD COLUMN workspace_id TEXT NOT NULL DEFAULT '';
-                         UPDATE members SET workspace_id=(SELECT workspace_id FROM channels WHERE id=members.channel_id);
-                         CREATE INDEX workspace_wide_channels ON channels(workspace_id,id) WHERE workspace_wide=1;
-                         CREATE INDEX visible_explicit_channels ON members(workspace_id,participant_id,channel_id);",
-                    )?;
-                }
-                migrate_attachment_staging(&tx)?;
-                tx.pragma_update(None, "user_version", STORE_VERSION)?;
-                tx.commit()?;
+        } else if version < STORE_VERSION {
+            let tx = connection.transaction()?;
+            if version == 1 {
+                tx.execute_batch(
+                    "ALTER TABLE members ADD COLUMN workspace_id TEXT NOT NULL DEFAULT '';
+                     UPDATE members SET workspace_id=(SELECT workspace_id FROM channels WHERE id=members.channel_id);
+                     CREATE INDEX workspace_wide_channels ON channels(workspace_id,id) WHERE workspace_wide=1;
+                     CREATE INDEX visible_explicit_channels ON members(workspace_id,participant_id,channel_id);",
+                )?;
             }
-            // Retain frozen work as history; a new runtime must not adopt old wakes or alerts.
-            connection.execute("UPDATE notification_work SET pending=0 WHERE pending=1", [])?;
+            if matches!(version, 1 | 2 | 7) {
+                tx.execute_batch(include_str!("wakes.sql"))?;
+            }
+            if version < 7 {
+                migrate_attachment_staging(&tx)?;
+            }
+            // Prior work cannot be offered by a new runtime, so its new order fields need no backfill.
+            tx.execute_batch(RETIRE_OLD_WAKE_WORK)?;
+            tx.execute_batch(WAKE_QUEUE_SCHEMA)?;
+            if matches!(version, 3 | 8) {
+                tx.execute(
+                    "UPDATE channel_batches SET revoked=1,outcome='unknown' WHERE outcome='revoked'",
+                    [],
+                )?;
+            }
+            tx.pragma_update(None, "user_version", STORE_VERSION)?;
+            tx.commit()?;
+        } else {
+            connection.execute_batch(RETIRE_OLD_WAKE_WORK)?;
         }
         Ok(Self {
             connection,
@@ -161,8 +212,10 @@ impl Store {
         let mut closed = Vec::new();
         {
             let mut statement = self.connection.prepare(
-                "SELECT DISTINCT c.workspace_id FROM notification_work w
-                 JOIN channels c ON c.id=w.channel_id WHERE w.pending=1",
+                "SELECT c.workspace_id FROM notification_work w
+                 JOIN channels c ON c.id=w.channel_id WHERE w.pending=1
+                 UNION SELECT c.workspace_id FROM channel_batches b
+                 JOIN channels c ON c.id=b.channel_id WHERE b.outcome IS NULL AND b.revoked=0",
             )?;
             let mut rows = statement.query([])?;
             while let Some(row) = rows.next()? {
@@ -183,6 +236,13 @@ impl Store {
             )?;
             for id in &closed {
                 statement.execute([id])?;
+            }
+            let mut batches = tx.prepare(
+                "UPDATE channel_batches SET revoked=1 WHERE outcome IS NULL AND revoked=0 AND channel_id IN
+                    (SELECT id FROM channels WHERE workspace_id=?1)",
+            )?;
+            for id in &closed {
+                batches.execute([id])?;
             }
         }
         tx.commit()?;
@@ -262,8 +322,10 @@ impl Store {
         &mut self,
         request: ChannelRequest,
         admit: impl Fn(&str) -> Result<ChannelAuthority>,
+        routes: ChannelRoutes<'_>,
         retire: impl FnOnce(&mut Self, &str) -> Result<bool>,
     ) -> Result<(ChannelResponse, bool)> {
+        let mut selector = None;
         let request = match request {
             ChannelRequest::List {
                 workspace_id,
@@ -307,6 +369,17 @@ impl Store {
                     settings,
                     &authority,
                 );
+            }
+            ChannelRequest::Post { channel_id, post } => {
+                let channel_id =
+                    match self.resolve_builtin(&channel_id, routes.workspace, &admit)? {
+                        Some(id) => {
+                            selector = Some(channel_id);
+                            id
+                        }
+                        None => channel_id,
+                    };
+                ChannelRequest::Post { channel_id, post }
             }
             request => request,
         };
@@ -359,9 +432,14 @@ impl Store {
                 require_owner(&authority)?;
                 self.set_membership(channel_id, channel, membership, members, &authority)
             }
-            ChannelRequest::Post { channel_id, post } => {
-                self.post(&channel_id, channel, post, authority, retire)
-            }
+            ChannelRequest::Post { channel_id, post } => self.post(
+                channel,
+                post,
+                authority,
+                retire,
+                routes,
+                (&channel_id, selector.as_ref()),
+            ),
             ChannelRequest::History {
                 channel_id,
                 before,
@@ -398,6 +476,33 @@ impl Store {
         }
     }
 
+    fn resolve_builtin(
+        &mut self,
+        selector: &ChannelId,
+        workspace: Option<&str>,
+        admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+    ) -> Result<Option<ChannelId>> {
+        let Some(workspace) = workspace.filter(|_| matches!(selector.as_ref(), "#desk" | "#team"))
+        else {
+            return Ok(None);
+        };
+        let lookup = |connection: &Connection| {
+            connection
+                .query_row(
+                    "SELECT id FROM channels WHERE workspace_id=?1 AND name=?2",
+                    params![workspace, selector.as_ref()],
+                    |row| Ok(ChannelId(row.get(0)?)),
+                )
+                .optional()
+        };
+        if let Some(id) = lookup(&self.connection)? {
+            return Ok(Some(id));
+        }
+        workspace_authority(workspace, admit)?;
+        self.provision([workspace])?;
+        Ok(Some(lookup(&self.connection)?.context(ChannelAccessLost)?))
+    }
+
     fn access(
         &self,
         id: &ChannelId,
@@ -411,14 +516,21 @@ impl Store {
         ).optional()?.context(ChannelAccessLost)?;
         let authority = workspace_authority(&channel.workspace_id, admit)?;
         if authority.actor.kind == ParticipantKind::Agent && !channel.workspace_wide {
-            let member: bool = self.connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM members WHERE channel_id=?1 AND participant_id=?2)",
-                params![id.as_ref(), authority.actor.id.as_ref()],
-                |r| r.get(0),
-            )?;
-            ensure!(member, ChannelAccessLost);
+            ensure!(
+                self.explicit_member(id, &authority.actor.id)?,
+                ChannelAccessLost
+            );
         }
         Ok((channel, authority))
+    }
+
+    fn explicit_member(&self, channel: &ChannelId, participant: &ParticipantId) -> Result<bool> {
+        exists(
+            &self.connection,
+            "SELECT EXISTS(SELECT 1 FROM members WHERE channel_id=?1 AND participant_id=?2)",
+            channel,
+            participant.as_ref(),
+        )
     }
 
     fn list(
@@ -632,6 +744,11 @@ impl Store {
                      AND NOT EXISTS(SELECT 1 FROM members WHERE channel_id=?1 AND participant_id=notification_work.participant_id)",
                     [id.as_ref()],
                 )?;
+                tx.execute(
+                    "UPDATE channel_batches SET revoked=1 WHERE channel_id=?1 AND revoked=0
+                     AND NOT EXISTS(SELECT 1 FROM members WHERE channel_id=?1 AND participant_id=channel_batches.participant_id)",
+                    [id.as_ref()],
+                )?;
             }
             add_change(&tx, &id, ChannelChangeKind::Membership, None)?;
             tx.commit()?;
@@ -664,13 +781,14 @@ impl Store {
 
     fn post(
         &mut self,
-        id: &ChannelId,
         channel: StoredChannel,
-        post: ChannelPost,
+        mut post: ChannelPost,
         authority: ChannelAuthority,
         retire: impl FnOnce(&mut Self, &str) -> Result<bool>,
+        routes: ChannelRoutes<'_>,
+        (id, selector): (&ChannelId, Option<&ChannelId>),
     ) -> Result<(ChannelResponse, bool)> {
-        let fingerprint = fingerprint(&post);
+        let fingerprint = fingerprint_for(&post, selector);
         let retry = self
             .connection
             .query_row(
@@ -720,12 +838,18 @@ impl Store {
         let can_mention =
             |participant: &Participant| member(participant, explicit_members.as_deref());
         let mut addressed_agent = false;
-        for mention in &post.mentions {
-            let target = authority
-                .roster()
-                .find(|actor| actor.id == *mention && can_mention(actor))
-                .context("channel mention no longer names a current member")?;
+        for mention in &mut post.mentions {
+            let target = if let Some(caller) = routes.exact_mentions {
+                exact_mention(&authority, mention, caller)
+            } else {
+                authority.roster().find(|actor| actor.id == *mention)
+            }
+            .filter(|actor| can_mention(actor))
+            .context("channel mention no longer names a current member; refresh the roster")?;
             addressed_agent |= target.kind == ParticipantKind::Agent;
+            if *mention != target.id {
+                mention.clone_from(&target.id);
+            }
         }
         let mut wakes = Vec::new();
         if may_wake {
@@ -751,7 +875,12 @@ impl Store {
                         wakes.len() < MAX_PENDING,
                         "channel notification capacity exceeded"
                     );
-                    wakes.push((target.id.as_ref(), launch, addressed));
+                    wakes.push(WakeTarget {
+                        launch,
+                        binding: entry.binding_revision,
+                        participant: target.id.as_ref(),
+                        addressed,
+                    });
                 }
             }
         }
@@ -765,9 +894,13 @@ impl Store {
             mentions: post.mentions,
             reply_to: post.reply_to,
             attachments: post.attachments,
+            source: post.source,
         };
         let needed = wakes.len() + usize::from(attention);
         let pending_work = needed != 0 && !retire(self, &channel.workspace_id)?;
+        if pending_work {
+            self.reclaim_wake_capacity(needed, routes.binding_live)?;
+        }
         let tx = self.connection.transaction()?;
         if let Some(reply) = &message.reply_to {
             ensure!(
@@ -783,17 +916,6 @@ impl Store {
         if !message.attachments.is_empty() {
             promote_attachments(&tx, id, &message.attachments, message.posted_at_ms)?;
         }
-        if pending_work {
-            let pending: usize = tx.query_row(
-                "SELECT count(*) FROM notification_work WHERE pending=1",
-                [],
-                |r| r.get(0),
-            )?;
-            ensure!(
-                needed <= MAX_PENDING.saturating_sub(pending),
-                "channel notification capacity exceeded"
-            );
-        }
         let wake_count = u32::try_from(wakes.len())?;
         tx.execute(
             "INSERT INTO posts(id,channel_id,sequence,author_id,request_key,fingerprint,summary,body,wake_count,attention)
@@ -806,18 +928,23 @@ impl Store {
             params![id.as_ref(), sequence, attention],
         )?;
         if needed != 0 {
+            // `posts` is the last rowid table inserted into by this transaction.
+            let enqueue_ordinal = tx.last_insert_rowid();
             let mut insert = tx.prepare(
-                "INSERT INTO notification_work(channel_id,message_id,participant_id,launch_id,addressed,pending)
-                 VALUES(?1,?2,?3,?4,?5,?6)",
+                "INSERT INTO notification_work(channel_id,message_id,participant_id,launch_id,addressed,pending,binding_revision,enqueue_ordinal,channel_sequence)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             )?;
-            for (recipient, launch, addressed) in wakes {
+            for wake in &wakes {
                 insert.execute(params![
                     id.as_ref(),
                     message.id.as_ref(),
-                    recipient,
-                    launch,
-                    addressed,
+                    wake.participant,
+                    wake.launch,
+                    wake.addressed,
                     pending_work,
+                    wake.binding,
+                    enqueue_ordinal,
+                    sequence,
                 ])?;
             }
             if attention {
@@ -828,11 +955,17 @@ impl Store {
                     None::<&str>,
                     false,
                     pending_work,
+                    0,
+                    enqueue_ordinal,
+                    sequence,
                 ])?;
             }
         }
         add_change(&tx, id, ChannelChangeKind::Post, None)?;
         tx.commit()?;
+        if pending_work && !wakes.is_empty() {
+            (routes.publish)(&wakes);
+        }
         Ok((
             ChannelResponse::Posted {
                 message,
@@ -843,6 +976,92 @@ impl Store {
         ))
     }
 
+    pub(crate) fn compact_members(
+        &mut self,
+        request: ChannelRequest,
+        admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+        caller: (&str, u64),
+        workspace: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let ChannelRequest::ListMembers {
+            channel_id,
+            after,
+            limit,
+        } = request
+        else {
+            unreachable!("compact roster requires a members request");
+        };
+        let channel_id = self
+            .resolve_builtin(&channel_id, workspace, admit)?
+            .unwrap_or(channel_id);
+        let (channel, authority) = self.access(&channel_id, admit)?;
+        let members = self.members_if_explicit(&channel_id, &channel)?;
+        let (entries, next_after) =
+            members_page(authority, members.as_deref(), after.as_ref(), limit)?;
+        let participants: Vec<_> = entries.into_iter().map(|entry| {
+            let launch = (entry.actor.kind == ParticipantKind::Agent).then(|| {
+                entry.launch_id.as_deref().map_or(caller, |id| (id, entry.binding_revision))
+            });
+            let mention_id = launch.map_or_else(|| entry.actor.id.0.clone(), |(id, generation)| {
+                super::agent_mention_id(id, generation)
+            });
+            let mut member = serde_json::json!({
+                "id":entry.actor.id, "kind":entry.actor.kind, "display_name":entry.actor.display_name,
+                "mention_id":mention_id,
+            });
+            if let Some((id, _)) = launch {
+                member["launch_id"] = serde_json::Value::String(id.to_owned());
+            }
+            member
+        }).collect();
+        Ok(
+            serde_json::json!({"kind":"members", "participants":participants, "next_after":next_after}),
+        )
+    }
+
+    pub(crate) fn compact_history(
+        &mut self,
+        request: ChannelRequest,
+        admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+        workspace: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let ChannelRequest::History {
+            channel_id,
+            before,
+            after,
+            limit,
+        } = request
+        else {
+            unreachable!("compact history requires a history request");
+        };
+        let channel_id = self
+            .resolve_builtin(&channel_id, workspace, admit)?
+            .unwrap_or(channel_id);
+        let (channel, _) = self.access(&channel_id, admit)?;
+        let bound = history_bound(&channel, before, after);
+        let sql = if after.is_some() {
+            "SELECT summary FROM posts WHERE channel_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3"
+        } else {
+            "SELECT summary FROM posts WHERE channel_id=?1 AND sequence<=?2 ORDER BY sequence DESC LIMIT ?3"
+        };
+        let mut statement = self.connection.prepare(sql)?;
+        let mut messages = statement
+            .query_map(params![channel_id.as_ref(), bound, limit], |row| {
+                json::<MessageSummary>(row, 0)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if after.is_none() {
+            messages.reverse();
+        }
+        Ok(serde_json::json!({
+            "kind": "history",
+            "messages": messages,
+            "next_before": messages.first().map(|post| post.sequence).filter(|seq| *seq > 1),
+            "next_after": messages.last().map(|post| post.sequence).filter(|seq| *seq < channel.last_sequence),
+            "cursor": ChannelCursor { channel_id, sequence: channel.change_sequence },
+        }))
+    }
+
     fn history(
         &self,
         id: &ChannelId,
@@ -851,18 +1070,12 @@ impl Store {
         after: Option<u64>,
         limit: u16,
     ) -> Result<ChannelResponse> {
-        let (sql, bound) = if let Some(after) = after {
-            (
-                "SELECT summary,body FROM posts WHERE channel_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3",
-                after,
-            )
+        let sql = if after.is_some() {
+            "SELECT summary,body FROM posts WHERE channel_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3"
         } else {
-            (
-                "SELECT summary,body FROM posts WHERE channel_id=?1 AND sequence<=?2 ORDER BY sequence DESC LIMIT ?3",
-                before.map_or(channel.last_sequence, |value| value - 1),
-            )
+            "SELECT summary,body FROM posts WHERE channel_id=?1 AND sequence<=?2 ORDER BY sequence DESC LIMIT ?3"
         };
-        let bound = i64::try_from(bound).unwrap_or(i64::MAX);
+        let bound = history_bound(channel, before, after);
         let mut statement = self.connection.prepare(sql)?;
         let mut rows = statement.query(params![id.as_ref(), bound, limit])?;
         let mut messages = Vec::new();
@@ -902,16 +1115,107 @@ impl Store {
     }
 
     fn read(&self, id: &ChannelId, message_id: &MessageId) -> Result<ChannelResponse> {
-        let mut statement = self
-            .connection
-            .prepare("SELECT summary,body FROM posts WHERE channel_id=?1 AND id=?2")?;
+        let mut statement = self.connection.prepare(READ_POST)?;
         let mut rows = statement.query(params![id.as_ref(), message_id.as_ref()])?;
         let message = self.message(id, rows.next()?.context("channel message unavailable")?)?;
         Ok(ChannelResponse::Message { message })
     }
 
+    pub(crate) fn compact_message(
+        &mut self,
+        request: ChannelRequest,
+        admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+        offset: usize,
+        maximum: usize,
+        workspace: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let ChannelRequest::Read {
+            channel_id,
+            message_id,
+        } = request
+        else {
+            unreachable!("compact message requires a read request");
+        };
+        let channel_id = self
+            .resolve_builtin(&channel_id, workspace, admit)?
+            .unwrap_or(channel_id);
+        self.access(&channel_id, admit)?;
+        self.with_message_page(&channel_id, &message_id, offset, maximum, |page| {
+            #[derive(serde::Serialize)]
+            struct Reply<'a> {
+                kind: &'static str,
+                #[serde(flatten)]
+                page: MessagePage<'a>,
+                attachments: Vec<AttachmentDescriptor>,
+            }
+            let attachments = self.message_attachments(&channel_id, &page.message)?;
+            Ok(serde_json::to_value(Reply {
+                kind: "message_page",
+                page,
+                attachments,
+            })?)
+        })
+    }
+
+    fn with_message_page<T>(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        offset: usize,
+        maximum: usize,
+        project: impl FnOnce(MessagePage<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.optional_message_page(channel_id, message_id, offset, maximum, project)?
+            .context("channel message unavailable")
+    }
+
+    fn optional_message_page<T>(
+        &self,
+        channel_id: &ChannelId,
+        message_id: &MessageId,
+        offset: usize,
+        maximum: usize,
+        project: impl FnOnce(MessagePage<'_>) -> Result<T>,
+    ) -> Result<Option<T>> {
+        let mut statement = self.connection.prepare(READ_POST)?;
+        let mut rows = statement.query(params![channel_id.as_ref(), message_id.as_ref()])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let text = row.get_ref(1)?.as_str()?;
+        ensure!(text.is_char_boundary(offset), "invalid channel body offset");
+        let mut end = offset.saturating_add(maximum).min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        project(MessagePage {
+            message: json(row, 0)?,
+            text: &text[offset..end],
+            body_bytes: text.len(),
+            next_offset: (end < text.len()).then_some(end),
+            reply_target: ReplyTarget {
+                channel_id,
+                reply_to: message_id,
+            },
+        })
+        .map(Some)
+    }
+
     fn message(&self, id: &ChannelId, row: &Row<'_>) -> Result<ChannelMessage> {
         let message: MessageSummary = json(row, 0)?;
+        let attachments = self.message_attachments(id, &message)?;
+        Ok(ChannelMessage {
+            message,
+            text: row.get(1)?,
+            attachments,
+        })
+    }
+
+    fn message_attachments(
+        &self,
+        id: &ChannelId,
+        message: &MessageSummary,
+    ) -> Result<Vec<AttachmentDescriptor>> {
         let mut attachments = Vec::with_capacity(message.attachments.len());
         if !message.attachments.is_empty() {
             let mut statement = self
@@ -925,11 +1229,7 @@ impl Store {
                 );
             }
         }
-        Ok(ChannelMessage {
-            message,
-            text: row.get(1)?,
-            attachments,
-        })
+        Ok(attachments)
     }
 
     fn mark_read(
@@ -1295,6 +1595,19 @@ fn list_members(
     after: Option<&ParticipantId>,
     limit: u16,
 ) -> Result<ChannelResponse> {
+    let (roster, next_after) = members_page(authority, members, after, limit)?;
+    Ok(ChannelResponse::Members {
+        participants: roster.into_iter().map(|entry| entry.actor).collect(),
+        next_after,
+    })
+}
+
+fn members_page(
+    authority: ChannelAuthority,
+    members: Option<&[ParticipantId]>,
+    after: Option<&ParticipantId>,
+    limit: u16,
+) -> Result<(Vec<super::WorkspaceParticipant>, Option<ParticipantId>)> {
     let ChannelAuthority {
         actor,
         participants: mut roster,
@@ -1302,10 +1615,7 @@ fn list_members(
         ..
     } = authority;
     if !workspace_open {
-        return Ok(ChannelResponse::Members {
-            participants: Vec::new(),
-            next_after: None,
-        });
+        return Ok((Vec::new(), None));
     }
     let visible = |participant: &Participant| {
         member(participant, members) && after.is_none_or(|id| participant.id > *id)
@@ -1315,6 +1625,7 @@ fn list_members(
         roster.push(super::WorkspaceParticipant {
             actor,
             launch_id: None,
+            binding_revision: 0,
         });
     }
     let count = usize::from(limit) + 1;
@@ -1328,10 +1639,39 @@ fn list_members(
     for entry in &roster {
         entry.actor.validate()?;
     }
-    Ok(ChannelResponse::Members {
-        participants: roster.into_iter().map(|entry| entry.actor).collect(),
-        next_after,
-    })
+    Ok((roster, next_after))
+}
+
+fn exact_mention<'a>(
+    authority: &'a ChannelAuthority,
+    mention: &ParticipantId,
+    caller: (&str, u64),
+) -> Option<&'a Participant> {
+    let reference = mention.as_ref();
+    if let Some((launch, binding)) = reference.split_once(':') {
+        if !binding
+            .as_bytes()
+            .first()
+            .is_some_and(|digit| matches!(digit, b'1'..=b'9'))
+            || !binding.bytes().all(|digit| digit.is_ascii_digit())
+        {
+            return None;
+        }
+        let binding = binding.parse::<u64>().ok()?;
+        if caller == (launch, binding) {
+            return Some(&authority.actor);
+        }
+        return authority
+            .participants
+            .iter()
+            .find(|entry| {
+                entry.launch_id.as_deref() == Some(launch) && entry.binding_revision == binding
+            })
+            .map(|entry| &entry.actor);
+    }
+    authority
+        .roster()
+        .find(|actor| actor.kind == ParticipantKind::User && actor.id == *mention)
 }
 
 fn open_private(path: &Path, create: bool) -> Result<Option<File>> {
@@ -1447,10 +1787,19 @@ fn take_extra<T>(items: &mut Vec<T>, limit: u16) -> bool {
     }
 }
 
-fn fingerprint(post: &ChannelPost) -> [u8; 32] {
+fn fingerprint_for(post: &ChannelPost, selector: Option<&ChannelId>) -> [u8; 32] {
     let mut writer = Sha256::new();
+    if let Some(selector) = selector {
+        writer.update(selector.as_ref().as_bytes());
+        writer.update([0]);
+    }
     serde_json::to_writer(&mut writer, post).expect("typed post serialization is infallible");
     writer.finalize().into()
+}
+
+fn history_bound(channel: &StoredChannel, before: Option<u64>, after: Option<u64>) -> i64 {
+    let bound = after.unwrap_or_else(|| before.map_or(channel.last_sequence, |value| value - 1));
+    i64::try_from(bound).unwrap_or(i64::MAX)
 }
 
 fn new_id() -> String {

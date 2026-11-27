@@ -31,7 +31,7 @@ fn apply(
 }
 
 #[test]
-fn native_codex_approvals_and_foreign_servers_survive_update_and_uninstall() -> Result<()> {
+fn codex_installs_transport_only_and_preserves_user_policy() -> Result<()> {
     let (_root, mut paths) = fixture()?;
     let config = paths.home.join(".codex/config.toml");
     directory(config.parent().unwrap(), false)?;
@@ -39,19 +39,29 @@ fn native_codex_approvals_and_foreign_servers_survive_update_and_uninstall() -> 
     fs::write(&config, original)?;
     let first = codex::definition(&paths)?;
     let installed = apply(&paths, &first, &[], Mode::Install)?;
-    let mut text = fs::read_to_string(&config)?;
-    text.push_str("\n# native approval, not an installer grant\n[mcp_servers.bkpr.tools.send_message]\napproval_mode = 'approve'\n");
-    fs::write(&config, text)?;
+    let parse =
+        |file: &Path| -> Result<toml::Value> { Ok(toml::from_str(&fs::read_to_string(file)?)?) };
+    let value = parse(&config)?;
+    assert!(value["mcp_servers"]["bkpr"].get("tools").is_none());
+    let mut document = config::Document::parse(Format::Toml, Some(&fs::read(&config)?), &config)?;
+    let tool_path = |tool: &str| ["mcp_servers", "bkpr", "tools", tool].map(String::from);
+    let mut send_mode = tool_path("send_message").to_vec();
+    send_mode.push("approval_mode".into());
+    document.set(&send_mode, Some(&Value::String("prompt".into())))?;
+    fs::write(&config, document.bytes())?;
+    verify_record(&installed)?;
     paths.program = PathBuf::from("/fixture/bkpr-b");
     let updated = codex::definition(&paths)?;
     let installed = apply(&paths, &updated, &[installed], Mode::Update)?;
-    let text = fs::read_to_string(&config)?;
-    assert!(text.contains("command = 'other' # keep this comment"));
-    let value: toml::Value = toml::from_str(&text)?;
+    let updated = codex::definition(&paths)?;
+    let installed = apply(&paths, &updated, &[installed], Mode::Update)?;
+    let value = parse(&config)?;
+    let tools = &value["mcp_servers"]["bkpr"]["tools"];
     assert_eq!(
-        value["mcp_servers"]["bkpr"]["tools"]["send_message"]["approval_mode"].as_str(),
-        Some("approve")
+        tools["send_message"]["approval_mode"].as_str(),
+        Some("prompt")
     );
+    assert!(tools.get("ack_message").is_none());
     assert_eq!(
         value["mcp_servers"]["bkpr"]["command"].as_str(),
         Some("/fixture/bkpr-b")
@@ -64,7 +74,34 @@ fn native_codex_approvals_and_foreign_servers_survive_update_and_uninstall() -> 
     fs::write(&config, document.bytes())?;
     let disabled = codex::definition(&paths)?;
     assert!(!disabled.blockers.is_empty());
-    apply(&paths, &disabled, &[installed], Mode::Uninstall)?;
+    let before = fs::read(&config)?;
+    let error = plan(
+        &disabled,
+        &paths,
+        std::slice::from_ref(&installed),
+        Mode::Uninstall,
+    )
+    .err()
+    .context("uninstall must retain the user's Codex preferences")?;
+    assert!(
+        error
+            .to_string()
+            .contains("mcp_servers.bkpr.tools.send_message.approval_mode")
+    );
+    assert!(error.to_string().contains("mcp_servers.bkpr.enabled"));
+    assert_eq!(fs::read(&config)?, before);
+    document.set(&tool_path("send_message"), None)?;
+    document.set(
+        &["mcp_servers".into(), "bkpr".into(), "enabled".into()],
+        None,
+    )?;
+    fs::write(&config, document.bytes())?;
+    apply(
+        &paths,
+        &codex::definition(&paths)?,
+        &[installed],
+        Mode::Uninstall,
+    )?;
     let text = fs::read_to_string(&config)?;
     let value: toml::Value = toml::from_str(&text)?;
     assert!(value["mcp_servers"].get("bkpr").is_none());
@@ -74,6 +111,188 @@ fn native_codex_approvals_and_foreign_servers_survive_update_and_uninstall() -> 
     );
     assert!(text.contains("# keep this comment"));
     assert_eq!(value["model"].as_str(), Some("fixture-model"));
+    Ok(())
+}
+
+#[test]
+fn claude_install_does_not_persist_tool_approvals() -> Result<()> {
+    let (_root, paths) = fixture()?;
+    let definition = claude::definition(&paths)?;
+    let settings = paths.home.join(".claude/settings.json");
+    directory(settings.parent().unwrap(), false)?;
+    let permissions = serde_json::json!({
+        "allow": ["Read", "mcp__bkpr__channel_post"],
+        "ask": ["mcp__bkpr__channel_read"],
+        "deny": ["mcp__bkpr__send_message"]
+    });
+    fs::write(
+        &settings,
+        serde_json::to_vec(&serde_json::json!({
+            "permissions": permissions
+        }))?,
+    )?;
+    let installed = apply(&paths, &definition, &[], Mode::Install)?;
+    verify_record(&installed)?;
+    let native: Value = serde_json::from_slice(&fs::read(settings)?)?;
+    assert_eq!(native["permissions"], permissions);
+    assert!(installed.entries.iter().all(|entry| !entry.legacy_default));
+    Ok(())
+}
+
+fn legacy_claude_manifest(
+    definition: &Definition,
+    paths: &Paths,
+    file: &Path,
+    rules: &[(&str, bool)],
+) -> Result<Manifest> {
+    let mut record = serde_json::to_value(stored(definition, &paths.program))?;
+    let entries = record["entries"].as_array_mut().unwrap();
+    for (rule, preserved) in rules {
+        let mut entry = serde_json::json!({
+            "id": format!("approval-{rule}"),
+            "file": file,
+            "format": "json",
+            "keys": ["permissions", "allow"],
+            "value": rule,
+            "array": true,
+            "marker": rule,
+            "default": true,
+        });
+        if *preserved {
+            entry["preserved"] = Value::Bool(true);
+        }
+        entries.push(entry);
+    }
+    Ok(serde_json::from_value(record)?)
+}
+
+#[test]
+fn claude_legacy_migration_removes_only_unique_owned_rules() -> Result<()> {
+    for mode in [Mode::Update, Mode::Uninstall] {
+        let (_root, paths) = fixture()?;
+        let definition = claude::definition(&paths)?;
+        let manifest_path = location(&paths, &definition);
+        let settings = paths.home.join(".claude/settings.json");
+        apply(&paths, &definition, &[], Mode::Install)?;
+        let owned = "mcp__bkpr__channel_post";
+        let claimed = "mcp__bkpr__channel_read";
+        let duplicate = "mcp__bkpr__send_message";
+        let edited = "mcp__bkpr__channel_create";
+        let user = "mcp__bkpr__channel_members";
+        let legacy = legacy_claude_manifest(
+            &definition,
+            &paths,
+            &settings,
+            &[
+                (owned, false),
+                (claimed, true),
+                (duplicate, false),
+                (edited, false),
+                ("mcp__bkpr__channel_history", false),
+            ],
+        )?;
+        write(&manifest_path, Some(&serde_json::to_vec(&legacy)?), 0o600)?;
+        let legacy =
+            record(&manifest_path, HarnessKind::Claude)?.context("missing old manifest")?;
+        assert!(!same_required_installation(
+            &legacy,
+            stored(&definition, &paths.program)
+        ));
+        assert!(
+            runtime_at(&paths, HarnessKind::Claude, &[])
+                .err()
+                .context("legacy manifest should require explicit update")?
+                .to_string()
+                .contains("--update")
+        );
+        let mut native: Value = serde_json::from_slice(&fs::read(&settings)?)?;
+        native["permissions"] = serde_json::json!({
+            "allow": [owned, claimed, duplicate, duplicate, format!("{edited}(edited)"), user],
+            "ask": ["mcp__bkpr__*"],
+            "deny": ["Read(./secret)"],
+        });
+        fs::write(&settings, serde_json::to_vec(&native)?)?;
+        assert_eq!(
+            plan(&definition, &paths, std::slice::from_ref(&legacy), mode)?
+                .retired_claude_approvals,
+            1
+        );
+        let successor = apply(&paths, &definition, &[legacy], mode)?;
+        native["permissions"]["allow"]
+            .as_array_mut()
+            .unwrap()
+            .remove(0);
+        let actual: Value = serde_json::from_slice(&fs::read(settings)?)?;
+        assert_eq!(actual["permissions"], native["permissions"]);
+        if mode == Mode::Update {
+            assert!(successor.entries.iter().all(|entry| !entry.legacy_default));
+            verify_record(&successor)?;
+        } else {
+            assert!(record(&manifest_path, HarnessKind::Claude)?.is_none());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn interrupted_claude_legacy_install_and_migration_never_recreate_or_claim_rules() -> Result<()> {
+    for old_write_applied in [false, true] {
+        let (_root, paths) = fixture()?;
+        let definition = claude::definition(&paths)?;
+        let manifest_path = location(&paths, &definition);
+        let pending_path = manifest_path.with_file_name("pending.json");
+        let settings = paths.home.join(".claude/settings.json");
+        directory(manifest_path.parent().unwrap(), true)?;
+        directory(settings.parent().unwrap(), false)?;
+        let owned = "mcp__bkpr__channel_post";
+        let user = "mcp__bkpr__channel_read";
+        let old = legacy_claude_manifest(
+            &definition,
+            &paths,
+            &settings,
+            &[(owned, false), (user, false)],
+        )?;
+        let prepared = legacy_claude_manifest(
+            &definition,
+            &paths,
+            &settings,
+            &[(owned, false), (user, true)],
+        )?;
+        let allows = if old_write_applied {
+            vec![user, owned]
+        } else {
+            vec![user]
+        };
+        fs::write(
+            &settings,
+            serde_json::to_vec(&serde_json::json!({
+                "permissions": {"allow": allows}
+            }))?,
+        )?;
+        write(
+            &pending_path,
+            Some(&serde_json::to_vec(&Journal {
+                owners: vec![old, prepared],
+            })?),
+            0o600,
+        )?;
+        let interrupted =
+            journal(&pending_path, HarnessKind::Claude)?.context("missing old journal")?;
+        let repair = plan(&definition, &paths, &interrupted.owners, Mode::Update)?;
+        // A second interruption can leave both old and new generations in the journal.
+        write(
+            &pending_path,
+            Some(&serde_json::to_vec(&repair.journal)?),
+            0o600,
+        )?;
+        let interrupted =
+            journal(&pending_path, HarnessKind::Claude)?.context("missing migration journal")?;
+        let installed = apply(&paths, &definition, &interrupted.owners, Mode::Update)?;
+        assert!(!pending_path.exists());
+        verify_record(&installed)?;
+        let actual: Value = serde_json::from_slice(&fs::read(settings)?)?;
+        assert_eq!(actual["permissions"]["allow"], serde_json::json!([user]));
+    }
     Ok(())
 }
 

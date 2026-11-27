@@ -1,7 +1,9 @@
 use super::*;
 use bkpr_protocol::channels::{
-    ChannelId, ChannelPost, ChannelRequest, ChannelResponse, MembershipMode, PostIntent,
+    ChannelId, ChannelPost, ChannelRequest, ChannelResponse, ChannelSource, MembershipMode,
+    MessageId, ParticipantId, PostIntent,
 };
+use bkpr_protocol::{AgentReceiverMode, AgentWakeOutcome};
 
 const NATIVE_ID: &str = "owned-channel-conversation";
 
@@ -36,6 +38,7 @@ fn channel_peer_fixture() {
             .unwrap(),
     );
     await_file(&home.join("native-ready"));
+    fs::write(home.join("native-pid"), _native.0.id().to_string()).unwrap();
     let response = wire(
         &socket,
         Operation::HarnessEvent {
@@ -84,6 +87,7 @@ fn launch_spec(root: &Path, name: &str, native: &str) -> PaneSpawnSpec {
     let _ = fs::remove_file(home.join("bound"));
     let _ = fs::remove_file(home.join("channel-stage"));
     let _ = fs::remove_file(home.join("native-ready"));
+    let _ = fs::remove_file(home.join("native-pid"));
     let executable = home.join("native/omp");
     if !executable.exists() {
         fs::create_dir(home.join("native")).unwrap();
@@ -133,25 +137,134 @@ fn send(registry: &Registry, op: Operation) -> Value {
         .unwrap()
 }
 
-fn agent(registry: &Registry, launch: &Launch, request: AgentRequest) -> Value {
+fn launch_request(registry: &Registry, launch: &Launch, operation: Operation) -> Result<Payload> {
     let peer = Peer {
         pid: launch.root.pid,
         uid: unsafe { libc::geteuid() },
         birth: launch.root.identity.clone(),
     };
-    registry
-        .request_authenticated(
-            Request::new(Operation::Agent {
-                launch_id: launch.grant.launch_id.clone(),
-                token: launch.grant.token.clone(),
-                guard: None,
-                request,
-            }),
-            &peer,
-        )
+    registry.request_authenticated(Request::new(operation), &peer)
+}
+
+fn agent_payload(registry: &Registry, launch: &Launch, request: AgentRequest) -> Result<Payload> {
+    launch_request(
+        registry,
+        launch,
+        Operation::Agent {
+            launch_id: launch.grant.launch_id.clone(),
+            token: launch.grant.token.clone(),
+            guard: None,
+            request,
+        },
+    )
+}
+
+fn agent_result(registry: &Registry, launch: &Launch, request: AgentRequest) -> Result<Value> {
+    agent_payload(registry, launch, request)?.into_json()
+}
+
+fn agent(registry: &Registry, launch: &Launch, request: AgentRequest) -> Value {
+    agent_result(registry, launch, request).unwrap()
+}
+
+fn agent_channel(registry: &Registry, launch: &Launch, request: ChannelRequest) -> Result<Value> {
+    agent_result(
+        registry,
+        launch,
+        AgentRequest::Channels {
+            request: Box::new(request),
+        },
+    )
+}
+
+fn mention_and_launch(
+    registry: &Registry,
+    launch: &Launch,
+    channel: &ChannelId,
+    member: &ParticipantId,
+) -> (ParticipantId, String) {
+    let roster = agent_channel(
+        registry,
+        launch,
+        ChannelRequest::ListMembers {
+            channel_id: channel.clone(),
+            after: None,
+            limit: 10,
+        },
+    )
+    .unwrap();
+    assert!(
+        roster["participants"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["kind"] == "user")
+            .all(|entry| entry.get("launch_id").is_none())
+    );
+    let entry = roster["participants"]
+        .as_array()
         .unwrap()
-        .into_json()
+        .iter()
+        .find(|entry| entry["id"] == member.0)
+        .unwrap();
+    (
+        ParticipantId(entry["mention_id"].as_str().unwrap().to_owned()),
+        entry["launch_id"].as_str().unwrap().to_owned(),
+    )
+}
+
+fn receiver(registry: &Registry, launch: &Launch) -> String {
+    agent(
+        registry,
+        launch,
+        AgentRequest::ReceiverRegister {
+            session_id: launch.managed.conversation.as_ref().unwrap().id.clone(),
+            mode: AgentReceiverMode::ActiveTurn,
+            pid: launch.root.pid.try_into().unwrap(),
+        },
+    )["receiver_id"]
+        .as_str()
         .unwrap()
+        .to_owned()
+}
+
+fn subscribe(registry: &Registry, launch: &Launch, receiver: &str) -> Value {
+    agent(
+        registry,
+        launch,
+        AgentRequest::ReceiverSubscribe {
+            receiver_id: receiver.to_owned(),
+            wait_ms: 0,
+        },
+    )["notification"]
+        .take()
+}
+
+fn validate_wake(registry: &Registry, launch: &Launch, receiver: &str, wake: &Value) -> Value {
+    agent(
+        registry,
+        launch,
+        AgentRequest::WakeValidate {
+            receiver_id: receiver.to_owned(),
+            notification_id: wake["notification_id"].as_str().unwrap().to_owned(),
+            generation: wake["generation"].as_u64().unwrap(),
+        },
+    )
+}
+
+fn settle_wake(registry: &Registry, launch: &Launch, receiver: &str, wake: &Value) -> Value {
+    agent(
+        registry,
+        launch,
+        AgentRequest::WakeOutcome {
+            receiver_id: receiver.to_owned(),
+            notification_id: wake["notification_id"].as_str().unwrap().to_owned(),
+            generation: wake["generation"].as_u64().unwrap(),
+            outcome: AgentWakeOutcome::Unknown {
+                reason: "native dispatch unobservable".into(),
+            },
+        },
+    )
 }
 
 fn channel(
@@ -159,7 +272,8 @@ fn channel(
     caller: Option<&Launch>,
     request: ChannelRequest,
 ) -> Result<ChannelResponse> {
-    let Payload::Channels(response) = registry.request_channels_for(request, caller, &|| true)?
+    let Payload::Channels(response) =
+        registry.request_channels_for(request, caller, &|| true, ChannelProjection::Native)?
     else {
         panic!("expected typed channel response");
     };
@@ -185,6 +299,7 @@ fn post(id: &ChannelId, text: &str, intent: PostIntent) -> ChannelRequest {
             mentions: Vec::new(),
             reply_to: None,
             attachments: Vec::new(),
+            source: None,
         },
     }
 }
@@ -317,6 +432,11 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
         post(&kept, "prior shared history", PostIntent::Note),
     )
     .unwrap();
+    let (stale_mention, old_selector) = mention_and_launch(&registry, &other, &team, &old_id);
+    assert_eq!(old_selector, old.grant.launch_id);
+    let original_receiver = receiver(&registry, &old);
+    let interrupted = subscribe(&registry, &old, &original_receiver);
+    assert_eq!(interrupted["channel_wake"]["channel_id"], team.0);
     let direct = agent(
         &registry,
         &other,
@@ -380,10 +500,51 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
         panic!("expected retained history")
     };
     assert_eq!(messages[0].text, "prior shared history");
+    let (live_mention, recovered_selector) =
+        mention_and_launch(&registry, &recovered, &team, &old_id);
+    assert_eq!(recovered_selector, recovered.grant.launch_id);
+    assert_ne!(stale_mention, live_mention);
+    let ChannelRequest::Post {
+        channel_id,
+        post: mut stale_post,
+    } = post(&team, "reject stale selection", PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    stale_post.mentions.push(stale_mention);
+    let error = agent_channel(
+        &registry,
+        &recovered,
+        ChannelRequest::Post {
+            channel_id,
+            post: stale_post,
+        },
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("refresh the roster"), "{error}");
     assert!(channel(&registry, Some(&recovered), history(&removed)).is_err());
     assert!(channel(&registry, Some(&old), history(&kept)).is_err());
     let inbox = agent(&registry, &recovered, read_inbox());
     assert_eq!(inbox["messages"], json!([]));
+    let recovered_receiver = receiver(&registry, &recovered);
+    assert!(subscribe(&registry, &recovered, &recovered_receiver).is_null());
+    let old_batch = interrupted["channel_wake"]["batch_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        agent_result(
+            &registry,
+            &recovered,
+            AgentRequest::ChannelWake {
+                batch_id: old_batch,
+                max_body_bytes: Some(4096),
+                include_source: false,
+            }
+        )
+        .is_err()
+    );
     let ChannelResponse::Posted { wake_count: 1, .. } = channel(
         &registry,
         None,
@@ -416,6 +577,25 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
         ]
     );
     drop(work);
+    let wake = subscribe(&registry, &recovered, &recovered_receiver);
+    assert_eq!(wake["channel_wake"]["channel_id"], kept.0);
+    assert_eq!(wake["channel_wake"]["pending_count"], 1);
+    assert_eq!(
+        settle_wake(&registry, &recovered, &recovered_receiver, &wake)["recorded"],
+        true
+    );
+    assert!(
+        channel(
+            &registry,
+            None,
+            post(
+                &kept,
+                "pending when recovered launch ends",
+                PostIntent::Note
+            ),
+        )
+        .is_ok()
+    );
     registry
         .request_authenticated(
             Request::new(Operation::HarnessEvent {
@@ -440,6 +620,17 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
         .unwrap();
     assert_eq!(pending, 0);
     drop(db);
+    assert!(
+        agent_result(
+            &registry,
+            &recovered,
+            AgentRequest::ReceiverSubscribe {
+                receiver_id: recovered_receiver,
+                wait_ms: 0,
+            },
+        )
+        .is_err()
+    );
     drop(server);
     drop(registry);
 
@@ -611,9 +802,38 @@ fn workspace_presets_repair_without_resetting_existing_channel() {
     else {
         panic!("expected both presets");
     };
-    let channel = channels.iter().find(|channel| &channel.id == desk).unwrap();
-    assert_eq!(channel.settings, custom);
-    assert_eq!(channel.membership, MembershipMode::Explicit);
+    let saved_desk = channels.iter().find(|channel| &channel.id == desk).unwrap();
+    assert_eq!(saved_desk.settings, custom);
+    assert_eq!(saved_desk.membership, MembershipMode::Explicit);
+
+    let team = reopened["#team"].clone();
+    let legacy = ChannelSettings {
+        user_wake: WakePolicy::All,
+        agent_wake: WakePolicy::All,
+        attention_reports: false,
+        attention_questions: false,
+    };
+    channel(
+        &registry,
+        None,
+        ChannelRequest::SetSettings {
+            channel_id: team.clone(),
+            settings: legacy,
+        },
+    )
+    .unwrap();
+    drop(registry);
+
+    let registry = Registry::open(root.path()).unwrap();
+    let ChannelResponse::Listed { channels, .. } = channel(&registry, None, list()).unwrap() else {
+        panic!("expected both presets");
+    };
+    let saved = channels
+        .iter()
+        .find(|channel| channel.name == "#team")
+        .unwrap();
+    assert_eq!(saved.id, team);
+    assert_eq!(saved.settings, legacy);
 }
 
 #[test]
@@ -650,4 +870,1192 @@ fn create_repairs_presets_after_storage_recovers() {
         .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap();
     assert_eq!(names, ["#desk", "#team", "custom"]);
+}
+
+#[test]
+fn authenticated_compact_channel_reads_resolve_only_workspace_builtins() {
+    let root = private_root();
+    let root = root.path();
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.join("omp")).unwrap();
+    let (registry, _server) = open(root);
+    let spec = launch_spec(root, "reader", "native-reader");
+    send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: Some(spec.clone()),
+        },
+    );
+    let reader = live(&registry, &spec.home);
+    let foreign = send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: None,
+        },
+    );
+    let ChannelResponse::Listed {
+        channels: foreign_channels,
+        ..
+    } = channel(
+        &registry,
+        None,
+        ChannelRequest::List {
+            workspace_id: foreign["workspace_id"].as_str().unwrap().into(),
+            after: None,
+            limit: 10,
+        },
+    )
+    .unwrap()
+    else {
+        panic!("expected foreign workspace presets");
+    };
+
+    let compact = |request| agent_channel(&registry, &reader, request);
+    let members = |id: &ChannelId| ChannelRequest::ListMembers {
+        channel_id: id.clone(),
+        after: None,
+        limit: 10,
+    };
+    for name in ["#desk", "#team"] {
+        let selector = ChannelId(name.into());
+        let empty = compact(history(&selector)).unwrap();
+        assert_eq!(empty["messages"], json!([]));
+        let exact_id = ChannelId(empty["cursor"]["channel_id"].as_str().unwrap().into());
+        assert_ne!(exact_id, selector);
+        assert_eq!(compact(history(&exact_id)).unwrap(), empty);
+        let roster = compact(members(&selector)).unwrap();
+        assert_eq!(compact(members(&exact_id)).unwrap(), roster);
+        assert!(
+            roster["participants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["launch_id"] == reader.grant.launch_id)
+        );
+
+        let body = format!("東京 {name} actual body");
+        let receipt = compact(post(&selector, &body, PostIntent::Note)).unwrap();
+        let summary = &receipt["message"];
+        let listed = compact(history(&selector)).unwrap();
+        assert_eq!(listed["messages"], json!([summary]));
+        assert_eq!(listed, compact(history(&exact_id)).unwrap());
+        assert!(!listed.to_string().contains(body.as_str()));
+        let ChannelResponse::History { messages, .. } =
+            channel(&registry, None, history(&exact_id)).unwrap()
+        else {
+            panic!("expected native history");
+        };
+        assert_eq!(messages[0].text, body);
+
+        let read = |id: &ChannelId, message_id, offset, max_bytes| {
+            agent_result(
+                &registry,
+                &reader,
+                AgentRequest::ChannelRead {
+                    channel_id: id.clone(),
+                    message_id,
+                    offset,
+                    max_bytes,
+                },
+            )
+        };
+        let message_id = bkpr_protocol::channels::MessageId(summary["id"].as_str().unwrap().into());
+        let first = read(&selector, message_id.clone(), None, Some(4)).unwrap();
+        assert_eq!(first["message"], *summary);
+        assert_eq!(
+            first["reply_target"],
+            json!({"channel_id": exact_id, "reply_to": message_id})
+        );
+        assert_eq!(first["text"], "東");
+        assert_eq!(first["body_bytes"], body.len());
+        assert_eq!(first["next_offset"], 3);
+        assert_eq!(
+            first,
+            read(&exact_id, message_id.clone(), None, Some(4)).unwrap()
+        );
+        let rest = read(&selector, message_id.clone(), Some(3), Some(4096)).unwrap();
+        assert_eq!(rest["text"], &body[3..]);
+        assert!(rest["next_offset"].is_null());
+        let ChannelResponse::Message { message: native } = channel(
+            &registry,
+            None,
+            ChannelRequest::Read {
+                channel_id: exact_id,
+                message_id: message_id.clone(),
+            },
+        )
+        .unwrap() else {
+            panic!("expected native message");
+        };
+        assert_eq!(native.text, body);
+
+        assert!(channel(&registry, None, history(&selector)).is_err());
+        assert!(channel(&registry, None, members(&selector)).is_err());
+        assert!(
+            channel(
+                &registry,
+                None,
+                ChannelRequest::Read {
+                    channel_id: selector,
+                    message_id,
+                },
+            )
+            .is_err()
+        );
+
+        let foreign_id = &foreign_channels.iter().find(|c| c.name == name).unwrap().id;
+        let ChannelResponse::Posted { message, .. } = channel(
+            &registry,
+            None,
+            post(
+                foreign_id,
+                &format!("foreign {name} body"),
+                PostIntent::Note,
+            ),
+        )
+        .unwrap() else {
+            panic!("expected a real foreign post");
+        };
+        assert!(compact(history(foreign_id)).is_err());
+        assert!(compact(members(foreign_id)).is_err());
+        assert!(read(foreign_id, message.id, None, Some(4)).is_err());
+    }
+}
+
+#[test]
+fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fences() {
+    use bkpr_protocol::channels::{ChannelSettings, WakePolicy};
+
+    let root = private_root();
+    let root = root.path();
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.join("omp")).unwrap();
+    let (registry, _server) = open(root);
+    let spec = launch_spec(root, "sender", "native-sender");
+    send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: Some(spec.clone()),
+        },
+    );
+    let sender = live(&registry, &spec.home);
+    let workspace = registry.snapshot().unwrap().workspaces.remove(0).id;
+    let add = |name| {
+        let spec = launch_spec(root, name, name);
+        let revision = registry
+            .snapshot()
+            .unwrap()
+            .workspaces
+            .iter()
+            .find(|w| w.id == workspace)
+            .unwrap()
+            .revision;
+        send(
+            &registry,
+            Operation::WindowCreate {
+                workspace_id: workspace.clone(),
+                expected_revision: revision,
+                name: None,
+                spec: spec.clone(),
+            },
+        );
+        live(&registry, &spec.home)
+    };
+    let a = add("a");
+    let b = add("b");
+    let a_actor = a.channel_participant.clone().unwrap();
+    let b_actor = b.channel_participant.clone().unwrap();
+    let foreign = send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: None,
+        },
+    )["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let list = |workspace_id| ChannelRequest::List {
+        workspace_id,
+        after: None,
+        limit: 10,
+    };
+    let listed = agent_channel(&registry, &sender, list(foreign.clone())).unwrap();
+    assert_eq!(listed["channels"].as_array().unwrap().len(), 2);
+    assert!(
+        listed["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["workspace_id"] == workspace)
+    );
+    let ChannelResponse::Listed {
+        channels: foreign_channels,
+        ..
+    } = channel(&registry, None, list(foreign)).unwrap()
+    else {
+        panic!("expected presets")
+    };
+    let missing = history(&ChannelId(uuid::Uuid::new_v4().to_string()));
+    let denial = |request| {
+        agent_channel(&registry, &sender, request)
+            .unwrap_err()
+            .to_string()
+    };
+    assert_eq!(denial(history(&foreign_channels[0].id)), denial(missing));
+
+    let desk = ChannelId("#desk".into());
+    let team = ChannelId("#team".into());
+    let team_id = ChannelId(
+        listed["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["name"] == "#team")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .into(),
+    );
+    let desk_id: ChannelId = serde_json::from_value(
+        listed["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["name"] == "#desk")
+            .unwrap()["id"]
+            .clone(),
+    )
+    .unwrap();
+    let (a_mention, a_selector) = mention_and_launch(&registry, &sender, &team_id, &a_actor);
+    assert_eq!(a_selector, a.grant.launch_id);
+    let ChannelRequest::Post {
+        channel_id,
+        post: mut passive_post,
+    } = post(&desk, "passive desk", PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    let source_body = "東京".repeat(400);
+    passive_post.text.clone_from(&source_body);
+    passive_post.source = Some(Box::new(ChannelSource {
+        channel_id: desk_id.clone(),
+        message_id: MessageId("nested-dangling".into()),
+    }));
+    let passive = agent_channel(
+        &registry,
+        &sender,
+        ChannelRequest::Post {
+            channel_id,
+            post: passive_post,
+        },
+    )
+    .unwrap();
+    assert_eq!(passive["wake_count"], 0);
+    for source in [
+        ChannelSource {
+            channel_id: ChannelId(sender.grant.token.clone()),
+            message_id: MessageId("ordinary-dangling".into()),
+        },
+        ChannelSource {
+            channel_id: desk_id.clone(),
+            message_id: MessageId(sender.grant.token.clone()),
+        },
+    ] {
+        let ChannelRequest::Post {
+            channel_id,
+            mut post,
+        } = post(
+            &desk,
+            "must not share a capture credential",
+            PostIntent::Note,
+        )
+        else {
+            unreachable!()
+        };
+        post.source = Some(Box::new(source));
+        let error = agent_channel(
+            &registry,
+            &sender,
+            ChannelRequest::Post { channel_id, post },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("private capability"));
+        assert!(!error.to_string().contains(&sender.grant.token));
+    }
+    assert_eq!(
+        agent_channel(&registry, &sender, history(&desk)).unwrap()["messages"],
+        json!([passive["message"]])
+    );
+    let addressed_post = |text| {
+        let ChannelRequest::Post {
+            channel_id,
+            mut post,
+        } = post(&team, text, PostIntent::Note)
+        else {
+            unreachable!()
+        };
+        post.mentions.push(a_mention.clone());
+        ChannelRequest::Post { channel_id, post }
+    };
+    let older = agent_channel(&registry, &sender, addressed_post("older callout")).unwrap();
+    let ChannelRequest::Post {
+        channel_id,
+        post: mut newest_post,
+    } = addressed_post("newest callout")
+    else {
+        unreachable!()
+    };
+    let source = Box::new(ChannelSource {
+        channel_id: desk_id.clone(),
+        message_id: serde_json::from_value(passive["message"]["id"].clone()).unwrap(),
+    });
+    newest_post.source = Some(source.clone());
+    let newest = agent_channel(
+        &registry,
+        &sender,
+        ChannelRequest::Post {
+            channel_id,
+            post: newest_post,
+        },
+    )
+    .unwrap();
+    assert_eq!(newest["message"]["mentions"], json!([a_actor]));
+    assert_eq!(older["wake_count"], 1);
+    assert_eq!(newest["wake_count"], 1);
+
+    let (self_mention, _) = mention_and_launch(
+        &registry,
+        &sender,
+        &team_id,
+        sender.channel_participant.as_ref().unwrap(),
+    );
+    let ChannelRequest::Post {
+        channel_id,
+        post: mut ineligible,
+    } = post(&team, "addressed to self", PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    ineligible.mentions.push(self_mention);
+    let self_callout = agent_channel(
+        &registry,
+        &sender,
+        ChannelRequest::Post {
+            channel_id,
+            post: ineligible,
+        },
+    )
+    .unwrap();
+    assert_eq!(self_callout["wake_count"], 0);
+
+    let broadcast = post(&team, "newer broadcast", PostIntent::Note);
+    let receipt = agent_channel(&registry, &sender, broadcast.clone()).unwrap();
+    assert_eq!(receipt["wake_count"], 2);
+    assert_eq!(
+        agent_channel(&registry, &sender, broadcast).unwrap(),
+        receipt
+    );
+    let next_broadcast = agent_channel(
+        &registry,
+        &sender,
+        post(&team, "last broadcast", PostIntent::Note),
+    )
+    .unwrap();
+    assert_eq!(next_broadcast["wake_count"], 2);
+    let a_receiver = receiver(&registry, &a);
+    let b_receiver = receiver(&registry, &b);
+    registry
+        .inner
+        .channels
+        .with_delivery_store(&|| false, &|_| true, |_| {
+            // Claim admission cannot reach SQLite while this operation owns the writer.
+            assert!(subscribe(&registry, &a, &a_receiver).is_null());
+            Ok(())
+        })
+        .unwrap();
+    let a_wake = subscribe(&registry, &a, &a_receiver);
+    let b_wake = subscribe(&registry, &b, &b_receiver);
+    let a_pointer = &a_wake["channel_wake"];
+    let b_pointer = &b_wake["channel_wake"];
+    assert_eq!(a_pointer["pending_count"], 4);
+    assert_eq!(b_pointer["pending_count"], 2);
+    assert_eq!(a_pointer["addressed_message_id"], newest["message"]["id"]);
+    assert!(b_pointer.get("addressed_message_id").is_none());
+    assert!(!a_wake.to_string().contains("newer broadcast"));
+    assert_eq!(
+        validate_wake(&registry, &a, &a_receiver, &a_wake)["current"],
+        true
+    );
+    let lookup_with = |pointer: &Value, max_body_bytes| AgentRequest::ChannelWake {
+        batch_id: pointer["batch_id"].as_str().unwrap().to_owned(),
+        max_body_bytes,
+        include_source: false,
+    };
+    let lookup_source = |pointer: &Value, max_body_bytes| AgentRequest::ChannelWake {
+        batch_id: pointer["batch_id"].as_str().unwrap().to_owned(),
+        max_body_bytes,
+        include_source: true,
+    };
+    let lookup = |pointer: &Value| lookup_with(pointer, None);
+    let lookup_body = |pointer: &Value, maximum| lookup_with(pointer, Some(maximum));
+    assert!(agent_result(&registry, &b, lookup(a_pointer)).is_err());
+    assert!(agent_result(&registry, &sender, lookup(a_pointer)).is_err());
+    assert!(agent_result(&registry, &b, lookup_body(a_pointer, 4096)).is_err());
+    assert!(agent_result(&registry, &a, lookup_body(a_pointer, 4097)).is_err());
+    let detail = agent(&registry, &a, lookup(a_pointer));
+    assert_eq!(
+        detail["addressed_message_id"],
+        a_pointer["addressed_message_id"]
+    );
+    assert_eq!(detail["messages"][0]["id"], older["message"]["id"]);
+    assert_eq!(detail["messages"][0]["addressed"], true);
+    assert_eq!(detail["messages"][2]["addressed"], false);
+    assert!(detail.get("post").is_none());
+    let other = agent(&registry, &b, lookup(b_pointer));
+    assert_eq!(other["messages"][0]["id"], receipt["message"]["id"]);
+    assert_eq!(other["messages"][1]["id"], next_broadcast["message"]["id"]);
+    let callout = agent(&registry, &a, lookup_body(a_pointer, 6));
+    assert_eq!(callout["post"]["message"]["id"], newest["message"]["id"]);
+    assert_eq!(callout["post"]["message"]["author"]["kind"], "agent");
+    assert_eq!(callout["post"]["text"], "newest");
+    assert_eq!(callout["post"]["next_offset"], 6);
+    assert_eq!(
+        callout["post"]["reply_target"],
+        json!({
+            "channel_id": a_pointer["channel_id"], "reply_to": newest["message"]["id"],
+        })
+    );
+    assert_eq!(callout["post"]["message"]["source"], json!(source));
+    assert!(callout["post"].get("source").is_none());
+    assert!(a_pointer.get("source").is_none());
+    let expanded = agent(&registry, &a, lookup_source(a_pointer, Some(4)));
+    assert_eq!(expanded["post"]["text"], "newe");
+    let source_page = &expanded["post"]["source"];
+    let mut source_message = passive["message"].clone();
+    source_message
+        .as_object_mut()
+        .unwrap()
+        .remove("source")
+        .unwrap();
+    assert_eq!(source_page["message"], source_message);
+    assert_eq!(source_page["text"], "東");
+    assert_eq!(source_page["body_bytes"], source_body.len());
+    assert_eq!(source_page["next_offset"], 3);
+    assert_eq!(
+        source_page["reply_target"],
+        json!({ "channel_id": desk_id, "reply_to": source.message_id }),
+    );
+    assert!(source_page.get("source").is_none());
+    let next_page = agent(
+        &registry,
+        &a,
+        AgentRequest::ChannelRead {
+            channel_id: source.channel_id.clone(),
+            message_id: source.message_id,
+            offset: Some(3),
+            max_bytes: Some(4),
+        },
+    );
+    assert_eq!(next_page["text"], "京");
+    assert_eq!(next_page["next_offset"], 6);
+    let default = agent(&registry, &a, lookup_source(a_pointer, None));
+    assert_eq!(default["post"]["text"], "newest callout");
+    assert_eq!(default["post"]["source"]["next_offset"], 2046);
+    assert_eq!(default["post"]["source"]["text"], &source_body[..2046]);
+    assert!(
+        agent(&registry, &b, lookup_source(b_pointer, None))
+            .get("post")
+            .is_none()
+    );
+    assert!(
+        agent(&registry, &b, lookup_body(b_pointer, 4096))
+            .get("post")
+            .is_none()
+    );
+
+    agent(
+        &registry,
+        &sender,
+        AgentRequest::SendMessage {
+            to: a.grant.launch_id.clone(),
+            text: "separate direct message".into(),
+            idempotency_key: "direct".into(),
+            scope: AgentScope::Workspace,
+        },
+    );
+    let mut wrong = a_wake.clone();
+    wrong["notification_id"] = b_wake["notification_id"].clone();
+    assert_eq!(
+        validate_wake(&registry, &a, &a_receiver, &wrong)["current"],
+        false
+    );
+    assert!(subscribe(&registry, &a, &a_receiver).is_null());
+    assert_eq!(
+        settle_wake(&registry, &a, &a_receiver, &a_wake)["recorded"],
+        true
+    );
+    assert_eq!(
+        settle_wake(&registry, &b, &b_receiver, &b_wake)["recorded"],
+        true
+    );
+    let direct = subscribe(&registry, &a, &a_receiver);
+    assert!(direct.get("channel_wake").is_none());
+    assert!(direct["generation"].as_u64().unwrap() > a_wake["generation"].as_u64().unwrap());
+    assert_eq!(agent(&registry, &a, lookup(a_pointer)), detail);
+
+    let created = agent_channel(
+        &registry,
+        &sender,
+        ChannelRequest::Create {
+            workspace_id: "@workspace".into(),
+            name: "named".into(),
+            membership: MembershipMode::Explicit,
+            members: vec![b_actor.clone()],
+            settings: ChannelSettings {
+                agent_wake: WakePolicy::All,
+                ..Default::default()
+            },
+        },
+    )
+    .unwrap();
+    let named = ChannelId(created["channel"]["id"].as_str().unwrap().into());
+    assert!(agent_channel(&registry, &a, history(&named)).is_err());
+    agent_channel(
+        &registry,
+        &sender,
+        post(&named, "claimed then revoked", PostIntent::Note),
+    )
+    .unwrap();
+    let revoked = subscribe(&registry, &b, &b_receiver);
+    agent_channel(
+        &registry,
+        &sender,
+        post(&named, "queued then revoked", PostIntent::Note),
+    )
+    .unwrap();
+    let creator = sender.channel_participant.clone().unwrap();
+    for members in [vec![creator.clone()], vec![creator, b_actor.clone()]] {
+        channel(
+            &registry,
+            None,
+            ChannelRequest::SetMembership {
+                channel_id: named.clone(),
+                membership: MembershipMode::Explicit,
+                members,
+            },
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        validate_wake(&registry, &b, &b_receiver, &revoked)["current"],
+        false
+    );
+    assert!(agent_result(&registry, &b, lookup(&revoked["channel_wake"])).is_err());
+    assert!(agent_result(&registry, &b, lookup_body(&revoked["channel_wake"], 4096)).is_err());
+    assert!(subscribe(&registry, &b, &b_receiver).is_null());
+    assert!(agent_channel(&registry, &b, history(&named)).is_ok());
+
+    for index in 0..35 {
+        agent_channel(
+            &registry,
+            &sender,
+            post(&named, &format!("queued-{index}"), PostIntent::Note),
+        )
+        .unwrap();
+    }
+    let first = subscribe(&registry, &b, &b_receiver);
+    assert_eq!(first["channel_wake"]["pending_count"], 32);
+    assert_eq!(
+        agent(&registry, &b, lookup(&first["channel_wake"]))["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        32
+    );
+    assert_eq!(
+        settle_wake(&registry, &b, &b_receiver, &first)["recorded"],
+        true
+    );
+    let rest = subscribe(&registry, &b, &b_receiver);
+    assert_eq!(rest["channel_wake"]["pending_count"], 3);
+    assert_eq!(
+        settle_wake(&registry, &b, &b_receiver, &rest)["recorded"],
+        true
+    );
+
+    let desk = desk_id;
+    let ChannelRequest::Post {
+        channel_id,
+        post: mut user_post,
+    } = post(&desk, "東京 user direction", PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    user_post.mentions.push(b_actor);
+    let ChannelResponse::Posted {
+        message,
+        wake_count: 1,
+        ..
+    } = channel(
+        &registry,
+        None,
+        ChannelRequest::Post {
+            channel_id,
+            post: user_post,
+        },
+    )
+    .unwrap()
+    else {
+        panic!("expected only the addressed agent")
+    };
+    let sender_receiver = receiver(&registry, &sender);
+    assert!(subscribe(&registry, &sender, &sender_receiver).is_null());
+    let targeted = subscribe(&registry, &b, &b_receiver);
+    assert_eq!(
+        targeted["channel_wake"]["addressed_message_id"],
+        message.id.0
+    );
+    let user = agent(&registry, &b, lookup_body(&targeted["channel_wake"], 4));
+    assert_eq!(user["post"]["message"]["author"]["kind"], "user");
+    assert_eq!(user["post"]["text"], "東");
+    assert_eq!(user["post"]["next_offset"], 3);
+    assert_eq!(
+        user["post"]["reply_target"],
+        json!({ "channel_id":desk.0, "reply_to":message.id.0 })
+    );
+    assert_eq!(
+        settle_wake(&registry, &b, &b_receiver, &targeted)["recorded"],
+        true
+    );
+    let ChannelResponse::Posted { message, .. } = channel(
+        &registry,
+        None,
+        post(&desk, "broadcast singleton", PostIntent::Note),
+    )
+    .unwrap() else {
+        panic!("expected user post");
+    };
+    let singleton = subscribe(&registry, &b, &b_receiver);
+    assert!(
+        singleton["channel_wake"]
+            .get("addressed_message_id")
+            .is_none()
+    );
+    let user = agent(&registry, &b, lookup_body(&singleton["channel_wake"], 2048));
+    assert_eq!(user["post"]["message"]["id"], message.id.0);
+    assert_eq!(user["post"]["text"], "broadcast singleton");
+    assert!(user["post"]["next_offset"].is_null());
+    assert_eq!(
+        agent(
+            &registry,
+            &b,
+            lookup_source(&singleton["channel_wake"], None)
+        ),
+        user
+    );
+    let response = agent_channel(
+        &registry,
+        &b,
+        ChannelRequest::Post {
+            channel_id: serde_json::from_value(user["post"]["reply_target"]["channel_id"].clone())
+                .unwrap(),
+            post: ChannelPost {
+                text: "reply sent in one call".into(),
+                idempotency_key: "singleton-reply".into(),
+                intent: PostIntent::Report,
+                mentions: Vec::new(),
+                attachments: Vec::new(),
+                reply_to: Some(
+                    serde_json::from_value(user["post"]["reply_target"]["reply_to"].clone())
+                        .unwrap(),
+                ),
+                source: None,
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(response["wake_count"], 0);
+    assert_eq!(response["message"]["reply_to"], message.id.0);
+
+    let body = "東京".repeat(2600);
+    for index in 0..11 {
+        let ChannelRequest::Post {
+            channel_id,
+            mut post,
+        } = post(&desk, &format!("busy-{index}"), PostIntent::Note)
+        else {
+            unreachable!()
+        };
+        post.text.clone_from(&body);
+        agent_channel(
+            &registry,
+            &sender,
+            ChannelRequest::Post { channel_id, post },
+        )
+        .unwrap();
+    }
+    let page = agent_channel(
+        &registry,
+        &b,
+        ChannelRequest::History {
+            channel_id: desk.clone(),
+            before: None,
+            after: None,
+            limit: 10,
+        },
+    )
+    .unwrap();
+    assert_eq!(page["messages"].as_array().unwrap().len(), 10);
+    assert!(!page.to_string().contains('東'));
+    let message_id =
+        bkpr_protocol::channels::MessageId(page["messages"][0]["id"].as_str().unwrap().into());
+    let page = agent(
+        &registry,
+        &b,
+        AgentRequest::ChannelRead {
+            channel_id: desk,
+            message_id,
+            offset: None,
+            max_bytes: Some(4096),
+        },
+    );
+    assert_eq!(page["text"].as_str().unwrap(), &body[..4095]);
+    assert_eq!(page["next_offset"], 4095);
+
+    let user_post = |request| {
+        let ChannelResponse::Posted { wake_count, .. } = channel(&registry, None, request).unwrap()
+        else {
+            panic!("expected user post")
+        };
+        wake_count
+    };
+    assert_eq!(
+        user_post(post(&team_id, "request for all peers", PostIntent::Note)),
+        3
+    );
+    let ChannelRequest::Post {
+        channel_id,
+        post: mut addressed,
+    } = post(&team_id, "request for coordinator", PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    addressed.mentions.push(a_actor);
+    assert_eq!(
+        user_post(ChannelRequest::Post {
+            channel_id,
+            post: addressed,
+        }),
+        1
+    );
+}
+
+#[test]
+fn channel_subscription_sees_empty_to_pending_and_rechecks_an_exiting_receiver() {
+    use crate::registry::{SpawnBarrier, agents::ChannelTestPause};
+    use std::sync::mpsc::sync_channel;
+
+    let root = private_root();
+    let root = root.path();
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.join("omp")).unwrap();
+    let (registry, _server) = open(root);
+    let spec = launch_spec(root, "receiver", NATIVE_ID);
+    send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: Some(spec.clone()),
+        },
+    );
+    let launch = live(&registry, &spec.home);
+    let inbox = agent_channel(&registry, &launch, history(&ChannelId("#desk".into()))).unwrap();
+    let desk = ChannelId(inbox["cursor"]["channel_id"].as_str().unwrap().into());
+    let native_pid: i32 = fs::read_to_string(spec.home.join("native-pid"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_ne!(native_pid, launch.root.pid);
+    let native = crate::harness_process::process(native_pid)
+        .unwrap()
+        .unwrap();
+    let lifetime = crate::control_lease::ProcessLifetime::observe(&native).unwrap();
+    let registered = agent(
+        &registry,
+        &launch,
+        AgentRequest::ReceiverRegister {
+            session_id: NATIVE_ID.into(),
+            mode: AgentReceiverMode::ActiveTurn,
+            pid: native_pid.try_into().unwrap(),
+        },
+    );
+    let receiver = registered["receiver_id"].as_str().unwrap();
+    channel(&registry, None, post(&desk, "first", PostIntent::Note)).unwrap();
+    let first = subscribe(&registry, &launch, receiver);
+    assert_eq!(
+        settle_wake(&registry, &launch, receiver, &first)["recorded"],
+        true
+    );
+
+    let pause = |phase| {
+        let (entered, notice) = sync_channel(0);
+        let (resume, resume_rx) = sync_channel(0);
+        registry.inner.agents.pause_channel(
+            phase,
+            Arc::new(SpawnBarrier {
+                entered,
+                resume: Mutex::new(resume_rx),
+            }),
+        );
+        (notice, resume)
+    };
+    let second = thread::scope(|scope| {
+        let (notice, resume) = pause(ChannelTestPause::EmptyClaim);
+        let registry_ref = &registry;
+        let launch_ref = &launch;
+        let waiting = scope.spawn(move || {
+            agent(
+                registry_ref,
+                launch_ref,
+                AgentRequest::ReceiverSubscribe {
+                    receiver_id: receiver.into(),
+                    wait_ms: 5000,
+                },
+            )["notification"]
+                .take()
+        });
+        notice.recv_timeout(Duration::from_secs(5)).unwrap();
+        channel(
+            &registry,
+            None,
+            post(&desk, "committed during empty probe", PostIntent::Note),
+        )
+        .unwrap();
+        resume.send(()).unwrap();
+        waiting.join().unwrap()
+    });
+    assert_eq!(second["channel_wake"]["channel_id"], desk.0);
+    assert_eq!(second["channel_wake"]["pending_count"], 1);
+
+    thread::scope(|scope| {
+        let (notice, resume) = pause(ChannelTestPause::Validate);
+        let req = AgentRequest::WakeValidate {
+            receiver_id: receiver.into(),
+            notification_id: second["notification_id"].as_str().unwrap().into(),
+            generation: second["generation"].as_u64().unwrap(),
+        };
+        let registry_ref = &registry;
+        let launch_ref = &launch;
+        let validating = scope.spawn(move || agent_result(registry_ref, launch_ref, req));
+        notice.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(unsafe { libc::kill(native.pid, libc::SIGKILL) }, 0);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while lifetime.is_alive() {
+            assert!(
+                Instant::now() < deadline,
+                "fixture native receiver did not exit"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        resume.send(()).unwrap();
+        assert!(validating.join().unwrap().is_err());
+    });
+    assert!(launch.channel_launch_alive());
+    let replacement = self::receiver(&registry, &launch);
+    assert_ne!(replacement, receiver);
+    assert!(subscribe(&registry, &launch, &replacement).is_null());
+    channel(
+        &registry,
+        None,
+        post(&desk, "after receiver replacement", PostIntent::Note),
+    )
+    .unwrap();
+    let next = subscribe(&registry, &launch, &replacement);
+    assert_eq!(next["channel_wake"]["pending_count"], 1);
+    assert!(next["generation"].as_u64().unwrap() > second["generation"].as_u64().unwrap());
+}
+
+#[test]
+fn channel_wake_author_mention_tracks_live_binding_and_membership() {
+    let root = private_root();
+    let root = root.path();
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.join("omp")).unwrap();
+    let (registry, _server) = open(root);
+    let author_spec = launch_spec(root, "author", "author-native");
+    send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: Some(author_spec.clone()),
+        },
+    );
+    let author = live(&registry, &author_spec.home);
+    let workspace = registry.snapshot().unwrap().workspaces.remove(0);
+    let reader_spec = launch_spec(root, "reader", "reader-native");
+    send(
+        &registry,
+        Operation::WindowCreate {
+            workspace_id: workspace.id.clone(),
+            expected_revision: workspace.revision,
+            name: None,
+            spec: reader_spec.clone(),
+        },
+    );
+    let reader = live(&registry, &reader_spec.home);
+    let author_id = author.channel_participant.as_ref().unwrap();
+    let reader_id = reader.channel_participant.as_ref().unwrap();
+    let ChannelResponse::Channel { channel: group } = channel(
+        &registry,
+        None,
+        ChannelRequest::Create {
+            workspace_id: workspace.id,
+            name: "author mention".into(),
+            membership: MembershipMode::Explicit,
+            members: vec![author_id.clone(), reader_id.clone()],
+            settings: Default::default(),
+        },
+    )
+    .unwrap() else {
+        panic!("expected an explicit channel");
+    };
+    let receipt = agent_channel(
+        &registry,
+        &author,
+        post(&group.id, "proposal from a live author", PostIntent::Note),
+    )
+    .unwrap();
+    assert_eq!(receipt["wake_count"], 1);
+    let reader_receiver = receiver(&registry, &reader);
+    let notification = subscribe(&registry, &reader, &reader_receiver);
+    let pointer = &notification["channel_wake"];
+    assert!(pointer.get("author_mention_id").is_none());
+    let lookup = |max_body_bytes| {
+        agent(
+            &registry,
+            &reader,
+            AgentRequest::ChannelWake {
+                batch_id: pointer["batch_id"].as_str().unwrap().to_owned(),
+                max_body_bytes,
+                include_source: false,
+            },
+        )
+    };
+    assert!(lookup(None).get("post").is_none());
+    let (old, _) = mention_and_launch(&registry, &reader, &group.id, author_id);
+    let selected = lookup(Some(2048));
+    assert_eq!(selected["post"]["author_mention_id"], old.as_ref());
+    assert_eq!(selected["post"]["message"], receipt["message"]);
+    assert_ne!(old, *author_id);
+    let event = |event| {
+        launch_request(
+            &registry,
+            &author,
+            Operation::HarnessEvent {
+                launch_id: author.grant.launch_id.clone(),
+                token: author.grant.token.clone(),
+                event,
+            },
+        )
+        .unwrap()
+        .into_json()
+        .unwrap()
+    };
+    let conversation = author.managed.conversation.as_ref().unwrap();
+    assert_eq!(
+        event(CaptureEvent::Bind {
+            conversation_id: conversation.id.clone(),
+            source: conversation.source,
+            expected_revision: Some(conversation.generation),
+        })["accepted"],
+        true
+    );
+    let (current, _) = mention_and_launch(&registry, &reader, &group.id, author_id);
+    assert_ne!(current, old);
+    assert_eq!(
+        lookup(Some(2048))["post"]["author_mention_id"],
+        current.as_ref()
+    );
+    let ChannelRequest::Post {
+        channel_id,
+        mut post,
+    } = post(&group.id, "reject replaced handle", PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    post.mentions.push(old);
+    assert!(
+        agent_channel(
+            &registry,
+            &reader,
+            ChannelRequest::Post { channel_id, post }
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("refresh the roster")
+    );
+
+    let membership = |members| {
+        channel(
+            &registry,
+            None,
+            ChannelRequest::SetMembership {
+                channel_id: group.id.clone(),
+                membership: MembershipMode::Explicit,
+                members,
+            },
+        )
+        .unwrap()
+    };
+    membership(vec![reader_id.clone()]);
+    let without_author = lookup(Some(2048));
+    assert!(without_author["post"].get("author_mention_id").is_none());
+    assert_eq!(without_author["post"]["message"], receipt["message"]);
+    membership(vec![author_id.clone(), reader_id.clone()]);
+    assert_eq!(
+        lookup(Some(2048))["post"]["author_mention_id"],
+        current.as_ref()
+    );
+    event(CaptureEvent::End);
+    assert_eq!(lookup(Some(2048)), without_author);
+}
+
+#[test]
+fn authenticated_channel_attachments_require_live_member() {
+    use bkpr_protocol::channels::{AttachmentMediaType, AttachmentUpload};
+
+    let root = private_root();
+    let root = root.path();
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.join("omp")).unwrap();
+    let (registry, _server) = open(root);
+    let member_spec = launch_spec(root, "member", "native-member");
+    send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: Some(member_spec.clone()),
+        },
+    );
+    let member = live(&registry, &member_spec.home);
+    let workspace = registry.snapshot().unwrap().workspaces.remove(0);
+    let nonmember_spec = launch_spec(root, "nonmember", "native-nonmember");
+    send(
+        &registry,
+        Operation::WindowCreate {
+            workspace_id: workspace.id.clone(),
+            expected_revision: workspace.revision,
+            name: None,
+            spec: nonmember_spec.clone(),
+        },
+    );
+    let nonmember = live(&registry, &nonmember_spec.home);
+    let actor = member.channel_participant.clone().unwrap();
+    assert_ne!(nonmember.channel_participant.as_ref().unwrap(), &actor);
+
+    let ChannelResponse::Channel {
+        channel: restricted,
+    } = channel(
+        &registry,
+        None,
+        ChannelRequest::Create {
+            workspace_id: workspace.id,
+            name: "attachments".into(),
+            membership: MembershipMode::Explicit,
+            members: vec![actor.clone()],
+            settings: Default::default(),
+        },
+    )
+    .unwrap()
+    else {
+        panic!("expected created channel");
+    };
+
+    let mut png = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png, 1, 1);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder
+        .write_header()
+        .unwrap()
+        .write_image_data(&[24, 42, 71])
+        .unwrap();
+    let upload = || ChannelRequest::UploadAttachment {
+        channel_id: restricted.id.clone(),
+        upload: AttachmentUpload {
+            media_type: AttachmentMediaType::Png,
+            alt_text: Some("Example".into()),
+            bytes: png.clone(),
+        },
+    };
+    let call = |launch, request| {
+        agent_payload(
+            &registry,
+            launch,
+            AgentRequest::Channels {
+                request: Box::new(request),
+            },
+        )
+    };
+    let Payload::Channels(ChannelResponse::AttachmentUploaded { attachment }) =
+        call(&member, upload()).unwrap()
+    else {
+        panic!("expected upload metadata");
+    };
+    assert_eq!(attachment.media_type, AttachmentMediaType::Png);
+    assert_eq!(attachment.byte_len as usize, png.len());
+    assert_eq!(attachment.alt_text.as_deref(), Some("Example"));
+
+    let ChannelRequest::Post {
+        channel_id,
+        mut post,
+    } = post(&restricted.id, "attached image", PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    post.attachments.push(attachment.id.clone());
+    let posted = agent_channel(
+        &registry,
+        &member,
+        ChannelRequest::Post { channel_id, post },
+    )
+    .unwrap();
+    assert_eq!(posted["message"]["author"]["id"], json!(actor));
+    assert_eq!(posted["message"]["attachments"], json!([attachment.id]));
+
+    let fetch = || ChannelRequest::GetAttachment {
+        channel_id: restricted.id.clone(),
+        attachment_id: attachment.id.clone(),
+    };
+    let Payload::Channels(ChannelResponse::Attachment {
+        attachment: fetched,
+        bytes,
+    }) = call(&member, fetch()).unwrap()
+    else {
+        panic!("expected fetched attachment");
+    };
+    assert_eq!(fetched, attachment);
+    assert_eq!(bytes.as_ref(), png.as_slice());
+    for request in [upload(), fetch()] {
+        assert_eq!(
+            call(&nonmember, request).unwrap_err().to_string(),
+            "channel unavailable"
+        );
+    }
+
+    // Revoke the launch while its process and explicit channel membership remain.
+    launch_request(
+        &registry,
+        &member,
+        Operation::HarnessEvent {
+            launch_id: member.grant.launch_id.clone(),
+            token: member.grant.token.clone(),
+            event: CaptureEvent::End,
+        },
+    )
+    .unwrap();
+    for request in [upload(), fetch()] {
+        assert_eq!(
+            call(&member, request).unwrap_err().to_string(),
+            "unknown or ended launch"
+        );
+    }
 }

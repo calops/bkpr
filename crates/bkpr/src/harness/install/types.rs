@@ -166,6 +166,12 @@ pub(super) struct Entry {
     pub array: bool,
     /// Conservative marker for detecting edited or unknown owned-looking array members.
     pub marker: Option<String>,
+    /// Schema-1 recovery metadata for the retired Claude allow-list installer.
+    #[serde(default, rename = "default", skip_serializing_if = "is_false")]
+    pub legacy_default: bool,
+    /// Schema-1 records distinguish foreign or relinquished Claude rules.
+    #[serde(default, rename = "preserved", skip_serializing_if = "is_false")]
+    pub legacy_preserved: bool,
 }
 impl Entry {
     /// Describe a single owned object or table slot.
@@ -178,6 +184,8 @@ impl Entry {
             value,
             array: false,
             marker: None,
+            legacy_default: false,
+            legacy_preserved: false,
         }
     }
     /// Describe one owned member without replacing the surrounding native array.
@@ -197,8 +205,14 @@ impl Entry {
             value,
             array: true,
             marker: Some(marker),
+            legacy_default: false,
+            legacy_preserved: false,
         }
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 /// Native integration subtree removed only by explicit uninstall after ownership checks.

@@ -148,10 +148,12 @@ test('body-free validated steering is deduplicated and void or throwing native A
     expect.objectContaining({ notification_id: 'offered', outcome: expect.objectContaining({ state: 'unknown' }) }),
   ]);
   item.throwDispatch();
-  item.notify('dispatch-threw');
-  item.notify('dispatch-threw');
+  const wake = { batch_id: 'batch', channel_id: 'channel', pending_count: 1, addressed_message_id: 'addressed' };
+  item.notify('dispatch-threw', { channel_wake: wake });
+  item.notify('dispatch-threw', { channel_wake: wake });
   await settle();
   expect(item.messages).toHaveLength(2);
+  expect(item.messages[1].message.content).toBe(JSON.stringify({ channel_wake: wake }));
   expect(item.requests.filter(request => request.method === 'wake_outcome')).toHaveLength(2);
   expect(item.requests.every(request => (request.outcome as Json | undefined)?.state !== 'accepted')).toBe(true);
   item.failOutcome();

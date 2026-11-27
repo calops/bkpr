@@ -1,6 +1,8 @@
 //! Fixed, allocation-free admission header. No negotiation or replay is implicit.
+use super::{MAX_NATIVE_DEPTH, g};
 use crate::PROTOCOL_VERSION;
 use anyhow::{Result, ensure};
+use planus::ReadAsRoot;
 use std::io::{Read, Write};
 
 /// Native frame header size in bytes.
@@ -19,8 +21,10 @@ pub const CAP_BINARY_SCENE: u64 = 1;
 pub const CAP_TYPED_FAILURE: u64 = 2;
 /// Capability bit requiring connection-bound client-lifetime support.
 pub const CAP_CLIENT_LIFETIME: u64 = 4;
-/// Required semantic capability bits understood and emitted by this implementation.
+/// Baseline required capability bits emitted on native frames and remote handshakes.
 pub const SUPPORTED_CAPABILITIES: u64 = CAP_BINARY_SCENE | CAP_TYPED_FAILURE | CAP_CLIENT_LIFETIME;
+// Per-request capabilities are not part of the connection's baseline mask.
+pub(super) const CAP_CHANNEL_POST_SOURCE: u64 = 8;
 
 /// Native payload category used for header admission and size limits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,6 +51,20 @@ impl Kind {
 /// Return the declared length after validating the native header and expected kind.
 /// Reject unknown required capabilities and lengths above either `max` or the kind's limit.
 pub fn frame_payload_len(header: &[u8], expected: Kind, max: usize) -> Result<usize> {
+    let capabilities = if expected == Kind::Request {
+        SUPPORTED_CAPABILITIES | CAP_CHANNEL_POST_SOURCE
+    } else {
+        SUPPORTED_CAPABILITIES
+    };
+    frame_payload_len_with_capabilities(header, expected, max, capabilities)
+}
+
+pub(super) fn frame_payload_len_with_capabilities(
+    header: &[u8],
+    expected: Kind,
+    max: usize,
+    capabilities: u64,
+) -> Result<usize> {
     ensure!(header.len() == HEADER_LEN, "incomplete native frame header");
     ensure!(
         &header[..4] == b"BKPR",
@@ -66,11 +84,10 @@ pub fn frame_payload_len(header: &[u8], expected: Kind, max: usize) -> Result<us
         header[9..12] == [0; 3],
         "nonzero native frame reserved bits"
     );
-    let required = u64::from_le_bytes(header[16..24].try_into()?);
+    let unsupported = u64::from_le_bytes(header[16..24].try_into()?) & !capabilities;
     ensure!(
-        required & !SUPPORTED_CAPABILITIES == 0,
-        "unsupported required native capabilities {:#x}",
-        required & !SUPPORTED_CAPABILITIES
+        unsupported == 0,
+        "unsupported required native capabilities {unsupported:#x}"
     );
     let length = u32::from_le_bytes(header[12..16].try_into()?) as usize;
     ensure!(
@@ -80,7 +97,8 @@ pub fn frame_payload_len(header: &[u8], expected: Kind, max: usize) -> Result<us
     Ok(length)
 }
 
-fn header(kind: Kind, length: usize) -> Result<[u8; HEADER_LEN]> {
+fn header(kind: Kind, payload: &[u8]) -> Result<[u8; HEADER_LEN]> {
+    let length = payload.len();
     ensure!(
         length <= kind.max_payload(),
         "native frame exceeds payload limit"
@@ -90,8 +108,42 @@ fn header(kind: Kind, length: usize) -> Result<[u8; HEADER_LEN]> {
     header[4..8].copy_from_slice(&PROTOCOL_VERSION.to_le_bytes());
     header[8] = kind as u8;
     header[12..16].copy_from_slice(&u32::try_from(length)?.to_le_bytes());
-    header[16..24].copy_from_slice(&SUPPORTED_CAPABILITIES.to_le_bytes());
+    let mut capabilities = SUPPORTED_CAPABILITIES;
+    if kind == Kind::Request && request_has_channel_source(payload).unwrap_or(false) {
+        capabilities |= CAP_CHANNEL_POST_SOURCE;
+    }
+    header[16..24].copy_from_slice(&capabilities.to_le_bytes());
     Ok(header)
+}
+
+fn request_has_channel_source(payload: &[u8]) -> planus::Result<bool> {
+    let mut operation = g::RequestRef::read_as_root(payload)?.operation()?;
+    for _ in 0..=MAX_NATIVE_DEPTH {
+        let channel = match operation {
+            g::OperationRef::OperationClient(client) => {
+                operation = client.request()?;
+                continue;
+            }
+            g::OperationRef::OperationAgent(agent) => match agent.request()? {
+                g::AgentRequestRef::AgentRequestChannels(channels) => channels.request()?,
+                g::AgentRequestRef::AgentRequestControl(control) => {
+                    operation = control.request()?;
+                    continue;
+                }
+                _ => return Ok(false),
+            },
+            g::OperationRef::OperationChannels(channels) => channels.request()?,
+            _ => return Ok(false),
+        };
+        return Ok(match channel {
+            // A legacy reader skips this slot even when the source offset is malformed.
+            g::ChannelRequestRef::ChannelRequestPost(post) => {
+                !matches!(post.post()?.source(), Ok(None))
+            }
+            _ => false,
+        });
+    }
+    Ok(false)
 }
 
 /// Read one owned payload after admitting its header; reject truncation or allocation failure.
@@ -107,16 +159,17 @@ pub fn read_frame(reader: &mut impl Read, expected: Kind, max: usize) -> Result<
     Ok(payload)
 }
 /// Write a native header and payload without flushing or validating the payload's contents.
+/// Source-bearing channel post requests declare their required capability in the header.
 /// An I/O error may follow a partial write and does not establish safe replay.
 pub fn write_frame(writer: &mut impl Write, kind: Kind, payload: &[u8]) -> Result<()> {
-    writer.write_all(&header(kind, payload.len())?)?;
+    writer.write_all(&header(kind, payload)?)?;
     writer.write_all(payload)?;
     Ok(())
 }
 /// Copy a payload into an owned native frame for queued writes.
-/// Enforces the kind's size limit without decoding the payload.
+/// Enforces the kind's size limit and declares source-bearing channel post requests in the header.
 pub fn encode_frame(kind: Kind, payload: &[u8]) -> Result<Vec<u8>> {
-    let header = header(kind, payload.len())?;
+    let header = header(kind, payload)?;
     let mut frame = Vec::new();
     frame.try_reserve_exact(HEADER_LEN + payload.len())?;
     frame.extend_from_slice(&header);

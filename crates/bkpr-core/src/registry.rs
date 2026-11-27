@@ -30,6 +30,12 @@ use uuid::Uuid;
 const STORAGE_VERSION: u32 = 4;
 const MAX_RECORD: u64 = 4 * 1024 * 1024;
 
+enum ChannelProjection {
+    Native,
+    Agent,
+    MessagePage { offset: usize, maximum: usize },
+}
+
 #[derive(Debug)]
 pub(crate) struct SessionClosing(pub(crate) &'static str);
 impl std::fmt::Display for SessionClosing {
@@ -911,35 +917,102 @@ impl Registry {
         request: bkpr_protocol::channels::ChannelRequest,
         connected: &impl Fn() -> bool,
     ) -> Result<Payload> {
-        self.request_channels_for(request, None, connected)
+        self.request_channels_for(request, None, connected, ChannelProjection::Native)
     }
 
     // Agent callers must first pass OS capture and native binding admission.
     fn request_channels_for(
         &self,
-        request: bkpr_protocol::channels::ChannelRequest,
+        mut request: bkpr_protocol::channels::ChannelRequest,
         caller: Option<&crate::harness::Launch>,
-        connected: &impl Fn() -> bool,
+        connected: &dyn Fn() -> bool,
+        projection: ChannelProjection,
     ) -> Result<Payload> {
         use bkpr_protocol::channels::ChannelRequest;
 
         if matches!(request, ChannelRequest::ListArchivedWorkspaces { .. }) {
             ensure!(caller.is_none(), "channel archives require user authority");
         }
+        let workspace = caller
+            .map(|launch| self.channel_caller_workspace(launch))
+            .transpose()?;
+        if let Some(workspace) = &workspace {
+            match &mut request {
+                ChannelRequest::List { workspace_id, .. }
+                | ChannelRequest::Create { workspace_id, .. } => {
+                    // Workspace authority comes only from the verified launch, never this field.
+                    workspace_id.clone_from(workspace);
+                }
+                _ => {}
+            }
+        }
+
         let with_roster = match &request {
             ChannelRequest::ListMembers { .. } | ChannelRequest::Post { .. } => true,
             ChannelRequest::Create { members, .. }
             | ChannelRequest::SetMembership { members, .. } => !members.is_empty(),
             _ => false,
         };
+        let admit = |workspace_id: &str| {
+            ensure!(
+                workspace.as_deref().is_none_or(|own| own == workspace_id),
+                crate::channels::ChannelAccessLost
+            );
+            self.channel_authority(workspace_id, caller, with_roster, connected)
+        };
+        let workspace_open = |id: &str| workspace_exists(&self.inner.state.lock().unwrap(), id);
+        let cancelled = || !connected() || self.session_end_requested();
+        let exact_mentions = caller
+            .filter(|_| matches!(projection, ChannelProjection::Agent))
+            .map(|launch| (launch.grant.launch_id.as_str(), launch.binding_generation));
+        if let Some(caller) = exact_mentions
+            && matches!(request, ChannelRequest::ListMembers { .. })
+        {
+            request.validate()?;
+            return self
+                .inner
+                .channels
+                .with_delivery_store(&cancelled, &workspace_open, |store| {
+                    store.compact_members(request, &admit, caller, workspace.as_deref())
+                })
+                .map(Payload::Control);
+        }
+        if matches!(projection, ChannelProjection::Agent)
+            && matches!(request, ChannelRequest::History { .. })
+        {
+            request.validate()?;
+            return self
+                .inner
+                .channels
+                .with_delivery_store(&cancelled, &workspace_open, |store| {
+                    store.compact_history(request, &admit, workspace.as_deref())
+                })
+                .map(Payload::Control);
+        }
+        if let ChannelProjection::MessagePage { offset, maximum } = projection {
+            request.validate()?;
+            return self
+                .inner
+                .channels
+                .with_delivery_store(&cancelled, &workspace_open, |store| {
+                    store.compact_message(request, &admit, offset, maximum, workspace.as_deref())
+                })
+                .map(Payload::Control);
+        }
 
         self.inner
             .channels
-            .request(
+            .request_routed(
                 request,
-                |workspace_id| self.channel_authority(workspace_id, caller, with_roster, connected),
-                |workspace_id| workspace_exists(&self.inner.state.lock().unwrap(), workspace_id),
-                || !connected() || self.session_end_requested(),
+                admit,
+                workspace_open,
+                cancelled,
+                crate::channels::ChannelRoutes {
+                    workspace: workspace.as_deref(),
+                    exact_mentions,
+                    publish: &|targets| self.inner.agents.publish_channel_work(targets),
+                    binding_live: &|launch, binding| self.channel_binding_live(launch, binding),
+                },
             )
             .map(Payload::Channels)
     }

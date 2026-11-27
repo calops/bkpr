@@ -20,6 +20,8 @@ use bkpr_protocol::{ConversationSource, HarnessKind};
 use super::{Capture, exit_code, install, passthrough, scrub};
 #[path = "codex_agent.rs"]
 mod agent;
+#[path = "codex_approvals.rs"]
+pub(super) mod approvals;
 #[path = "codex_startup.rs"]
 mod startup;
 
@@ -27,6 +29,7 @@ struct LaunchPlan {
     overrides: Vec<OsString>,
     cwd: PathBuf,
     cwd_argument: Option<(usize, bool)>,
+    native_approval_override: bool,
     passthrough: bool,
 }
 
@@ -35,6 +38,7 @@ fn launch_plan(arguments: &[OsString]) -> Result<LaunchPlan> {
         overrides: Vec::new(),
         cwd: env::current_dir()?,
         cwd_argument: None,
+        native_approval_override: false,
         passthrough: false,
     };
     let mut first_positional = true;
@@ -98,12 +102,13 @@ fn launch_plan(arguments: &[OsString]) -> Result<LaunchPlan> {
                         .context("Codex --config requires key=value")?
                         .clone()
                 };
-                let (local_only, permissions) = config_boundaries(&value);
+                let (local_only, permissions, approval) = config_boundaries(&value);
                 if local_only {
                     plan.passthrough = true;
                     return Ok(plan);
                 }
                 permission_override |= permissions;
+                plan.native_approval_override |= approval;
                 plan.overrides.extend([OsString::from("-c"), value]);
             }
             "--enable" | "--disable" => {
@@ -134,6 +139,7 @@ fn launch_plan(arguments: &[OsString]) -> Result<LaunchPlan> {
             }
             "-s" | "--sandbox" | "-a" | "--ask-for-approval" => {
                 permission_override = true;
+                plan.native_approval_override |= matches!(option, "-a" | "--ask-for-approval");
                 if inline.is_none() {
                     index += 1;
                     arguments
@@ -144,7 +150,12 @@ fn launch_plan(arguments: &[OsString]) -> Result<LaunchPlan> {
             "--dangerously-bypass-approvals-and-sandbox"
             | "--yolo"
             | "--full-auto"
-            | "--auto-review" => permission_override = true,
+            | "--approve-for-me"
+            | "--not-so-yolo"
+            | "--auto-review" => {
+                permission_override = true;
+                plan.native_approval_override = true;
+            }
             "-m" | "--model" | "-i" | "--image" | "--local-provider" => {
                 if inline.is_none() {
                     index += 1;
@@ -155,19 +166,21 @@ fn launch_plan(arguments: &[OsString]) -> Result<LaunchPlan> {
             }
             _ if option.starts_with("-c") && !option.starts_with("--") => {
                 let value = OsString::from(&argument[2..]);
-                let (local_only, permissions) = config_boundaries(&value);
+                let (local_only, permissions, approval) = config_boundaries(&value);
                 if local_only {
                     plan.passthrough = true;
                     return Ok(plan);
                 }
                 permission_override |= permissions;
+                plan.native_approval_override |= approval;
                 plan.overrides.extend([OsString::from("-c"), value]);
             }
             _ if option.starts_with("-p") && !option.starts_with("--") => profile = true,
             _ if (option.starts_with("-s") || option.starts_with("-a"))
                 && !option.starts_with("--") =>
             {
-                permission_override = true
+                permission_override = true;
+                plan.native_approval_override |= option.starts_with("-a");
             }
             _ if option.starts_with('-') => {}
             _ if first_positional => {
@@ -202,9 +215,9 @@ fn launch_plan(arguments: &[OsString]) -> Result<LaunchPlan> {
 }
 
 // These are native remote-mode restrictions, not a new Bkpr permission policy.
-fn config_boundaries(value: &std::ffi::OsStr) -> (bool, bool) {
+fn config_boundaries(value: &std::ffi::OsStr) -> (bool, bool, bool) {
     let Some((key, value)) = value.to_str().and_then(|value| value.split_once('=')) else {
-        return (false, false);
+        return (false, false, false);
     };
     let key = key.trim();
     let local_only = key == "sandbox_workspace_write.writable_roots"
@@ -213,7 +226,7 @@ fn config_boundaries(value: &std::ffi::OsStr) -> (bool, bool) {
                 .parse::<toml::Value>()
                 .ok()
                 .is_some_and(|parsed| parsed.get("writable_roots").is_some()));
-    let root = key.split('.').next().unwrap_or(key);
+    let root = key.split('.').next().unwrap_or(key).trim();
     let permissions = matches!(
         root,
         "approval_policy"
@@ -224,7 +237,8 @@ fn config_boundaries(value: &std::ffi::OsStr) -> (bool, bool) {
             | "permissions"
             | "network"
     );
-    (local_only, permissions)
+    let approval = matches!(root, "approval_policy" | "approvals_reviewer");
+    (local_only, permissions, approval)
 }
 
 fn native_tui_arguments(
@@ -259,6 +273,20 @@ impl Drop for OwnedServer {
     }
 }
 
+fn configure_server_process(command: &mut Command) {
+    // The foreground TUI receives terminal interrupts, not our native servers.
+    unsafe {
+        command.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+            if libc::setpgid(0, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
 struct Signals(Vec<signal_hook::SigId>);
 impl Drop for Signals {
     fn drop(&mut self) {
@@ -277,9 +305,15 @@ pub(super) fn launch(executable: PathBuf, arguments: Vec<OsString>) -> Result<i3
     if plan.passthrough {
         return passthrough(&executable, arguments);
     }
-    let installed = install::runtime(HarnessKind::Codex, Default::default())?.is_some();
+    let installed = install::runtime(HarnessKind::Codex, Default::default())?;
     let capture = Capture::begin(HarnessKind::Codex)?;
-    let result = managed(&executable, arguments, &plan, &capture, installed);
+    let result = managed(
+        &executable,
+        arguments,
+        &plan,
+        &capture,
+        installed.as_ref().map(|install| install.manifest.as_path()),
+    );
     if let Err(error) = &result {
         let _ = capture.error(&format!("Codex capture failed: {error:#}"));
     }
@@ -294,29 +328,29 @@ fn managed(
     arguments: Vec<OsString>,
     plan: &LaunchPlan,
     capture: &Capture,
-    installed: bool,
+    installation: Option<&Path>,
 ) -> Result<i32> {
     let cwd = fs::canonicalize(&plan.cwd).context("resolve Codex working directory")?;
     let arguments = native_tui_arguments(arguments, plan, &cwd);
+    let cancelled = Arc::new(AtomicUsize::new(0));
+    let mut signals = Signals(Vec::new());
+    for signal in [libc::SIGHUP, libc::SIGTERM] {
+        signals.0.push(signal_hook::flag::register_usize(
+            signal,
+            Arc::clone(&cancelled),
+            signal as usize,
+        )?);
+    }
+    let registration = approvals::registration(&capture.program, installation)?;
+    let mcp = installation
+        .is_none()
+        .then(|| approvals::registration_overrides(&registration))
+        .transpose()?;
     let runtime = tempfile::Builder::new()
         .prefix("bkpr-codex-")
         .tempdir_in("/tmp")?;
     fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700))?;
     let relay = agent::Relay::start(capture, runtime.path())?;
-    let mcp = if installed {
-        // The native entry retains per-tool approvals and explicit disabled state.
-        None
-    } else {
-        Some(format!(
-            "mcp_servers.bkpr={{command={},args=[\"capture\",\"mcp\",\"--harness\",\"codex\"],env_vars=[\"BKPR_AGENT_RELAY_SOCKET\",\"BKPR_AGENT_RELAY_TOKEN\"],enabled=true}}",
-            serde_json::to_string(
-                capture
-                    .program
-                    .to_str()
-                    .context("Codex MCP program path is not UTF-8")?
-            )?,
-        ))
-    };
     let socket = runtime.path().join("server.sock");
     let endpoint = format!(
         "unix://{}",
@@ -328,15 +362,6 @@ fn managed(
         .write(true)
         .mode(0o600)
         .open(&log_path)?;
-    let cancelled = Arc::new(AtomicUsize::new(0));
-    let mut signals = Signals(Vec::new());
-    for signal in [libc::SIGHUP, libc::SIGTERM] {
-        signals.0.push(signal_hook::flag::register_usize(
-            signal,
-            Arc::clone(&cancelled),
-            signal as usize,
-        )?);
-    }
     unsafe {
         libc::signal(libc::SIGINT, libc::SIG_IGN);
         libc::signal(libc::SIGQUIT, libc::SIG_IGN);
@@ -352,20 +377,10 @@ fn managed(
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
-    if let Some(mcp) = mcp {
-        command.args(["-c", &mcp]);
+    for setting in mcp.iter().flatten() {
+        command.args(["-c", setting]);
     }
-    // The foreground TUI receives terminal interrupts, not the waiting supervisor.
-    unsafe {
-        command.pre_exec(|| {
-            libc::signal(libc::SIGINT, libc::SIG_DFL);
-            libc::signal(libc::SIGQUIT, libc::SIG_DFL);
-            if libc::setpgid(0, 0) < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+    configure_server_process(&mut command);
     let mut server = OwnedServer(
         command
             .spawn()
@@ -422,12 +437,18 @@ fn managed(
         .spawn()
         .context("start Codex TUI")?;
     let mut selected_thread: Option<(ConversationSource, String)> = None;
+    let defaults = (!plan.native_approval_override).then_some(approvals::ThreadDefaults {
+        socket: &socket,
+        cwd: &cwd,
+        registration: &registration,
+    });
     let status = startup::supervise(
         tui,
         listener,
         &socket,
         &mut server.0,
         &cancelled,
+        defaults.as_ref(),
         |method, id| {
             if method == "turn/start" {
                 let (source, selected) = selected_thread
@@ -566,6 +587,34 @@ mod tests {
         }
         assert!(launch_plan(&args(&["-p", "custom", "resume"])).is_err());
         assert!(launch_plan(&args(&["--config"])).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn equivalent_native_approval_flags_and_config_never_acquire_defaults() -> Result<()> {
+        for flag in ["--approve-for-me", "--not-so-yolo"] {
+            assert!(launch_plan(&args(&[flag]))?.native_approval_override);
+            assert!(launch_plan(&args(&[flag, "resume"]))?.passthrough);
+        }
+        for values in [
+            vec!["-a", "on-request"],
+            vec!["-aon-request"],
+            vec!["--ask-for-approval=on-request"],
+            vec!["-c", "approval_policy=\"on-request\""],
+            vec!["-c=approval_policy=\"on-request\""],
+            vec!["-capproval_policy=\"on-request\""],
+            vec!["--config", "approval_policy=\"on-request\""],
+            vec!["--config= approval_policy =\"on-request\""],
+            vec!["-c", "approval_policy.granular.mcp_elicitations=true"],
+            vec!["--config=approvals_reviewer=\"user\""],
+        ] {
+            let plan = launch_plan(&args(&values))?;
+            assert!(plan.native_approval_override, "{values:?}");
+            assert!(!plan.passthrough, "{values:?}");
+        }
+        assert!(!launch_plan(&args(&["--sandbox", "workspace-write"]))?.native_approval_override);
+        assert!(!launch_plan(&args(&["-c", "model=\"fixture\""]))?.native_approval_override);
+        assert!(!launch_plan(&args(&["--", "--ask-for-approval=never"]))?.native_approval_override);
         Ok(())
     }
 

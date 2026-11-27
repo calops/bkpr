@@ -31,6 +31,8 @@ pub use framing::*;
 use generated::native_wire as g;
 use planus::{Builder, ReadAsRoot};
 
+const MAX_NATIVE_DEPTH: usize = 128;
+
 /// Bounds lazy Planus traversal, including repeated/aliased offsets. The wire is
 /// at most `max` bytes, but an owned Rust tree can require more than its compact
 /// representation. A separate aggregate allocation/work budget prevents a small
@@ -70,7 +72,7 @@ impl<'a> Budget<'a> {
         )
     }
     fn node(&mut self, depth: usize) -> Result<()> {
-        ensure!(depth <= 128, "native nesting depth limit");
+        ensure!(depth <= MAX_NATIVE_DEPTH, "native nesting depth limit");
         self.nodes = self
             .nodes
             .checked_sub(1)
