@@ -68,6 +68,13 @@ impl Active {
             roster_ready: false,
         }
     }
+
+    fn refresh_roster(&mut self) {
+        self.roster.clear();
+        self.roster_next = Some(None);
+        self.roster_error = None;
+        self.roster_ready = false;
+    }
 }
 
 struct Editor {
@@ -168,6 +175,7 @@ pub(super) struct Chat {
     selected: HashMap<String, ChannelId>,
     ids: Vec<ChannelId>,
     channel_chooser: bool,
+    members_scroll: Option<usize>,
     list_cursor: usize,
     drafts: HashMap<ChannelId, Draft>,
     sends: HashMap<ChannelId, Send>,
@@ -193,7 +201,7 @@ impl Chat {
     }
 
     pub(super) fn dialog_open(&self) -> bool {
-        self.editor.is_some() || self.channel_chooser
+        self.editor.is_some() || self.channel_chooser || self.members_scroll.is_some()
     }
 
     pub(super) fn is_attending(&self) -> bool {
@@ -227,6 +235,7 @@ impl Chat {
     pub(super) fn open(&mut self, workspace: String) {
         if self.workspace.as_ref() == Some(&workspace) {
             self.set_channel_chooser(false);
+            self.set_members(false);
             self.redraw();
             return;
         }
@@ -242,6 +251,7 @@ impl Chat {
         self.retain_active_history();
         self.workspace = None;
         self.channel_chooser = false;
+        self.members_scroll = None;
         self.editor = None;
         self.images_wanted.clear();
         self.mark = None;
@@ -426,6 +436,7 @@ impl Chat {
             self.select(id);
         } else {
             self.active = None;
+            self.members_scroll = None;
             self.epoch = self.epoch.wrapping_add(1);
             self.paint.invalidate_hits();
         }
@@ -457,6 +468,7 @@ impl Chat {
             active.history = self.recent_history.remove(index).expect("cached history").1;
         }
         self.active = Some(active);
+        self.members_scroll = None;
         self.editor = None;
         self.notice = None;
         self.images_wanted.clear();
@@ -500,6 +512,34 @@ impl Chat {
         self.redraw();
     }
 
+    fn set_members(&mut self, open: bool) {
+        if self.members_scroll.is_some() == open {
+            return;
+        }
+        if open {
+            let Some(active) = &mut self.active else {
+                return;
+            };
+            active.refresh_roster();
+            if let Some(draft) = self.drafts.get_mut(&active.id) {
+                draft.completion = None;
+            }
+            self.set_channel_chooser(false);
+        }
+        self.members_scroll = open.then_some(0);
+        self.paint.invalidate_hits();
+        self.redraw();
+    }
+
+    fn scroll_members(&mut self, delta: isize) {
+        if let Some(scroll) = &mut self.members_scroll {
+            *scroll = scroll
+                .saturating_add_signed(delta)
+                .min(self.paint.members_max_scroll());
+            self.redraw();
+        }
+    }
+
     fn writable(&self, read_only: bool) -> bool {
         !read_only && self.summary().is_some_and(|channel| !channel.direct)
     }
@@ -518,6 +558,7 @@ impl Chat {
                 editor.form.paste(text);
             }
         } else if !self.channel_chooser
+            && self.members_scroll.is_none()
             && self.writable(read_only)
             && let Some(active) = &self.active
             && !self.sends.contains_key(&active.id)
@@ -586,6 +627,10 @@ impl Chat {
         match hit {
             Hit::Create if self.supports(ChatAction::Create, read_only) => self.start_editor(true),
             Hit::Manage if self.writable(read_only) => self.start_editor(false),
+            Hit::Members if self.supports(ChatAction::Members, read_only) => {
+                self.set_members(self.members_scroll.is_none());
+            }
+            Hit::MemberBack => self.set_members(false),
             _ => {}
         }
     }
@@ -625,6 +670,8 @@ impl Chat {
     pub(super) fn context(&self) -> Context {
         if self.editor.is_some() {
             Context::ChatControls
+        } else if self.members_scroll.is_some() {
+            Context::ChatMembers
         } else if self.channel_chooser {
             Context::ChatChannels
         } else if self.completing() {
@@ -642,6 +689,7 @@ impl Chat {
         match action {
             ChatAction::Create => !read_only && self.catalog_ready && self.catalog_error.is_none(),
             ChatAction::Manage => self.writable(read_only),
+            ChatAction::Members => self.summary().is_some_and(|summary| !summary.direct),
             ChatAction::MarkRead => !read_only && self.active.is_some(),
             ChatAction::Retry => self.writable(read_only) && matches!(send, Some(Send::Unknown(_))),
             ChatAction::Send | ChatAction::Newline | ChatAction::Edit(_) => {
@@ -677,6 +725,10 @@ impl Chat {
                 self.set_channel_chooser(!self.channel_chooser);
             }
             Some(Action::Chat(ChatAction::Back)) => {
+                if self.members_scroll.is_some() {
+                    self.set_members(false);
+                    return Effect::None;
+                }
                 if self.channel_chooser {
                     self.set_channel_chooser(false);
                 } else if self.completing() {
@@ -688,6 +740,9 @@ impl Chat {
             }
             Some(Action::Chat(ChatAction::Create)) => self.start_editor(true),
             Some(Action::Chat(ChatAction::Manage)) => self.start_editor(false),
+            Some(Action::Chat(ChatAction::Members)) => {
+                self.set_members(self.members_scroll.is_none())
+            }
             Some(Action::Chat(ChatAction::MarkRead)) => {
                 self.redraw();
                 self.explicit_read();
@@ -723,10 +778,18 @@ impl Chat {
                 self.set_channel_chooser(false);
             }
             Some(Action::History(HistoryAction::PageUp)) => {
+                if self.members_scroll.is_some() {
+                    self.scroll_members(-(self.paint.member_page_rows() as isize));
+                    return Effect::None;
+                }
                 self.redraw();
                 self.scroll(-(self.paint.page_rows().max(1) as isize));
             }
             Some(Action::History(HistoryAction::PageDown)) => {
+                if self.members_scroll.is_some() {
+                    self.scroll_members(self.paint.member_page_rows() as isize);
+                    return Effect::None;
+                }
                 self.redraw();
                 self.scroll(self.paint.page_rows().max(1) as isize);
             }
@@ -735,13 +798,28 @@ impl Chat {
                 self.live_tail();
             }
             Some(Action::Navigate(navigation)) => self.navigate(navigation),
-            _ if !self.channel_chooser && self.writable(read_only) => self.composer_key(event),
+            _ if !self.channel_chooser
+                && self.members_scroll.is_none()
+                && self.writable(read_only) =>
+            {
+                self.composer_key(event)
+            }
             _ => {}
         }
         Effect::None
     }
 
     fn navigate(&mut self, navigation: Navigation) {
+        if self.members_scroll.is_some() {
+            self.scroll_members(match navigation {
+                Navigation::Previous => -1,
+                Navigation::Next => 1,
+                Navigation::First => isize::MIN,
+                Navigation::Last => isize::MAX,
+                _ => 0,
+            });
+            return;
+        }
         if !self.channel_chooser {
             if let Some(active) = &self.active
                 && active.roster_ready
@@ -791,10 +869,7 @@ impl Chat {
             self.redraw_composer();
         } else if mods & !1 == 0 && event.text.chars().any(|ch| !ch.is_control()) {
             if draft.insert(&event.text, event.action == KeyAction::Press) {
-                active.roster.clear();
-                active.roster_next = Some(None);
-                active.roster_error = None;
-                active.roster_ready = false;
+                active.refresh_roster();
             }
             self.redraw_composer();
         }
@@ -920,6 +995,9 @@ impl Chat {
         let hit = self.paint.hit(mouse.x, mouse.y);
         let writable = self.writable(read_only);
         match (button, action, hit) {
+            (B::WheelUp | B::WheelDown, _, _) if self.members_scroll.is_some() => {
+                self.scroll_members(if button == B::WheelUp { -3 } else { 3 });
+            }
             (B::WheelUp | B::WheelDown, _, Some(Hit::Channel(_) | Hit::List)) => {
                 self.list_cursor = self
                     .list_cursor
@@ -1010,10 +1088,11 @@ impl Chat {
                 ));
             }
         }
-        if self
-            .drafts
-            .get(channel)
-            .is_some_and(|draft| draft.completion.is_some())
+        if (self.members_scroll.is_some()
+            || self
+                .drafts
+                .get(channel)
+                .is_some_and(|draft| draft.completion.is_some()))
             && !self
                 .pending
                 .values()
@@ -1144,19 +1223,16 @@ impl Chat {
                         participants,
                         next_after,
                     }) => {
-                        active
-                            .roster
-                            .extend(participants.into_iter().filter(|entry| {
-                                entry.participant.kind == ParticipantKind::Agent
-                                    && entry.binding.is_some()
-                            }));
+                        active.roster.extend(participants);
                         active.roster_next = next_after.map(Some);
                         if active.roster_next.is_none() {
                             active.roster_ready = true;
                             active.roster.sort_unstable_by(|a, b| {
-                                a.participant
-                                    .display_name
-                                    .cmp(&b.participant.display_name)
+                                view::member_group(a)
+                                    .cmp(&view::member_group(b))
+                                    .then_with(|| {
+                                        a.participant.display_name.cmp(&b.participant.display_name)
+                                    })
                                     .then_with(|| a.participant.id.cmp(&b.participant.id))
                             });
                         }
@@ -1580,7 +1656,7 @@ mod tests {
     #[test]
     fn mention_roster_follows_empty_and_over_membership_cap_pages() {
         let (mut chat, id) = open_chat();
-        let draft = chat.drafts.entry(id).or_default();
+        let draft = chat.drafts.entry(id.clone()).or_default();
         assert!(draft.insert("@", true));
         let active = chat.active.as_mut().unwrap();
         active.history.load = None;
@@ -1641,9 +1717,13 @@ mod tests {
             assert_eq!(chat.active.as_ref().unwrap().roster_ready, cursor.is_none());
         }
         let roster = &chat.active.as_ref().unwrap().roster;
-        assert_eq!(roster.len(), bound_pages * limit + 1);
+        let choices: Vec<_> = chat.drafts[&id]
+            .choices(roster, usize::MAX)
+            .map(|(_, entry, _)| entry)
+            .collect();
+        assert_eq!(choices.len(), bound_pages * limit + 1);
         assert_eq!(
-            roster.last().unwrap().participant.id.0,
+            choices.last().unwrap().participant.id.0,
             format!("p-{:04}-0000", bound_pages + 1)
         );
         assert!(chat.next_job(false).is_none());
