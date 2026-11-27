@@ -749,6 +749,14 @@ pub enum ChannelRequest {
         /// One binding per mentioned agent, none for the session user. Part of the retry fingerprint.
         bindings: Vec<ChannelMentionBinding>,
     },
+    /// Add one live agent to an ordinary explicit-membership channel as the session user.
+    /// If the exact target is already a member, returns the channel without a change.
+    InviteUser {
+        /// Exact owning channel identity, not shorthand or a display name.
+        channel_id: ChannelId,
+        /// Agent from the owning workspace's current roster; stale bindings are rejected.
+        target: ChannelMentionBinding,
+    },
 }
 
 /// Typed channel replies. Only an attachment fetch includes encoded raster bytes.
@@ -1024,6 +1032,10 @@ impl ChannelRequest {
             } => {
                 valid_id(channel_id.as_ref())?;
                 valid_members(*membership, members)
+            }
+            Self::InviteUser { channel_id, target } => {
+                valid_id(channel_id.as_ref())?;
+                target.validate()
             }
             Self::Post { channel_id, post } => {
                 valid_id(channel_id.as_ref())?;

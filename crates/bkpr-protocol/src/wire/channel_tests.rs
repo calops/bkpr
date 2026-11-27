@@ -188,6 +188,10 @@ fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
             membership: MembershipMode::WorkspaceWide,
             members: vec![],
         },
+        ChannelRequest::InviteUser {
+            channel_id: channel(),
+            target: mention_binding(),
+        },
         ChannelRequest::Post {
             channel_id: channel(),
             post: post(),
@@ -662,6 +666,13 @@ fn channel_validation_rejects_client_authorship_and_invalid_reference_shapes() {
             channel_id: channel(),
             membership: MembershipMode::WorkspaceWide,
             members: vec![participant().id],
+        },
+        ChannelRequest::InviteUser {
+            channel_id: channel(),
+            target: ChannelMentionBinding {
+                binding_generation: 0,
+                ..mention_binding()
+            },
         },
         ChannelRequest::Post {
             channel_id: channel(),

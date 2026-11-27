@@ -95,6 +95,136 @@ fn read_agent(
 }
 
 #[test]
+fn user_invites_add_exact_live_members_without_replacing_concurrent_edits() {
+    use bkpr_protocol::channels::ChannelChangeKind;
+
+    let root = private_root();
+    let (registry, _server, first, second) = open_channel_pair(root.path());
+    let workspace = registry.snapshot().unwrap().workspaces.remove(0).id;
+    let create = |workspace: &str, name: &str, membership| {
+        let ChannelResponse::Channel { channel } = channel(
+            &registry,
+            None,
+            ChannelRequest::Create {
+                workspace_id: workspace.into(),
+                name: name.into(),
+                membership,
+                members: vec![],
+                settings: Default::default(),
+            },
+        )
+        .unwrap() else {
+            panic!("expected created channel");
+        };
+        channel.id
+    };
+    let restricted = create(&workspace, "invite test", MembershipMode::Explicit);
+    let wide = create(&workspace, "wide test", MembershipMode::WorkspaceWide);
+    let invite = |channel_id: &ChannelId, target| ChannelRequest::InviteUser {
+        channel_id: channel_id.clone(),
+        target,
+    };
+    let request = |request| channel(&registry, None, request);
+    let first_binding = binding(&first);
+    let second_binding = binding(&second);
+    let ChannelResponse::History { cursor, .. } = request(history(&restricted)).unwrap() else {
+        panic!("expected change baseline");
+    };
+    assert!(
+        agent_channel(
+            &registry,
+            &first,
+            invite(&restricted, second_binding.clone())
+        )
+        .is_err()
+    );
+    assert!(agent_channel(&registry, &second, history(&restricted)).is_err());
+    let start = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| {
+            start.wait();
+            request(invite(&restricted, first_binding.clone())).unwrap()
+        });
+        start.wait();
+        let second = request(invite(&restricted, second_binding.clone())).unwrap();
+        assert_eq!(first.join().unwrap(), second);
+    });
+    assert_eq!(
+        request(invite(&restricted, second_binding.clone())).unwrap(),
+        request(invite(&restricted, first_binding.clone())).unwrap()
+    );
+    let mut expected = [
+        first_binding.participant_id.clone(),
+        second_binding.participant_id.clone(),
+    ];
+    expected.sort_unstable();
+    assert_eq!(
+        request(ChannelRequest::ListExplicitMembers {
+            channel_id: restricted.clone(),
+            after: None,
+            limit: 8,
+        })
+        .unwrap(),
+        ChannelResponse::ExplicitMembers {
+            members: expected.into(),
+            next_after: None
+        }
+    );
+    assert!(agent_channel(&registry, &second, history(&restricted)).is_ok());
+
+    let stale = ChannelMentionBinding {
+        binding_generation: second_binding.binding_generation + 1,
+        ..second_binding.clone()
+    };
+    assert!(request(invite(&restricted, stale)).is_err());
+    assert!(request(invite(&wide, second_binding.clone())).is_err());
+    let (client, _stream) = registry.test_role_client();
+    activity(&registry, &client, true);
+    let tenure = grant(user(&registry, &client, set(&workspace, Some(&first))).unwrap());
+    assert!(request(invite(&tenure.channel_id, second_binding.clone())).is_err());
+    let dm = agent(
+        &registry,
+        &first,
+        direct_post(&second.grant.launch_id, "private", "invite-test"),
+    );
+    let dm = ChannelId(dm["channel_id"].as_str().unwrap().into());
+    assert!(request(invite(&dm, second_binding.clone())).is_err());
+    let foreign_spec = launch_spec(root.path(), "foreign", "foreign");
+    let foreign = send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: Some(foreign_spec),
+        },
+    );
+    let foreign = create(
+        foreign["workspace_id"].as_str().unwrap(),
+        "foreign test",
+        MembershipMode::Explicit,
+    );
+    assert!(request(invite(&foreign, second_binding)).is_err());
+
+    let ChannelResponse::Changes {
+        changes,
+        more: false,
+        ..
+    } = request(ChannelRequest::Subscribe {
+        channel_id: restricted,
+        after: Some(cursor),
+        limit: 8,
+        wait_ms: 0,
+    })
+    .unwrap()
+    else {
+        panic!("expected membership changes");
+    };
+    assert_eq!(
+        changes.iter().map(|change| change.kind).collect::<Vec<_>>(),
+        [ChannelChangeKind::Membership, ChannelChangeKind::Membership]
+    );
+}
+
+#[test]
 fn workspace_role_approval_fences_and_native_wakes() {
     let root = private_root();
     let (registry, _server, first, second) = open_channel_pair(root.path());

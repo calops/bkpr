@@ -8,8 +8,8 @@ use bkpr_protocol::channels::{
     AttachmentDescriptor, AttachmentId, AttachmentUpload, ChannelChange, ChannelChangeKind,
     ChannelCursor, ChannelId, ChannelMentionBinding, ChannelMessage, ChannelPost, ChannelRequest,
     ChannelResolvedMentionSpan, ChannelResponse, ChannelRosterEntry, ChannelSettings,
-    ChannelSummary, MAX_HISTORY_BYTES, MAX_MENTIONS, MembershipMode, MessageId, MessageSummary,
-    Participant, ParticipantId, ParticipantKind, PostIntent, WakePolicy,
+    ChannelSummary, MAX_HISTORY_BYTES, MAX_MEMBERS, MAX_MENTIONS, MembershipMode, MessageId,
+    MessageSummary, Participant, ParticipantId, ParticipantKind, PostIntent, WakePolicy,
 };
 use bkpr_protocol::roles::{RoleGrant, RoleGrantId, RoleThread, WorkspaceRole};
 use rusqlite::{
@@ -562,6 +562,7 @@ impl Store {
             | ChannelRequest::ListExplicitMembers { channel_id, .. }
             | ChannelRequest::SetSettings { channel_id, .. }
             | ChannelRequest::SetMembership { channel_id, .. }
+            | ChannelRequest::InviteUser { channel_id, .. }
             | ChannelRequest::Post { channel_id, .. }
             | ChannelRequest::PostUser { channel_id, .. }
             | ChannelRequest::History { channel_id, .. }
@@ -575,7 +576,8 @@ impl Store {
         match &request {
             ChannelRequest::ListExplicitMembers { .. }
             | ChannelRequest::SetSettings { .. }
-            | ChannelRequest::SetMembership { .. } => channel.require_unmanaged()?,
+            | ChannelRequest::SetMembership { .. }
+            | ChannelRequest::InviteUser { .. } => channel.require_unmanaged()?,
             ChannelRequest::ListMembers { .. }
             | ChannelRequest::PostUser { .. }
             | ChannelRequest::UploadAttachment { .. }
@@ -620,6 +622,16 @@ impl Store {
             } => {
                 require_owner(&authority)?;
                 self.set_membership(channel_id, channel, membership, members, &authority)
+            }
+            ChannelRequest::InviteUser { channel_id, target } => {
+                require_owner(&authority)?;
+                self.invite_user(
+                    channel_id,
+                    channel,
+                    &target,
+                    &authority.actor,
+                    routes.fence_user_mentions,
+                )
             }
             request @ (ChannelRequest::Post { .. } | ChannelRequest::PostUser { .. }) => {
                 let (channel_id, post, bindings) = match request {
@@ -1076,6 +1088,49 @@ impl Store {
             add_change(&tx, &id, ChannelChangeKind::Membership, None)?;
             tx.commit()?;
             channel.workspace_wide = workspace_wide;
+        }
+        Ok((
+            ChannelResponse::Channel {
+                channel: channel.summary(id, through, true, false),
+            },
+            changed,
+        ))
+    }
+
+    fn invite_user(
+        &mut self,
+        id: ChannelId,
+        channel: StoredChannel,
+        target: &ChannelMentionBinding,
+        user: &Participant,
+        fence: &super::UserMentionFence<'_>,
+    ) -> Result<(ChannelResponse, bool)> {
+        ensure!(
+            !channel.workspace_wide,
+            "channel does not accept explicit invites"
+        );
+        let through = read_position(&self.connection, &id, &user.id)?;
+        let changed = !self.explicit_member(&id, &target.participant_id)?;
+        if changed {
+            let count: usize = self.connection.query_row(
+                "SELECT count(*) FROM members WHERE channel_id=?1",
+                [id.as_ref()],
+                |row| row.get(0),
+            )?;
+            ensure!(count < MAX_MEMBERS, "channel member limit reached");
+        }
+        let _binding = fence(&channel.workspace_id, std::slice::from_ref(target))
+            .context("invite target changed or is no longer live in this workspace")?;
+        if changed {
+            let tx = self.connection.transaction()?;
+            insert_members(
+                &tx,
+                &id,
+                &channel.workspace_id,
+                std::slice::from_ref(&target.participant_id),
+            )?;
+            add_change(&tx, &id, ChannelChangeKind::Membership, None)?;
+            tx.commit()?;
         }
         Ok((
             ChannelResponse::Channel {
