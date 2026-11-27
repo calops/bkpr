@@ -145,6 +145,14 @@ pub(super) enum Hit {
     Manage,
     Members,
     MemberBack,
+    MemberRail,
+    Divider(bkpr_protocol::Axis),
+}
+
+impl Paint {
+    pub(super) fn has_member_rail(&self) -> bool {
+        self.hits.iter().any(|(_, hit)| *hit == Hit::MemberRail)
+    }
 }
 
 const CHANNEL_BUTTONS: [(Hit, &str); 4] = [
@@ -646,7 +654,7 @@ impl Chat {
         paint.inlay_mask = Some(mask);
         let parent = paint.key.expect("painted chat").backgrounds[2];
         let mut border_rows = Vec::new();
-        let mut plain = [Rect::default(); 3];
+        let mut plain = [Rect::default(); 4];
         let mut count = 0;
         for (index, &(outer, _, _)) in paint.inlays.iter().enumerate() {
             if mask & (1 << index) == 0 {
@@ -1053,7 +1061,15 @@ impl Chat {
             if self.roles_enabled == Some(false) {
                 title.push_str(" · Live updates unavailable");
             }
-            paint_members(paint, theme, full, list_background, &title, active, offset);
+            paint_members(
+                paint,
+                theme,
+                full,
+                (list_background, true),
+                &title,
+                active,
+                offset,
+            );
             return;
         }
         let split = (!list_only && size.cols >= LIST_MIN_WIDTH)
@@ -1061,7 +1077,9 @@ impl Chat {
                 crate::tiling::partition_at(
                     full,
                     bkpr_protocol::Axis::Horizontal,
-                    (size.cols / 4).clamp(15, 24) - 1,
+                    self.rail_width
+                        .unwrap_or_else(|| (size.cols / 4).clamp(15, 24) - 1)
+                        .clamp(12, size.cols.saturating_sub(24).max(12)),
                 )
             })
             .flatten();
@@ -1074,6 +1092,38 @@ impl Chat {
             .active
             .as_ref()
             .and_then(|active| self.catalog.get(&active.id));
+        let (list, member_rail) = match (list, summary) {
+            (Some(rail), Some(channel))
+                if !list_only
+                    && rail.height >= 12
+                    && Self::can_show_members(channel, self.roles_enabled) =>
+            {
+                let first = self
+                    .channels_height
+                    .unwrap_or(rail.height * 3 / 5)
+                    .clamp(6, rail.height - 6);
+                crate::tiling::partition_at(rail, bkpr_protocol::Axis::Vertical, first)
+                    .map_or((Some(rail), None), |(channels, _, members)| {
+                        (Some(channels), Some(members))
+                    })
+            }
+            (rail, _) => (rail, None),
+        };
+        if let (Some(rail), Some(channel), Some(active)) =
+            (member_rail, summary, self.active.as_ref())
+        {
+            let title = format!("Members · {}", channel_name(channel));
+            paint.target(rail, Hit::MemberRail);
+            paint_members(
+                paint,
+                theme,
+                rail,
+                (list_background, false),
+                &title,
+                active,
+                &mut self.rail_members_scroll,
+            );
+        }
         let writing = !read_only && summary.is_some_and(Self::can_write);
         let can_create = !read_only && self.catalog_ready && self.catalog_error.is_none();
         if let Some(outer) = list {
@@ -1082,8 +1132,9 @@ impl Chat {
             let reserved = 1 + u16::from(!self.ids.is_empty());
             let has_settings =
                 !read_only && summary.is_some_and(Self::can_manage) && body.height > reserved;
-            let has_members = summary
-                .is_some_and(|channel| Self::can_show_members(channel, self.roles_enabled))
+            let has_members = member_rail.is_none()
+                && summary
+                    .is_some_and(|channel| Self::can_show_members(channel, self.roles_enabled))
                 && body.height > reserved + u16::from(has_settings);
             let has_create = can_create
                 && body.height >= reserved + 2 + u16::from(has_settings) + u16::from(has_members);
@@ -1182,6 +1233,15 @@ impl Chat {
                     Hit::Members,
                 );
             }
+        }
+        if let Some((_, divider, _)) = split {
+            paint.target(divider, Hit::Divider(bkpr_protocol::Axis::Horizontal));
+        }
+        if let Some(members) = member_rail {
+            paint.target(
+                row(members.x, members.y, members.width.saturating_sub(1)),
+                Hit::Divider(bkpr_protocol::Axis::Vertical),
+            );
         }
         if list_only {
             return;
@@ -1549,7 +1609,7 @@ fn paint_members(
     paint: &mut Paint,
     theme: &Theme,
     outer: Rect,
-    background: ColorSource,
+    (background, show_back): (ColorSource, bool),
     title: &str,
     active: &Active,
     offset: &mut usize,
@@ -1559,7 +1619,7 @@ fn paint_members(
         return;
     }
     let back_width = Button::new(MEMBER_BACK).width();
-    let back = if body.width >= back_width + 8 {
+    let back = if show_back && body.width >= back_width + 8 {
         paint.target(
             row(body.x + body.width - back_width, body.y, back_width),
             Hit::MemberBack,
@@ -1580,7 +1640,9 @@ fn paint_members(
     if rows == 0 {
         return;
     }
-    let status = if let Some(error) = &active.roster_error {
+    let status = if active.workspace_roster {
+        Some(("Loading members…", Role::Muted))
+    } else if let Some(error) = &active.roster_error {
         Some((error.as_str(), Role::Error))
     } else if !active.roster_ready {
         Some(("Loading members…", Role::Muted))
@@ -2406,6 +2468,7 @@ mod tests {
         };
         chat.paint(area(wide), wide, &theme, false, false, true, BACKGROUNDS);
         let &[
+            (members, _, None),
             (list, list_body, None),
             (thread, thread_body, None),
             (composer, composer_body, Some(6)),
@@ -2413,6 +2476,8 @@ mod tests {
         else {
             panic!("expected neutral list and thread cards plus an accented composer");
         };
+        assert_eq!(members.x, list.x);
+        assert!(members.y >= list.y + list.height - 1);
         assert_eq!(
             chat.paint.history,
             crate::controller::padded_content(thread, crate::appearance::FANCY_PANE_PADDING)
@@ -2445,7 +2510,7 @@ mod tests {
         assert_eq!((composer.x, composer.width), (thread.x, thread.width));
         assert_eq!(composer.y + 1, thread.y + thread.height);
         assert_eq!(thread.x + 1, list.x + list.width);
-        assert_eq!(composer.y + composer.height, list.y + list.height);
+        assert_eq!(composer.y + composer.height, members.y + members.height);
         chat.set_graphical_inlays(0, &theme);
         assert_eq!(
             chat.surface().frame.rows[usize::from(composer.y)].cells[usize::from(thread.x)].text,
@@ -2505,7 +2570,7 @@ mod tests {
         chat.redraw();
         chat.paint(area(wide), wide, &theme, false, false, true, BACKGROUNDS);
         assert_eq!(chat.paint.history.height + 1, thread_body.height);
-        assert_eq!(chat.inlays()[2].0, composer);
+        assert_eq!(chat.inlays().last().map(|card| card.0), Some(composer));
         assert!(matches!(
             chat.paint
                 .hit(chat.paint.history.x, thread_body.y + thread_body.height - 1),

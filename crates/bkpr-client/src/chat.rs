@@ -183,6 +183,10 @@ pub(super) struct Chat {
     ids: Vec<ChannelId>,
     channel_chooser: bool,
     members_scroll: Option<usize>,
+    rail_members_scroll: usize,
+    rail_width: Option<u16>,
+    channels_height: Option<u16>,
+    divider_drag: Option<bkpr_protocol::Axis>,
     roles_enabled: Option<bool>,
     list_cursor: usize,
     drafts: HashMap<ChannelId, Draft>,
@@ -476,7 +480,11 @@ impl Chat {
         {
             active.history = self.recent_history.remove(index).expect("cached history").1;
         }
+        if self.visible() && Self::can_show_members(&self.catalog[&active.id], self.roles_enabled) {
+            active.refresh_roster(false);
+        }
         self.active = Some(active);
+        self.rail_members_scroll = 0;
         self.members_scroll = None;
         self.editor = None;
         self.notice = None;
@@ -547,14 +555,45 @@ impl Chat {
         }
     }
 
+    pub(super) fn begin_divider_drag(&mut self, point: (u16, u16)) -> bool {
+        let rect = self.geometry();
+        self.divider_drag = match self.paint.hit(
+            point.0.saturating_sub(rect.x),
+            point.1.saturating_sub(rect.y),
+        ) {
+            Some(Hit::Divider(axis)) => Some(axis),
+            _ => None,
+        };
+        self.divider_drag.is_some()
+    }
+
+    pub(super) fn update_divider_drag(&mut self, point: (u16, u16), release: bool) {
+        let Some(axis) = self.divider_drag else {
+            return;
+        };
+        if release {
+            self.divider_drag = None;
+        }
+        let rect = self.geometry();
+        let (slot, value) = match axis {
+            bkpr_protocol::Axis::Horizontal => {
+                (&mut self.rail_width, point.0.saturating_sub(rect.x))
+            }
+            bkpr_protocol::Axis::Vertical => {
+                (&mut self.channels_height, point.1.saturating_sub(rect.y))
+            }
+        };
+        if *slot != Some(value) {
+            *slot = Some(value);
+            self.redraw();
+        }
+    }
+
     pub(super) fn invalidate_roster(&mut self) {
-        if let Some(active) = &mut self.active
-            && (self.members_scroll.is_some()
-                || self
-                    .drafts
-                    .get_mut(&active.id)
-                    .is_some_and(Draft::invalidate_completion))
-        {
+        if let Some(active) = &mut self.active {
+            if let Some(draft) = self.drafts.get_mut(&active.id) {
+                draft.invalidate_completion();
+            }
             active.refresh_roster(active.workspace_roster);
             self.paint.invalidate_hits();
             self.redraw();
@@ -733,9 +772,12 @@ impl Chat {
         match action {
             ChatAction::Create => !read_only && self.catalog_ready && self.catalog_error.is_none(),
             ChatAction::Manage => !read_only && self.summary().is_some_and(Self::can_manage),
-            ChatAction::Members => self
-                .summary()
-                .is_some_and(|channel| Self::can_show_members(channel, self.roles_enabled)),
+            ChatAction::Members => {
+                !self.paint.has_member_rail()
+                    && self
+                        .summary()
+                        .is_some_and(|channel| Self::can_show_members(channel, self.roles_enabled))
+            }
             ChatAction::MarkRead => !read_only && self.active.is_some(),
             ChatAction::Retry => self.writable(read_only) && matches!(send, Some(Send::Unknown(_))),
             ChatAction::Send | ChatAction::Newline | ChatAction::Edit(_) => {
@@ -1068,6 +1110,13 @@ impl Chat {
         let hit = self.paint.hit(mouse.x, mouse.y);
         let writable = self.writable(read_only);
         match (button, action, hit) {
+            (B::WheelUp | B::WheelDown, _, Some(Hit::MemberRail)) => {
+                self.rail_members_scroll = self
+                    .rail_members_scroll
+                    .saturating_add_signed(if button == B::WheelUp { -3 } else { 3 })
+                    .min(self.paint.members_max_scroll());
+                self.redraw();
+            }
             (B::WheelUp | B::WheelDown, _, _) if self.members_scroll.is_some() => {
                 self.scroll_members(if button == B::WheelUp { -3 } else { 3 });
             }
@@ -1125,6 +1174,14 @@ impl Chat {
             return Some((JobKind::EditorRead(editor.token), Job::Request(request)));
         }
         let active = self.active.as_mut()?;
+        if active.workspace_roster
+            && self
+                .drafts
+                .get(&active.id)
+                .is_none_or(|draft| draft.completion.is_none())
+        {
+            active.refresh_roster(false);
+        }
         let channel = &active.id;
         let summary = self.catalog.get(channel)?;
         let epoch = self.epoch;
@@ -1161,15 +1218,10 @@ impl Chat {
                 ));
             }
         }
-        if (self.members_scroll.is_some()
-            || self
-                .drafts
-                .get(channel)
-                .is_some_and(|draft| draft.completion.is_some()))
-            && !self
-                .pending
-                .values()
-                .any(|kind| *kind == JobKind::Roster(epoch))
+        if !self
+            .pending
+            .values()
+            .any(|kind| *kind == JobKind::Roster(epoch))
             && let Some(after) = active.roster_next.take()
         {
             return Some((
@@ -1755,6 +1807,7 @@ mod tests {
     #[test]
     fn repeated_history_boundary_does_not_request_the_same_page_twice() {
         let (mut chat, _) = open_chat();
+        chat.active.as_mut().unwrap().roster_next = None;
         let boundary = Load::Older(6);
         let history = &mut chat.active.as_mut().unwrap().history;
         history.anchor = Some(Anchor {
@@ -1783,6 +1836,7 @@ mod tests {
     #[test]
     fn same_mark_read_is_not_requeued_behind_its_in_flight_request() {
         let (mut chat, _) = open_chat();
+        chat.active.as_mut().unwrap().roster_next = None;
         let history = &mut chat.active.as_mut().unwrap().history;
         history.load = None;
         history.anchor = Some(Anchor {

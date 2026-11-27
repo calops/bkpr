@@ -5136,6 +5136,11 @@ impl App {
         }
         if matches!(&captured, Some(PointerCapture::Ui)) && !wheel {
             if event_button == MouseButton::Left && action == MouseAction::Release {
+                self.chat.update_divider_drag(point, true);
+            } else if action == MouseAction::Motion {
+                self.chat.update_divider_drag(point, false);
+            }
+            if event_button == MouseButton::Left && action == MouseAction::Release {
                 self.chat
                     .update_button_pointer(chat_target.then_some(point));
                 self.chat.release_button(self.options.read_only);
@@ -5303,6 +5308,13 @@ impl App {
                 {
                     self.chat.hover_channel(None);
                     return self.open_image_viewer(image, size, button);
+                }
+                if event_button == MouseButton::Left
+                    && action == MouseAction::Press
+                    && self.chat.begin_divider_drag(point)
+                {
+                    self.pointer_capture = Some(PointerCapture::Ui);
+                    return Ok(());
                 }
                 if event_button == MouseButton::Left
                     && action == MouseAction::Press
