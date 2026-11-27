@@ -269,6 +269,11 @@ pub enum Operation {
         /// Session-scoped channel operation; authority comes from the caller.
         request: crate::channels::ChannelRequest,
     },
+    /// Inspect or change volatile workspace roles through a registered user attachment.
+    Roles {
+        /// Session-local role operation; never available through agent control.
+        request: crate::roles::RoleRequest,
+    },
 }
 impl std::fmt::Debug for Operation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

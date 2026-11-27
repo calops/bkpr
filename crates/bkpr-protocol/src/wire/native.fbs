@@ -504,6 +504,23 @@ union ChannelRequest {
   ChannelRequestPostUser
 }
 table OperationChannels { request:ChannelRequest (required); }
+enum WorkspaceRole:ubyte { Coordinator = 1 }
+enum RoleOrigin:ubyte { Approval = 1, Command = 2 }
+table RoleRequestActivity { eligible:bool; }
+table RoleRequestSnapshot {}
+table RoleRequestDecide {
+  request_id:string (required);
+  requester:ChannelMentionBinding (required);
+  expected_holder:string;
+  approve:bool;
+}
+table RoleRequestSet {
+  workspace_id:string (required);
+  role:WorkspaceRole = Coordinator;
+  target:ChannelMentionBinding;
+}
+union RoleRequest { RoleRequestActivity, RoleRequestSnapshot, RoleRequestDecide, RoleRequestSet }
+table OperationRoles { request:RoleRequest (required); }
 union Operation {
   OperationSessionInfo,
   OperationClientRegister,
@@ -540,7 +557,8 @@ union Operation {
   OperationSessionOpen,
   OperationDaemonShutdown,
   OperationNotifications,
-  OperationChannels
+  OperationChannels,
+  OperationRoles
 }
 table PaneRequestInspect {
 
@@ -1003,7 +1021,36 @@ union ChannelResponse {
   ChannelResponseUserRoster
 }
 table ChannelPayload { response:ChannelResponse (required); }
-union Payload { ControlPayload, PanePayload, ImageResourcePayload, ChannelPayload }
+table RoleGrant {
+  id:string (required);
+  workspace_id:string (required);
+  role:WorkspaceRole = Coordinator;
+  holder:ChannelMentionBinding (required);
+  origin:RoleOrigin = Approval;
+  granted_at_ms:ulong;
+  channel_id:string (required);
+  display_name:string (required);
+}
+table RoleApproval {
+  id:string (required);
+  workspace_id:string (required);
+  role:WorkspaceRole = Coordinator;
+  requester:ChannelMentionBinding (required);
+  participant:ChannelParticipant (required);
+  prior_holder:RoleGrant;
+  expires_at_ms:ulong;
+  workspace_name:string (required);
+}
+table RoleResponseActivity {}
+table RoleResponseSnapshot {
+  revision:ulong;
+  grants:[RoleGrant] (required);
+  approvals:[RoleApproval] (required);
+}
+table RoleResponseUpdated { grant:RoleGrant; }
+union RoleResponse { RoleResponseActivity, RoleResponseSnapshot, RoleResponseUpdated }
+table RolePayload { response:RoleResponse (required); }
+union Payload { ControlPayload, PanePayload, ImageResourcePayload, ChannelPayload, RolePayload }
 table Request { version:uint; operation:Operation (required); }
 table OptionalPayload { value:Payload (required); }
 table OptionalFailure { value:RequestFailure (required); }

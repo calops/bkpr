@@ -984,7 +984,7 @@ fn validate_history_continuations(before: Option<u64>, after: Option<u64>) -> Re
     Ok(())
 }
 
-fn write_participant(
+pub(super) fn write_participant(
     b: &mut Builder,
     value: &Participant,
     budget: &mut Budget,
@@ -1002,7 +1002,7 @@ fn write_participant(
     ))
 }
 
-fn read_participant(
+pub(super) fn read_participant(
     v: g::ChannelParticipantRef<'_>,
     budget: &mut Budget,
     depth: usize,
@@ -1015,7 +1015,7 @@ fn read_participant(
     })
 }
 
-fn write_mention_binding(
+pub(super) fn write_mention_binding(
     b: &mut Builder,
     value: &ChannelMentionBinding,
     budget: &mut Budget,
@@ -1032,7 +1032,7 @@ fn write_mention_binding(
     ))
 }
 
-fn read_mention_binding(
+pub(super) fn read_mention_binding(
     value: g::ChannelMentionBindingRef<'_>,
     budget: &mut Budget,
     depth: usize,

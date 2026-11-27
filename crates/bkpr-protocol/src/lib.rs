@@ -28,6 +28,7 @@ pub mod scene_wire;
 pub use image_source::*;
 pub use registry::*;
 mod recovery;
+pub mod roles;
 pub use recovery::*;
 mod session;
 pub use session::*;
