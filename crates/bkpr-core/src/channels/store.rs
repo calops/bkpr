@@ -1,10 +1,14 @@
-use super::{ChannelAccessLost, ChannelAuthority, ChannelRoutes, WakeTarget, WorkspaceParticipant};
+use super::{
+    ChannelAccessLost, ChannelAuthority, ChannelRoutes, STALE_USER_MENTION, WakeTarget,
+    WorkspaceParticipant,
+};
 use anyhow::{Context, Result, bail, ensure};
 use bkpr_protocol::ChannelAttentionKind;
 use bkpr_protocol::channels::{
     AttachmentDescriptor, AttachmentId, AttachmentUpload, ChannelChange, ChannelChangeKind,
-    ChannelCursor, ChannelId, ChannelMessage, ChannelPost, ChannelRequest, ChannelResponse,
-    ChannelSettings, ChannelSummary, MAX_HISTORY_BYTES, MembershipMode, MessageId, MessageSummary,
+    ChannelCursor, ChannelId, ChannelMentionBinding, ChannelMessage, ChannelPost, ChannelRequest,
+    ChannelResolvedMentionSpan, ChannelResponse, ChannelRosterEntry, ChannelSettings,
+    ChannelSummary, MAX_HISTORY_BYTES, MAX_MENTIONS, MembershipMode, MessageId, MessageSummary,
     Participant, ParticipantId, ParticipantKind, PostIntent, WakePolicy,
 };
 use rusqlite::{
@@ -46,7 +50,7 @@ const PRESETS: [(&str, ChannelSettings); 2] = [
         "#desk",
         ChannelSettings {
             user_wake: WakePolicy::AddressedOrAll,
-            agent_wake: WakePolicy::None,
+            agent_wake: WakePolicy::AddressedOnly,
             attention_questions: true,
             attention_reports: true,
         },
@@ -445,6 +449,42 @@ impl Store {
             ChannelRequest::ListArchivedWorkspaces { after, limit } => {
                 return Ok((self.archives(after.as_deref(), limit, &admit)?, false));
             }
+            ChannelRequest::UserRoster {
+                workspace_id,
+                channel_id,
+                after,
+                limit,
+            } => {
+                let (authority, members) = if let Some(id) = &channel_id {
+                    let (channel, authority) = self.access(id, &admit, routes.workspace)?;
+                    ensure!(channel.workspace_id == workspace_id, ChannelAccessLost);
+                    channel.require_shared()?;
+                    (authority, self.members_if_explicit(id, &channel)?)
+                } else {
+                    (workspace_authority(&workspace_id, &admit)?, None)
+                };
+                require_user(&authority)?;
+                let (entries, next_after) =
+                    members_page(authority, members.as_deref(), after.as_ref(), limit)?;
+                let participants = entries
+                    .into_iter()
+                    .map(|entry| ChannelRosterEntry {
+                        binding: entry.launch_id.map(|launch_id| ChannelMentionBinding {
+                            participant_id: entry.actor.id.clone(),
+                            launch_id,
+                            binding_generation: entry.binding_revision,
+                        }),
+                        participant: entry.actor,
+                    })
+                    .collect();
+                return Ok((
+                    ChannelResponse::UserRoster {
+                        participants,
+                        next_after,
+                    },
+                    false,
+                ));
+            }
             ChannelRequest::Create {
                 workspace_id,
                 name,
@@ -483,6 +523,7 @@ impl Store {
             | ChannelRequest::SetSettings { channel_id, .. }
             | ChannelRequest::SetMembership { channel_id, .. }
             | ChannelRequest::Post { channel_id, .. }
+            | ChannelRequest::PostUser { channel_id, .. }
             | ChannelRequest::History { channel_id, .. }
             | ChannelRequest::Read { channel_id, .. }
             | ChannelRequest::MarkRead { channel_id, .. }
@@ -535,8 +576,18 @@ impl Store {
                 require_owner(&authority)?;
                 self.set_membership(channel_id, channel, membership, members, &authority)
             }
-            ChannelRequest::Post { channel_id, post } => {
-                let fingerprint = fingerprint_for(&post, selector.as_ref());
+            request @ (ChannelRequest::Post { .. } | ChannelRequest::PostUser { .. }) => {
+                let (channel_id, post, bindings) = match request {
+                    ChannelRequest::Post { channel_id, post } => (channel_id, post, None),
+                    ChannelRequest::PostUser {
+                        channel_id,
+                        post,
+                        bindings,
+                    } => (channel_id, post, Some(bindings)),
+                    _ => unreachable!(),
+                };
+                let bindings = bindings.as_deref();
+                let fingerprint = fingerprint_for(&post, selector.as_ref(), bindings);
                 if let Some(receipt) =
                     self.retry_post(&authority.actor.id, &post, &fingerprint, Some(&channel_id))?
                 {
@@ -549,7 +600,7 @@ impl Store {
                     retire,
                     routes,
                     attention_origin,
-                    (&channel_id, &fingerprint),
+                    (&channel_id, &fingerprint, bindings),
                     None,
                 )
             }
@@ -931,9 +982,17 @@ impl Store {
         retire: impl FnOnce(&mut Self, &str) -> Result<bool>,
         routes: ChannelRoutes<'_>,
         attention_origin: Option<&str>,
-        (id, fingerprint): (&ChannelId, &[u8]),
+        (id, fingerprint, bindings): (&ChannelId, &[u8], Option<&[ChannelMentionBinding]>),
         selected_direct: Option<(WorkspaceParticipant, bool)>,
     ) -> Result<(ChannelResponse, bool)> {
+        if bindings.is_some() {
+            require_user(&authority)?;
+        } else if authority.actor.kind == ParticipantKind::User {
+            ensure!(
+                post.mentions.iter().all(|id| *id == authority.actor.id),
+                "structured user mentions of agents require an exact binding from the channel roster"
+            );
+        }
         require_write(&authority)?;
         if channel.direct {
             ensure!(
@@ -996,8 +1055,11 @@ impl Store {
             None => member(participant, explicit_members),
         };
         let mut addressed_agent = false;
+        let mut span_targets = [None; MAX_MENTIONS];
         for mention in &mut post.mentions {
-            let target = if let Some(caller) = routes.exact_mentions {
+            let target = if let Some(bindings) = bindings {
+                user_mention(&authority, mention, bindings)
+            } else if let Some(caller) = routes.exact_mentions {
                 exact_mention(&authority, recipients, mention, caller)
             } else {
                 authority
@@ -1006,12 +1068,33 @@ impl Store {
                     .find(|actor| actor.id == *mention)
             }
             .filter(|actor| can_mention(actor))
-            .context("channel mention no longer names a current member; refresh the roster")?;
+            .context(if bindings.is_some() {
+                STALE_USER_MENTION
+            } else {
+                "channel mention no longer names a current member; refresh the roster"
+            })?;
             addressed_agent |= target.kind == ParticipantKind::Agent;
+            for (span, snapshot) in post.mention_spans.iter().zip(&mut span_targets) {
+                if span.participant_id == *mention {
+                    *snapshot = Some(target);
+                }
+            }
             if *mention != target.id {
                 mention.clone_from(&target.id);
             }
         }
+        let mention_spans = post
+            .mention_spans
+            .into_iter()
+            .zip(&span_targets)
+            .map(|(span, target)| ChannelResolvedMentionSpan {
+                start: span.start,
+                end: span.end,
+                participant: target
+                    .expect("span names a validated routing target")
+                    .clone(),
+            })
+            .collect();
         let mut wakes = Vec::new();
         if may_wake {
             for entry in recipients {
@@ -1053,6 +1136,7 @@ impl Store {
             posted_at_ms: unix_time_ms()?,
             intent: post.intent,
             mentions: post.mentions,
+            mention_spans,
             reply_to: post.reply_to,
             attachments: post.attachments,
             source: post.source,
@@ -1067,6 +1151,12 @@ impl Store {
         if attention {
             self.reserve_attention(message.posted_at_ms)?;
         }
+        // The store slot serializes channel membership. Final admission checks the
+        // selected live bindings after any maintenance, before the post transaction.
+        let _binding_guard = bindings
+            .filter(|bindings| !bindings.is_empty())
+            .map(|bindings| (routes.fence_user_mentions)(&channel.workspace_id, bindings))
+            .transpose()?;
         let tx = self.connection.transaction()?;
         if let Some((peer, true)) = &selected_direct {
             insert_direct_channel(&tx, id, &channel.workspace_id, &message.author, &peer.actor)?;
@@ -1201,7 +1291,7 @@ impl Store {
         resolve_target: impl FnOnce() -> Result<WorkspaceParticipant>,
     ) -> Result<(ChannelResponse, bool)> {
         let selector = ChannelId(format!("\u{1}{launch_id}"));
-        let fingerprint = fingerprint_for(&post, Some(&selector));
+        let fingerprint = fingerprint_for(&post, Some(&selector), None);
         if let Some(receipt) = self.retry_post(&authority.actor.id, &post, &fingerprint, None)? {
             return Ok((receipt, false));
         }
@@ -1242,7 +1332,7 @@ impl Store {
             |_, _| Ok(false),
             routes,
             None,
-            (&id, &fingerprint),
+            (&id, &fingerprint, None),
             Some((target, is_new)),
         )
     }
@@ -1411,11 +1501,21 @@ impl Store {
              ORDER BY sequence DESC LIMIT ?4"
         };
         let mut statement = self.connection.prepare(sql)?;
-        let mut messages = statement
-            .query_map(params![channel_id.as_ref(), lower, upper, limit], |row| {
-                json::<MessageSummary>(row, 0)
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut rows = statement.query(params![channel_id.as_ref(), lower, upper, limit])?;
+        let mut messages = Vec::<MessageSummary>::new();
+        let mut remaining = MAX_HISTORY_BYTES;
+        while let Some(row) = rows.next()? {
+            let summary = row.get_ref(0)?.as_str()?;
+            let Some(bytes_left) = remaining.checked_sub(summary.len()) else {
+                ensure!(
+                    !messages.is_empty(),
+                    "channel message summary exceeds the history page budget"
+                );
+                break;
+            };
+            messages.push(serde_json::from_str(summary)?);
+            remaining = bytes_left;
+        }
         if after.is_none() {
             messages.reverse();
         }
@@ -2003,9 +2103,13 @@ fn require_write(authority: &ChannelAuthority) -> Result<()> {
 
 fn require_owner(authority: &ChannelAuthority) -> Result<()> {
     require_write(authority)?;
+    require_user(authority)
+}
+
+fn require_user(authority: &ChannelAuthority) -> Result<()> {
     ensure!(
         authority.actor.kind == ParticipantKind::User,
-        "channel management requires the session user"
+        "operation requires the session user",
     );
     Ok(())
 }
@@ -2080,6 +2184,30 @@ fn members_page(
         entry.actor.validate()?;
     }
     Ok((roster, next_after))
+}
+
+fn user_mention<'a>(
+    authority: &'a ChannelAuthority,
+    mention: &ParticipantId,
+    bindings: &[ChannelMentionBinding],
+) -> Option<&'a Participant> {
+    let binding = bindings
+        .iter()
+        .find(|binding| binding.participant_id == *mention);
+    if *mention == authority.actor.id {
+        return binding.is_none().then_some(&authority.actor);
+    }
+    let binding = binding?;
+    let mut entries = authority
+        .participants
+        .iter()
+        .filter(|entry| entry.actor.id == *mention);
+    let entry = entries.next()?;
+    (entries.next().is_none()
+        && entry.actor.kind == ParticipantKind::Agent
+        && entry.launch_id.as_deref() == Some(binding.launch_id.as_str())
+        && entry.binding_revision == binding.binding_generation)
+        .then_some(&entry.actor)
 }
 
 fn exact_mention<'a>(
@@ -2362,13 +2490,22 @@ fn take_extra<T>(items: &mut Vec<T>, limit: u16) -> bool {
     }
 }
 
-fn fingerprint_for(post: &ChannelPost, selector: Option<&ChannelId>) -> [u8; 32] {
+fn fingerprint_for(
+    post: &ChannelPost,
+    selector: Option<&ChannelId>,
+    bindings: Option<&[ChannelMentionBinding]>,
+) -> [u8; 32] {
     let mut writer = Sha256::new();
     if let Some(selector) = selector {
         writer.update(selector.as_ref().as_bytes());
         writer.update([0]);
     }
     serde_json::to_writer(&mut writer, post).expect("typed post serialization is infallible");
+    if let Some(bindings) = bindings {
+        writer.update(b"\0user mention bindings\0");
+        serde_json::to_writer(&mut writer, bindings)
+            .expect("typed mention binding serialization is infallible");
+    }
     writer.finalize().into()
 }
 

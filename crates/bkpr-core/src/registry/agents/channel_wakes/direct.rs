@@ -73,6 +73,7 @@ impl Registry {
                         publish: &|targets| self.inner.agents.publish_channel_work(targets),
                         binding_live: &|id, binding| self.channel_binding_live(id, binding),
                         direct_peer: &|_| Ok(None),
+                        fence_user_mentions: &|_, _| unreachable!("agent direct post"),
                     },
                     || self.channel_direct_target(launch, &launch_id, &workspace, connected),
                 )
@@ -119,7 +120,7 @@ impl Registry {
         Ok((
             workspace.to_owned(),
             ChannelAuthority {
-                actor: channel_agent(current, agent),
+                actor: channel_agent(current, agent, &state, pane),
                 writable: true,
                 workspace_open: true,
                 participants,
@@ -144,7 +145,7 @@ impl Registry {
         healthy_agents(&agents)?;
         let captures = self.inner.captures.lock().unwrap();
         captures.authorize(caller).context(ChannelAccessLost)?;
-        let (launch, agent) = captures
+        let pane = captures
             .launches
             .get(launch_id)
             .and_then(|launch| channel_pane(&state, &launch.grant.pane_id))
@@ -154,10 +155,11 @@ impl Registry {
                     .and_then(|harness| harness.managed.as_ref())
                     .is_some_and(|visible| visible.launch_id == launch_id)
             })
-            .and_then(|pane| live_channel_agent(&state, pane, workspace, &agents, &captures, None))
+            .context("direct recipient is not a live launch in your workspace")?;
+        let (launch, agent) = live_channel_agent(&state, pane, workspace, &agents, &captures, None)
             .context("direct recipient is not a live launch in your workspace")?;
         Ok(WorkspaceParticipant {
-            actor: channel_agent(launch, agent),
+            actor: channel_agent(launch, agent, &state, pane),
             launch_id: Some(launch.grant.launch_id.clone()),
             binding_revision: launch.binding_generation,
         })
@@ -197,19 +199,20 @@ impl Registry {
                 if state.closing_workspaces.contains(workspace) {
                     return None;
                 }
-                live_channel_agent(
+                let (launch, agent) = live_channel_agent(
                     &state,
                     pane,
                     workspace,
                     &agents,
                     &captures,
                     Some(participant),
-                )
+                )?;
+                Some(WorkspaceParticipant {
+                    actor: channel_agent(launch, agent, &state, pane),
+                    launch_id: Some(launch.grant.launch_id.clone()),
+                    binding_revision: launch.binding_generation,
+                })
             });
-        Ok(current.map(|(launch, agent)| WorkspaceParticipant {
-            actor: channel_agent(launch, agent),
-            launch_id: Some(launch.grant.launch_id.clone()),
-            binding_revision: launch.binding_generation,
-        }))
+        Ok(current)
     }
 }

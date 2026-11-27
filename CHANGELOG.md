@@ -14,6 +14,8 @@
 * **channels:** route private messages through the channel engine and preserve private history after acknowledgement and session restart ([#76](https://github.com/calops/bkpr/issues/76))
 * **channels:** expose a resumable session catalog and unread attention for local and SSH attachments ([#79](https://github.com/calops/bkpr/issues/79))
 * **channels:** route questions and reports through host notifications without sending chat bodies
+* **tui:** open workspace channels with drafts, exact mentions and unread attention without replacing native panes ([#77](https://github.com/calops/bkpr/issues/77))
+* **channels:** color exact inline agent mentions in newly authored posts and in the picker using the participant's transcript color.
 
 ### Bug Fixes
 
@@ -26,6 +28,20 @@
 * **channels:** keep wakes live under channel-store pressure, fence recipient callbacks at admission, and preserve native receipts through membership removal ([#75](https://github.com/calops/bkpr/issues/75))
 * **channels:** return canonical reply targets on exact reads and reject source-linked writes on older native peers before dispatch ([#75](https://github.com/calops/bkpr/issues/75))
 * **agents:** scope native collaboration approvals to verified managed Claude registrations and fresh, admitted Codex threads
+* **tui:** retain recent channel history when switching. Shift-Enter is the only newline shortcut.
+* **tui:** copy chat history without leaving the composer, edit drafts with readline shortcuts, and keep author and mention labels independent of transient terminal titles.
+* **tui:** preserve Markdown paragraph spacing and blank code lines when displaying and copying chat posts.
+* **tui:** keep chat in one pane with recessed sections. Use slightly lighter section interiors, tint the full composer, and match the edge materials to the pane and section fills.
+* **tui:** align workspace chat badges with pane status icons and extend selected sidebar highlights cleanly to the pane edge.
+* **tui:** center the empty chat, highlight channel rows on hover, and keep typing in the composer after channel or history clicks. Tab opens a separate channel chooser.
+* **tui:** Alt-click an inline chat PNG to open the original in the shared pane image viewer.
+* **tui:** use inset shared buttons with Nerd Font icons for channel creation and settings, with matching hitboxes in fancy and plain modes.
+* **tui:** use standard modal dialogs for channel creation and settings, with shared form controls and composer focus restoration.
+* **tui:** round shared fancy button corners without changing their hitboxes or plain presentation.
+* **tui:** fit channel dialogs to their content, with recessed fancy text fields and checkboxes, floating dropdowns, and matching hit geometry in plain mode.
+* **tui:** center the Channels heading and separate it from the first channel with a blank row.
+* **channels:** new `#desk` channels wake only explicitly mentioned agents for agent-authored posts; existing settings are unchanged.
+* **tui:** keep the original request when retrying an unconfirmed chat send, keep the selected mention visible, and resolve desktop alerts against the owning session even while its catalog catches up.
 
 ## [0.11.0](https://github.com/calops/bkpr/compare/v0.10.0...v0.11.0) (2026-11-23)
 

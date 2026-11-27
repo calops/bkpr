@@ -59,6 +59,7 @@ fn message() -> MessageSummary {
         mentions: vec![ParticipantId("stable-agent".into())],
         reply_to: Some(MessageId("previous".into())),
         attachments: vec![attachment_id()],
+        mention_spans: Vec::new(),
         source: None,
     }
 }
@@ -110,7 +111,16 @@ fn post() -> ChannelPost {
         mentions: vec![ParticipantId("stable-agent".into())],
         reply_to: Some(message_id()),
         attachments: vec![attachment_id()],
+        mention_spans: Vec::new(),
         source: None,
+    }
+}
+
+fn mention_binding() -> ChannelMentionBinding {
+    ChannelMentionBinding {
+        participant_id: ParticipantId("stable-agent".into()),
+        launch_id: "selected-launch".into(),
+        binding_generation: 42,
     }
 }
 
@@ -121,6 +131,12 @@ fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
         client_id: "client".into(),
         token: "secret".into(),
     };
+    let mut annotated_post = post();
+    annotated_post.mention_spans.push(ChannelMentionSpan {
+        start: 8,
+        end: 16,
+        participant_id: mention_binding().participant_id,
+    });
     for request in [
         ChannelRequest::List {
             workspace_id: "workspace".into(),
@@ -139,6 +155,18 @@ fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
         ChannelRequest::ListExplicitMembers {
             channel_id: channel(),
             after: Some(ParticipantId("inactive".into())),
+            limit: 2,
+        },
+        ChannelRequest::UserRoster {
+            workspace_id: "workspace".into(),
+            channel_id: Some(channel()),
+            after: Some(participant().id),
+            limit: 2,
+        },
+        ChannelRequest::UserRoster {
+            workspace_id: "workspace".into(),
+            channel_id: None,
+            after: None,
             limit: 2,
         },
         ChannelRequest::Create {
@@ -165,8 +193,13 @@ fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
             channel_id: channel(),
             post: ChannelPost {
                 source: Some(source()),
-                ..post()
+                ..annotated_post.clone()
             },
+        },
+        ChannelRequest::PostUser {
+            channel_id: channel(),
+            post: annotated_post,
+            bindings: vec![mention_binding()],
         },
         ChannelRequest::History {
             channel_id: channel(),
@@ -315,6 +348,33 @@ fn source_post_frames_fail_legacy_header_admission_without_breaking_ordinary_pos
             codec.encode_request(&Request::new(user)).unwrap(),
             has_source,
         );
+        let mut fenced_post = post();
+        let binding = mention_binding();
+        fenced_post.mentions = vec![binding.participant_id.clone()];
+        fenced_post.source = has_source.then(source);
+        let fenced = ChannelRequest::PostUser {
+            channel_id: channel(),
+            post: fenced_post,
+            bindings: vec![binding],
+        };
+        let user = Operation::Channels {
+            request: fenced.clone(),
+        };
+        let decoded = check_frames(
+            codec.encode_client_request(&authority, &user).unwrap(),
+            has_source,
+        );
+        let Operation::Client {
+            request: wrapped, ..
+        } = decoded.operation
+        else {
+            panic!("expected authenticated user post");
+        };
+        let Operation::Channels { request: actual } = *wrapped else {
+            panic!("expected fenced channel post");
+        };
+        assert_eq!(actual, fenced);
+
         let agent = Request::new(Operation::Agent {
             launch_id: "launch".into(),
             token: "secret".into(),
@@ -360,9 +420,13 @@ fn source_post_frames_fail_legacy_header_admission_without_breaking_ordinary_pos
 #[test]
 fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
     let attachment = descriptor();
-    let mut linked_message = renderable_message();
-    linked_message.message.source = Some(source());
     let mut codec = Codec::new();
+    let mut annotated_message = renderable_message();
+    annotated_message
+        .message
+        .mention_spans
+        .push(resolved_span(0, 7));
+    annotated_message.message.source = Some(source());
     for response in [
         ChannelResponse::Listed {
             channels: vec![summary()],
@@ -376,6 +440,23 @@ fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
             participants: vec![participant()],
             next_after: None,
         },
+        ChannelResponse::UserRoster {
+            participants: vec![
+                ChannelRosterEntry {
+                    participant: Participant {
+                        id: mention_binding().participant_id,
+                        kind: ParticipantKind::Agent,
+                        display_name: "Agent".into(),
+                    },
+                    binding: Some(mention_binding()),
+                },
+                ChannelRosterEntry {
+                    participant: participant(),
+                    binding: None,
+                },
+            ],
+            next_after: Some(participant().id),
+        },
         ChannelResponse::ExplicitMembers {
             members: vec![ParticipantId("inactive".into())],
             next_after: Some(ParticipantId("inactive".into())),
@@ -384,6 +465,12 @@ fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
         ChannelResponse::Posted {
             channel_id: Some(channel()),
             message: message(),
+            wake_count: 0,
+            attention: false,
+        },
+        ChannelResponse::Posted {
+            channel_id: Some(channel()),
+            message: annotated_message.message.clone(),
             wake_count: 2,
             attention: true,
         },
@@ -394,13 +481,13 @@ fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
             attention: false,
         },
         ChannelResponse::History {
-            messages: vec![linked_message],
+            messages: vec![annotated_message.clone()],
             next_before: Some(9),
             next_after: Some(9),
             cursor: cursor(11),
         },
         ChannelResponse::Message {
-            message: renderable_message(),
+            message: annotated_message,
         },
         ChannelResponse::ReadPosition { through: 4 },
         ChannelResponse::Changes {
@@ -579,6 +666,37 @@ fn channel_validation_rejects_client_authorship_and_invalid_reference_shapes() {
             channel_id: channel(),
             post: escapes,
         },
+        ChannelRequest::PostUser {
+            channel_id: channel(),
+            post: post(),
+            bindings: vec![ChannelMentionBinding {
+                binding_generation: 0,
+                ..mention_binding()
+            }],
+        },
+        ChannelRequest::PostUser {
+            channel_id: channel(),
+            post: post(),
+            bindings: vec![ChannelMentionBinding {
+                participant_id: ParticipantId("different-agent".into()),
+                ..mention_binding()
+            }],
+        },
+        ChannelRequest::PostUser {
+            channel_id: channel(),
+            post: {
+                let mut post = post();
+                post.mentions.push(participant().id);
+                post
+            },
+            bindings: vec![mention_binding(), mention_binding()],
+        },
+        ChannelRequest::UserRoster {
+            workspace_id: "workspace".into(),
+            channel_id: Some(ChannelId(String::new())),
+            after: None,
+            limit: 1,
+        },
         ChannelRequest::Subscribe {
             channel_id: channel(),
             after: Some(ChannelCursor {
@@ -699,6 +817,7 @@ fn channel_source_requires_only_two_exact_bounded_ids() {
             empty_ids,
             None::<Offset<str>>,
             empty_ids,
+            None::<Offset<[Offset<g::ChannelMentionSpan>]>>,
             Some(source),
         );
         let post = g::ChannelRequestPost::create(&mut b, channel, post);
@@ -738,6 +857,43 @@ fn malformed_native_channel_vectors_fail_before_expansion() {
     assert!(
         charged < 512,
         "charged {charged} before rejecting the aliased vector"
+    );
+}
+
+#[test]
+fn native_fenced_user_post_rejects_missing_generation_without_becoming_legacy_post() {
+    let mut b = Builder::new();
+    let channel = b.create_string("channel");
+    let key = b.create_string("key");
+    let text = b.create_string("@agent");
+    let participant = b.create_string("agent");
+    let launch = b.create_string("launch");
+    let mentions = b.create_vector([participant]);
+    let attachments = b.create_vector([] as [Offset<str>; 0]);
+    let post = g::ChannelPost::create(
+        &mut b,
+        key,
+        text,
+        g::PostIntent::Note,
+        mentions,
+        None::<Offset<str>>,
+        attachments,
+        None::<Offset<[Offset<g::ChannelMentionSpan>]>>,
+        None::<Offset<g::ChannelSource>>,
+    );
+    let binding = g::ChannelMentionBinding::create(&mut b, participant, launch, 0);
+    let bindings = b.create_vector([binding]);
+    let post = g::ChannelRequestPostUser::create(&mut b, channel, post, bindings);
+    let request = g::ChannelRequest::create_channel_request_post_user(&mut b, post);
+    assert_eq!(request.tag(), 18);
+    let channels = g::OperationChannels::create(&mut b, request);
+    let operation = g::Operation::create_operation_channels(&mut b, channels);
+    let root = g::Request::create(&mut b, PROTOCOL_VERSION, operation);
+    let error = decode_request(b.finish(root, None)).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("missing channel mention binding generation")
     );
 }
 
@@ -837,6 +993,7 @@ fn native_history_budgets_source_ids_even_for_aliased_rows() {
         empty_ids,
         None::<Offset<str>>,
         empty_ids,
+        None::<Offset<[Offset<g::ChannelResolvedMentionSpan>]>>,
         Some(source),
     );
     let text = b.create_string(&message.text);
@@ -952,4 +1109,208 @@ fn attachment_json_accepts_size_limit_and_rejects_malformed_or_oversized_input()
             .is_err()
         );
     }
+}
+
+fn resolved_span(start: u32, end: u32) -> ChannelResolvedMentionSpan {
+    ChannelResolvedMentionSpan {
+        start,
+        end,
+        participant: Participant {
+            id: mention_binding().participant_id,
+            kind: ParticipantKind::Agent,
+            display_name: "Agent".into(),
+        },
+    }
+}
+
+#[test]
+fn empty_mention_spans_preserve_legacy_json_and_retry_bytes() {
+    let legacy = r#"{"idempotency_key":"same-request","text":"private @literal\nbody","intent":"report","mentions":["stable-agent"],"reply_to":"message","attachments":["attachment"]}"#;
+    assert_eq!(serde_json::to_string(&post()).unwrap(), legacy);
+    assert_eq!(serde_json::from_str::<ChannelPost>(legacy).unwrap(), post());
+
+    let legacy = serde_json::to_value(message()).unwrap();
+    assert!(legacy.get("mention_spans").is_none());
+    assert_eq!(
+        serde_json::from_value::<MessageSummary>(legacy).unwrap(),
+        message()
+    );
+}
+
+#[test]
+fn native_post_rejects_malformed_mention_spans() {
+    for (intervals, expected_error) in [
+        (
+            vec![(0u32, 0u32, "agent")],
+            "invalid channel mention span interval",
+        ),
+        (vec![(1, 2, "agent")], "splits a UTF-8 character"),
+        (vec![(0, 4, "agent")], "outside the body"),
+        (
+            vec![(0, 3, "agent"), (2, 3, "agent")],
+            "invalid channel mention span interval",
+        ),
+        (
+            vec![(2, 3, "agent"), (0, 2, "agent")],
+            "invalid channel mention span interval",
+        ),
+        (
+            vec![(0, 2, "other")],
+            "does not reference an addressed participant",
+        ),
+        (
+            vec![(0, 2, "agent"); MAX_MENTIONS + 1],
+            "channel vector exceeds limit",
+        ),
+    ] {
+        let mut b = Builder::new();
+        let channel = b.create_string("channel");
+        let key = b.create_string("key");
+        let text = b.create_string("é!");
+        let agent = b.create_string("agent");
+        let mentions = b.create_vector([agent]);
+        let attachments = b.create_vector([] as [Offset<str>; 0]);
+        let spans: Vec<_> = intervals
+            .into_iter()
+            .map(|(start, end, id)| {
+                let id = b.create_string(id);
+                g::ChannelMentionSpan::create(&mut b, start, end, id)
+            })
+            .collect();
+        let spans = b.create_vector(spans.as_slice());
+        let post = g::ChannelPost::create(
+            &mut b,
+            key,
+            text,
+            g::PostIntent::Note,
+            mentions,
+            None::<Offset<str>>,
+            attachments,
+            Some(spans),
+            None::<Offset<g::ChannelSource>>,
+        );
+        let request = g::ChannelRequestPost::create(&mut b, channel, post);
+        let request = g::ChannelRequest::create_channel_request_post(&mut b, request);
+        let channels = g::OperationChannels::create(&mut b, request);
+        let operation = g::Operation::create_operation_channels(&mut b, channels);
+        let root = g::Request::create(&mut b, PROTOCOL_VERSION, operation);
+        let error = decode_request(b.finish(root, None))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected_error), "{error}");
+    }
+}
+
+#[test]
+fn native_summary_checks_spans_against_body_only_when_present() {
+    for (text, start, end, resolved_id, expected_error) in [
+        (None, 1u32, 2, "agent", None),
+        (Some("é"), 0, 2, "agent", None),
+        (Some("é"), 1, 2, "agent", Some("splits a UTF-8 character")),
+        (Some("é"), 0, 3, "agent", Some("outside the body")),
+        (
+            None,
+            0,
+            MAX_POST_BYTES as u32 + 1,
+            "agent",
+            Some("invalid channel mention span interval"),
+        ),
+        (
+            None,
+            0,
+            2,
+            "other",
+            Some("does not reference an addressed participant"),
+        ),
+    ] {
+        let mut b = Builder::new();
+        let id = b.create_string("message");
+        let agent = b.create_string("agent");
+        let mentions = b.create_vector([agent]);
+        let participant_id = b.create_string(resolved_id);
+        let name = b.create_string("Agent");
+        let participant =
+            g::ChannelParticipant::create(&mut b, participant_id, g::ParticipantKind::Agent, name);
+        let span = g::ChannelResolvedMentionSpan::create(&mut b, start, end, participant);
+        let spans = b.create_vector([span]);
+        let empty_ids = b.create_vector([] as [Offset<str>; 0]);
+        let metadata = g::ChannelMessageSummary::create(
+            &mut b,
+            id,
+            1u64,
+            participant,
+            0u64,
+            g::PostIntent::Note,
+            mentions,
+            None::<Offset<str>>,
+            empty_ids,
+            Some(spans),
+            None::<Offset<g::ChannelSource>>,
+        );
+        let response = if let Some(text) = text {
+            let text = b.create_string(text);
+            let attachments = b.create_vector([] as [Offset<g::AttachmentDescriptor>; 0]);
+            let message = g::ChannelMessage::create(&mut b, metadata, text, attachments);
+            let response = g::ChannelResponseMessage::create(&mut b, message);
+            g::ChannelResponse::create_channel_response_message(&mut b, response)
+        } else {
+            let response = g::ChannelResponsePosted::create(
+                &mut b,
+                metadata,
+                0u32,
+                false,
+                None::<Offset<str>>,
+            );
+            g::ChannelResponse::create_channel_response_posted(&mut b, response)
+        };
+        let result = decode_native_channel_response(&mut b, response);
+        if let Some(expected_error) = expected_error {
+            let error = result.unwrap_err();
+            assert!(error.contains(expected_error), "{error}");
+        } else {
+            result.unwrap();
+        }
+    }
+}
+
+#[test]
+fn native_history_validates_and_charges_resolved_spans_on_encode() {
+    let mut message = renderable_message();
+    message.text = "é".into();
+    let mut codec = Codec::new();
+    message.message.mention_spans.push(resolved_span(1, 2));
+    let response = reply(ChannelResponse::History {
+        messages: vec![message.clone()],
+        next_before: None,
+        next_after: None,
+        cursor: cursor(9),
+    });
+    let error = codec.encode_response(&response).unwrap_err().to_string();
+    assert!(error.contains("splits a UTF-8 character"));
+
+    message.message.mention_spans.clear();
+    message.text = "x".repeat(MAX_MENTIONS);
+    let before = message.content_bytes();
+    message.message.mention_spans = (0..MAX_MENTIONS as u32)
+        .map(|start| {
+            let mut span = resolved_span(start, start + 1);
+            span.participant.display_name = "x".repeat(MAX_NAME_BYTES);
+            span
+        })
+        .collect();
+    let span = &message.message.mention_spans[0];
+    let span_bytes = 2 * size_of::<u32>()
+        + span.participant.display_name.len()
+        + span.participant.id.as_ref().len();
+    assert_eq!(message.content_bytes() - before, MAX_MENTIONS * span_bytes);
+    let count = MAX_HISTORY_BYTES / message.content_bytes() + 1;
+    assert!(count <= usize::from(MAX_PAGE_LIMIT));
+    let response = reply(ChannelResponse::History {
+        messages: vec![message; count],
+        next_before: None,
+        next_after: None,
+        cursor: cursor(9),
+    });
+    let error = codec.encode_response(&response).unwrap_err().to_string();
+    assert!(error.contains("channel history page exceeds byte limit"));
 }

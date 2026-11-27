@@ -155,6 +155,14 @@ struct SidebarMenu {
     widget: bkpr_tui_framework::context_menu::ContextMenu<crate::keyguide::Action>,
 }
 
+#[path = "chat.rs"]
+mod chat;
+#[path = "chat_controls.rs"]
+mod chat_controls;
+#[path = "chat_draft.rs"]
+mod chat_draft;
+#[path = "chat_images.rs"]
+mod chat_images;
 #[path = "diagnostics.rs"]
 mod diagnostics;
 #[path = "identity_copy.rs"]
@@ -190,6 +198,7 @@ enum Background {
     Resize(management::Completion),
     SessionStop(Result<()>),
     Recovery(Box<recovery_ui::Completion>),
+    Chat(Box<Result<chat::Completion>>),
     CiRefresh {
         owner: TreeOwner,
         target: bkpr_protocol::CiRefreshTarget,
@@ -225,6 +234,7 @@ enum PointerCapture {
     SidebarResize { size: Size, offset: i32 },
     Pane(Arc<PointerOrigin>),
     Selection(Arc<PointerOrigin>),
+    ChatSelection,
 }
 struct PressedPointer {
     origin: Arc<PointerOrigin>,
@@ -526,13 +536,14 @@ struct App {
     backgrounded: bool,
     notification_source: Option<String>,
     tree: Arc<Mutex<Tree>>,
-    tree_press: Option<TreeTarget>,
+    tree_press: Option<(TreeTarget, bool)>,
     sidebar_menu: Option<SidebarMenu>,
     sidebar_target: Option<TreeTarget>,
     sidebar_backend_available: bool,
     sidebar_has_workspace: bool,
     registry: RegistrySnapshot,
     state: Controller,
+    chat: chat::Chat,
     views: HashMap<String, Attached>,
     retiring: Vec<RetiringView>,
     pane_feedback: HashMap<String, pane_feedback::Feedback>,
@@ -589,6 +600,8 @@ impl App {
     fn cancel_button_presses(&mut self) {
         self.button_pointer = None;
         self.popover_button = None;
+        self.chat.cancel_button_press();
+        self.chat.cancel_editor_press();
         self.recovery.cancel_button_press();
         if let Some(finder) = &mut self.finder {
             finder.cancel_copy_press();
@@ -823,6 +836,7 @@ impl App {
         {
             return;
         }
+        self.chat.close_editor();
         self.cancel_recovery();
         self.state.cancel();
         self.restore_theme_preview();
@@ -854,6 +868,7 @@ impl App {
         );
     }
     fn enter_sidebar(&mut self) {
+        self.chat.set_channel_chooser(false);
         self.retire_resize();
         self.selection_focus_lost();
         self.close_search();
@@ -1074,6 +1089,27 @@ impl App {
         if action == Action::ShowDiagnostics {
             return self.latest_diagnostic().is_some();
         }
+        if let Action::Chat(action) = action {
+            return self.chat.supports(action, self.options.read_only);
+        }
+        if self.chat.visible()
+            && !self.state.sidebar.active
+            && matches!(
+                action,
+                Action::StartHistory
+                    | Action::StartSearch
+                    | Action::StartResize
+                    | Action::ProjectDetails
+                    | Action::ReopenPane
+                    | Action::SplitHorizontal
+                    | Action::SplitVertical
+                    | Action::RemovePaneFromLayout
+                    | Action::MovePane(_)
+                    | Action::FocusPane(_)
+            )
+        {
+            return false;
+        }
         if self.diagnostic_active() {
             return matches!(action, Action::Navigate(_) | Action::Cancel);
         }
@@ -1188,7 +1224,11 @@ impl App {
             | Action::RemovePaneFromLayout
             | Action::MovePane(_)
             | Action::StartResize => !self.options.read_only,
-            Action::CopySelection => self.options.clipboard_policy != "deny",
+            Action::CopySelection => {
+                self.options.clipboard_policy != "deny"
+                    && (!self.chat.visible()
+                        || self.history_selection_owner() && self.chat.can_copy_history())
+            }
             Action::SendPrefix => {
                 !self.options.read_only && !self.state.sidebar.active && !self.search_open()
             }
@@ -1273,7 +1313,7 @@ impl App {
         {
             return Context::Sessions;
         }
-        ContextState {
+        let context = ContextState {
             modal,
             resizing: self.resize_capturing() && !self.state.prefix,
             prefix: self.state.prefix,
@@ -1285,7 +1325,12 @@ impl App {
                 .then_some(self.sidebar_target.is_some()),
             history: self.focused_history(),
         }
-        .context()
+        .context();
+        if context == Context::Application && self.chat.visible() {
+            self.chat.context()
+        } else {
+            context
+        }
     }
     fn refresh_guide(&mut self, size: Size) {
         let context = self.guide_context();
@@ -1367,6 +1412,14 @@ impl App {
     }
 
     fn local_repeat(&self, event: &KeyEvent) -> bool {
+        if self.chat.visible()
+            && !self.state.prefix
+            && !self.state.sidebar.active
+            && self.state.form.is_none()
+            && !self.picker_open()
+        {
+            return true;
+        }
         use crate::keyguide::{self, Action, Context};
         let context = self.guide_context();
         matches!(
@@ -1437,6 +1490,12 @@ impl App {
             (64, (crate::themes::THEMES.len() as u16).saturating_add(6))
         } else if self.recovery.open() {
             (100, screen.rows.saturating_sub(4).min(36))
+        } else if let Some(height) = self.chat.editor_height(
+            56.min(screen.cols.saturating_sub(4).max(1))
+                .saturating_sub(2),
+            self.options.read_only,
+        ) {
+            (56, height.min(screen.rows.saturating_sub(4).max(1)))
         } else {
             match self.state.form.as_ref().map(|form| &form.kind) {
                 Some(FormKind::CreateWorkspace | FormKind::CreateWindow) => (76, 12),
@@ -1531,6 +1590,7 @@ impl App {
         Ok(())
     }
     fn focus(&mut self, pane: String) {
+        self.chat.close();
         if self.state.focused.as_ref() != Some(&pane) {
             self.retire_resize();
             self.close_search();
@@ -1540,6 +1600,7 @@ impl App {
         self.select_current_lease();
     }
     fn switch(&mut self, workspace: String) {
+        self.chat.close();
         if self.state.workspace.as_ref() != Some(&workspace) {
             self.retire_resize();
             self.close_search();
@@ -1549,6 +1610,7 @@ impl App {
         self.select_current_lease();
     }
     fn switch_window(&mut self, window: String) {
+        self.chat.close();
         if self.state.window.as_ref() != Some(&window) {
             self.retire_resize();
             self.close_search();
@@ -1556,6 +1618,50 @@ impl App {
         self.selection_epoch = self.selection_epoch.wrapping_add(1);
         self.state.switch_window(window, &self.registry);
         self.select_current_lease();
+    }
+    fn open_chat(&mut self, workspace: String) {
+        if self.chat.workspace() != Some(workspace.as_str()) {
+            self.switch(workspace.clone());
+        }
+        self.retire_resize();
+        self.selection_focus_lost();
+        self.close_search();
+        self.popover.hide();
+        self.chat.open(workspace);
+        self.leave_sidebar();
+    }
+
+    fn submit_chat(&mut self, kind: chat::JobKind, job: chat::Job) {
+        let key = self.chat.track(kind);
+        let endpoint = self.socket.clone();
+        if let Err(error) = self.jobs.submit(key.clone(), move || {
+            Ok(Background::Chat(Box::new(job.run(&endpoint))))
+        }) {
+            self.complete_chat(&key, Err(error), false);
+        }
+    }
+
+    fn complete_chat(&mut self, key: &str, result: Result<chat::Completion>, admitted: bool) {
+        self.chat.redraw();
+        if let Some((summary, error)) = self.chat.complete(key, result, admitted) {
+            self.report_failure(&summary, &error);
+        }
+    }
+
+    fn schedule_chat(&mut self) {
+        if !self.jobs.is_full()
+            && let Some((kind, job)) = self.chat.next_job(self.options.read_only)
+        {
+            self.submit_chat(kind, job);
+        }
+    }
+
+    fn chat_effect(&mut self, effect: chat::Effect) {
+        match effect {
+            chat::Effect::None => {}
+            chat::Effect::Native => self.chat.close(),
+            chat::Effect::Submit(kind, job) => self.submit_chat(kind, job),
+        }
     }
     fn select_current_lease(&mut self) {
         if self.host_focused
@@ -1707,6 +1813,7 @@ impl App {
                         && pane.window_id.as_ref() == Some(&selection.window)
                 })
             {
+                self.chat.close();
                 self.state.switch(selection.workspace, &self.registry);
                 self.state.switch_window(selection.window, &self.registry);
                 self.state.focus(selection.pane);
@@ -1716,6 +1823,14 @@ impl App {
     }
     fn complete_background(&mut self) -> Result<()> {
         for completion in self.jobs.latest()? {
+            if completion.key.starts_with("chat:") {
+                let result = completion.result.and_then(|value| match value {
+                    Background::Chat(result) => *result,
+                    _ => bail!("chat job returned an unrelated completion"),
+                });
+                self.complete_chat(&completion.key, result, true);
+                continue;
+            }
             if completion.key.starts_with("recovery:") {
                 self.complete_recovery(completion);
                 continue;
@@ -1770,6 +1885,7 @@ impl App {
                     bail!("session stop receipt escaped its coordinator")
                 }
                 Ok(Background::Recovery(_)) => bail!("recovery receipt escaped its owner"),
+                Ok(Background::Chat(_)) => bail!("chat receipt escaped its owner"),
                 Ok(Background::Attached { pane, attached }) => {
                     if self.views.contains_key(&pane) || attached.retirement_requested {
                         self.retiring_candidates.push(RetiringCandidate {
@@ -2163,6 +2279,7 @@ impl App {
                     self.pointer_capture = None;
                 }
             }
+            self.chat.hover_channel(None);
             let releases = self.cancel_held_keys();
             self.scope_input_result(releases)?;
             self.retire_resize();
@@ -2308,6 +2425,9 @@ impl App {
             })
     }
     fn active(&self) -> Option<(String, String)> {
+        if self.chat.visible() {
+            return None;
+        }
         let id = self.state.focused.as_ref()?;
         if !self.input_enabled(id) || self.execution_completed(id) {
             return None;
@@ -2335,6 +2455,9 @@ impl App {
     fn rects(&self, size: Size) -> Vec<(String, Rect)> {
         let (_, content) = self.screen_geometry(size);
         let mut rects = Vec::new();
+        if self.chat.visible() {
+            return rects;
+        }
         if let Some(window) = self.state.current_window(&self.registry) {
             layout_rects(window.layout.as_ref(), content, &mut rects);
         }
@@ -2625,6 +2748,15 @@ impl App {
     }
     fn pane_content(&self, rect: Rect) -> Rect {
         crate::controller::padded_content(rect, self.pane_padding)
+    }
+
+    fn chat_content(&self, rect: Rect) -> Rect {
+        let inset = crate::controller::padded_content(rect, crate::appearance::FANCY_PANE_PADDING);
+        if inset.width == 0 {
+            content(rect)
+        } else {
+            inset
+        }
     }
 
     fn sync_views(&mut self, size: Size, rects: &[(String, Rect)]) -> Result<()> {
@@ -3240,6 +3372,7 @@ impl App {
             if self.consent.is_some()
                 || self.paste_offer.is_some()
                 || self.state.form.is_some()
+                || self.chat.editor_open()
                 || self.picker_open()
             {
                 let mut response = Some(Operation::Pane {
@@ -3703,7 +3836,7 @@ impl App {
     }
     fn activate_sidebar(&mut self, target: SidebarTarget) -> Result<()> {
         match target {
-            SidebarTarget::Workspace(id) => self.switch(id),
+            SidebarTarget::Workspace(id) => self.open_chat(id),
             SidebarTarget::Window { workspace, window } => {
                 if !self.registry.workspaces.iter().any(|entry| {
                     entry.id == workspace && entry.windows.iter().any(|entry| entry.id == window)
@@ -3845,6 +3978,7 @@ impl App {
                 self.directional(direction.key(), &rects);
             }
             Action::PreviousWorkspace | Action::NextWorkspace => {
+                self.chat.close();
                 self.retire_resize();
                 self.selection_epoch = self.selection_epoch.wrapping_add(1);
                 self.state.cycle_workspace(
@@ -3858,6 +3992,7 @@ impl App {
                 self.select_current_lease();
             }
             Action::NextPane => {
+                self.chat.close();
                 self.retire_resize();
                 self.selection_epoch = self.selection_epoch.wrapping_add(1);
                 self.state.cycle_pane(&self.registry);
@@ -3974,6 +4109,7 @@ impl App {
             || self.focused_history()
             || self.resize_capturing()
             || self.search_open();
+        let local = local || self.chat.visible();
         match self.key(event, out, size, rects) {
             Err(error) if error.downcast_ref::<updates::InputRejected>().is_some() => {
                 self.scope_input_result(Err(error))?;
@@ -4166,7 +4302,7 @@ impl App {
             }
             return Ok(false);
         }
-        if self.state.form.is_some() || self.picker_open() {
+        if self.state.form.is_some() || self.picker_open() || self.chat.editor_open() {
             if self.state.prefix {
                 self.state.prefix = false;
                 self.state.suppressed.insert(event.key.clone());
@@ -4182,6 +4318,15 @@ impl App {
                 self.state.suppressed.insert(event.key);
                 return Ok(false);
             }
+        }
+        if self.chat.editor_open() {
+            self.state.suppressed.insert(event.key.clone());
+            let effect = self.chat.key(&event, self.options.read_only);
+            self.chat_effect(effect);
+            if !self.chat.editor_open() {
+                self.cancel_modal();
+            }
+            return Ok(false);
         }
         if self.overlays.escape_target() == Some("ui:modal")
             && crate::keyguide::lookup(self.guide_context(), &event)
@@ -4389,18 +4534,21 @@ impl App {
                     })?;
                 }
                 Some(Action::PreviousWorkspace) => {
+                    self.chat.close();
                     self.retire_resize();
                     self.selection_epoch = self.selection_epoch.wrapping_add(1);
                     self.state.cycle_workspace(&self.registry, -1);
                     self.select_current_lease();
                 }
                 Some(Action::NextWorkspace) => {
+                    self.chat.close();
                     self.retire_resize();
                     self.selection_epoch = self.selection_epoch.wrapping_add(1);
                     self.state.cycle_workspace(&self.registry, 1);
                     self.select_current_lease();
                 }
                 Some(Action::NextPane) => {
+                    self.chat.close();
                     self.retire_resize();
                     self.selection_epoch = self.selection_epoch.wrapping_add(1);
                     self.state.cycle_pane(&self.registry);
@@ -4417,6 +4565,18 @@ impl App {
                 self.retire_resize();
                 self.selection_focus_lost();
                 self.close_search();
+            }
+            return Ok(false);
+        }
+        if self.chat.visible() {
+            self.state.suppressed.insert(event.key.clone());
+            if matches!(self.pointer_capture, Some(PointerCapture::ChatSelection)) {
+                self.chat.clear_history_selection();
+            }
+            let effect = self.chat.key(&event, self.options.read_only);
+            self.chat_effect(effect);
+            if self.chat.editor_open() {
+                self.begin_modal();
             }
             return Ok(false);
         }
@@ -4466,6 +4626,27 @@ impl App {
         }
         Ok(false)
     }
+
+    fn open_image_viewer(
+        &mut self,
+        image: Arc<Image>,
+        size: Size,
+        button: MouseButton,
+    ) -> Result<()> {
+        self.last_button = button;
+        self.pointer_capture = Some(PointerCapture::Ui);
+        if !self.colors.graphics.supported() {
+            self.notify("Image viewing requires Kitty graphics support".into());
+            return Ok(());
+        }
+        self.image_viewer = Some(image_viewer::ImageViewer::new(image));
+        self.state.prefix = false;
+        self.clear_tree_pointer();
+        self.sidebar_resize_hover = false;
+        self.update_resize_hover(size, None);
+        self.notify_focus()
+    }
+
     fn mouse(
         &mut self,
         mouse: termwiz::input::MouseEvent,
@@ -4522,6 +4703,34 @@ impl App {
             };
             (event_button, action)
         });
+        let chat_target = self.chat.visible() && hits.hit_test(mouse.x, mouse.y) == Some("ui:chat");
+        if !chat_target || wheel {
+            self.chat.hover_channel(None);
+        }
+        if matches!(self.pointer_capture, Some(PointerCapture::ChatSelection)) {
+            if !wheel
+                && event_button == MouseButton::Left
+                && matches!(action, MouseAction::Motion | MouseAction::Release)
+            {
+                self.last_button = button;
+                let release = action == MouseAction::Release;
+                if release {
+                    self.pointer_capture = None;
+                }
+                if self.history_selection_owner() {
+                    let rect = self.chat_content(self.screen_geometry(size).1);
+                    if self
+                        .chat
+                        .drag_history_selection(rect, size, mouse.x, mouse.y, release)
+                    {
+                        self.queue_history_copy();
+                    }
+                } else {
+                    self.chat.clear_history_selection();
+                }
+            }
+            return Ok(());
+        }
         self.resize_click_pointer(
             mouse.x,
             mouse.y,
@@ -4529,6 +4738,10 @@ impl App {
         );
         let point = (mouse.x, mouse.y);
         self.button_pointer = None;
+        self.chat.update_button_pointer(None);
+        if !chat_target && action == MouseAction::Release && event_button == MouseButton::Left {
+            self.chat.cancel_button_press();
+        }
         // A host blur can drop button-up. Swallow it if it arrives, but let
         // a fresh press supersede it without retaining the old overlay owner.
         if !wheel && self.retired_overlay_button == Some(event_button) {
@@ -4582,6 +4795,7 @@ impl App {
             if let Some(viewer) = &mut self.image_viewer {
                 viewer.cancel_button_press();
             }
+            self.chat.hover_channel(None);
             if let toast::PointerRoute::Activated(toast) = toast_route {
                 let diagnostic = self.diagnostics.lock().unwrap().for_toast(toast);
                 self.toasts.lock().unwrap().dismiss(toast);
@@ -4697,7 +4911,7 @@ impl App {
                 .hit_test(mouse.x, mouse.y)
                 .is_some_and(|id| !matches!(id, "ui:modal" | "ui:search" | "ui:window"))
             && (self.begin_sidebar_resize(size, mouse.x, mouse.y)
-                || self.begin_divider_resize(size, mouse.x, mouse.y)?)
+                || !self.chat.visible() && self.begin_divider_resize(size, mouse.x, mouse.y)?)
         {
             return Ok(());
         }
@@ -4723,6 +4937,7 @@ impl App {
                     finder.cancel_copy_press();
                 }
                 self.recovery.cancel_button_press();
+                self.chat.cancel_editor_press();
             }
             if !matches!(
                 route,
@@ -4786,6 +5001,23 @@ impl App {
                 }
                 PointerRoute::Dismiss("ui:modal") => {
                     self.cancel_modal();
+                    return Ok(());
+                }
+                PointerRoute::Target {
+                    id: "ui:modal",
+                    content: true,
+                } if self.chat.editor_open() && !consent_open => {
+                    let rect = self.overlays.layer("ui:modal").unwrap().placement.content;
+                    let mut local = mouse;
+                    local.x -= rect.x;
+                    local.y -= rect.y;
+                    let effect =
+                        self.chat
+                            .editor_mouse(local, action, event_button, self.options.read_only);
+                    self.chat_effect(effect);
+                    if !self.chat.editor_open() {
+                        self.cancel_modal();
+                    }
                     return Ok(());
                 }
                 PointerRoute::Target {
@@ -4906,8 +5138,18 @@ impl App {
             }
         }
         if matches!(&captured, Some(PointerCapture::Ui)) && !wheel {
+            if event_button == MouseButton::Left && action == MouseAction::Release {
+                self.chat
+                    .update_button_pointer(chat_target.then_some(point));
+                self.chat.release_button(self.options.read_only);
+                if self.chat.editor_open() && self.overlays.layer("ui:modal").is_none() {
+                    self.begin_modal();
+                }
+            } else if action == MouseAction::Motion && chat_target {
+                self.chat.update_button_pointer(Some(point));
+            }
             if action == MouseAction::Release
-                && let Some(target) = self.tree_press.take()
+                && let Some((target, disclosure)) = self.tree_press.take()
                 && mouse.x < self.screen_geometry(size).0.width
                 && workspace_hits
                     .iter()
@@ -4915,17 +5157,28 @@ impl App {
             {
                 let accepted = {
                     let mut tree = self.tree.lock().unwrap();
-                    if tree
+                    let target_row = tree
                         .rows
-                        .iter()
-                        .any(|row| row.target.as_ref() == Some(&target))
+                        .get(tree.scroll + usize::from(mouse.y.saturating_sub(2)));
+                    if let Some(row) = target_row.filter(|row| row.target.as_ref() == Some(&target))
                     {
-                        tree.enter();
-                        let double = tree.click(target.clone(), Instant::now());
-                        if double {
-                            tree.fold(None);
+                        let workspace =
+                            matches!(&target.node, TreeNode::Native(SidebarTarget::Workspace(_)));
+                        let released_disclosure = workspace
+                            && (row.icon_column()..row.content_column()).contains(&mouse.x);
+                        if disclosure != released_disclosure {
+                            false
+                        } else if disclosure {
+                            tree.toggle_menu_fold(target.clone());
+                            false
+                        } else {
+                            tree.enter();
+                            let double = tree.click(target.clone(), Instant::now());
+                            if double && !workspace {
+                                tree.fold(None);
+                            }
+                            true
                         }
-                        true
                     } else {
                         false
                     }
@@ -4942,6 +5195,7 @@ impl App {
             return Ok(());
         }
         let modal = self.state.form.is_some()
+            || self.chat.editor_open()
             || self.picker_open()
             || self
                 .consent
@@ -4987,13 +5241,94 @@ impl App {
                 && action == MouseAction::Press
                 && captured.is_none()
             {
-                self.tree_press = target.cloned();
+                self.tree_press = target.map(|target| {
+                    let tree = self.tree.lock().unwrap();
+                    let disclosure =
+                        matches!(&target.node, TreeNode::Native(SidebarTarget::Workspace(_)))
+                            && tree
+                                .rows
+                                .get(tree.scroll + usize::from(mouse.y.saturating_sub(2)))
+                                .is_some_and(|row| {
+                                    row.target.as_ref() == Some(target)
+                                        && (row.icon_column()..row.content_column())
+                                            .contains(&mouse.x)
+                                });
+                    (target.clone(), disclosure)
+                });
             }
             self.synchronize_tree_focus();
             return Ok(());
         }
         if origin.is_none() {
             self.clear_tree_pointer();
+        }
+        let pick_image = origin.is_none()
+            && event_button == MouseButton::Left
+            && action == MouseAction::Press
+            && mouse.modifiers == Modifiers::ALT;
+        let image_at = |area: Rect, frame: &Frame| {
+            if !area.contains(mouse.x, mouse.y) {
+                return None;
+            }
+            image_viewer::hit_test(
+                frame,
+                f32::from(mouse.x - area.x) + 0.5,
+                f32::from(mouse.y - area.y) + 0.5,
+            )
+        };
+        if origin.is_none() && chat_target {
+            let rect = self.chat_content(self.screen_geometry(size).1);
+            if self.chat.geometry() == rect && rect.contains(mouse.x, mouse.y) {
+                self.chat.update_button_pointer(Some(point));
+                if captured.is_none()
+                    && matches!(
+                        (action, event_button),
+                        (MouseAction::Motion, MouseButton::None)
+                            | (MouseAction::Press, MouseButton::Left)
+                    )
+                {
+                    self.chat.hover_channel(Some((mouse.x, mouse.y)));
+                }
+                if !wheel && action == MouseAction::Press && self.state.sidebar.active {
+                    self.leave_sidebar();
+                }
+                if captured.is_none()
+                    && event_button == MouseButton::Left
+                    && action == MouseAction::Press
+                    && mouse.modifiers.is_empty()
+                    && self.chat.press_button()
+                {
+                    return Ok(());
+                }
+                if pick_image
+                    && let Some((area, frame)) = self.chat.image_surface()
+                    && let Some(image) = image_at(area, frame)
+                {
+                    self.chat.hover_channel(None);
+                    return self.open_image_viewer(image, size, button);
+                }
+                if event_button == MouseButton::Left
+                    && action == MouseAction::Press
+                    && self.history_selection_owner()
+                    && self
+                        .chat
+                        .begin_history_selection(rect, size, mouse.x, mouse.y)
+                {
+                    self.pointer_capture = Some(PointerCapture::ChatSelection);
+                    return Ok(());
+                }
+                let mut event = mouse;
+                event.x -= rect.x;
+                event.y -= rect.y;
+                if wheel || action == MouseAction::Press {
+                    self.chat.redraw();
+                    let effect =
+                        self.chat
+                            .mouse(event, event_button, action, self.options.read_only);
+                    self.chat_effect(effect);
+                }
+            }
+            return Ok(());
         }
         let target = if let Some(origin) = origin {
             rects.iter().find(|(pane, _)| *pane == origin.pane)
@@ -5019,37 +5354,11 @@ impl App {
         {
             return Ok(());
         }
-        if origin.is_none()
-            && event_button == MouseButton::Left
-            && action == MouseAction::Press
-            && mouse.modifiers == Modifiers::ALT
+        if pick_image
+            && let Some(frame) = self.views.get(pane).and_then(|view| view.frame.as_ref())
+            && let Some(image) = image_at(self.pane_content(*rect), frame)
         {
-            let area = self.pane_content(*rect);
-            let hit = area
-                .contains(mouse.x, mouse.y)
-                .then(|| {
-                    let view = self.views.get(pane)?;
-                    let frame = view.frame.as_ref()?;
-                    let x = f32::from(mouse.x - area.x) + 0.5;
-                    let y = f32::from(mouse.y - area.y) + 0.5;
-                    image_viewer::hit_test(frame, x, y)
-                })
-                .flatten();
-            if let Some(image) = hit {
-                self.last_button = button;
-                self.pointer_capture = Some(PointerCapture::Ui);
-                if !self.colors.graphics.supported() {
-                    self.notify("Image viewing requires Kitty graphics support".into());
-                    return Ok(());
-                }
-                self.image_viewer = Some(image_viewer::ImageViewer::new(image));
-                self.state.prefix = false;
-                self.clear_tree_pointer();
-                self.sidebar_resize_hover = false;
-                self.update_resize_hover(size, None);
-                self.notify_focus()?;
-                return Ok(());
-            }
+            return self.open_image_viewer(image, size, button);
         }
         if origin.is_none() && button == MouseButton::Left && action == MouseAction::Press {
             self.leave_sidebar();
@@ -5383,6 +5692,7 @@ impl App {
             notification_source: None,
             registry,
             state,
+            chat: chat::Chat::default(),
             views: HashMap::new(),
             pane_feedback: HashMap::new(),
             retiring: Vec::new(),
@@ -5500,6 +5810,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         let mut last_input = Instant::now();
         let mut theme = Theme::default();
         let mut ui_palette = crate::themes::Palette::default();
+        let mut chat_palette = None;
+        let mut chat_backgrounds = [ColorSource::Default; 3];
         let mut project_palette = crate::project_colors::ProjectPalette::default();
         let mut chrome_projects = Vec::new();
         let mut chrome_foregrounds = Vec::new();
@@ -5546,6 +5858,14 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         let mut popover_effects = graphics_frame(initial_size);
         let mut image_surface = UiSurface::new(initial_size);
         let mut image_effects = graphics_frame(initial_size);
+        let mut channel_form_effects = graphics_frame(initial_size);
+        let mut channel_choice_surface = UiSurface::new(Size {
+            cols: 1,
+            rows: 1,
+            ..initial_size
+        });
+        let mut channel_choice_effects = graphics_frame(initial_size);
+        let mut chat_button_effects = graphics_frame(initial_size);
         let mut guide_effects = graphics_frame(initial_size);
         let mut artwork_effects = graphics_frame(initial_size);
         let mut tree_artwork =
@@ -5611,6 +5931,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             app.validate_sidebar_resize(size);
             app.validate_resize(size);
             let rects = app.rects(size);
+            let chat_frame = app.chat.visible().then(|| app.screen_geometry(size).1);
             if resource_namespace != Some((attachment, generation))
                 || scoped_panes.len() != rects.len()
                 || scoped_panes
@@ -5637,6 +5958,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             } else {
                 0
             };
+            let chat_rect = chat_frame.map(|outer| app.chat_content(outer));
             app.sync_views(size, &rects)?;
             app.poll_views();
             app.sync_pane_feedback(size, &rects);
@@ -5654,6 +5976,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     .as_ref()
                     .is_some_and(|consent| consent.state.paste);
             let local = app.sidebar_menu.is_some()
+                || app.chat.visible()
                 || app.guide_context() != crate::keyguide::Context::Application;
             terminal.set_enhanced_paste(
                 &mut out,
@@ -5709,6 +6032,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         size,
                         state: &app.state,
                         rects: &rects,
+                        chat_frame,
                         pane_graphics: &pane_graphics,
                         guide_rows,
                     },
@@ -5730,6 +6054,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         size,
                         state: &app.state,
                         rects: &rects,
+                        chat_frame,
                         pane_graphics: &pane_graphics,
                         guide_rows,
                     },
@@ -5762,21 +6087,20 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             graphics.set_enabled(app.chrome_graphics_enabled);
             graphics.prepare_tree_guides(&theme);
             graphics.prepare(ui_colors, size, &marker_sources);
-            graphics.prepare_panes(size, &rects);
+            let frames = rects.iter().map(|(_, rect)| *rect).chain(chat_frame);
+            graphics.prepare_panes(size, frames.clone());
+            let pane_placement_base = 0x10000;
             next_pane_graphics.clear();
             let sidebar_width = app.screen_geometry(size).0.width;
-            for (index, (_, rect)) in rects.iter().enumerate() {
-                if rect.width >= 3 && rect.height >= 3 {
-                    let ready = graphics.decorate_pane(
-                        &mut chrome_surface.frame,
-                        *rect,
-                        index,
-                        0x10000 + (index as u32) * 64,
-                        rect.x == sidebar_width,
-                    );
-                    if ready {
-                        next_pane_graphics.push(*rect);
-                    }
+            for (index, rect) in frames.enumerate() {
+                if graphics.decorate_pane(
+                    &mut chrome_surface.frame,
+                    rect,
+                    index,
+                    pane_placement_base + index as u32 * 64,
+                    rect.x == sidebar_width,
+                ) {
+                    next_pane_graphics.push(rect);
                 }
             }
             if pane_graphics != next_pane_graphics {
@@ -5790,6 +6114,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             size,
                             state: &app.state,
                             rects: &rects,
+                            chat_frame,
                             pane_graphics: &pane_graphics,
                             guide_rows,
                         },
@@ -5809,6 +6134,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             size,
                             state: &app.state,
                             rects: &rects,
+                            chat_frame,
                             pane_graphics: &pane_graphics,
                             guide_rows,
                         },
@@ -5875,7 +6201,10 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     app.views.get(pane).map(|view| &view.metadata)
                 });
             }
-            let regular_modal = consent_open || app.state.form.is_some() || app.picker_open();
+            let regular_modal = consent_open
+                || app.state.form.is_some()
+                || app.picker_open()
+                || app.chat.editor_open();
             let popup =
                 regular_modal || app.image_viewer.is_some() || app.diagnostic_view.is_some();
             let placement = (regular_modal && app.image_viewer.is_none()).then(|| {
@@ -5897,6 +6226,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             };
             let mut form_region = None;
             let mut modal_graphical = false;
+            let mut channel_choice_rect = None;
             if let Some((outer, _)) = placement
                 && let Some(layout) = &picker_cards
             {
@@ -6051,6 +6381,23 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         &theme,
                         pointer,
                         graphics.button_painter(true),
+                    );
+                } else if app.chat.editor_open() {
+                    for effects in [&mut channel_form_effects, &mut channel_choice_effects] {
+                        effects.size = local;
+                        effects.images.clear();
+                        effects.placements.clear();
+                    }
+                    channel_choice_rect = app.chat.paint_editor(
+                        chat_controls::EditorSurfaces {
+                            surface: &mut popup_surface,
+                            effects: &mut channel_form_effects,
+                            choices: &mut channel_choice_surface,
+                            choice_effects: &mut channel_choice_effects,
+                        },
+                        &theme,
+                        app.options.read_only,
+                        &graphics,
                     );
                 } else if let Some(form) = &app.state.form {
                     modal(&mut popup_surface, local, form, &app.registry);
@@ -6375,7 +6722,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 app.overlays.present(
                     "ui:guide",
                     OverlayPlacement::framed(rect, size),
-                    if app.sidebar_menu.is_some() {
+                    if app.sidebar_menu.is_some() || app.chat.editor_open() {
                         OverlayPolicy::PASSIVE
                     } else {
                         OverlayPolicy::COMPANION
@@ -6556,6 +6903,53 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             };
             terminal.set_background(&mut out, background)?;
             app.paint_pane_feedback(size, &rects, &theme);
+            let chat_focused = app.host_focused
+                && !sidebar_active
+                && !popup
+                && !app.state.prefix
+                && app.sidebar_menu.is_none();
+            if let Some(chat_rect) = chat_rect {
+                let palette = (
+                    ui_colors.truecolor,
+                    ui_colors.foreground,
+                    ui_colors.background,
+                    ui_colors.palette.get(&6).copied(),
+                );
+                if chat_palette != Some(palette) {
+                    chat_palette = Some(palette);
+                    chat_backgrounds = crate::appearance::chat_backgrounds(ui_colors)
+                        .map_or([ColorSource::Default; 3], |rgb| rgb.map(ColorSource::Rgb));
+                }
+                app.chat.paint(
+                    chat_rect,
+                    size,
+                    &theme,
+                    app.options.read_only,
+                    ui_colors.graphics.supported(),
+                    chat_focused,
+                    chat_backgrounds,
+                );
+                let ready = graphics.decorate_chat_panes(
+                    &mut chrome_surface.frame,
+                    chat_rect,
+                    app.chat.inlays(),
+                    pane_placement_base + (rects.len() as u32 + 1) * 64,
+                    app.chat.history_selection_spans(),
+                    app.chat.row_highlights(),
+                );
+                app.chat.set_graphical_inlays(ready, &theme);
+                app.chat.paint_buttons(
+                    &mut chat_button_effects,
+                    &theme,
+                    graphics.button_painter(true),
+                );
+                let transports = app.chat.transports();
+                if !transports.is_empty() {
+                    terminal.register_prepared_transports(&transports);
+                }
+                app.schedule_chat();
+            }
+            app.history_clipboard(&mut out)?;
             fds.clear();
             fds.extend([
                 libc::pollfd {
@@ -6645,6 +7039,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     view.transports.clear();
                 }
             }
+            let mut hits = None;
             let hits = loop {
                 title_animation.apply(&mut chrome_surface.frame);
                 let mut surfaces = vec![Surface {
@@ -6667,6 +7062,37 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         && app.sidebar_menu.is_none(),
                     faint: faint_background,
                 }];
+                if let Some((chat_rect, outer)) = chat_rect.zip(chat_frame) {
+                    let surface = Surface {
+                        palette: None,
+                        id: "ui:chat",
+                        content: SurfaceContent::Cells,
+                        rect: chat_rect,
+                        frame: &app.chat.surface().frame,
+                        selection: app.chat.history_selection_spans(),
+                        search: &[],
+                        focused: chat_focused,
+                        faint: faint_background,
+                    };
+                    if let Some(gutters) = surface.horizontal_gutters(content(outer), &gutter_frame)
+                    {
+                        surfaces.extend(gutters);
+                    }
+                    surfaces.push(surface);
+                    if let Some((rect, frame)) = app.chat.image_surface() {
+                        surfaces.push(Surface {
+                            palette: None,
+                            id: "ui:chat-images",
+                            content: SurfaceContent::Graphics,
+                            rect,
+                            frame,
+                            selection: &[],
+                            search: &[],
+                            focused: false,
+                            faint: faint_background,
+                        });
+                    }
+                }
                 for (id, outer) in &rects {
                     let rect = app.pane_content(*outer);
                     if rect.height == 0 || rect.width == 0 {
@@ -6794,6 +7220,21 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     focused: false,
                     faint: faint_background,
                 });
+                if let Some(rect) = chat_rect
+                    && !chat_button_effects.placements.is_empty()
+                {
+                    surfaces.push(Surface {
+                        palette: None,
+                        id: "ui:chat:buttons",
+                        content: SurfaceContent::Graphics,
+                        rect,
+                        frame: &chat_button_effects,
+                        selection: &[],
+                        search: &[],
+                        focused: false,
+                        faint: faint_background,
+                    });
+                }
                 for segment in &resize_feedback_regions {
                     surfaces.push(Surface {
                         palette: None,
@@ -7135,6 +7576,52 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         focused: false,
                         faint: faint_background && !layer.policy.modal,
                     });
+                    if layer.id == "ui:modal"
+                        && app.chat.editor_open()
+                        && !consent_open
+                        && !channel_form_effects.placements.is_empty()
+                    {
+                        surfaces.push(Surface {
+                            palette: None,
+                            id: "ui:modal:channel-controls",
+                            content: SurfaceContent::Graphics,
+                            rect: layer.placement.content,
+                            frame: &channel_form_effects,
+                            selection: &[],
+                            search: &[],
+                            focused: false,
+                            faint: false,
+                        });
+                    }
+                    if layer.id == "ui:modal"
+                        && let Some(rect) = channel_choice_rect
+                    {
+                        let origin = layer.placement.content;
+                        let rect = Rect {
+                            x: origin.x + rect.x,
+                            y: origin.y + rect.y,
+                            ..rect
+                        };
+                        surfaces.push(Surface {
+                            palette: None,
+                            id: "ui:modal:channel-choices",
+                            content: SurfaceContent::All,
+                            rect,
+                            frame: &channel_choice_surface.frame,
+                            selection: &[],
+                            search: &[],
+                            focused: false,
+                            faint: false,
+                        });
+                        if !channel_choice_effects.placements.is_empty() {
+                            surfaces.push(button_graphics(
+                                "ui:modal:channel-choice-rim",
+                                origin,
+                                &channel_choice_effects,
+                                false,
+                            ));
+                        }
+                    }
                 }
                 if let Some(artwork) = artwork_surface {
                     surfaces.push(artwork);
@@ -7216,6 +7703,18 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     &mut terminal,
                     Some(&tree_artwork),
                 )?;
+                if hits.is_none() {
+                    hits = Some(scene.hit_map());
+                    if chat_rect.is_some() {
+                        app.chat.attend(
+                            chat_focused
+                                && tooltip.is_none()
+                                && terminal.observed_focus() == Some(true),
+                            app.options.read_only,
+                        );
+                        app.schedule_chat();
+                    }
+                }
                 let ready = unsafe {
                     libc::poll(
                         fds.as_mut_ptr(),
@@ -7232,7 +7731,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 if ready == 0 && now < presentation_deadline && title_animation.clock.advance(now) {
                     continue;
                 }
-                break scene.hit_map();
+                break hits.expect("the first presentation determines hit geometry");
             };
             let mut resized = [0u8; 64];
             let mut geometry_changed = false;
@@ -7247,6 +7746,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             if geometry_changed {
                 app.cancel_button_presses();
                 app.retire_resize();
+                app.chat.clear_history_selection();
                 app.validate_sidebar_resize(input_size);
                 app.clear_resize_hover();
                 app.sidebar_resize_hover = false;
@@ -7364,6 +7864,31 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
     result.and(sessions.finish())
 }
 
+fn finish_chat_write(
+    chat: &mut chat::Chat,
+    completion: jobs::Completion<Background>,
+) -> Result<()> {
+    if !chat.is_shutdown_write(&completion.key) {
+        return Ok(());
+    }
+    let result = completion.result.and_then(|value| match value {
+        Background::Chat(result) => *result,
+        _ => bail!("chat job returned an unrelated completion"),
+    });
+    chat.complete(&completion.key, result, true)
+        .map_or(Ok(()), |(summary, error)| {
+            Err(anyhow::anyhow!("{summary} {error:#}"))
+        })
+}
+
+fn unresolved_chat_send(chat: &chat::Chat) -> Result<()> {
+    anyhow::ensure!(
+        !chat.has_unknown_send(),
+        "A channel post may have been committed without a receipt. Check channel history before resending."
+    );
+    Ok(())
+}
+
 fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
     app.cancel_recovery();
     let endpoint = app.socket.clone();
@@ -7374,6 +7899,13 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
         match app.jobs.finish() {
             Ok(completions) => {
                 for completion in completions {
+                    if completion.key.starts_with("chat:") {
+                        accumulate_cleanup(
+                            &mut finished,
+                            finish_chat_write(&mut app.chat, completion),
+                        );
+                        continue;
+                    }
                     accumulate_cleanup(
                         &mut finished,
                         shutdown_result(completion.result.map(|_| ()), socket.session_ended()),
@@ -7382,6 +7914,7 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
             }
             Err(error) => accumulate_cleanup(&mut finished, Err(error)),
         }
+        accumulate_cleanup(&mut finished, unresolved_chat_send(&app.chat));
         accumulate_cleanup(&mut finished, app.input.finish());
         accumulate_cleanup(
             &mut finished,
@@ -7446,6 +7979,10 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
     match app.jobs.finish() {
         Ok(completions) => {
             for completion in completions {
+                if completion.key.starts_with("chat:") {
+                    accumulate_cleanup(&mut cleanup, finish_chat_write(&mut app.chat, completion));
+                    continue;
+                }
                 match completion.result {
                     Ok(Background::Attached { pane, mut attached }) => {
                         accumulate_cleanup(
@@ -7463,6 +8000,10 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
                         accumulate_cleanup(&mut cleanup, result.context(completion.key));
                     }
                     Ok(Background::Management(_) | Background::Resize(_)) => {}
+                    Ok(Background::Chat(_)) => accumulate_cleanup(
+                        &mut cleanup,
+                        Err(anyhow::anyhow!("chat receipt escaped its owner")),
+                    ),
                     Ok(Background::Recovery(result)) => {
                         if let recovery_ui::Completion::Resumed {
                             result: Err(failure),
@@ -7490,6 +8031,7 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
         }
         Err(error) => accumulate_cleanup(&mut cleanup, Err(error)),
     }
+    accumulate_cleanup(&mut cleanup, unresolved_chat_send(&app.chat));
     for mut candidate in std::mem::take(&mut app.retiring_candidates) {
         // Never displayed, so no user input was addressed to this view.
         accumulate_cleanup(
@@ -7671,6 +8213,7 @@ pub(super) mod tests {
                 }),
                 registry,
                 state,
+                chat: chat::Chat::default(),
                 views: HashMap::new(),
                 pane_feedback: HashMap::new(),
                 retiring: Vec::new(),
@@ -8070,7 +8613,16 @@ pub(super) mod tests {
             owner: foreign,
             node: TreeNode::Session,
         };
-        let tree_hits = vec![(target.clone(), 3)];
+        let row = {
+            let tree = app.tree.lock().unwrap();
+            let index = tree
+                .rows
+                .iter()
+                .position(|row| row.target.as_ref() == Some(&target))
+                .unwrap();
+            (index - tree.scroll) as u16 + 2
+        };
+        let tree_hits = vec![(target.clone(), row)];
         let size = size();
         let frame = blank(size);
         let hits = Scene {
@@ -8095,11 +8647,9 @@ pub(super) mod tests {
         .hit_map();
         let mut parser = InputParser::new();
         let mut demux = ReplyDemux::default();
-        for (packet, pressed) in [
-            (b"\x1b[<0;3;4M".as_slice(), true),
-            (b"\x1b[<0;3;4m".as_slice(), false),
-        ] {
-            for event in decode_input(&mut parser, demux.feed(packet), false) {
+        for (suffix, pressed) in [('M', true), ('m', false)] {
+            let packet = format!("\x1b[<0;3;{}{suffix}", row + 1);
+            for event in decode_input(&mut parser, demux.feed(packet.as_bytes()), false) {
                 let ClientEvent::Mouse {
                     event,
                     button,
@@ -9262,6 +9812,7 @@ pub(super) mod tests {
                     size,
                     state: &app.state,
                     rects: &rects,
+                    chat_frame: None,
                     pane_graphics: &[],
                     guide_rows: 0,
                 },
@@ -12234,6 +12785,33 @@ pub(super) mod tests {
         assert_eq!(projected, vec!["owner-neighbor", "removed-pane"]);
         assert_eq!(serde_json::to_value(&app.registry).unwrap(), before);
         assert_eq!(app.management.len(), 1);
+    }
+
+    #[test]
+    fn detach_reports_rejected_chat_writes_but_not_canceled_observations() {
+        let (mut app, _) = fixture();
+        let key = app.chat.track(chat::JobKind::EditorWrite(1));
+        let receipt = jobs::Completion {
+            key,
+            result: Ok(Background::Chat(Box::new(Err(anyhow::anyhow!(
+                "fixture rejected channel settings"
+            ))))),
+        };
+        let error = finish_chat_write(&mut app.chat, receipt).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("fixture rejected channel settings")
+        );
+
+        let key = app.chat.track(chat::JobKind::EditorRead(1));
+        let receipt = jobs::Completion {
+            key,
+            result: Ok(Background::Chat(Box::new(Err(anyhow::anyhow!(
+                "fixture canceled channel observation"
+            ))))),
+        };
+        finish_chat_write(&mut app.chat, receipt).unwrap();
     }
 
     fn submitted_form_operation(kind: FormKind, prepare: impl FnOnce(&mut App)) -> Operation {

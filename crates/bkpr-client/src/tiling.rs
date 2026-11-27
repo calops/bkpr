@@ -79,6 +79,16 @@ pub(crate) fn partition(rect: Rect, axis: Axis, ratio: u16) -> Option<(Rect, Rec
     }
     let usable = length(rect, axis) - 1;
     let first = boundary(usable, ratio);
+    partition_at(rect, axis, first)
+}
+
+/// Partition at a cell offset, with both frames sharing the divider cell.
+pub(crate) fn partition_at(rect: Rect, axis: Axis, first: u16) -> Option<(Rect, Rect, Rect)> {
+    let rect = visible_area(rect);
+    let usable = length(rect, axis).saturating_sub(1);
+    if rect.width < 3 || rect.height < 3 || first < 2 || usable.saturating_sub(first) < 2 {
+        return None;
+    }
     Some(match axis {
         Axis::Horizontal => (
             Rect {

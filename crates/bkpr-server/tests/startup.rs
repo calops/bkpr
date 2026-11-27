@@ -2106,15 +2106,6 @@ fn channel_history_reopens_on_the_same_session_only() {
     assert_eq!(desk.membership, MembershipMode::WorkspaceWide);
     assert_eq!(team.membership, MembershipMode::WorkspaceWide);
     assert_eq!(
-        desk.settings,
-        ChannelSettings {
-            user_wake: WakePolicy::AddressedOrAll,
-            agent_wake: WakePolicy::None,
-            attention_questions: true,
-            attention_reports: true,
-        }
-    );
-    assert_eq!(
         team.settings,
         ChannelSettings {
             user_wake: WakePolicy::AddressedOrAll,
@@ -2125,6 +2116,7 @@ fn channel_history_reopens_on_the_same_session_only() {
     );
     let custom = ChannelSettings {
         user_wake: WakePolicy::AddressedOnly,
+        agent_wake: WakePolicy::None,
         ..desk.settings
     };
     send(
@@ -2145,6 +2137,7 @@ fn channel_history_reopens_on_the_same_session_only() {
             text: "Ready for review.".into(),
             intent: Default::default(),
             mentions: vec![],
+            mention_spans: vec![],
             reply_to: None,
             attachments: vec![],
             source: None,

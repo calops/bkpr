@@ -385,7 +385,7 @@ table ChannelPost {
   mentions:[string] (required);
   reply_to:string;
   attachments:[string] (required);
-  reserved_mention_spans:ubyte (deprecated);
+  mention_spans:[ChannelMentionSpan];
   source:ChannelSource;
 }
 table ChannelCursor { channel_id:string (required); sequence:ulong; }
@@ -467,6 +467,22 @@ table ChannelRequestCatalogSubscribe {
   limit:ushort;
   wait_ms:uint;
 }
+table ChannelMentionBinding {
+  participant_id:string (required);
+  launch_id:string (required);
+  binding_generation:ulong;
+}
+table ChannelRequestUserRoster {
+  workspace_id:string (required);
+  channel_id:string;
+  after:string;
+  limit:ushort;
+}
+table ChannelRequestPostUser {
+  channel_id:string (required);
+  post:ChannelPost (required);
+  bindings:[ChannelMentionBinding] (required);
+}
 union ChannelRequest {
   ChannelRequestList,
   ChannelRequestListMembers,
@@ -483,7 +499,9 @@ union ChannelRequest {
   ChannelRequestListArchivedWorkspaces,
   ChannelRequestListExplicitMembers,
   ChannelRequestCatalogSnapshot,
-  ChannelRequestCatalogSubscribe
+  ChannelRequestCatalogSubscribe,
+  ChannelRequestUserRoster,
+  ChannelRequestPostUser
 }
 table OperationChannels { request:ChannelRequest (required); }
 union Operation {
@@ -881,7 +899,7 @@ table ChannelMessageSummary {
   mentions:[string] (required);
   reply_to:string;
   attachments:[string] (required);
-  reserved_mention_spans:ubyte (deprecated);
+  mention_spans:[ChannelResolvedMentionSpan];
   source:ChannelSource;
 }
 table ChannelChange { sequence:ulong; kind:ChannelChangeKind; }
@@ -940,7 +958,10 @@ table ChannelResponseExplicitMembers {
   members:[string] (required);
   next_after:string;
 }
-table ChannelCatalogUpsert { channel:ChannelSummary (required); }
+table ChannelCatalogUpsert {
+  channel:ChannelSummary (required);
+  // Do not reuse the former experimental attention slot.
+}
 table ChannelCatalogWorkspaceClosed { workspace_id:string (required); }
 union ChannelCatalogChangeBody { ChannelCatalogUpsert, ChannelCatalogWorkspaceClosed }
 table ChannelCatalogChange { body:ChannelCatalogChangeBody (required); }
@@ -955,6 +976,14 @@ table ChannelResponseCatalogChanges {
   more:bool;
 }
 table ChannelResponseCatalogReset {}
+table ChannelRosterEntry {
+  participant:ChannelParticipant (required);
+  binding:ChannelMentionBinding;
+}
+table ChannelResponseUserRoster {
+  participants:[ChannelRosterEntry] (required);
+  next_after:string;
+}
 union ChannelResponse {
   ChannelResponseListed,
   ChannelResponseMembers,
@@ -970,7 +999,8 @@ union ChannelResponse {
   ChannelResponseExplicitMembers,
   ChannelResponseCatalogSnapshot,
   ChannelResponseCatalogChanges,
-  ChannelResponseCatalogReset
+  ChannelResponseCatalogReset,
+  ChannelResponseUserRoster
 }
 table ChannelPayload { response:ChannelResponse (required); }
 union Payload { ControlPayload, PanePayload, ImageResourcePayload, ChannelPayload }
@@ -978,3 +1008,14 @@ table Request { version:uint; operation:Operation (required); }
 table OptionalPayload { value:Payload (required); }
 table OptionalFailure { value:RequestFailure (required); }
 table Response { version:uint; ok:bool; result:OptionalPayload; error:string; failure:OptionalFailure; }
+
+table ChannelMentionSpan {
+  start:uint;
+  end:uint;
+  participant_id:string (required);
+}
+table ChannelResolvedMentionSpan {
+  start:uint;
+  end:uint;
+  participant:ChannelParticipant (required);
+}

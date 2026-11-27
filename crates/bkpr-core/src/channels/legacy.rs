@@ -402,6 +402,7 @@ fn archive_post(
         posted_at_ms: timestamp,
         intent: PostIntent::Note,
         mentions: Vec::new(),
+        mention_spans: Vec::new(),
         reply_to: None,
         attachments: Vec::new(),
         source: None,

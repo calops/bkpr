@@ -2,8 +2,8 @@
 
 use anyhow::{Result, ensure};
 use bkpr_protocol::channels::{
-    AttachmentMediaType, AttachmentUpload, ChannelCursor, ChannelId, ChannelRequest,
-    ChannelResponse, ChannelSubscriptionStatus, Participant, ParticipantId,
+    AttachmentMediaType, AttachmentUpload, ChannelCursor, ChannelId, ChannelMentionBinding,
+    ChannelRequest, ChannelResponse, ChannelSubscriptionStatus, Participant, ParticipantId,
 };
 use bkpr_protocol::{ChannelNotificationSource, SessionInfo};
 use std::{
@@ -11,7 +11,7 @@ use std::{
     io::Cursor,
     path::{Path, PathBuf},
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -26,6 +26,7 @@ const MAX_REQUESTS: usize = 16;
 const MAX_SUBSCRIBERS: usize = 16;
 const CANCEL_CHECK: Duration = Duration::from_millis(100);
 const STORE_WAIT: Duration = Duration::from_secs(1);
+pub(crate) const STALE_USER_MENTION: &str = "selected channel mention changed or left the channel; refresh the roster and select it again; nothing was posted";
 
 /// Current workspace participant supplied by the authenticated owner, not the request.
 pub struct WorkspaceParticipant {
@@ -103,7 +104,11 @@ pub(crate) struct ChannelRoutes<'a> {
     pub(crate) publish: &'a dyn Fn(&[WakeTarget<'_>]),
     pub(crate) binding_live: &'a dyn Fn(&str, u64) -> bool,
     pub(crate) direct_peer: &'a dyn Fn(&ParticipantId) -> Result<Option<WorkspaceParticipant>>,
+    pub(crate) fence_user_mentions: &'a UserMentionFence<'a>,
 }
+
+pub(crate) type UserMentionFence<'a> =
+    dyn Fn(&str, &[ChannelMentionBinding]) -> Result<MutexGuard<'a, ()>> + 'a;
 
 /// Channel storage and bounded subscription admission for one exclusively leased session.
 pub struct ChannelEngine {
@@ -234,6 +239,7 @@ impl ChannelEngine {
         workspace_open: impl Fn(&str) -> bool,
         cancelled: impl Fn() -> bool,
     ) -> Result<ChannelResponse> {
+        let fence = Mutex::new(());
         self.request_routed(
             request,
             admit,
@@ -245,6 +251,7 @@ impl ChannelEngine {
                 publish: &|_| {},
                 binding_live: &|_, _| true,
                 direct_peer: &|_| Ok(None),
+                fence_user_mentions: &|_, _| Ok(fence.lock().unwrap()),
             },
         )
     }

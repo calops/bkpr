@@ -1,6 +1,10 @@
 use super::*;
 use crate::attachments::SessionTarget;
 use crate::transport::Lifecycle;
+use bkpr_protocol::channels::{
+    ChannelId, ChannelRequest, ChannelResponse, ChannelSummary, MAX_PAGE_LIMIT,
+};
+use bkpr_protocol::{ChannelNotificationSource, NotificationSource};
 use std::{io, sync::Mutex};
 use tokio_util::sync::CancellationToken;
 
@@ -141,6 +145,14 @@ struct PendingStop {
     origin: crate::tree::Owner,
 }
 
+struct ChannelActivation {
+    origin: crate::tree::Owner,
+    origin_selection: u64,
+    owner: crate::tree::Owner,
+    target: ChannelNotificationSource,
+    lookup: crate::observation::Observer<Option<ChannelSummary>>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Queued,
@@ -159,7 +171,8 @@ struct Session {
     owner: Option<Attachment>,
     app: Option<App>,
     registry: Option<Pump<RegistrySnapshot>>,
-    notifications: Option<crate::notification_updates::Observer>,
+    notifications: Option<crate::observation::Observer<bkpr_protocol::NotificationPage>>,
+    catalog: Option<crate::observation::Observer<crate::catalog_updates::Update>>,
     notifications_attempted: bool,
     phase: Phase,
     status: String,
@@ -187,6 +200,7 @@ impl Session {
             app: None,
             registry: None,
             notifications: None,
+            catalog: None,
             notifications_attempted: false,
             phase: Phase::Queued,
             status: "queued".into(),
@@ -287,6 +301,7 @@ pub(super) struct Coordinator {
     retirement_jobs: Option<jobs::Jobs<Retirement>>,
     desktop: crate::desktop::Desktop,
     notification_turn: usize,
+    channel_activation: Option<ChannelActivation>,
     stops: HashMap<String, PendingStop>,
     stop_error: Option<anyhow::Error>,
 }
@@ -463,8 +478,12 @@ fn refresh_presentation(index: usize, session: &mut Session, empty: &EmptyMetada
                 statuses,
                 history,
                 app.state.workspace.as_ref(),
-                app.state.window.as_ref(),
-                app.state.focused.as_ref(),
+                (!app.chat.visible())
+                    .then_some(app.state.window.as_ref())
+                    .flatten(),
+                (!app.chat.visible())
+                    .then_some(app.state.focused.as_ref())
+                    .flatten(),
             )
         } else {
             (
@@ -614,6 +633,7 @@ impl Coordinator {
             retirement_jobs: Some(retirement_jobs),
             desktop: crate::desktop::Desktop::default(),
             notification_turn: 0,
+            channel_activation: None,
             stops: HashMap::new(),
             stop_error: None,
         })
@@ -833,6 +853,13 @@ impl Coordinator {
 
     fn retire_current(&mut self, index: usize, graceful: bool) -> Result<()> {
         self.remember_origins();
+        if self
+            .channel_activation
+            .as_ref()
+            .is_some_and(|pending| pending.owner.slot == index || pending.origin.slot == index)
+        {
+            self.channel_activation = None;
+        }
         let session = &mut self.sessions[index];
         let mut owner = session.owner.take();
         let retirement_token = if graceful && owner.is_some() {
@@ -852,6 +879,18 @@ impl Coordinator {
         };
         session.registry.take();
         session.notifications.take();
+        session.catalog.take();
+        self.desktop.cancel_channels(crate::tree::Owner {
+            slot: index,
+            generation: session.generation,
+        });
+        self.tree.lock().unwrap().set_channel_attention(
+            crate::tree::Owner {
+                slot: index,
+                generation: session.generation,
+            },
+            HashSet::new(),
+        );
         session.notifications_attempted = false;
         let mut app = session.app.take();
         if let Some(app) = &mut app {
@@ -1219,6 +1258,7 @@ impl Coordinator {
         if self.sessions[self.selected].present && !self.app().session_navigation_allowed() {
             return Ok(());
         }
+        self.channel_activation = None;
         let old = self.selected;
         self.remember_origins();
         if let Some(app) = self.sessions[old].app.as_mut() {
@@ -1409,6 +1449,10 @@ impl Coordinator {
                     let session = &mut self.sessions[index];
                     session.owner = Some(owner);
                     session.registry = Some(registry_pump);
+                    match crate::catalog_updates::start(app.socket.clone()) {
+                        Ok(catalog) => session.catalog = Some(catalog),
+                        Err(error) => app.chat.catalog_error(&error),
+                    }
                     session.app = Some(app);
                     session.failures = 0;
                     session.ever_active = true;
@@ -1491,7 +1535,15 @@ impl Coordinator {
                     self.remove(index, size, true)?;
                 }
             }
+            if let Some(update) = self.sessions[index]
+                .catalog
+                .as_mut()
+                .and_then(|catalog| catalog.next())
+            {
+                self.apply_channel_catalog(index, update);
+            }
         }
+        self.complete_channel_activation(size)?;
         if self.started {
             for remote in [false, true] {
                 for index in 0..self.sessions.len() {
@@ -1544,6 +1596,48 @@ impl Coordinator {
         Ok(())
     }
 
+    fn apply_channel_catalog(
+        &mut self,
+        index: usize,
+        update: Result<crate::catalog_updates::Update>,
+    ) {
+        use crate::catalog_updates::Update;
+        let session = &mut self.sessions[index];
+        let Some(app) = &mut session.app else { return };
+        let owner = crate::tree::Owner {
+            slot: index,
+            generation: session.generation,
+        };
+        let replace_badges = match update {
+            Ok(Update::Snapshot(catalog)) => {
+                app.chat.replace_catalog(catalog);
+                true
+            }
+            Ok(Update::Reset) => {
+                app.chat.reset_catalog();
+                true
+            }
+            Ok(Update::Changes(changes)) => app.chat.apply_catalog_changes(changes),
+            Err(error) => {
+                session.catalog.take();
+                app.chat.catalog_error(&error);
+                true
+            }
+        };
+        if replace_badges {
+            self.publish_channel_attention(owner);
+        }
+    }
+
+    fn publish_channel_attention(&self, owner: crate::tree::Owner) {
+        let app = self.sessions[owner.slot].app.as_ref().unwrap();
+        let workspaces = app.chat.attention().map(str::to_owned).collect();
+        self.tree
+            .lock()
+            .unwrap()
+            .set_channel_attention(owner, workspaces);
+    }
+
     pub fn append_poll_fds(&self, fds: &mut Vec<libc::pollfd>) {
         fds.push(libc::pollfd {
             fd: self.connections.as_ref().unwrap().wake.as_raw_fd(),
@@ -1560,6 +1654,13 @@ impl Coordinator {
             events: libc::POLLIN,
             revents: 0,
         });
+        if let Some(pending) = &self.channel_activation {
+            fds.push(libc::pollfd {
+                fd: pending.lookup.wake.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            });
+        }
         for (index, session) in self.sessions.iter().enumerate() {
             if session.stop == StopState::Pending {
                 if let Some(owner) = &session.owner {
@@ -1574,6 +1675,10 @@ impl Coordinator {
             for fd in [
                 session.owner.as_ref().map(Attachment::lifetime_fd),
                 session.registry.as_ref().map(|pump| pump.wake.as_raw_fd()),
+                session
+                    .catalog
+                    .as_ref()
+                    .map(|observer| observer.wake.as_raw_fd()),
                 session
                     .notifications
                     .as_ref()
@@ -1641,6 +1746,7 @@ impl Coordinator {
             terminal,
             out,
         )?;
+        self.channel_notifications(terminal, out)?;
         if !terminal
             .notification_capabilities()
             .is_some_and(|caps| caps.title)
@@ -1656,7 +1762,7 @@ impl Coordinator {
                 continue;
             };
             session.notifications_attempted = true;
-            match crate::notification_updates::Observer::start(owner.endpoint()) {
+            match crate::notification_updates::start(owner.endpoint()) {
                 Ok(observer) => session.notifications = Some(observer),
                 Err(error) => self.app_mut().notify(format!(
                     "Desktop notification subscription unavailable: {error:#}"
@@ -1702,41 +1808,45 @@ impl Coordinator {
                 slot: index,
                 generation: session.generation,
             };
-            let attended = (index == self.selected && terminal.observed_focus() == Some(true))
+            let Some(attachment) = &session.owner else {
+                continue;
+            };
+            let physically_focused =
+                index == self.selected && terminal.observed_focus() == Some(true);
+            let attended = physically_focused
                 .then(|| session.app.as_ref().and_then(App::focused_application))
                 .flatten();
             for record in page.notifications {
-                self.desktop.show(
-                    owner,
-                    record,
-                    |source| {
-                        let attachment = session.owner.as_ref()?;
-                        if !crate::desktop::source_session_is_current(source, attachment.info()) {
-                            return None;
-                        }
-                        let context = session
-                            .app
-                            .as_ref()
-                            .map(|app| {
-                                crate::desktop::Context::resolve(
-                                    source,
-                                    attachment.info(),
-                                    &app.registry,
-                                )
-                            })
-                            .unwrap_or_default();
-                        if context.current
-                            && attended
-                                .as_ref()
-                                .is_some_and(|(pane, _)| *pane == source.pane_id)
-                        {
-                            return None;
-                        }
-                        Some(context)
-                    },
-                    terminal,
-                    out,
-                )?;
+                let NotificationSource::Pane(source) = &record.source else {
+                    if let NotificationSource::Channel(source) = &record.source
+                        && crate::desktop::source_session_is_current(
+                            &source.session,
+                            attachment.info(),
+                        )
+                    {
+                        self.desktop.queue_channel(owner, record);
+                    }
+                    continue;
+                };
+                if !crate::desktop::source_session_is_current(&source.session, attachment.info()) {
+                    continue;
+                }
+                let context = session
+                    .app
+                    .as_ref()
+                    .map(|app| {
+                        crate::desktop::Context::resolve(source, attachment.info(), &app.registry)
+                    })
+                    .unwrap_or_default();
+                if context.current
+                    && attended
+                        .as_ref()
+                        .is_some_and(|(pane, _)| *pane == source.pane_id)
+                {
+                    continue;
+                }
+                let context = context.description(source);
+                self.desktop.show(owner, record, &context, terminal, out)?;
             }
             out.flush()?;
             break;
@@ -1744,6 +1854,248 @@ impl Coordinator {
         Ok(())
     }
 
+    fn channel_notifications(
+        &mut self,
+        terminal: &mut TerminalGuard,
+        out: &mut impl Write,
+    ) -> Result<()> {
+        let now = Instant::now();
+        let mut attempted = false;
+        for _ in 0..bkpr_protocol::channels::MAX_PAGE_LIMIT {
+            let Some(alert) = self.desktop.next_channel(now) else {
+                break;
+            };
+            let Some(session) = self.sessions.get(alert.owner.slot).filter(|session| {
+                session.present
+                    && session.phase == Phase::Online
+                    && session.generation == alert.owner.generation
+            }) else {
+                continue;
+            };
+            let NotificationSource::Channel(source) = &alert.record.source else {
+                continue;
+            };
+            let Some(attachment) = &session.owner else {
+                continue;
+            };
+            if !crate::desktop::source_session_is_current(&source.session, attachment.info()) {
+                continue;
+            }
+            let app = session.app.as_ref();
+            let channel =
+                app.and_then(|app| app.chat.channel(&source.workspace_id, &source.channel_id));
+            let attending = alert.owner.slot == self.selected
+                && terminal.observed_focus() == Some(true)
+                && channel.is_some()
+                && app.is_some_and(|app| {
+                    app.chat.workspace() == Some(source.workspace_id.as_str())
+                        && app.chat.is_attending()
+                        && !app.state.sidebar.active
+                        && !app.state.prefix
+                        && app.session_navigation_allowed()
+                        && !app.diagnostic_active()
+                        && app.image_viewer.is_none()
+                        && app.chat.rendered(
+                            &source.channel_id,
+                            &source.message_id,
+                            source.sequence,
+                        )
+                });
+            if attending {
+                continue;
+            }
+            let workspace = app.and_then(|app| {
+                app.registry
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == source.workspace_id)
+            });
+            let context = format!(
+                "{} · {} · {}",
+                safe_text(&attachment.info().name),
+                safe_text(workspace.map_or("Unknown workspace", |workspace| &workspace.name)),
+                safe_text(channel.map_or("Unknown channel", |channel| &channel.name)),
+            );
+            self.desktop
+                .show(alert.owner, alert.record, &context, terminal, out)?;
+            attempted = true;
+        }
+        if attempted {
+            out.flush()?;
+        }
+        Ok(())
+    }
+
+    fn channel_notification_session(
+        &self,
+        owner: crate::tree::Owner,
+        target: &ChannelNotificationSource,
+    ) -> Option<(&Attachment, &App)> {
+        let session = self.sessions.get(owner.slot)?;
+        if !session.present
+            || session.phase != Phase::Online
+            || session.stop != StopState::None
+            || session.generation != owner.generation
+        {
+            return None;
+        }
+        session
+            .owner
+            .as_ref()
+            .zip(session.app.as_ref())
+            .filter(|(attachment, app)| {
+                !app.socket.is_revoked()
+                    && crate::desktop::source_session_is_current(&target.session, attachment.info())
+            })
+    }
+
+    fn channel_navigation_allowed(&self) -> bool {
+        let app = self.app();
+        app.session_navigation_allowed() && !app.diagnostic_active() && app.image_viewer.is_none()
+    }
+
+    fn start_channel_activation(
+        &mut self,
+        owner: crate::tree::Owner,
+        target: ChannelNotificationSource,
+    ) {
+        let Some((attachment, app)) = self.channel_notification_session(owner, &target) else {
+            self.app_mut()
+                .notify("The original channel is no longer available.".into());
+            return;
+        };
+        if !self.channel_navigation_allowed() {
+            self.app_mut()
+                .notify("Close the active dialog before opening the channel.".into());
+            return;
+        }
+        let endpoint = attachment.endpoint();
+        let workspace = app
+            .chat
+            .channel(&target.workspace_id, &target.channel_id)
+            .is_none()
+            .then(|| target.workspace_id.clone());
+        let channel_id = target.channel_id.clone();
+        let message_id = target.message_id.clone();
+        let sequence = target.sequence;
+        let lookup = crate::observation::Observer::spawn(
+            "bkpr-channel-activation",
+            endpoint,
+            move |endpoint, mut publisher| async move {
+                let result = async {
+                    let summary = match workspace {
+                        Some(workspace) => Some(
+                            find_notification_channel(
+                                &endpoint,
+                                &publisher.cancellation,
+                                workspace,
+                                &channel_id,
+                            )
+                            .await?,
+                        ),
+                        None => None,
+                    };
+                    let payload = endpoint
+                        .checked_observation_payload_async(
+                            Operation::Channels {
+                                request: ChannelRequest::Read {
+                                    channel_id,
+                                    message_id: message_id.clone(),
+                                },
+                            },
+                            &publisher.cancellation,
+                        )
+                        .await?;
+                    anyhow::ensure!(
+                        matches!(payload, Payload::Channels(ChannelResponse::Message { message })
+                            if message.message.id == message_id && message.message.sequence == sequence),
+                        "channel notification does not match the retained message",
+                    );
+                    Ok(summary)
+                }
+                .await;
+                publisher.send(&endpoint, result).await;
+            },
+        );
+        match lookup {
+            Ok(lookup) => {
+                self.channel_activation = Some(ChannelActivation {
+                    origin: self.current_owner(),
+                    origin_selection: self.app().selection_epoch,
+                    owner,
+                    target,
+                    lookup,
+                });
+            }
+            Err(error) => {
+                self.app()
+                    .report_failure("Couldn't open the channel notification.", &error);
+            }
+        }
+    }
+
+    fn complete_channel_activation(&mut self, size: Size) -> Result<()> {
+        let Some(pending) = self.channel_activation.as_ref() else {
+            return Ok(());
+        };
+        if pending.origin != self.current_owner()
+            || pending.origin_selection != self.app().selection_epoch
+            || !self.channel_navigation_allowed()
+            || self
+                .channel_notification_session(pending.owner, &pending.target)
+                .is_none()
+        {
+            self.channel_activation = None;
+            return Ok(());
+        }
+        let Some(result) = self.channel_activation.as_mut().unwrap().lookup.next() else {
+            return Ok(());
+        };
+        let ChannelActivation { owner, target, .. } = self.channel_activation.take().unwrap();
+        let app = self.sessions[owner.slot].app.as_ref().unwrap();
+        let missing = app
+            .chat
+            .channel(&target.workspace_id, &target.channel_id)
+            .is_none();
+        let summary = match result {
+            Ok(summary) => summary,
+            Err(error) => {
+                self.app()
+                    .report_failure("The original channel message could not be opened.", &error);
+                return Ok(());
+            }
+        };
+        if (missing && summary.is_none())
+            || !app
+                .registry
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.id == target.workspace_id)
+        {
+            self.app_mut()
+                .notify("The original channel is no longer available.".into());
+            return Ok(());
+        }
+        self.select(owner.slot, size)?;
+        if self.selected != owner.slot {
+            return Ok(());
+        }
+        let app = self.app_mut();
+        let badges_changed = missing && summary.is_some_and(|summary| app.chat.upsert(summary));
+        app.open_chat(target.workspace_id.clone());
+        app.chat.jump(
+            target.workspace_id,
+            target.channel_id,
+            target.message_id,
+            target.sequence,
+        );
+        if badges_changed {
+            self.publish_channel_attention(owner);
+        }
+        Ok(())
+    }
+
+    /// Returns whether the caller should rebuild input geometry before dispatching more events.
     pub(super) fn notification_reply(
         &mut self,
         response: &[u8],
@@ -1759,7 +2111,16 @@ impl Coordinator {
         let Some(target) = self.desktop.take(id) else {
             return Ok(false);
         };
+        self.channel_activation = None;
         terminal.close_notification(out, id)?;
+        let source = match target.source {
+            NotificationSource::Pane(source) => source,
+            NotificationSource::Channel(channel) => {
+                self.start_channel_activation(target.owner, channel);
+                // Dispatch the rest of this input batch before completion can change focus.
+                return Ok(false);
+            }
+        };
         let current = self.sessions.get(target.owner.slot).is_some_and(|session| {
             session.present
                 && session.generation == target.owner.generation
@@ -1771,13 +2132,9 @@ impl Coordinator {
                         app.registry
                             .panes
                             .iter()
-                            .find(|pane| pane.id == target.source.pane_id)
+                            .find(|pane| pane.id == source.pane_id)
                             .is_some_and(|pane| {
-                                crate::desktop::source_is_current(
-                                    &target.source,
-                                    attachment.info(),
-                                    pane,
-                                )
+                                crate::desktop::source_is_current(&source, attachment.info(), pane)
                             })
                     })
         });
@@ -1787,13 +2144,13 @@ impl Coordinator {
         } else if !self.app().session_navigation_allowed() {
             self.app_mut()
                 .notify("Close the active dialog before opening the notification source".into());
-        } else if let Some(workspace) = target.source.workspace_id {
+        } else if let Some(workspace) = source.workspace_id {
             self.dispatch_tree(
                 crate::tree::Target {
                     owner: target.owner,
                     node: crate::tree::Node::Native(SidebarTarget::Pane {
                         workspace,
-                        pane: target.source.pane_id,
+                        pane: source.pane_id,
                     }),
                 },
                 crate::keyguide::Action::ActivateSelected,
@@ -1886,6 +2243,22 @@ impl Coordinator {
             ClientEvent::Legacy(InputEvent::Key(key)) => Some(key_event(key.clone())),
             _ => None,
         };
+        if self.channel_activation.is_some()
+            && (key
+                .as_ref()
+                .is_some_and(|key| key.action != KeyAction::Release)
+                || matches!(
+                    event,
+                    ClientEvent::Mouse {
+                        action: MouseAction::Press,
+                        ..
+                    } | ClientEvent::Legacy(InputEvent::Paste(_))
+                )
+                || matches!(event, ClientEvent::Legacy(InputEvent::Mouse(mouse))
+                    if !mouse.mouse_buttons.is_empty()))
+        {
+            self.channel_activation = None;
+        }
         if let Some(key) = key {
             match key.action {
                 KeyAction::Press => {
@@ -1955,6 +2328,7 @@ impl Coordinator {
     }
 
     pub fn finish(mut self) -> Result<()> {
+        self.channel_activation = None;
         let replacement = self.jobs.scope()?;
         let jobs = std::mem::replace(&mut self.jobs, replacement);
         let mut stop_result = self.stop_error.take().map_or(Ok(()), Err);
@@ -2037,6 +2411,49 @@ impl Drop for Coordinator {
                 owner.cancel();
             }
         }
+    }
+}
+
+async fn find_notification_channel(
+    endpoint: &Endpoint,
+    cancellation: &CancellationToken,
+    workspace_id: String,
+    channel_id: &ChannelId,
+) -> Result<ChannelSummary> {
+    let mut after = None;
+    loop {
+        let Payload::Channels(ChannelResponse::Listed {
+            channels,
+            next_after,
+        }) = endpoint
+            .checked_observation_payload_async(
+                Operation::Channels {
+                    request: ChannelRequest::List {
+                        workspace_id: workspace_id.clone(),
+                        after: after.clone(),
+                        limit: MAX_PAGE_LIMIT,
+                    },
+                },
+                cancellation,
+            )
+            .await?
+        else {
+            bail!("unexpected channel list response");
+        };
+        if let Some(summary) = channels
+            .into_iter()
+            .find(|summary| summary.id == *channel_id && summary.workspace_id == workspace_id)
+        {
+            return Ok(summary);
+        }
+        let Some(next) = next_after.filter(|next| next < channel_id) else {
+            bail!("the original channel is no longer available");
+        };
+        anyhow::ensure!(
+            after.as_ref().is_none_or(|after| after < &next),
+            "channel list did not advance",
+        );
+        after = Some(next);
     }
 }
 
@@ -2157,6 +2574,7 @@ impl App {
         self.state.form.is_none()
             && self.sidebar_menu.is_none()
             && !self.picker_open()
+            && !self.chat.dialog_open()
             && self
                 .consent
                 .as_ref()
@@ -2214,6 +2632,214 @@ mod tests {
             KeyAction::Release => 3,
         };
         ClientEvent::Reply(format!("key;97;1:{action}").into_bytes())
+    }
+
+    #[test]
+    fn uncached_notification_opens_only_the_verified_target_without_stealing_new_focus() {
+        use bkpr_protocol::{
+            ChannelAttentionKind,
+            channels::{
+                ChannelMessage, MembershipMode, MessageId, MessageSummary, Participant,
+                ParticipantId, ParticipantKind, PostIntent,
+            },
+        };
+        use std::os::unix::net::{UnixListener, UnixStream};
+
+        fn wait_readable(fd: std::os::fd::RawFd) {
+            let mut ready = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            assert_eq!(unsafe { libc::poll(&mut ready, 1, 3_000) }, 1);
+        }
+
+        for (sequence, newer_input, replace_generation) in [
+            (7, false, false),
+            (8, false, false),
+            (7, true, false),
+            (7, false, true),
+        ] {
+            let (mut coordinator, _captures) = coordinator_fixture();
+            let owner = crate::tree::Owner {
+                slot: 1,
+                generation: 1,
+            };
+            let target = ChannelNotificationSource {
+                session: SessionInfo {
+                    name: "channel-owner".into(),
+                    session_id: "channel-owner-id".into(),
+                    daemon_id: "channel-daemon".into(),
+                    session_instance_id: "channel-instance".into(),
+                },
+                workspace_id: "channel-workspace".into(),
+                channel_id: ChannelId("channel-2".into()),
+                message_id: MessageId("message-7".into()),
+                sequence: 7,
+                intent: ChannelAttentionKind::Question,
+            };
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("channel.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let expected = target.clone();
+            let server = std::thread::spawn(move || {
+                let accept = || {
+                    wait_readable(listener.as_raw_fd());
+                    let (stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(3)))
+                        .unwrap();
+                    stream
+                };
+                let reply = |stream: &mut UnixStream, payload: Payload| {
+                    transport::test_wire::write_response(
+                        stream,
+                        &Response {
+                            version: PROTOCOL_VERSION,
+                            ok: true,
+                            result: Some(payload),
+                            error: None,
+                            failure: None,
+                        },
+                    )
+                    .unwrap();
+                };
+                let mut probe = accept();
+                assert!(matches!(
+                    transport::test_wire::read_request(&mut probe)
+                        .unwrap()
+                        .operation,
+                    Operation::SessionInfo
+                ));
+                reply(
+                    &mut probe,
+                    serde_json::json!({"session": expected.session}).into(),
+                );
+                let mut lifetime = accept();
+                assert!(matches!(
+                    transport::test_wire::read_request(&mut lifetime).unwrap().operation,
+                    Operation::ClientRegister { session_id, daemon_id, session_instance_id }
+                        if session_id == expected.session.session_id
+                            && daemon_id == expected.session.daemon_id
+                            && session_instance_id == expected.session.session_instance_id
+                ));
+                reply(
+                    &mut lifetime,
+                    serde_json::json!({
+                        "session": expected.session,
+                        "client": {"client_id": "channel-client", "token": "fixture-token"}
+                    })
+                    .into(),
+                );
+                let read_owned = |stream: &mut UnixStream| {
+                    let Operation::Client { authority, request } =
+                        transport::test_wire::read_request(stream)
+                            .unwrap()
+                            .operation
+                    else {
+                        panic!("notification lookup lost its owner");
+                    };
+                    assert_eq!(authority.client_id, "channel-client");
+                    *request
+                };
+                let first = ChannelId("channel-1".into());
+                for after in [None, Some(first.clone())] {
+                    let mut stream = accept();
+                    assert!(matches!(read_owned(&mut stream),
+                        Operation::Channels {
+                            request: ChannelRequest::List { workspace_id, after: requested, .. },
+                        } if workspace_id == expected.workspace_id && requested == after
+                    ));
+                    let (id, next_after) = if after.is_none() {
+                        (first.clone(), Some(first.clone()))
+                    } else {
+                        (expected.channel_id.clone(), None)
+                    };
+                    reply(
+                        &mut stream,
+                        Payload::Channels(ChannelResponse::Listed {
+                            channels: vec![ChannelSummary {
+                                id,
+                                workspace_id: expected.workspace_id.clone(),
+                                name: "#review".into(),
+                                membership: MembershipMode::WorkspaceWide,
+                                settings: Default::default(),
+                                last_sequence: 8,
+                                read_through: 0,
+                                unread_attention: true,
+                                direct: false,
+                            }],
+                            next_after,
+                        }),
+                    );
+                }
+                let mut stream = accept();
+                assert!(matches!(read_owned(&mut stream),
+                    Operation::Channels { request: ChannelRequest::Read { channel_id, message_id } }
+                        if channel_id == expected.channel_id && message_id == expected.message_id
+                ));
+                reply(
+                    &mut stream,
+                    Payload::Channels(ChannelResponse::Message {
+                        message: ChannelMessage {
+                            message: MessageSummary {
+                                id: expected.message_id,
+                                sequence,
+                                author: Participant {
+                                    id: ParticipantId("agent".into()),
+                                    kind: ParticipantKind::Agent,
+                                    display_name: "Agent".into(),
+                                },
+                                posted_at_ms: 1,
+                                intent: PostIntent::Question,
+                                mentions: Vec::new(),
+                                reply_to: None,
+                                attachments: Vec::new(),
+                                mention_spans: Vec::new(),
+                                source: None,
+                            },
+                            text: "Ready for review?".into(),
+                            attachments: Vec::new(),
+                        },
+                    }),
+                );
+                lifetime
+            });
+            let client = RegisteredClient::register(&socket).unwrap();
+            let session = &mut coordinator.sessions[owner.slot];
+            session.identity = Some(client.info().clone());
+            let app = session.app.as_mut().unwrap();
+            app.socket = client.endpoint().clone();
+            app.registry.workspaces.push(Workspace {
+                id: target.workspace_id.clone(),
+                name: "Owner workspace".into(),
+                revision: 1,
+                windows: Vec::new(),
+            });
+            session.owner = Some(Attachment::Local(client));
+            coordinator.start_channel_activation(owner, target.clone());
+            assert_eq!(coordinator.selected, 0);
+            let pending = coordinator.channel_activation.as_ref().unwrap();
+            wait_readable(pending.lookup.wake.as_raw_fd());
+            let _lifetime = server.join().unwrap();
+            if newer_input {
+                assert!(
+                    !coordinator
+                        .route_release(&physical_key(KeyAction::Press), size())
+                        .unwrap()
+                );
+            }
+            if replace_generation {
+                coordinator.sessions[owner.slot].generation += 1;
+            }
+            coordinator.complete_channel_activation(size()).unwrap();
+            let should_open = sequence == target.sequence && !newer_input && !replace_generation;
+            assert_eq!(coordinator.selected, if should_open { 1 } else { 0 });
+            assert_eq!(
+                coordinator.app().chat.summary().map(|summary| &summary.id),
+                should_open.then_some(&target.channel_id),
+            );
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Session-local channel requests, durable records and bounded read models.
 //!
 //! The receiving session supplies the authenticated actor and determines workspace
-//! access. No request carries an author, session selector or live launch authority.
+//! access. Mention bindings identify selected recipients; they confer no authority.
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -148,6 +148,53 @@ impl Participant {
     }
 }
 
+/// Exact live recipient observed when selecting a structured user mention.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelMentionBinding {
+    /// Stable participant being mentioned.
+    pub participant_id: ParticipantId,
+    /// Exact launch observed for this participant.
+    pub launch_id: String,
+    /// Nonzero native binding generation observed on that launch.
+    pub binding_generation: u64,
+}
+
+impl ChannelMentionBinding {
+    pub(crate) fn validate(&self) -> Result<()> {
+        valid_id(self.participant_id.as_ref())?;
+        valid_id(&self.launch_id)?;
+        ensure!(
+            self.binding_generation != 0,
+            "missing channel mention binding generation"
+        );
+        Ok(())
+    }
+}
+
+/// Current workspace participant and the binding to retain when selecting an agent mention.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelRosterEntry {
+    /// Stable identity and current display label.
+    pub participant: Participant,
+    /// Exact observed agent binding, never a saved membership reference.
+    pub binding: Option<ChannelMentionBinding>,
+}
+
+impl ChannelRosterEntry {
+    pub(crate) fn validate_binding_relationship(&self) -> Result<()> {
+        if let Some(binding) = &self.binding {
+            ensure!(
+                self.participant.kind == ParticipantKind::Agent
+                    && binding.participant_id == self.participant.id,
+                "channel roster binding does not match its agent participant"
+            );
+        }
+        Ok(())
+    }
+}
+
 /// User-attention intent selected by the author, distinct from wake routing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -171,6 +218,30 @@ pub struct ChannelSource {
     pub message_id: MessageId,
 }
 
+/// Display annotation for an explicitly addressed recipient in the original post.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelMentionSpan {
+    /// Inclusive UTF-8 byte offset.
+    pub start: u32,
+    /// Exclusive UTF-8 byte offset.
+    pub end: u32,
+    /// An exact reference from [`ChannelPost::mentions`], not routing authority.
+    pub participant_id: ParticipantId,
+}
+
+/// Display annotation with the backend-resolved participant at commit time.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelResolvedMentionSpan {
+    /// Inclusive UTF-8 byte offset in the original post.
+    pub start: u32,
+    /// Exclusive UTF-8 byte offset in the original post.
+    pub end: u32,
+    /// Participant snapshot for rendering only; never used to route a wake.
+    pub participant: Participant,
+}
+
 /// A post retry is equivalent only when its authenticated author, channel and every field match.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -182,7 +253,8 @@ pub struct ChannelPost {
     /// Optional semantic attention signal; ordinary posts use [`PostIntent::Note`].
     #[serde(default)]
     pub intent: PostIntent,
-    /// Explicit stable participant references resolved by the backend at admission.
+    /// Explicit recipient references resolved by the backend at admission.
+    /// User posts use stable participant IDs; agent posts use exact mention handles.
     #[serde(default)]
     pub mentions: Vec<ParticipantId>,
     /// One existing message in the same channel, not a separate thread.
@@ -190,6 +262,9 @@ pub struct ChannelPost {
     /// Immutable resources uploaded into the same channel.
     #[serde(default)]
     pub attachments: Vec<AttachmentId>,
+    /// Sorted nonoverlapping display annotations for entries in `mentions`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mention_spans: Vec<ChannelMentionSpan>,
     /// Optional context link; posting does not resolve or verify the target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<Box<ChannelSource>>,
@@ -207,7 +282,14 @@ impl ChannelPost {
         if let Some(source) = &self.source {
             valid_source_ids(source.channel_id.as_ref(), source.message_id.as_ref())?;
         }
-        valid_references(&self.mentions, self.reply_to.as_ref(), &self.attachments)
+        valid_references(&self.mentions, self.reply_to.as_ref(), &self.attachments)?;
+        valid_mention_spans(
+            self.mention_spans
+                .iter()
+                .map(|span| (span.start, span.end, &span.participant_id)),
+            &self.mentions,
+            Some(&self.text),
+        )
     }
 }
 
@@ -379,9 +461,24 @@ pub struct MessageSummary {
     pub reply_to: Option<MessageId>,
     /// Channel-scoped immutable attachment references.
     pub attachments: Vec<AttachmentId>,
+    /// Sorted nonoverlapping presentation spans for resolved entries in `mentions`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mention_spans: Vec<ChannelResolvedMentionSpan>,
     /// Optional author-supplied context link, independent of read access to its target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<Box<ChannelSource>>,
+}
+
+impl MessageSummary {
+    pub(crate) fn validate_mention_spans(&self, text: Option<&str>) -> Result<()> {
+        valid_mention_spans(
+            self.mention_spans
+                .iter()
+                .map(|span| (span.start, span.end, &span.participant.id)),
+            &self.mentions,
+            text,
+        )
+    }
 }
 
 /// One retained post ready to render without fetching its body or attachment metadata.
@@ -397,8 +494,8 @@ pub struct ChannelMessage {
 }
 
 impl ChannelMessage {
-    /// Count UTF-8 bytes of the body and variable-size metadata, including reference
-    /// identities. Raster bytes are fetched separately and do not count toward this budget.
+    /// Count UTF-8 bytes of the body and variable-size metadata, reference identities
+    /// and mention offsets. Raster bytes are fetched separately and do not count.
     pub fn content_bytes(&self) -> usize {
         let message = &self.message;
         self.text.len()
@@ -409,6 +506,15 @@ impl ChannelMessage {
                 .mentions
                 .iter()
                 .map(|id| id.as_ref().len())
+                .sum::<usize>()
+            + message
+                .mention_spans
+                .iter()
+                .map(|span| {
+                    size_of::<u32>() * 2
+                        + span.participant.id.as_ref().len()
+                        + span.participant.display_name.len()
+                })
                 .sum::<usize>()
             + message.reply_to.as_ref().map_or(0, |id| id.as_ref().len())
             + message.source.as_ref().map_or(0, |source| {
@@ -524,7 +630,8 @@ pub enum ChannelRequest {
         /// Replacement explicit set; must be empty for workspace-wide membership.
         members: Vec<ParticipantId>,
     },
-    /// Commit one post and its notification work atomically.
+    /// Commit a post and its notification work atomically. User agent mentions
+    /// require [`Self::PostUser`] instead.
     Post {
         /// Channel to post in.
         channel_id: ChannelId,
@@ -600,6 +707,26 @@ pub enum ChannelRequest {
         limit: u16,
         /// At most [`MAX_WAIT_MS`], or zero for a nonblocking read.
         wait_ms: u32,
+    },
+    /// Observe current participants in a workspace or shared channel as the session user.
+    UserRoster {
+        /// Exact owning workspace identity.
+        workspace_id: String,
+        /// Restrict to members of this shared channel, or list the entire workspace.
+        channel_id: Option<ChannelId>,
+        /// Exclude this identity and earlier identities, or start at the first.
+        after: Option<ParticipantId>,
+        /// Maximum number of participants to return.
+        limit: u16,
+    },
+    /// Commit a user post only if every selected agent still has its exact observed binding.
+    PostUser {
+        /// Shared channel to post in.
+        channel_id: ChannelId,
+        /// Body, retry key and structured references.
+        post: ChannelPost,
+        /// One binding per mentioned agent, none for the session user. Part of the retry fingerprint.
+        bindings: Vec<ChannelMentionBinding>,
     },
 }
 
@@ -718,6 +845,13 @@ pub enum ChannelResponse {
     },
     /// The cursor cannot be continued. Discard partial or cached state and start a snapshot.
     CatalogReset {},
+    /// Page of current workspace or channel participants observed by the session user.
+    UserRoster {
+        /// Participants ordered by stable identity; only agents can have a binding.
+        participants: Vec<ChannelRosterEntry>,
+        /// Exclusive continuation when more records are available.
+        next_after: Option<ParticipantId>,
+    },
 }
 
 impl fmt::Debug for ChannelResponse {
@@ -738,6 +872,7 @@ impl fmt::Debug for ChannelResponse {
             Self::CatalogSnapshot { .. } => "CatalogSnapshot",
             Self::CatalogChanges { .. } => "CatalogChanges",
             Self::CatalogReset {} => "CatalogReset",
+            Self::UserRoster { .. } => "UserRoster",
         };
         f.debug_struct(variant).finish_non_exhaustive()
     }
@@ -795,6 +930,7 @@ impl ChannelRequest {
                 | Self::ListArchivedWorkspaces { .. }
                 | Self::ListMembers { .. }
                 | Self::ListExplicitMembers { .. }
+                | Self::UserRoster { .. }
                 | Self::History { .. }
                 | Self::Read { .. }
                 | Self::Subscribe { .. }
@@ -835,6 +971,17 @@ impl ChannelRequest {
                 valid_optional_id(after.as_ref())?;
                 valid_limit(*limit)
             }
+            Self::UserRoster {
+                workspace_id,
+                channel_id,
+                after,
+                limit,
+            } => {
+                valid_id(workspace_id)?;
+                valid_optional_id(channel_id.as_ref())?;
+                valid_optional_id(after.as_ref())?;
+                valid_limit(*limit)
+            }
             Self::Create {
                 workspace_id,
                 name,
@@ -860,6 +1007,32 @@ impl ChannelRequest {
             Self::Post { channel_id, post } => {
                 valid_id(channel_id.as_ref())?;
                 post.validate()
+            }
+            Self::PostUser {
+                channel_id,
+                post,
+                bindings,
+            } => {
+                valid_id(channel_id.as_ref())?;
+                post.validate()?;
+                ensure!(
+                    bindings.len() <= post.mentions.len(),
+                    "channel mention binding count exceeds mention count"
+                );
+                for (index, binding) in bindings.iter().enumerate() {
+                    binding.validate()?;
+                    ensure!(
+                        post.mentions.contains(&binding.participant_id),
+                        "channel mention binding has no matching mention"
+                    );
+                    ensure!(
+                        !bindings[..index]
+                            .iter()
+                            .any(|previous| { previous.participant_id == binding.participant_id }),
+                        "duplicate channel mention binding"
+                    );
+                }
+                Ok(())
             }
             Self::History {
                 channel_id,
@@ -929,6 +1102,36 @@ impl ChannelRequest {
             }
         }
     }
+}
+
+fn valid_mention_spans<'a>(
+    spans: impl ExactSizeIterator<Item = (u32, u32, &'a ParticipantId)>,
+    mentions: &[ParticipantId],
+    text: Option<&str>,
+) -> Result<()> {
+    ensure!(
+        spans.len() <= MAX_MENTIONS,
+        "channel mention span count exceeds limit"
+    );
+    let mut previous_end = 0;
+    for (start, end, participant_id) in spans {
+        ensure!(
+            previous_end <= start && start < end && end as usize <= MAX_POST_BYTES,
+            "invalid channel mention span interval"
+        );
+        ensure!(
+            text.is_none_or(|text| {
+                text.is_char_boundary(start as usize) && text.is_char_boundary(end as usize)
+            }),
+            "channel mention span is outside the body or splits a UTF-8 character"
+        );
+        ensure!(
+            mentions.contains(participant_id),
+            "channel mention span does not reference an addressed participant"
+        );
+        previous_end = end;
+    }
+    Ok(())
 }
 
 pub(crate) fn valid_id(value: &str) -> Result<()> {

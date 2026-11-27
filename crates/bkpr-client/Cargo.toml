@@ -21,6 +21,7 @@ textwrap = { version = "0.16.4", default-features = false, features = ["unicode-
 futures = { version = "0.3", default-features = false, features = ["std", "async-await", "executor"] }
 tokio = { version = "1", features = ["rt", "net", "process", "sync", "time", "io-util", "macros"] }
 tokio-util = { version = "0.7", features = ["compat", "rt"] }
+uuid = { version = "1", features = ["v4"] }
 yamux = "=0.14.1"
 
 [dev-dependencies]

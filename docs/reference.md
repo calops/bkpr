@@ -1091,9 +1091,9 @@ Finder's `pr:`, `ci:` and `ticket:` search filters remain unsupported.
 `Ctrl-Space` enters the all-workspace sidebar. Selection is local:
 browsing does not change the active application or attach hidden terminal views.
 Arrows or `j`/`k` move, Home/End and PageUp/PageDown reveal other rows, Left/Right
-fold or unfold a workspace or window, and Enter activates the selected workspace,
-window or terminal. Esc returns to the original application. The mouse supports
-activation, wheel scrolling and double-click folding.
+fold or unfold a workspace or window. Enter opens a workspace's channels or
+activates the selected window or pane. The mouse selects the same targets;
+the workspace disclosure arrow only folds the tree.
 
 Right-click a sidebar row for its available actions. Open, Rename and Close use
 the same actions as keyboard navigation; Close still asks for confirmation.
@@ -1370,6 +1370,62 @@ and differential output without backend refreshes or graphics preparation.
 A command palette remains outside the current main-parity pass.
 Forge/PR/CI card data and refresh use the daemon-owned metadata contract;
 the frontend does not query providers or invent those facts.
+
+### Workspace channels
+
+Click a workspace name or select it in the sidebar and press Enter. `#desk`
+comes first, then `#team`, named channels and private agent threads. Selecting a
+pane or pressing Esc from the composer returns to the native application without
+closing its process. Local and SSH chats use the selected session's own channels.
+
+Tab opens a channel chooser. Use arrows and Enter to choose; Esc cancels.
+On narrow terminals, use the Channels button to open the chooser from chat.
+Typing and paste stay in the composer after channel or history clicks unless the
+sidebar or a dialog owns focus. Each channel keeps its unsent draft. Enter sends.
+Shift-Enter adds a line only if the terminal reports it separately from Enter.
+Multiline paste never sends by itself. Right-click a message to reply. Pending
+and rejected sends are not shown as committed messages. Ctrl-r after an uncertain send retries
+only the exact original post and key.
+
+Type `@` in ordinary text and choose an agent from the channel's current roster.
+The roster shows separate entries for duplicate names. Code, quotes and pasted
+`@` text don't select a recipient. The user post includes the selected launch
+and native binding so replacing or rebinding an agent cannot redirect the send.
+Chat uses the explicit pane label, then the agent's authenticated discovery
+label, then the harness name with a stable participant suffix. Terminal title
+changes do not rename chat participants. Posts retain the author label saved
+when they were sent.
+In history, authenticated inline agent mentions use the same participant color
+as the agent's nickname. Identical pasted text or code does not inherit that color.
+The mention picker shows wake scope when space permits. In new `#desk` and
+`#team` channels, user posts request wakes for selected agents, or for all
+eligible agents if none are selected.
+Agent posts in new `#team` channels follow the same rule, excluding the author.
+Use **+ New channel** below the channel list or press Ctrl-n to open the create
+dialog. Use **Settings** or Alt-e to edit wake policy, attention or membership.
+Tab moves between controls. Enter opens a floating dropdown; use the arrows
+and Enter to choose, or Esc to discard the choice. Close the dialog to return
+to the composer without losing your draft.
+In the composer, Ctrl-a/e move to the start/end of the line. Ctrl-w deletes the
+previous word; Ctrl-u/k delete to the start/end of the line.
+Drag across history text to copy it using the configured clipboard policy.
+Ctrl-b then y copies the current selection again. Copy preserves logical line
+breaks, paragraph spacing, and blank code lines, but omits the nickname gutter
+and visual spacing between messages.
+Private direct threads cannot be posted to or edited. Read-only clients can
+browse but cannot send, edit channels or advance the user's read position.
+
+PageUp/PageDown or the mouse wheel scroll conversation history. Loading older
+pages keeps the visible message anchored. Ctrl-End returns to the latest posts.
+Timestamps are UTC. Messages render lightweight CommonMark with no terminal
+escapes or network previews. Typed images use Kitty graphics when confirmed;
+other terminals show their labels.
+
+`!` marks unread attention on the channel and owning workspace. Only the
+backend sets that flag. Viewing a different channel doesn't clear it. The
+focused TUI marks through the newest message it has rendered; Alt-m explicitly
+marks the whole selected channel read. A desktop alert, when supported, opens
+the original channel message rather than a pane or the current tail.
 
 ### Workspace, window and pane controls
 
@@ -2038,7 +2094,7 @@ Historical versions remain in [CHANGELOG.md](../CHANGELOG.md).
 `Operation::Channels` is session-scoped. User requests use the owning session's
 registered, active client attachment. Bare socket requests and daemon-owned pane
 processes cannot act as the user. The daemon derives the author; there is no
-caller-supplied author or launch ID. Older daemons reject the additive operation
+caller-supplied author identity. Older daemons reject the additive operation
 without changing the native protocol family.
 
 Create an ordinary channel with explicit or workspace-wide membership and
@@ -2059,16 +2115,22 @@ An uploaded image is staged for 24 hours until a post references it. A session
 can stage up to 64 MiB across its channels. Uploads reclaim expired stages;
 posted images are retained with their messages and don't count toward this limit.
 
-New workspaces get two ordinary, workspace-wide channels. `#desk` requests a
-wake for all eligible agents on a user post unless it mentions specific agents.
-Agent posts request no wakes; questions and reports request user attention.
-`#team` requests a wake for all eligible agents except the author unless the post
-mentions specific agents. It does not request user attention. Authorized agents
-who arrive later join workspace-wide channels automatically. The session user can change these
-settings; reopening or repairing a workspace creates only missing presets.
-If channel storage is unavailable, the workspace can still open and run panes;
-listing or creating channels retries provisioning and reports any remaining
-storage error.
+An agent posting with explicit mentions can add `mention_spans` to color their
+inline occurrences. Each range uses half-open UTF-8 byte offsets (`start`, `end`)
+in the original `text` and an exact `mention_id` already listed in `mentions`.
+These optional spans never route delivery. History keeps the resolved participant
+identity from commit time; records without spans are not inferred from text.
+
+New workspaces get two ordinary, workspace-wide channels. `#desk` wakes all
+eligible agents for a user post unless it mentions specific agents. Agent posts
+wake only the eligible agents they explicitly mention. Agent questions and
+reports request user attention. `#team` wakes all eligible agents except the
+author unless the post mentions specific agents, and requests no user attention.
+Authorized agents who arrive later join workspace-wide channels automatically.
+The session user can change these settings; reopening or repairing a workspace
+creates only missing presets. If channel storage is unavailable, the workspace
+can still open and run panes; listing or creating channels retries provisioning
+and reports any remaining storage error.
 
 An agent resumes its explicit memberships only when the backend's reserved
 native recovery verifies the same saved participant in the same workspace.
@@ -2117,11 +2179,11 @@ exact channel ID for subsequent posts and reads, and the post's canonical
 recovered launch. Text alone never routes a wake. `channel_read` rechecks access
 on each body page; a cursor or batch ID never grants permission.
 
-The native user API still takes stable participant IDs in `ChannelPost.mentions`.
-A future composer must carry the selected launch and binding revision as well,
-and validate them against the current roster before resolving that mention to its
-stable participant ID. Reuse the launch and binding check used by the MCP route;
-don't submit a saved participant ID as a live selection.
+For a native user post that mentions an agent, fetch `UserRoster` for the
+channel and send `PostUser` rather than `Post`. Put the stable participant IDs
+in `post.mentions` and include the selected entries' exact `participant_id`,
+`launch_id` and `binding_generation` in `bindings`. These identify recipients,
+not the author. A stale binding rejects the post instead of retargeting it.
 
 The existing native receiver takes up to 32 queued posts for one channel and
 one recipient per wake. A wake carries compact `channel_wake` JSON with a

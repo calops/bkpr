@@ -295,6 +295,16 @@ impl Endpoint {
         operation: Operation,
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<Value> {
+        self.checked_observation_payload_async(operation, cancellation)
+            .await?
+            .into_json()
+    }
+
+    pub(crate) async fn checked_observation_payload_async(
+        &self,
+        operation: Operation,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<Payload> {
         ensure!(
             observational(&operation),
             "cancellable endpoint request must be observational"
@@ -338,7 +348,7 @@ impl Endpoint {
                         &mut stream, &Request::new(operation), wire::MAX_RESPONSE,
                     ).await,
                 }?;
-                checked_response(response)
+                checked_payload_response(response)
             } => response,
         };
         result.map_err(super::observation_error)

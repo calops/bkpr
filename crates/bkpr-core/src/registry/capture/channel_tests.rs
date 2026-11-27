@@ -1,7 +1,7 @@
 use super::*;
 use bkpr_protocol::channels::{
-    ChannelId, ChannelPost, ChannelRequest, ChannelResponse, ChannelSource, MembershipMode,
-    MessageId, ParticipantId, PostIntent,
+    ChannelId, ChannelMentionBinding, ChannelMentionSpan, ChannelPost, ChannelRequest,
+    ChannelResponse, ChannelSource, MembershipMode, MessageId, ParticipantId, PostIntent,
 };
 use bkpr_protocol::{AgentReceiverMode, AgentWakeOutcome, LayoutNode, Window, Workspace};
 
@@ -297,10 +297,65 @@ fn post(id: &ChannelId, text: &str, intent: PostIntent) -> ChannelRequest {
             text: text.into(),
             intent,
             mentions: Vec::new(),
+            mention_spans: Vec::new(),
             reply_to: None,
             attachments: Vec::new(),
             source: None,
         },
+    }
+}
+
+fn user_binding(
+    registry: &Registry,
+    workspace: &str,
+    channel_id: &ChannelId,
+    agent: &Launch,
+) -> ChannelMentionBinding {
+    let ChannelResponse::UserRoster { participants, .. } = channel(
+        registry,
+        None,
+        ChannelRequest::UserRoster {
+            workspace_id: workspace.into(),
+            channel_id: Some(channel_id.clone()),
+            after: None,
+            limit: 32,
+        },
+    )
+    .unwrap() else {
+        panic!("expected user roster");
+    };
+    let binding = participants
+        .into_iter()
+        .find(|entry| Some(&entry.participant.id) == agent.channel_participant.as_ref())
+        .and_then(|entry| entry.binding)
+        .expect("bound agent in roster");
+    assert_eq!(binding.launch_id, agent.grant.launch_id);
+    assert_eq!(binding.binding_generation, agent.binding_generation);
+    binding
+}
+
+fn mention_as_user(id: &ChannelId, text: &str, binding: ChannelMentionBinding) -> ChannelRequest {
+    let ChannelRequest::Post {
+        channel_id,
+        mut post,
+    } = post(id, text, PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    post.mentions.push(binding.participant_id.clone());
+    post.mention_spans
+        .extend(
+            text.match_indices("@Same label")
+                .map(|(start, label)| ChannelMentionSpan {
+                    start: start as u32,
+                    end: (start + label.len()) as u32,
+                    participant_id: binding.participant_id.clone(),
+                }),
+        );
+    ChannelRequest::PostUser {
+        channel_id,
+        post,
+        bindings: vec![binding],
     }
 }
 
@@ -507,12 +562,9 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
     )
     .unwrap();
     assert!(channel(&registry, Some(&old), history(&removed)).is_err());
-    channel(
-        &registry,
-        None,
-        post(&kept, "prior shared history", PostIntent::Note),
-    )
-    .unwrap();
+    let old_binding = user_binding(&registry, &workspace.id, &kept, &old);
+    let prior = mention_as_user(&kept, "prior shared history", old_binding.clone());
+    let accepted = channel(&registry, None, prior.clone()).unwrap();
     let (stale_mention, old_selector) = mention_and_launch(&registry, &other, &team, &old_id);
     assert_eq!(old_selector, old.grant.launch_id);
     let original_receiver = receiver(&registry, &old);
@@ -609,6 +661,10 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
         panic!("expected retained history")
     };
     assert_eq!(messages[0].text, "prior shared history");
+    assert_eq!(channel(&registry, None, prior).unwrap(), accepted);
+    let stale = mention_as_user(&kept, "quoted @Same label (not broadcast)", old_binding);
+    let error = channel(&registry, None, stale).unwrap_err().to_string();
+    assert!(error.contains("refresh the roster"), "{error}");
     for caller in [None, Some(&recovered)] {
         let ChannelResponse::History { messages, .. } =
             channel(&registry, caller, history(&direct_channel)).unwrap()
@@ -673,7 +729,11 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
     let ChannelResponse::Posted { wake_count: 1, .. } = channel(
         &registry,
         None,
-        post(&kept, "new launch wake", PostIntent::Note),
+        mention_as_user(
+            &kept,
+            "new launch wake",
+            user_binding(&registry, &workspace.id, &kept, &recovered),
+        ),
     )
     .unwrap() else {
         panic!("expected one new wake")
@@ -805,14 +865,8 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
     assert!(channel(&registry, Some(&replacement), history(&kept)).is_err());
     assert!(channel(&registry, Some(&replacement), history(&direct_channel)).is_err());
     assert!(channel(&registry, Some(&replacement), history(&desk)).is_ok());
-    let replacement_id = replacement.channel_participant.as_ref().unwrap().clone();
-    let addressed = |key: &str| {
-        let mut request = post(&desk, key, PostIntent::Note);
-        if let ChannelRequest::Post { post, .. } = &mut request {
-            post.mentions.push(replacement_id.clone());
-        }
-        request
-    };
+    let binding = user_binding(&registry, &workspace.id, &desk, &replacement);
+    let addressed = |key| mention_as_user(&desk, key, binding.clone());
     assert!(channel(&registry, None, addressed("before exit")).is_ok());
     let process = crate::harness_process::process(replacement.root.pid)
         .unwrap()
@@ -827,11 +881,7 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
     }
     assert!(registry.capture_pane(&replacement.grant.pane_id).is_ok());
     let error = channel(&registry, None, addressed("after exit")).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("mention no longer names a current member")
-    );
+    assert!(error.to_string().contains("refresh the roster"), "{error}");
 }
 
 fn private_root() -> tempfile::TempDir {
@@ -875,9 +925,20 @@ fn workspace_presets_repair_without_resetting_existing_channel() {
         ["#desk", "#team"]
     );
     let desk = &created["#desk"];
+    let persisted_settings: String = db
+        .query_row(
+            "SELECT settings FROM channels WHERE id=?1",
+            [desk.as_ref()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let defaults: ChannelSettings = serde_json::from_str(&persisted_settings).unwrap();
+    assert_eq!(defaults.user_wake, WakePolicy::AddressedOrAll);
+    assert_eq!(defaults.agent_wake, WakePolicy::AddressedOnly);
     let custom = ChannelSettings {
         user_wake: WakePolicy::None,
-        ..Default::default()
+        agent_wake: WakePolicy::None,
+        ..defaults
     };
     channel(
         &registry,
@@ -1150,6 +1211,106 @@ fn authenticated_compact_channel_reads_resolve_only_workspace_builtins() {
 }
 
 #[test]
+fn channel_labels_ignore_native_titles_and_snapshot_explicit_names() {
+    let root = private_root();
+    let root = root.path();
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.join("omp")).unwrap();
+    let (registry, _server) = open(root);
+    let mut spec = launch_spec(root, "labels", "label-fixture");
+    spec.title = None;
+    send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: Some("Not an author".into()),
+            initial: Some(spec.clone()),
+        },
+    );
+    let launch = live(&registry, &spec.home);
+    let workspace = registry.snapshot().unwrap().workspaces.remove(0).id;
+    let ChannelResponse::Listed { channels, .. } = channel(
+        &registry,
+        None,
+        ChannelRequest::List {
+            workspace_id: workspace.clone(),
+            after: None,
+            limit: 8,
+        },
+    )
+    .unwrap() else {
+        panic!("expected workspace presets")
+    };
+    let id = &channels
+        .iter()
+        .find(|channel| channel.name == "#desk")
+        .unwrap()
+        .id;
+    let receipt = |key| agent_channel(&registry, &launch, post(id, key, PostIntent::Note)).unwrap();
+    let original = receipt("original");
+    let author = &original["message"]["author"];
+    let label = author["display_name"].as_str().unwrap();
+    assert_ne!(label, "Not an author");
+    let pane = registry.capture_pane(&launch.grant.pane_id).unwrap();
+    for native in ["◕ Working", r#"{"wake":"spinner"}"#] {
+        pane.shared.published.lock().unwrap().title = Some(native.into());
+        assert_eq!(receipt(native)["message"]["author"], *author);
+        let ChannelResponse::UserRoster { participants, .. } = channel(
+            &registry,
+            None,
+            ChannelRequest::UserRoster {
+                workspace_id: workspace.clone(),
+                channel_id: Some(id.clone()),
+                after: None,
+                limit: 8,
+            },
+        )
+        .unwrap() else {
+            panic!("expected live roster")
+        };
+        let entry = participants
+            .iter()
+            .find(|entry| {
+                entry
+                    .binding
+                    .as_ref()
+                    .is_some_and(|binding| binding.launch_id == launch.grant.launch_id)
+            })
+            .expect("the current launch is present in the channel roster");
+        assert_eq!(entry.participant.display_name, label);
+    }
+    agent(
+        &registry,
+        &launch,
+        AgentRequest::SetTitle {
+            title: "Review lead".into(),
+        },
+    );
+    assert_eq!(
+        receipt("named")["message"]["author"]["display_name"],
+        "Review lead"
+    );
+    send(
+        &registry,
+        Operation::PaneRename {
+            pane_id: launch.grant.pane_id.clone(),
+            title: "Pane override".into(),
+        },
+    );
+    assert_eq!(
+        receipt("override")["message"]["author"]["display_name"],
+        "Pane override"
+    );
+    let compact = agent_channel(&registry, &launch, history(id)).unwrap();
+    let retained = compact["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["id"] == original["message"]["id"])
+        .unwrap();
+    assert_eq!(retained["author"], *author);
+    assert_eq!(receipt("original"), original);
+}
+
+#[test]
 fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fences() {
     use bkpr_protocol::channels::{ChannelSettings, WakePolicy};
 
@@ -1231,42 +1392,36 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     };
     assert_eq!(denial(history(&foreign_channels[0].id)), denial(missing));
 
-    let desk = ChannelId("#desk".into());
+    let desk_alias = ChannelId("#desk".into());
     let team = ChannelId("#team".into());
-    let team_id = ChannelId(
-        listed["channels"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|entry| entry["name"] == "#team")
-            .unwrap()["id"]
-            .as_str()
-            .unwrap()
-            .into(),
-    );
-    let desk_id: ChannelId = serde_json::from_value(
-        listed["channels"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|entry| entry["name"] == "#desk")
-            .unwrap()["id"]
-            .clone(),
-    )
-    .unwrap();
+    let preset = |name: &str| {
+        ChannelId(
+            listed["channels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["name"] == name)
+                .unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .into(),
+        )
+    };
+    let desk = preset("#desk");
+    let team_id = preset("#team");
     let (a_mention, a_selector) = mention_and_launch(&registry, &sender, &team_id, &a_actor);
     assert_eq!(a_selector, a.grant.launch_id);
     let ChannelRequest::Post {
         channel_id,
         post: mut passive_post,
-    } = post(&desk, "passive desk", PostIntent::Note)
+    } = post(&desk_alias, "passive desk", PostIntent::Note)
     else {
         unreachable!()
     };
     let source_body = "東京".repeat(400);
     passive_post.text.clone_from(&source_body);
     passive_post.source = Some(Box::new(ChannelSource {
-        channel_id: desk_id.clone(),
+        channel_id: desk.clone(),
         message_id: MessageId("nested-dangling".into()),
     }));
     let passive = agent_channel(
@@ -1285,7 +1440,7 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
             message_id: MessageId("ordinary-dangling".into()),
         },
         ChannelSource {
-            channel_id: desk_id.clone(),
+            channel_id: desk.clone(),
             message_id: MessageId(sender.grant.token.clone()),
         },
     ] {
@@ -1314,6 +1469,73 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         agent_channel(&registry, &sender, history(&desk)).unwrap()["messages"],
         json!([passive["message"]])
     );
+    assert!(passive["message"].get("mention_spans").is_none());
+    let a_receiver = receiver(&registry, &a);
+    let b_receiver = receiver(&registry, &b);
+    assert!(subscribe(&registry, &a, &a_receiver).is_null());
+    assert!(subscribe(&registry, &b, &b_receiver).is_null());
+
+    let (b_mention, _) = mention_and_launch(&registry, &sender, &desk, &b_actor);
+    let text = "é @東京 + @東京";
+    let ChannelRequest::Post {
+        channel_id,
+        post: mut desk_post,
+    } = post(&desk_alias, text, PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    desk_post.mentions.push(b_mention.clone());
+    desk_post.mention_spans = text
+        .match_indices("@東京")
+        .map(|(start, label)| ChannelMentionSpan {
+            start: start as u32,
+            end: (start + label.len()) as u32,
+            participant_id: b_mention.clone(),
+        })
+        .collect();
+    let addressed = agent_channel(
+        &registry,
+        &sender,
+        ChannelRequest::Post {
+            channel_id,
+            post: desk_post,
+        },
+    )
+    .unwrap();
+    assert_eq!(addressed["wake_count"], 1);
+    assert_eq!(addressed["message"]["mentions"], json!([b_actor]));
+    assert_eq!(
+        addressed["message"]["mention_spans"],
+        json!([
+            {"start": 3, "end": 10, "participant": {"id": b_actor, "kind": "agent", "display_name": "Same label"}},
+            {"start": 13, "end": 20, "participant": {"id": b_actor, "kind": "agent", "display_name": "Same label"}}
+        ])
+    );
+    assert!(subscribe(&registry, &a, &a_receiver).is_null());
+    let targeted = subscribe(&registry, &b, &b_receiver);
+    let pointer = &targeted["channel_wake"];
+    assert_eq!(pointer["pending_count"], 1);
+    assert_eq!(pointer["addressed_message_id"], addressed["message"]["id"]);
+    assert!(pointer.get("mention_spans").is_none());
+    let desk_lookup = agent(
+        &registry,
+        &b,
+        AgentRequest::ChannelWake {
+            batch_id: pointer["batch_id"].as_str().unwrap().into(),
+            max_body_bytes: Some(4096),
+            include_source: false,
+        },
+    );
+    assert_eq!(desk_lookup["post"]["message"], addressed["message"]);
+    assert_eq!(desk_lookup["post"]["text"], text);
+    assert!(desk_lookup["messages"][0].get("mention_spans").is_none());
+    assert_eq!(
+        settle_wake(&registry, &b, &b_receiver, &targeted)["recorded"],
+        true
+    );
+    let retained = agent_channel(&registry, &b, history(&desk)).unwrap();
+    assert_eq!(retained["messages"][1], addressed["message"]);
+
     let addressed_post = |text| {
         let ChannelRequest::Post {
             channel_id,
@@ -1334,7 +1556,7 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         unreachable!()
     };
     let source = Box::new(ChannelSource {
-        channel_id: desk_id.clone(),
+        channel_id: desk.clone(),
         message_id: serde_json::from_value(passive["message"]["id"].clone()).unwrap(),
     });
     newest_post.source = Some(source.clone());
@@ -1390,8 +1612,6 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     )
     .unwrap();
     assert_eq!(next_broadcast["wake_count"], 2);
-    let a_receiver = receiver(&registry, &a);
-    let b_receiver = receiver(&registry, &b);
     registry
         .inner
         .channels
@@ -1471,7 +1691,7 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     assert_eq!(source_page["next_offset"], 3);
     assert_eq!(
         source_page["reply_target"],
-        json!({ "channel_id": desk_id, "reply_to": source.message_id }),
+        json!({ "channel_id": desk, "reply_to": source.message_id }),
     );
     assert!(source_page.get("source").is_none());
     let next_page = agent(
@@ -1611,28 +1831,34 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         true
     );
 
-    let desk = desk_id;
-    let ChannelRequest::Post {
-        channel_id,
-        post: mut user_post,
-    } = post(&desk, "東京 user direction", PostIntent::Note)
-    else {
-        unreachable!()
+    let ChannelResponse::UserRoster { participants, .. } = channel(
+        &registry,
+        None,
+        ChannelRequest::UserRoster {
+            workspace_id: workspace.clone(),
+            channel_id: Some(desk.clone()),
+            after: None,
+            limit: 32,
+        },
+    )
+    .unwrap() else {
+        panic!("expected user roster");
     };
-    user_post.mentions.push(b_actor);
+    for id in [&a_actor, &b_actor] {
+        let entry = participants
+            .iter()
+            .find(|entry| &entry.participant.id == id)
+            .unwrap();
+        assert_eq!(entry.participant.display_name, "Same label");
+    }
+    let selected = user_binding(&registry, &workspace, &desk, &b);
+    let user_post = mention_as_user(&desk, "東京 user direction", selected);
+    assert!(agent_channel(&registry, &sender, user_post.clone()).is_err());
     let ChannelResponse::Posted {
         message,
         wake_count: 1,
         ..
-    } = channel(
-        &registry,
-        None,
-        ChannelRequest::Post {
-            channel_id,
-            post: user_post,
-        },
-    )
-    .unwrap()
+    } = channel(&registry, None, user_post).unwrap()
     else {
         panic!("expected only the addressed agent")
     };
@@ -1692,6 +1918,7 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
                 idempotency_key: "singleton-reply".into(),
                 intent: PostIntent::Report,
                 mentions: Vec::new(),
+                mention_spans: Vec::new(),
                 attachments: Vec::new(),
                 reply_to: Some(
                     serde_json::from_value(user["post"]["reply_target"]["reply_to"].clone())
@@ -1750,7 +1977,7 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
     assert_eq!(page["text"].as_str().unwrap(), &body[..4095]);
     assert_eq!(page["next_offset"], 4095);
 
-    let user_post = |request| {
+    let user_wakes = |request| {
         let ChannelResponse::Posted { wake_count, .. } = channel(&registry, None, request).unwrap()
         else {
             panic!("expected user post")
@@ -1758,24 +1985,100 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         wake_count
     };
     assert_eq!(
-        user_post(post(&team_id, "request for all peers", PostIntent::Note)),
+        user_wakes(post(&team_id, "request for all peers", PostIntent::Note)),
         3
     );
-    let ChannelRequest::Post {
-        channel_id,
-        post: mut addressed,
-    } = post(&team_id, "request for coordinator", PostIntent::Note)
-    else {
-        unreachable!()
-    };
-    addressed.mentions.push(a_actor);
+    let coordinator = user_binding(&registry, &workspace, &team_id, &a);
     assert_eq!(
-        user_post(ChannelRequest::Post {
-            channel_id,
-            post: addressed,
-        }),
+        user_wakes(mention_as_user(
+            &team_id,
+            "request for coordinator",
+            coordinator
+        )),
         1
     );
+
+    let stale_binding = user_binding(&registry, &workspace, &team_id, &b);
+    let accepted_request = mention_as_user(
+        &team_id,
+        "prior @Same label user post",
+        stale_binding.clone(),
+    );
+    let accepted = channel(&registry, None, accepted_request.clone()).unwrap();
+    let racing = mention_as_user(
+        &team_id,
+        "stale @Same label is not a broadcast",
+        stale_binding,
+    );
+    let previous = b.managed.conversation.as_ref().unwrap();
+    let peer = Peer {
+        pid: b.root.pid,
+        uid: unsafe { libc::geteuid() },
+        birth: b.root.identity.clone(),
+    };
+    let error = registry
+        .inner
+        .channels
+        .request_routed(
+            racing,
+            |workspace| registry.channel_authority(workspace, None, true, &|| true),
+            |_| true,
+            || false,
+            crate::channels::ChannelRoutes {
+                workspace: None,
+                exact_mentions: None,
+                publish: &|_| panic!("stale post published a wake"),
+                binding_live: &|id, generation| registry.channel_binding_live(id, generation),
+                direct_peer: &|_| Ok(None),
+                fence_user_mentions: &|workspace, bindings| {
+                    // Rotate the same native root after the store has selected recipients.
+                    let response = registry
+                        .request_authenticated(
+                            Request::new(Operation::HarnessEvent {
+                                launch_id: b.grant.launch_id.clone(),
+                                token: b.grant.token.clone(),
+                                event: CaptureEvent::Bind {
+                                    conversation_id: previous.id.clone(),
+                                    source: previous.source,
+                                    expected_revision: Some(previous.generation),
+                                },
+                            }),
+                            &peer,
+                        )?
+                        .into_json()?;
+                    assert_eq!(response["accepted"], true);
+                    registry.fence_user_mentions(workspace, bindings)
+                },
+            },
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("refresh the roster"), "{error}");
+    let current = registry.inner.captures.lock().unwrap().launches[&b.grant.launch_id].clone();
+    assert_eq!(current.channel_participant, b.channel_participant);
+    assert_ne!(current.binding_generation, b.binding_generation);
+    assert_eq!(
+        channel(&registry, None, accepted_request).unwrap(),
+        accepted
+    );
+    let conflict = mention_as_user(
+        &team_id,
+        "prior @Same label user post",
+        user_binding(&registry, &workspace, &team_id, &current),
+    );
+    let error = channel(&registry, None, conflict).unwrap_err().to_string();
+    assert!(
+        error.contains("conflicts with an existing retry key"),
+        "{error}"
+    );
+    let ChannelResponse::History { messages, .. } =
+        channel(&registry, None, history(&team_id)).unwrap()
+    else {
+        panic!("expected team history");
+    };
+    assert_eq!(messages.last().unwrap().text, "prior @Same label user post");
+    let current_receiver = receiver(&registry, &current);
+    assert!(subscribe(&registry, &current, &current_receiver).is_null());
 }
 
 #[test]
@@ -2566,6 +2869,7 @@ fn concurrent_direct_sends_share_one_private_thread_and_keep_exact_receipts() {
         panic!("expected direct history");
     };
     assert_eq!(messages.len(), 2);
+    assert!(messages.iter().all(|m| m.message.mention_spans.is_empty()));
     for (receipt, body) in [(&a_post, "from A"), (&b_post, "from B")] {
         assert!(
             messages
@@ -2629,6 +2933,67 @@ fn concurrent_direct_sends_share_one_private_thread_and_keep_exact_receipts() {
     assert_eq!(agent(&registry, &a, original()), a_post);
     assert!(subscribe(&registry, &b, &receiving).is_null());
 
+    let message_id: MessageId = serde_json::from_value(a_post["message"]["id"].clone()).unwrap();
+    let ChannelResponse::Listed { channels, .. } =
+        channel(&registry, None, list(&a_workspace)).unwrap()
+    else {
+        panic!("expected workspace channels");
+    };
+    let team = &channels
+        .iter()
+        .find(|channel| channel.name == "#team")
+        .unwrap()
+        .id;
+    let ChannelRequest::Post {
+        channel_id,
+        post: mut kickoff,
+    } = post(team, "DM context", PostIntent::Note)
+    else {
+        unreachable!()
+    };
+    kickoff.source = Some(Box::new(ChannelSource {
+        channel_id: id.clone(),
+        message_id: message_id.clone(),
+    }));
+    let outsider_receiver = receiver(&registry, &outsider);
+    assert!(matches!(
+        channel(
+            &registry,
+            None,
+            ChannelRequest::Post {
+                channel_id,
+                post: kickoff
+            }
+        )
+        .unwrap(),
+        ChannelResponse::Posted { wake_count: 3, .. }
+    ));
+    let expand = |caller: &Launch, receiver| {
+        let wake = subscribe(&registry, caller, receiver);
+        agent(
+            &registry,
+            caller,
+            AgentRequest::ChannelWake {
+                batch_id: wake["channel_wake"]["batch_id"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("expected a channel wake, got {wake}"))
+                    .into(),
+                max_body_bytes: None,
+                include_source: true,
+            },
+        )
+    };
+    let visible = expand(&b, &receiving);
+    let source = &visible["post"]["source"];
+    assert_eq!(source["text"], "from A");
+    assert_eq!(
+        source["reply_target"],
+        json!({"channel_id": id, "reply_to": message_id})
+    );
+    let hidden = expand(&outsider, &outsider_receiver);
+    assert_eq!(hidden["post"]["text"], "DM context");
+    assert!(hidden["post"].get("source").is_none());
+
     // Failure inserting mandatory wake work rolls back both the thread and post.
     let disk = rusqlite::Connection::open(root.join("state/channels.sqlite3")).unwrap();
     disk.execute_batch(
@@ -2657,7 +3022,7 @@ fn concurrent_direct_sends_share_one_private_thread_and_keep_exact_receipts() {
     let count: usize = disk
         .query_row("SELECT count(*) FROM posts", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count, 2);
+    assert_eq!(count, 3);
     let ChannelRequest::Post {
         channel_id,
         post: mut reply,
@@ -2689,6 +3054,7 @@ fn direct_post(launch_id: &str, text: &str, key: &str) -> AgentRequest {
             text: text.into(),
             intent: PostIntent::Note,
             mentions: Vec::new(),
+            mention_spans: Vec::new(),
             reply_to: None,
             attachments: Vec::new(),
             source: None,

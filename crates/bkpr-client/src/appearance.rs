@@ -82,10 +82,40 @@ pub(crate) fn button_materials(
     size: Size,
 ) -> bkpr_tui_framework::button::Materials {
     let accent = theme_styles(host).base[Role::Accent as usize].foreground;
-    let radius = (size.cell_width / 3).clamp(1, 6).min(size.cell_height / 3);
+    control_materials(accent, size)
+}
+
+pub(crate) fn field_materials(
+    foreground: [u8; 3],
+    background: [u8; 3],
+    size: Size,
+) -> bkpr_tui_framework::button::Materials {
+    control_materials(blend(foreground, background, 12), size)
+}
+
+pub(crate) fn recessed_fields(
+    host: &ColorProbe,
+    size: Size,
+    pane: DecorationStyle,
+) -> bkpr_tui_framework::form::RecessedFields {
+    let accent = theme_styles(host).base[Role::Accent as usize].foreground;
+    bkpr_tui_framework::form::RecessedFields::new(
+        pane,
+        pane.surface,
+        [pane.background, blend(accent, pane.background, 18)],
+        control_radius(size),
+        size.cell_width,
+    )
+}
+
+fn control_radius(size: Size) -> u32 {
+    (size.cell_width / 2).clamp(1, 7).min(size.cell_height / 3)
+}
+
+fn control_materials(face: [u8; 3], size: Size) -> bkpr_tui_framework::button::Materials {
     bkpr_tui_framework::button::Materials::new(
-        accent,
-        radius,
+        face,
+        control_radius(size),
         (size.cell_width * 180).clamp(1000, 2600),
         400,
         420,
@@ -161,6 +191,18 @@ const ROLES: [Role; 15] = [
     Role::BrightInfo,
 ];
 
+const HOVER_MIX: u16 = 6;
+
+/// Apply the sidebar's hover contrast to a recessed list's own fill.
+pub(crate) fn hover_background(theme: &Theme, surface: ColorSource) -> ColorSource {
+    match (theme.ink(Role::Base, false), surface) {
+        (ColorSource::Rgb(fg), ColorSource::Rgb(surface)) => {
+            ColorSource::Rgb(blend(fg, surface, HOVER_MIX))
+        }
+        _ => theme.background(Role::Hover, false),
+    }
+}
+
 struct Recipe<'a> {
     evidence: &'a ColorProbe,
     styles: [Style; 15],
@@ -230,7 +272,7 @@ impl Recipe<'_> {
                 style.foreground_source = ColorSource::Rgb(color);
                 style.faint = false;
             }
-            for (role, percent) in [(Role::Selected, 12), (Role::Hover, 6)] {
+            for (role, percent) in [(Role::Selected, 12), (Role::Hover, HOVER_MIX)] {
                 let color = blend(fg, surface, percent);
                 let style = &mut self.styles[role as usize];
                 style.background = color;
@@ -388,6 +430,17 @@ pub(crate) fn guide_background(host: &ColorProbe, accent: Option<u8>) -> Option<
             .and_then(|index| host.palette.get(&usize::from(index)))
             .map_or(background, |&color| mode_tint(background, color, 0.40)),
     )
+}
+
+/// List, composer, and parent fills for the nested workspace chat pane.
+pub(crate) fn chat_backgrounds(host: &ColorProbe) -> Option<[[u8; 3]; 3]> {
+    let parent = guide_background(host, None)?;
+    let neutral = blend([255; 3], parent, 5);
+    let composer = host
+        .palette
+        .get(&6)
+        .map_or(neutral, |&accent| mode_tint(neutral, accent, 0.22));
+    Some([neutral, composer, parent])
 }
 
 fn theme_styles(evidence: &ColorProbe) -> ThemeStyles {

@@ -345,6 +345,7 @@ fn post(key: &str) -> ChannelPost {
         text: "a post quoting @Coordinator".into(),
         intent: PostIntent::Note,
         mentions: Vec::new(),
+        mention_spans: Vec::new(),
         reply_to: None,
         attachments: Vec::new(),
         source: None,
@@ -355,6 +356,18 @@ fn send(channel: &ChannelId, post: ChannelPost) -> ChannelRequest {
     ChannelRequest::Post {
         channel_id: channel.clone(),
         post,
+    }
+}
+
+fn send_user(
+    channel: &ChannelId,
+    post: ChannelPost,
+    bindings: Vec<ChannelMentionBinding>,
+) -> ChannelRequest {
+    ChannelRequest::PostUser {
+        channel_id: channel.clone(),
+        post,
+        bindings,
     }
 }
 
@@ -554,30 +567,53 @@ fn typed_mentions_and_policy_select_only_current_agents_and_preserve_unread_atte
         ]
     );
 
-    let roster = |after| ChannelRequest::ListMembers {
-        channel_id: id.clone(),
+    let roster = |after| ChannelRequest::UserRoster {
+        workspace_id: WORKSPACE.into(),
+        channel_id: Some(id.clone()),
         after,
         limit: 2,
     };
+    let entry = |participant: &Participant, launch: &str| ChannelRosterEntry {
+        participant: participant.clone(),
+        binding: Some(ChannelMentionBinding {
+            participant_id: participant.id.clone(),
+            launch_id: launch.into(),
+            binding_generation: 1,
+        }),
+    };
+    let a = entry(&f.a, "launch-a");
+    let b = entry(&f.b, "launch-b");
     assert_eq!(
         f.request(roster(None)).unwrap(),
-        ChannelResponse::Members {
-            participants: vec![f.a.clone(), f.b.clone()],
+        ChannelResponse::UserRoster {
+            participants: vec![a, b.clone()],
             next_after: Some(f.b.id.clone()),
         }
     );
     assert_eq!(
         f.request(roster(Some(f.b.id.clone()))).unwrap(),
-        ChannelResponse::Members {
-            participants: vec![f.user.clone()],
+        ChannelResponse::UserRoster {
+            participants: vec![ChannelRosterEntry {
+                participant: f.user.clone(),
+                binding: None,
+            }],
             next_after: None,
         }
     );
+    let binding = b.binding.unwrap();
 
     let mut directed = post("directed");
     directed.mentions.push(f.b.id.clone());
     directed.reply_to = Some(literal.id.clone());
-    let addressed = posted(f.request(send(&id, directed)).unwrap());
+    let error = f
+        .request(send(&id, directed.clone()))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("require an exact binding"), "{error}");
+    let addressed = posted(
+        f.request(send_user(&id, directed, vec![binding.clone()]))
+            .unwrap(),
+    );
     assert_eq!(
         f.work(&addressed.id),
         [(f.b.id.0.clone(), Some("launch-b".into()), true, true)]
@@ -593,7 +629,7 @@ fn typed_mentions_and_policy_select_only_current_agents_and_preserve_unread_atte
     .unwrap();
     let mut broad = post("broad");
     broad.mentions.push(f.b.id.clone());
-    let broad = posted(f.request(send(&id, broad)).unwrap());
+    let broad = posted(f.request(send_user(&id, broad, vec![binding])).unwrap());
     assert_eq!(
         f.work(&broad.id),
         [
@@ -815,10 +851,21 @@ fn wake_claim_uses_oldest_channel_and_caps_each_batch_in_sequence_order() {
     let mut remaining = vec![older.id];
     for sequence in 2..=33 {
         let mut next = post(&format!("post-{sequence}"));
-        if matches!(sequence, 2 | 32 | 33) {
+        let request = if matches!(sequence, 2 | 32 | 33) {
             next.mentions.push(f.a.id.clone());
-        }
-        remaining.push(posted(f.request(send(&first, next)).unwrap()).id);
+            send_user(
+                &first,
+                next,
+                vec![ChannelMentionBinding {
+                    participant_id: f.a.id.clone(),
+                    launch_id: "launch-a".into(),
+                    binding_generation: 1,
+                }],
+            )
+        } else {
+            send(&first, next)
+        };
+        remaining.push(posted(f.request(request).unwrap()).id);
     }
 
     let claim = f.wake_claim("first-32", 1);
@@ -1014,6 +1061,67 @@ fn wake_native_outcomes_are_exact_durable_and_not_overwritten() {
 }
 
 #[test]
+fn user_roster_is_observational_but_scoped_to_workspace_and_channel_members() {
+    let f = Fixture::new();
+    let id = f.create(
+        &f.user,
+        WORKSPACE,
+        MembershipMode::Explicit,
+        vec![f.a.id.clone()],
+        quiet(),
+    );
+    let roster = |workspace_id: &str, channel_id| ChannelRequest::UserRoster {
+        workspace_id: workspace_id.into(),
+        channel_id,
+        after: None,
+        limit: MAX_PAGE_LIMIT,
+    };
+    let read_only = |workspace: &str| {
+        let mut authority = f.authority(&f.user, workspace)?;
+        authority.writable = false;
+        Ok(authority)
+    };
+    let observe = |request| f.engine.request(request, read_only, |_| true, || false);
+    let all = roster(WORKSPACE, None);
+    assert!(all.is_observational());
+    assert!(f.as_actor(&f.a, all.clone()).is_err());
+    let ids = |request| {
+        let ChannelResponse::UserRoster { participants, .. } = observe(request).unwrap() else {
+            panic!("expected roster");
+        };
+        participants
+            .into_iter()
+            .map(|entry| entry.participant.id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        ids(all),
+        [f.a.id.clone(), f.b.id.clone(), f.user.id.clone()]
+    );
+    assert_eq!(
+        ids(roster(WORKSPACE, Some(id.clone()))),
+        [f.a.id.clone(), f.user.id.clone()]
+    );
+    assert!(observe(roster(OTHER_WORKSPACE, Some(id.clone()))).is_err());
+
+    let mut body = post("forged-unselected-agent");
+    body.mentions.push(f.b.id.clone());
+    let request = send_user(
+        &id,
+        body,
+        vec![ChannelMentionBinding {
+            participant_id: f.b.id.clone(),
+            launch_id: "launch-b".into(),
+            binding_generation: 1,
+        }],
+    );
+    assert!(!request.is_observational());
+    assert!(f.as_actor(&f.a, request.clone()).is_err());
+    let error = f.request(request).unwrap_err().to_string();
+    assert!(error.contains("left the channel"), "{error}");
+}
+
+#[test]
 fn durable_history_recovery_and_atomic_commit_failure() {
     let f = Fixture::new();
     let id = f.wide(ChannelSettings::default());
@@ -1189,6 +1297,119 @@ fn retry_conflicts_are_scoped_to_authenticated_sender_and_exact_request() {
     let other_sender = posted(f.as_actor(&f.a, send(&id, original)).unwrap());
     assert_eq!(other_sender.sequence, 2);
     assert_eq!(other_sender.author.id, f.a.id);
+}
+
+#[test]
+fn unannotated_posts_keep_legacy_fingerprints_and_receipts() {
+    use sha2::{Digest, Sha256};
+
+    let mut f = Fixture::new();
+    let id = f.wide(quiet());
+    let legacy = concat!(
+        r#"{"idempotency_key":"legacy","text":"a post quoting @Coordinator","#,
+        r#""intent":"note","mentions":[],"reply_to":null,"attachments":[]}"#
+    );
+    let accepted = f.request(send(&id, post("legacy"))).unwrap();
+    let (fingerprint, span_type): (Vec<u8>, Option<String>) = f
+        .engine
+        .with_store(|store| {
+            Ok(store.connection.query_row(
+                "SELECT fingerprint,json_type(summary,'$.mention_spans') FROM posts WHERE id=?1",
+                [posted(accepted.clone()).id.as_ref()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    let expected: [u8; 32] = Sha256::digest(legacy.as_bytes()).into();
+    assert_eq!(fingerprint.as_slice(), expected.as_slice());
+    assert_eq!(span_type, None);
+
+    f.engine = ChannelEngine::new(f.root.path().to_owned());
+    let old_post = serde_json::from_str(legacy).unwrap();
+    assert_eq!(f.request(send(&id, old_post)).unwrap(), accepted);
+}
+
+#[test]
+fn user_mention_spans_require_targets_and_retain_ordered_snapshots() {
+    let mut f = Fixture::new();
+    let id = f.create(
+        &f.user,
+        WORKSPACE,
+        MembershipMode::Explicit,
+        vec![f.b.id.clone()],
+        ChannelSettings {
+            user_wake: WakePolicy::AddressedOnly,
+            ..quiet()
+        },
+    );
+    let binding = ChannelMentionBinding {
+        participant_id: f.b.id.clone(),
+        launch_id: "launch-b".into(),
+        binding_generation: 1,
+    };
+    let text = "é @東京 + @user + @東京";
+    let targets = [(3, 10, &f.b), (13, 18, &f.user), (21, 28, &f.b)];
+    let post = ChannelPost {
+        text: text.into(),
+        mentions: vec![f.user.id.clone(), f.b.id.clone()],
+        mention_spans: targets
+            .iter()
+            .map(|&(start, end, target)| ChannelMentionSpan {
+                start,
+                end,
+                participant_id: target.id.clone(),
+            })
+            .collect(),
+        ..post("annotated")
+    };
+    let request = |post| send_user(&id, post, vec![binding.clone()]);
+    let mut invalid = post.clone();
+    invalid.mention_spans[0].participant_id = f.a.id.clone();
+    let error = f.request(request(invalid)).unwrap_err().to_string();
+    assert!(error.contains("does not reference an addressed participant"));
+    let mut invalid = post.clone();
+    invalid.mention_spans[0].start = 1;
+    let error = f.request(request(invalid)).unwrap_err().to_string();
+    assert!(error.contains("splits a UTF-8 character"));
+
+    let accepted = f.request(request(post.clone())).unwrap();
+    let summary = posted(accepted.clone());
+    assert_eq!(summary.sequence, 1);
+    assert_eq!(
+        summary.mention_spans,
+        targets.map(|(start, end, target)| ChannelResolvedMentionSpan {
+            start,
+            end,
+            participant: target.clone(),
+        })
+    );
+    assert_eq!(
+        f.work(&summary.id),
+        [(f.b.id.0.clone(), Some("launch-b".into()), true, true)]
+    );
+
+    let mut conflict = post.clone();
+    conflict.mention_spans[0].start = 4;
+    let error = f.request(request(conflict)).unwrap_err().to_string();
+    assert!(error.contains("conflicts with an existing retry key"));
+    f.b.display_name = "Renamed after commit".into();
+    f.request(ChannelRequest::SetMembership {
+        channel_id: id.clone(),
+        membership: MembershipMode::Explicit,
+        members: Vec::new(),
+    })
+    .unwrap();
+    f.engine = ChannelEngine::new(f.root.path().to_owned());
+
+    assert_eq!(f.request(request(post.clone())).unwrap(), accepted);
+    let mut stale = post;
+    stale.idempotency_key = "fresh-key".into();
+    let error = f.request(request(stale)).unwrap_err().to_string();
+    assert_eq!(error, super::STALE_USER_MENTION);
+    assert!(
+        matches!(f.request(messages(&id, None, 8)).unwrap(), ChannelResponse::History { messages, .. }
+            if messages.len() == 1 && messages[0].message == summary && messages[0].text == text)
+    );
 }
 
 #[test]
@@ -1867,6 +2088,82 @@ fn body_budget_and_cursor_allow_contiguous_forward_catch_up() {
 }
 
 #[test]
+fn compact_history_pages_bound_serialized_mention_metadata() {
+    let mut f = Fixture::new();
+    f.b.display_name = "\\".repeat(MAX_NAME_BYTES);
+    let id = f.wide(quiet());
+    let count = u64::from(MAX_PAGE_LIMIT);
+    for index in 0..count {
+        f.as_actor(
+            &f.a,
+            send(
+                &id,
+                ChannelPost {
+                    text: "x".repeat(MAX_MENTIONS),
+                    mentions: vec![f.b.id.clone()],
+                    mention_spans: (0..MAX_MENTIONS as u32)
+                        .map(|start| ChannelMentionSpan {
+                            start,
+                            end: start + 1,
+                            participant_id: f.b.id.clone(),
+                        })
+                        .collect(),
+                    ..post(&format!("dense-{index}"))
+                },
+            ),
+        )
+        .unwrap();
+    }
+
+    let mut bound = 0;
+    let mut pages = 0;
+    loop {
+        let page = f
+            .engine
+            .with_store(|store| {
+                store.compact_history(
+                    ChannelRequest::History {
+                        channel_id: id.clone(),
+                        before: None,
+                        after: Some(bound),
+                        limit: MAX_PAGE_LIMIT,
+                    },
+                    &|workspace| f.authority(&f.a, workspace),
+                    Some(WORKSPACE),
+                )
+            })
+            .unwrap();
+        pages += 1;
+        let summaries = page["messages"].as_array().unwrap();
+        assert!(!summaries.is_empty());
+        assert!(
+            summaries
+                .iter()
+                .map(|summary| serde_json::to_vec(summary).unwrap().len())
+                .sum::<usize>()
+                <= MAX_HISTORY_BYTES
+        );
+        for summary in summaries {
+            bound += 1;
+            assert_eq!(summary["sequence"], bound);
+            assert_eq!(
+                summary["mention_spans"].as_array().unwrap().len(),
+                MAX_MENTIONS
+            );
+        }
+        assert_eq!(
+            page["next_after"].as_u64(),
+            (bound < count).then_some(bound)
+        );
+        if page["next_after"].is_null() {
+            break;
+        }
+    }
+    assert_eq!(bound, count);
+    assert!(pages > 1);
+}
+
+#[test]
 fn unauthorized_upload_does_not_decode_and_valid_upload_rechecks_before_insert() {
     let f = Fixture::new();
     let id = f.create(
@@ -2034,6 +2331,7 @@ fn close_retires_old_and_racing_work_before_new_capacity_is_used() {
                         publish: &|_| {},
                         binding_live: &|_, _| true,
                         direct_peer: &|_| Ok(None),
+                        fence_user_mentions: &|_, _| unreachable!("no selected user mentions"),
                     },
                     None,
                     |store, workspace| {
@@ -2341,6 +2639,7 @@ fn direct_version_nine_migration_keeps_history_and_uses_the_ordered_queue() {
                         publish: &|_| {},
                         binding_live: &|_, _| true,
                         direct_peer: &|_| Ok(None),
+                        fence_user_mentions: &|_, _| unreachable!("agent direct post"),
                     },
                     || {
                         Ok(WorkspaceParticipant {
@@ -2439,6 +2738,7 @@ fn first_direct_post_accepts_descending_pair_and_replays_without_resolving_targe
                         publish: &|_| {},
                         binding_live: &|_, _| true,
                         direct_peer: &|_| Ok(None),
+                        fence_user_mentions: &|_, _| unreachable!("agent direct post"),
                     },
                     || resolve_target(&f),
                 )
@@ -2734,7 +3034,6 @@ fn catalog_pages_stay_at_their_baseline_and_resume_authoritative_unread() {
 
     let mut cursor = cursor;
     let mut created = false;
-    let mut updated = false;
     loop {
         let ChannelResponse::CatalogChanges {
             changes,
@@ -2759,7 +3058,6 @@ fn catalog_pages_stay_at_their_baseline_and_resume_authoritative_unread() {
                 ),
                 (2, 1, true)
             );
-            updated = true;
         } else {
             assert_eq!(channel.id, channel_created_later);
             created = true;
@@ -2768,7 +3066,7 @@ fn catalog_pages_stay_at_their_baseline_and_resume_authoritative_unread() {
             break;
         }
     }
-    assert!(created && updated);
+    assert!(created);
     f.as_actor(
         &f.a,
         ChannelRequest::MarkRead {
@@ -2962,13 +3260,24 @@ fn catalog_overrun_resets_without_losing_history_or_unread() {
             || false,
         )
         .unwrap();
-    let ChannelResponse::CatalogSnapshot { channels, .. } = user_catalog else {
+    let ChannelResponse::CatalogSnapshot {
+        channels, cursor, ..
+    } = user_catalog
+    else {
         panic!("expected fresh catalog");
     };
     assert!(
         channels
             .iter()
             .any(|c| c.id == id && c.unread_attention && c.last_sequence == 1)
+    );
+    assert_eq!(
+        fetch(CatalogRead::Changes(&cursor)),
+        ChannelResponse::CatalogChanges {
+            changes: vec![],
+            cursor: cursor.clone(),
+            more: false,
+        }
     );
     let ChannelResponse::History { messages, .. } = f.request(messages(&id, None, 4)).unwrap()
     else {

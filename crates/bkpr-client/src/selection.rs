@@ -281,6 +281,7 @@ impl App {
     pub(super) fn selection_focus_lost(&mut self) {
         self.identity_copy.cancel();
         self.cancel_button_presses();
+        self.chat.clear_history_selection();
         let generation = self.terminal_selection.generation;
         self.terminal_selection.generation = generation.wrapping_add(1);
         self.terminal_selection.copies.clear();
@@ -391,7 +392,73 @@ impl App {
             })
     }
 
+    pub(super) fn history_selection_owner(&self) -> bool {
+        self.chat.is_attending()
+            && self.host_focused
+            && !self.backgrounded
+            && !self.state.sidebar.active
+            && self.state.form.is_none()
+            && self.sidebar_menu.is_none()
+            && !self.picker_open()
+            && !self.diagnostic_active()
+            && self.image_viewer.is_none()
+    }
+
+    pub(super) fn queue_history_copy(&mut self) {
+        if !self.history_selection_owner() || !self.chat.can_copy_history() {
+            return;
+        }
+        if self.options.clipboard_policy == "deny" {
+            self.notify("Selection retained; host clipboard export denied by client policy".into());
+        } else if self.consent.is_some() || self.paste_offer.is_some() {
+            self.notify("Clipboard exchange busy; history copy was not queued".into());
+        } else {
+            self.chat.request_history_copy();
+        }
+    }
+
+    pub(super) fn history_clipboard(&mut self, out: &mut impl Write) -> Result<()> {
+        if !self.history_selection_owner()
+            || self.options.clipboard_policy == "deny"
+            || self.consent.is_some()
+            || self.paste_offer.is_some()
+        {
+            self.chat.cancel_history_copy();
+            return Ok(());
+        }
+        let result = self
+            .chat
+            .take_history_copy(MAX_INPUT_BYTES)
+            .and_then(|copy| {
+                let Some(data) = copy else {
+                    return Ok(());
+                };
+                self.export_user_clipboard(
+                    out,
+                    vec![ClipboardContent {
+                        mime: "text/plain".into(),
+                        data,
+                    }],
+                    "Selection",
+                )
+            });
+        match result {
+            Err(error) if error.downcast_ref::<std::io::Error>().is_some() => Err(error.context(
+                "selection clipboard host transport failed; outcome unknown; not replayed",
+            )),
+            Err(error) => {
+                self.notify(format!("Selection copy failed: {error:#}; not replayed"));
+                Ok(())
+            }
+            Ok(()) => Ok(()),
+        }
+    }
+
     pub(super) fn copy_focused_selection(&mut self) -> Result<()> {
+        if self.chat.visible() {
+            self.queue_history_copy();
+            return Ok(());
+        }
         if let Some((pane, view)) = self.state.focused.as_ref().and_then(|pane| {
             self.views
                 .get(pane)

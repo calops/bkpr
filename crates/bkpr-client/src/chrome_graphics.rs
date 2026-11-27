@@ -49,21 +49,14 @@ struct PaneGeometry {
 }
 
 impl PaneGeometry {
-    fn prepare(&mut self, size: Size, rects: &[(String, Rect)]) {
+    fn prepare(&mut self, size: Size, rects: impl Iterator<Item = Rect> + Clone) {
         let cell = [size.cell_width, size.cell_height];
-        if self.cell == cell
-            && self.rects.len() == rects.len()
-            && self
-                .rects
-                .iter()
-                .zip(rects)
-                .all(|(old, (_, rect))| old == rect)
-        {
+        if self.cell == cell && self.rects.iter().copied().eq(rects.clone()) {
             return;
         }
         self.cell = cell;
         self.rects.clear();
-        self.rects.extend(rects.iter().map(|(_, rect)| *rect));
+        self.rects.extend(rects);
         self.placements.clear();
         let [cw, ch] = cell;
         let excess = i64::from(ch.saturating_sub(cw));
@@ -109,19 +102,56 @@ impl PaneGeometry {
             });
         }
     }
+
+    fn place(
+        &self,
+        graphics: &SvgGraphics,
+        frame: &mut Frame,
+        index: usize,
+        base: u32,
+        style: DecorationStyle,
+        exclusions: &[Rect],
+    ) -> bool {
+        let Some((&rect, &geometry)) = self.rects.get(index).zip(self.placements.get(index)) else {
+            return false;
+        };
+        rect.width >= 3
+            && rect.height >= 3
+            && graphics
+                .decorate_window_with_geometry(frame, rect, style, base, exclusions, geometry)
+    }
+}
+
+const NATIVE_PANE: usize = 0;
+const SIDEBAR_EDGE_PANE: usize = 11;
+const CHAT_PANE: usize = 12;
+const CYAN_PANE: usize = 13;
+
+pub(crate) enum FormControlFace {
+    Action,
+    Neutral,
+    Recessed { focused: bool },
+}
+
+#[derive(Default)]
+struct SplitGeometry {
+    workspace: PaneGeometry,
+    chat: PaneGeometry,
+    chat_cutouts: Vec<Rect>,
 }
 pub(crate) struct ChromeGraphics(
     SvgGraphics,
-    Option<[DecorationStyle; 15]>,
+    Option<[DecorationStyle; 23]>,
     Option<DecorationEvidence>,
-    PaneGeometry,
-    Option<bkpr_tui_framework::button::Materials>,
+    SplitGeometry,
+    Option<[bkpr_tui_framework::button::Materials; 2]>,
+    Option<bkpr_tui_framework::form::RecessedFields>,
 );
 impl ChromeGraphics {
     pub(crate) fn new(cache_root: Option<std::path::PathBuf>) -> io::Result<Self> {
         std::hint::black_box(NOTICES);
         SvgGraphics::new_with_cache(ASSETS, 2, 1, cache_root)
-            .map(|graphics| Self(graphics, None, None, PaneGeometry::default(), None))
+            .map(|graphics| Self(graphics, None, None, SplitGeometry::default(), None, None))
     }
     pub(crate) fn register_uploads(&mut self, terminal: &mut bkpr_tui_framework::TerminalGuard) {
         self.0.register_uploads(terminal);
@@ -169,6 +199,7 @@ impl ChromeGraphics {
         );
         if self.2 != Some(evidence) {
             self.4 = None;
+            self.5 = None;
             self.1 = crate::appearance::decoration_styles(host, size).map(|[pane, popup]| {
                 let guide = |accent| DecorationStyle {
                     background: crate::appearance::guide_background(host, accent)
@@ -180,13 +211,27 @@ impl ChromeGraphics {
                         .unwrap_or(popup.background),
                     ..popup
                 };
+                let [neutral, cyan, parent] =
+                    crate::appearance::chat_backgrounds(host).unwrap_or([pane.background; 3]);
+                let chat_pane = |background| DecorationStyle {
+                    kind: bkpr_tui_framework::decoration::DecorationKind::RecessedOpaqueOpening,
+                    background,
+                    surface: parent,
+                    ..pane
+                };
                 let sidebar_edge = DecorationStyle {
                     kind: bkpr_tui_framework::decoration::DecorationKind::RecessedTransparentLeftGutter,
                     ..pane
                 };
-                let buttons = crate::appearance::button_materials(host, size);
-                self.4 = Some(buttons);
+                let muted_face = crate::appearance::blend(pane.foreground, pane.background, 8);
+                let buttons = crate::appearance::button_materials(host, size).with_disabled(muted_face);
+                let fields = crate::appearance::field_materials(pane.foreground, pane.background, size);
+                self.4 = Some([buttons, fields]);
                 let [idle, hover, pressed] = *buttons.styles();
+                let [field, field_hover, field_pressed] = *fields.styles();
+                let recesses = crate::appearance::recessed_fields(host, size, pane);
+                let [recessed, recessed_focus] = *recesses.styles();
+                self.5 = Some(recesses);
                 [
                     pane,
                     popup,
@@ -200,9 +245,17 @@ impl ChromeGraphics {
                     region(Some(3)),
                     region(Some(4)),
                     sidebar_edge,
+                    chat_pane(neutral),
+                    chat_pane(cyan),
                     idle,
                     hover,
                     pressed,
+                    field,
+                    field_hover,
+                    field_pressed,
+                    buttons.disabled_style().expect("disabled button face configured"),
+                    recessed,
+                    recessed_focus,
                 ]
             });
             self.2 = Some(evidence);
@@ -216,7 +269,7 @@ impl ChromeGraphics {
     }
 
     pub(crate) fn button_keys(&self) -> [Option<bkpr_protocol::ImageKey>; 3] {
-        self.4.map_or([None; 3], |buttons| {
+        self.4.map_or([None; 3], |[buttons, _]| {
             buttons.styles().map(|style| self.0.decoration_key(style))
         })
     }
@@ -225,22 +278,47 @@ impl ChromeGraphics {
         &self,
         enabled: bool,
     ) -> impl FnMut(&mut Frame, Rect, bkpr_tui_framework::button::State) -> bool + '_ {
-        let mut base = 1;
-        let mut retained = false;
+        let mut place = self.form_control_painter();
         move |frame, rect, state| {
+            enabled
+                && state != bkpr_tui_framework::button::State::Disabled
+                && place(frame, rect, state, FormControlFace::Action)
+        }
+    }
+
+    pub(crate) fn form_control_painter(
+        &self,
+    ) -> impl FnMut(&mut Frame, Rect, bkpr_tui_framework::button::State, FormControlFace) -> bool + '_
+    {
+        let mut base = 1;
+        let mut retained = [false; 2];
+        move |frame, rect, state, face| {
             let id = base;
             base += 64;
-            enabled
-                && self.4.is_some_and(|buttons| {
-                    if !buttons.place(&self.0, frame, rect, state, id) {
-                        return false;
+            let index = match face {
+                FormControlFace::Action => 0,
+                FormControlFace::Neutral => 1,
+                FormControlFace::Recessed { focused } => {
+                    return self
+                        .5
+                        .as_ref()
+                        .is_some_and(|fields| fields.place(&self.0, frame, rect, focused, id));
+                }
+            };
+            self.4.is_some_and(|materials| {
+                let material = &materials[index];
+                if !material.place(&self.0, frame, rect, state, id) {
+                    return false;
+                }
+                if !retained[index] {
+                    self.0.retain_decoration_sources(frame, material.styles());
+                    if let Some(disabled) = material.disabled_style() {
+                        self.0.retain_decoration_sources(frame, &[disabled]);
                     }
-                    if !retained {
-                        self.0.retain_decoration_sources(frame, buttons.styles());
-                        retained = true;
-                    }
-                    true
-                })
+                    retained[index] = true;
+                }
+                true
+            })
         }
     }
 
@@ -250,10 +328,10 @@ impl ChromeGraphics {
         }
     }
 
-    /// Cache complete native split geometry; unchanged renders allocate nothing.
-    pub(crate) fn prepare_panes(&mut self, size: Size, rects: &[(String, Rect)]) {
+    /// Cache the visible frames' geometry in paint order, independent of pane IDs.
+    pub(crate) fn prepare_panes(&mut self, size: Size, rects: impl Iterator<Item = Rect> + Clone) {
         if self.0.is_enabled() {
-            self.3.prepare(size, rects);
+            self.3.workspace.prepare(size, rects);
         }
     }
 
@@ -292,6 +370,7 @@ impl ChromeGraphics {
         self.0.decorate_joined(frame, base, exclusions)
     }
 
+    /// Paint the cached workspace pane with its native perimeter and split clip.
     pub(crate) fn decorate_pane(
         &self,
         frame: &mut Frame,
@@ -300,23 +379,90 @@ impl ChromeGraphics {
         base: u32,
         transparent_left_gutter: bool,
     ) -> bool {
-        self.3
-            .rects
-            .get(index)
-            .is_some_and(|cached| *cached == rect)
-            && self.3.placements.get(index).is_some_and(|geometry| {
-                self.1.is_some_and(|styles| {
-                    self.0.decorate_window_with_geometry(
-                        frame,
-                        rect,
-                        styles[if transparent_left_gutter { 11 } else { 0 }],
-                        base,
-                        &[],
-                        *geometry,
-                    )
-                })
-            })
+        let Some(styles) = self.1.as_ref() else {
+            return false;
+        };
+        let style = if transparent_left_gutter {
+            styles[SIDEBAR_EDGE_PANE]
+        } else {
+            styles[NATIVE_PANE]
+        };
+        self.3.workspace.rects.get(index) == Some(&rect)
+            && self
+                .3
+                .workspace
+                .place(&self.0, frame, index, base, style, &[])
     }
+
+    /// Paint the tiled sections in the native graphics frame, beneath any overlays.
+    /// Returns the bitmask of section borders replaced by native materials.
+    pub(crate) fn decorate_chat_panes(
+        &mut self,
+        frame: &mut Frame,
+        origin: Rect,
+        sections: &[(Rect, Rect, Option<u8>)],
+        base: u32,
+        selection: &[bkpr_protocol::SelectionSpan],
+        row_highlights: [Option<Rect>; 2],
+    ) -> u8 {
+        let Some(styles) = self.1.as_ref().filter(|_| self.0.is_enabled()) else {
+            return 0;
+        };
+        self.3.chat.prepare(
+            frame.size,
+            sections.iter().map(|&(rect, _, _)| Rect {
+                x: origin.x + rect.x,
+                y: origin.y + rect.y,
+                ..rect
+            }),
+        );
+        // These terminal backgrounds must remain visible beneath their text.
+        let cutouts = &mut self.3.chat_cutouts;
+        cutouts.clear();
+        cutouts.extend(row_highlights.into_iter().flatten().map(|rect| Rect {
+            x: origin.x + rect.x,
+            y: origin.y + rect.y,
+            ..rect
+        }));
+        for span in selection {
+            let rect = Rect {
+                x: origin.x + span.start,
+                y: origin.y + span.row,
+                width: span.end - span.start,
+                height: 1,
+            };
+            match cutouts.last_mut() {
+                Some(previous)
+                    if previous.x == rect.x
+                        && previous.width == rect.width
+                        && previous.y + previous.height == rect.y =>
+                {
+                    previous.height += 1;
+                }
+                _ => cutouts.push(rect),
+            }
+        }
+        let mut ready = 0;
+        for (index, &(_, _, accent)) in sections.iter().enumerate() {
+            let style = match accent {
+                None => styles[CHAT_PANE],
+                Some(6) => styles[CYAN_PANE],
+                _ => continue,
+            };
+            if self.3.chat.place(
+                &self.0,
+                frame,
+                index,
+                base + index as u32 * 64,
+                style,
+                cutouts,
+            ) {
+                ready |= 1 << index;
+            }
+        }
+        ready
+    }
+
     /// Add static material without changing text/cursor/native geometry.
     /// Raised output needs a root-sized graphics-only frame for its outer halo.
     /// Callers provide semantic title/caption cutouts and reserve 64 IDs.
@@ -420,6 +566,12 @@ impl ChromeGraphics {
         base: u32,
         accent: Option<u8>,
     ) -> bool {
+        let index = match accent {
+            None => 5,
+            Some(6) => 6,
+            Some(index @ 1..=4) => 6 + usize::from(index),
+            _ => return false,
+        };
         if !self.0.is_enabled()
             || text_body.width == 0
             || text_body.height == 0
@@ -434,12 +586,6 @@ impl ChromeGraphics {
         }
         let Some(styles) = self.1 else {
             return false;
-        };
-        let index = match accent {
-            None => 5,
-            Some(6) => 6,
-            Some(index @ 1..=4) => 6 + usize::from(index),
-            _ => return false,
         };
         let cw = i64::from(frame.size.cell_width);
         let ch = i64::from(frame.size.cell_height);
@@ -468,8 +614,8 @@ impl ChromeGraphics {
         )
     }
 
-    /// Replace only an existing two-cell decorative marker, never a label or
-    /// semantic status glyph. Unready/unsupported restores its text fallback.
+    /// Replace only an existing decorative marker, never a label or pane
+    /// activity glyph. Unready/unsupported restores its text fallback.
     /// The root-sized resource-only `artwork_frame` must be composed after
     /// passive sidebar contours and before true modal content. The hive extends
     /// half a cell into the border gutter; marker-cell cutouts would crop it.
@@ -483,14 +629,18 @@ impl ChromeGraphics {
         placement_id: u32,
     ) -> bool {
         let [col, row] = position;
+        let marker = match artwork {
+            Artwork::Bee | Artwork::Hive => ["●", " "],
+            Artwork::BeeHidden => ["◌", " "],
+        };
+        let range = usize::from(col)..usize::from(col) + marker.len();
         if artwork_frame.size != frame.size
-            || col.checked_add(2).is_none_or(|end| end > frame.size.cols)
+            || range.end > usize::from(frame.size.cols)
             || row >= frame.size.rows
             || (artwork == Artwork::Hive && col == 0)
         {
             return false;
         }
-        let range = usize::from(col)..usize::from(col) + 2;
         let Some(cells) = frame
             .rows
             .get(usize::from(row))
@@ -501,10 +651,6 @@ impl ChromeGraphics {
         if cells.iter().any(|cell| cell.width != 1) {
             return false;
         }
-        let marker = match artwork {
-            Artwork::Bee | Artwork::Hive => ["●", " "],
-            Artwork::BeeHidden => ["◌", " "],
-        };
         if !cells
             .iter()
             .zip(marker)
@@ -685,6 +831,7 @@ mod tests {
         host.feed(format!("graphics;Gi={id};OK").as_bytes());
         host.feed(b"10;rgb:ffff/ffff/ffff");
         host.feed(b"11;rgb:2222/2222/2222");
+        host.feed(b"4;6;rgb:0000/ffff/ffff");
         host.truecolor = true;
         let size = Size {
             cols: 80,
@@ -725,7 +872,7 @@ mod tests {
             assert!(chrome.drain().unwrap());
         };
         chrome.prepare(&host, size, &[]);
-        chrome.prepare_panes(size, &[("pane".into(), rect)]);
+        chrome.prepare_panes(size, std::iter::once(rect));
         prepared(&mut chrome);
         let mut markers = Vec::new();
         for artwork in [Artwork::Hive, Artwork::Bee, Artwork::BeeHidden] {
@@ -765,10 +912,69 @@ mod tests {
         for accent in [None, Some(4), Some(3)] {
             assert!(chrome.decorate_guide(&mut rich, guide, body, 256, accent));
         }
+        let origin = Rect {
+            height: 20,
+            ..guide
+        };
+        let split = [
+            Rect {
+                x: 0,
+                y: 0,
+                width: 21,
+                height: 20,
+            },
+            Rect {
+                x: 20,
+                y: 0,
+                width: 20,
+                height: 12,
+            },
+            Rect {
+                x: 20,
+                y: 11,
+                width: 20,
+                height: 9,
+            },
+        ];
+        let absolute = split.map(|rect| Rect {
+            x: rect.x + origin.x,
+            y: rect.y + origin.y,
+            ..rect
+        });
+        let mut sections = split.map(|rect| (rect, crate::controller::content(rect), None));
+        let mut chat = bkpr_tui_framework::graphics_frame(size);
+        assert_eq!(
+            chrome.decorate_chat_panes(&mut chat, origin, &sections, 1, &[], [None; 2]),
+            0b111
+        );
+        let mut native = bkpr_tui_framework::graphics_frame(size);
+        chrome.prepare_panes(size, absolute.into_iter());
+        for (index, rect) in absolute.into_iter().enumerate() {
+            assert!(chrome.decorate_pane(&mut native, rect, index, 1 + index as u32 * 64, false));
+        }
+        assert_eq!(chat.images.len(), 1);
+        assert_ne!(chat.images[0].pixels, native.images[0].pixels);
+        assert_eq!(chat.placements.len(), native.placements.len());
+        sections[2].2 = Some(6);
+        let mut tinted = bkpr_tui_framework::graphics_frame(size);
+        assert_eq!(
+            chrome.decorate_chat_panes(&mut tinted, origin, &sections, 1, &[], [None; 2]),
+            0b111
+        );
+        assert_eq!(tinted.images.len(), 2);
+        assert_eq!(tinted.placements.len(), native.placements.len());
+        for (mut tinted, native) in tinted.placements.into_iter().zip(native.placements) {
+            assert_ne!(tinted.image_id, native.image_id);
+            tinted.image_id = native.image_id;
+            tinted.generation = native.generation;
+            assert_eq!(tinted.layer, bkpr_protocol::ImageLayer::BelowText);
+            tinted.layer = native.layer;
+            assert_eq!(tinted, native);
+        }
 
         chrome.set_enabled(false);
         chrome.prepare(&host, size, &[]);
-        chrome.prepare_panes(size, &[]);
+        chrome.prepare_panes(size, std::iter::empty());
         for (artwork, frame, effects, original, _) in &mut markers {
             effects.images.clear();
             effects.placements.clear();
@@ -786,6 +992,10 @@ mod tests {
         bkpr_tui_framework::text(&mut plain, 1, 1, "retained title and content", false);
         let original = plain.clone();
         assert!(!chrome.decorate_pane(&mut plain, rect, 0, 64, false));
+        assert_eq!(
+            chrome.decorate_chat_panes(&mut plain, origin, &sections, 1, &[], [None; 2]),
+            0
+        );
         for raised in [false, true] {
             assert!(!chrome.decorate_window_in_clipped(&mut plain, rect, raised, 128, &[]));
             assert!(!chrome.decorate_window_with_geometry(
@@ -805,6 +1015,7 @@ mod tests {
 
         chrome.set_enabled(true);
         chrome.prepare(&host, size, &[]);
+        chrome.prepare_panes(size, std::iter::once(rect));
         prepared(&mut chrome);
         for (artwork, frame, effects, _, image) in &mut markers {
             assert!(chrome.decorate(
@@ -828,37 +1039,28 @@ mod tests {
             cell_width: 9,
             cell_height: 20,
         };
-        let rects = vec![
-            (
-                "left".into(),
-                Rect {
-                    x: 0,
-                    y: 0,
-                    width: 21,
-                    height: 24,
-                },
-            ),
-            (
-                "upper".into(),
-                Rect {
-                    x: 20,
-                    y: 0,
-                    width: 20,
-                    height: 13,
-                },
-            ),
-            (
-                "lower".into(),
-                Rect {
-                    x: 20,
-                    y: 12,
-                    width: 20,
-                    height: 12,
-                },
-            ),
+        let rects = [
+            Rect {
+                x: 0,
+                y: 0,
+                width: 21,
+                height: 24,
+            },
+            Rect {
+                x: 20,
+                y: 0,
+                width: 20,
+                height: 13,
+            },
+            Rect {
+                x: 20,
+                y: 12,
+                width: 20,
+                height: 12,
+            },
         ];
         let mut cache = PaneGeometry::default();
-        cache.prepare(size, &rects);
+        cache.prepare(size, rects.into_iter());
         assert_eq!(
             cache.placements,
             [
@@ -878,7 +1080,7 @@ mod tests {
         );
         let rect_storage = cache.rects.as_ptr();
         let placement_storage = cache.placements.as_ptr();
-        cache.prepare(size, &rects);
+        cache.prepare(size, rects.into_iter());
         assert_eq!(cache.rects.as_ptr(), rect_storage);
         assert_eq!(cache.placements.as_ptr(), placement_storage);
         // The fork saturates excess height: unusually wide cells never produce
@@ -889,7 +1091,7 @@ mod tests {
                 cell_height: 9,
                 ..size
             },
-            &rects,
+            rects.into_iter(),
         );
         assert_eq!(cache.placements[1].bounds_px, [400, 0, 800, 117]);
         assert_eq!(cache.placements[2].bounds_px, [400, 108, 800, 216]);
@@ -903,28 +1105,22 @@ mod tests {
             cell_width: 9,
             cell_height: 20,
         };
-        let rects = vec![
-            (
-                "upper".into(),
-                Rect {
-                    x: 0,
-                    y: 0,
-                    width: 10,
-                    height: 10,
-                },
-            ),
-            (
-                "corner".into(),
-                Rect {
-                    x: 9,
-                    y: 9,
-                    width: 10,
-                    height: 10,
-                },
-            ),
+        let rects = [
+            Rect {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 10,
+            },
+            Rect {
+                x: 9,
+                y: 9,
+                width: 10,
+                height: 10,
+            },
         ];
         let mut cache = PaneGeometry::default();
-        cache.prepare(size, &rects);
+        cache.prepare(size, rects.into_iter());
         assert_eq!(
             cache.placements[0],
             DecorationGeometry {

@@ -14,6 +14,13 @@ Sidebar: Ctrl-Space, then
   s               Stop session; keep recovery (session row, confirm)
   /               Find panes
 
+Workspace chat: activate a workspace by name
+  Tab             Channels / composer Enter       Send or choose
+  Shift-Enter     Add a line           Esc         Return to pane
+  PgUp / PgDn     Page conversation    Ctrl-End    Latest messages
+  Ctrl-n          New channel          Alt-e       Channel settings
+  Alt-m           Mark channel read    Ctrl-r      Retry identical uncertain post
+
 Panes: Ctrl-b, then
   n / %           Split side by side   "           Split above / below
   arrows          Focus pane           Tab         Next pane

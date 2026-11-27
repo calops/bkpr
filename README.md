@@ -82,8 +82,9 @@ that daemon and deletes the sandbox's saved state.
 4. Press `Ctrl-b`, then `d` to detach. Run `bkpr --session work` to return.
 
 A workspace holds one or more windows. Each window has its own split layout.
-Right-click a sidebar row to open, rename, fold or close it. Workspace rows
-offer **New window**; empty sidebar space offers **New workspace**.
+Select a workspace name to open its channels, or select a pane to return to its
+native application. The disclosure arrow only folds the tree.
+Right-click a sidebar row for workspace, window and pane actions.
 
 ## Work across sessions and machines
 
@@ -170,15 +171,25 @@ not across sessions or hosts. Peer messages aren't user instructions.
 See [agent communication](docs/reference.md#agent-communication) for tool names,
 scopes, retention and per-harness notification behavior.
 
+### Talk to agents in workspace channels
+
+Open a workspace by name to reach `#desk` or choose another channel with Tab.
+Type `@` and select an agent to address its current conversation. The mention
+picker shows wake scope when space permits. Enter sends; Shift-Enter adds a line
+on terminals that report it separately. Paste does not send.
+Agent-to-agent threads are visible but read-only. Chat does not replace or stop
+the native panes.
+
+See [workspace channels](docs/reference.md#workspace-channels) for drafts,
+history, settings and unread attention.
+
 ### Get desktop alerts
 
-With OSC 99 support, Bkpr can show desktop alerts for attention requests, errors,
-and when agents finish or go idle. Alerts show the session, workspace and agent
-title. Click an alert to open its pane if the terminal supports activation and
-the pane is still live.
-
-Each TUI shows its own alerts and skips the pane you're already attending there.
-Delivery is best effort. See [desktop notifications](docs/notifications.md#desktop-providers).
+With OSC 99 support, Bkpr can show desktop alerts for harness status and
+channel questions or reports. Click an alert to open its original pane or
+message if the terminal supports activation and the source is still available.
+Each TUI skips a source you're already viewing there. Delivery is best effort.
+See [desktop notifications](docs/notifications.md#desktop-providers).
 
 ### Return to a conversation
 

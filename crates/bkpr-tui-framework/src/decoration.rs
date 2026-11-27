@@ -33,8 +33,10 @@ use std::sync::Arc;
 pub enum DecorationKind {
     /// Inward shadow with an opaque exterior and cell gutter.
     Recessed,
-    /// Recessed material with a transparent left straight gutter.
+    /// Recessed material with a transparent left gutter outside the bevel.
     RecessedTransparentLeftGutter,
+    /// Recess with a known opening fill, composited above backgrounds but below glyphs.
+    RecessedOpaqueOpening,
     /// Exterior shadow with a transparent interior.
     Raised,
     /// Exterior shadow with an opaque interior in the sparse perimeter tiles.
@@ -43,6 +45,17 @@ pub enum DecorationKind {
     ButtonRaised,
     /// Shadowless recessed face painted between the cell background and text.
     ButtonPressed,
+    /// Recessed below-text face with a solid fill, including the center tile.
+    RecessedField,
+}
+
+impl DecorationKind {
+    fn fills_center(self) -> bool {
+        matches!(
+            self,
+            Self::ButtonRaised | Self::ButtonPressed | Self::RecessedField
+        )
+    }
 }
 
 /// Physical-pixel material; fractional values use thousandths of a pixel or unit.
@@ -239,12 +252,7 @@ impl PreparedDecoration {
         let mut fragments = [[0_u32; 8]; 64];
         let mut count = 0;
         for (index, (x, y, sx, sy, width, height)) in parts.into_iter().enumerate() {
-            if index == 8
-                && !matches!(
-                    self.style.kind,
-                    DecorationKind::ButtonRaised | DecorationKind::ButtonPressed
-                )
-            {
+            if index == 8 && !self.style.kind.fills_center() {
                 break;
             }
             let left = (origin_x + i64::from(x)).max(clip_left);
@@ -355,7 +363,10 @@ impl PreparedDecoration {
                 source_height,
                 layer: if matches!(
                     self.style.kind,
-                    DecorationKind::ButtonRaised | DecorationKind::ButtonPressed
+                    DecorationKind::ButtonRaised
+                        | DecorationKind::ButtonPressed
+                        | DecorationKind::RecessedOpaqueOpening
+                        | DecorationKind::RecessedField
                 ) {
                     ImageLayer::BelowText
                 } else {
@@ -531,7 +542,7 @@ impl Material {
         };
         let opacity = f64::from(self.style.shadow_opacity_milli) / 1000.0;
         if self.style.kind == DecorationKind::RecessedTransparentLeftGutter
-            && tile == 3
+            && (tile == 3 || matches!(tile, 0 | 5) && lx < f64::from(self.cell[0]))
             && distance < -f64::from(self.style.lip_width_milli) / 1000.0
         {
             return [0.0; 4];
@@ -560,11 +571,19 @@ impl Material {
                     [0.0; 4]
                 }
             }
-            DecorationKind::Recessed | DecorationKind::RecessedTransparentLeftGutter
+            DecorationKind::Recessed
+            | DecorationKind::RecessedTransparentLeftGutter
+            | DecorationKind::RecessedOpaqueOpening
+            | DecorationKind::RecessedField
                 if distance >= 0.0 =>
             {
                 let shadow = opacity * self.blurred_outside(tile, x, y);
-                if gutter {
+                if gutter
+                    || matches!(
+                        self.style.kind,
+                        DecorationKind::RecessedOpaqueOpening | DecorationKind::RecessedField
+                    )
+                {
                     let [r, g, b] = self.style.background.map(|c| f64::from(c) * (1.0 - shadow));
                     [r, g, b, 255.0]
                 } else {
@@ -573,7 +592,10 @@ impl Material {
             }
             // Rounded corners may reach into native content cells. Their
             // outside mask stays opaque, as in the source recessed material.
-            DecorationKind::Recessed | DecorationKind::RecessedTransparentLeftGutter => {
+            DecorationKind::Recessed
+            | DecorationKind::RecessedTransparentLeftGutter
+            | DecorationKind::RecessedOpaqueOpening
+            | DecorationKind::RecessedField => {
                 let [r, g, b] = self.bevel(tile, x, y, distance);
                 [r, g, b, 255.0]
             }
@@ -606,10 +628,7 @@ pub(crate) fn rasterize(style: DecorationStyle, cell: [u32; 2]) -> Option<Vec<u8
     let tile = [width / 3, height / 3];
     let material = Material { style, tile, cell };
     let mut pixels = vec![0; bytes];
-    if matches!(
-        style.kind,
-        DecorationKind::ButtonRaised | DecorationKind::ButtonPressed
-    ) {
+    if style.kind.fills_center() {
         for y in tile[1]..2 * tile[1] {
             let start = ((y * width + tile[0]) * 4) as usize;
             for pixel in pixels[start..start + tile[0] as usize * 4].chunks_exact_mut(4) {
@@ -725,7 +744,48 @@ mod tests {
                 "bevel and inner shadow must survive at {x}"
             );
         }
+        for (left, right, exterior_y, straight_y) in [
+            (0, 2, 1.0, 20.0),
+            (
+                5,
+                7,
+                f64::from(normal.tile[1]) - 1.0,
+                f64::from(normal.tile[1]) - 20.0,
+            ),
+        ] {
+            assert_eq!(normal.sample(left, 0.5, straight_y)[3], 255.0);
+            assert_eq!(transparent.sample(left, 0.5, straight_y), [0.0; 4]);
+            assert_eq!(transparent.sample(left, 0.5, exterior_y), [0.0; 4]);
+            for (tile, x, y) in [
+                (left, inset - lip / 2.0, straight_y),
+                (left, inset + 1.0, straight_y),
+                (left, f64::from(cell[0]) + 0.5, exterior_y),
+                (right, f64::from(normal.tile[0]) - 0.5, exterior_y),
+            ] {
+                assert_eq!(transparent.sample(tile, x, y), normal.sample(tile, x, y));
+            }
+        }
     }
+
+    #[test]
+    fn opaque_opening_keeps_child_color_beyond_the_cell_gutter() {
+        let style = DecorationStyle {
+            kind: DecorationKind::RecessedOpaqueOpening,
+            ..material()
+        };
+        let material = Material {
+            style,
+            cell: [10, 20],
+            tile: atlas_size(style, [10, 20]).unwrap().map(|side| side / 3),
+        };
+        assert_eq!(material.sample(1, 1.5, 0.5), [20.0, 20.0, 20.0, 255.0]);
+        let [r, g, b, alpha] = material.sample(1, 1.5, 25.5);
+        assert_eq!(alpha, 255.0);
+        for channel in [r, g, b] {
+            assert!((channel - 30.0).abs() < 0.1);
+        }
+    }
+
     #[test]
     fn stretched_edges_do_not_filter_neighboring_corner_tiles() {
         let transparent = DecorationStyle {

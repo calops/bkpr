@@ -1,8 +1,8 @@
 use crate::tree::Owner;
 use anyhow::Result;
 use bkpr_protocol::{
-    Notification, NotificationKind, NotificationSource, PaneInfo, PaneNotificationSource,
-    PaneStatus, RegistrySnapshot, SessionInfo,
+    ChannelAttentionKind, Notification, NotificationKind, NotificationSource, PaneInfo,
+    PaneNotificationSource, PaneStatus, RegistrySnapshot, SessionInfo,
 };
 use bkpr_tui_framework::{TerminalGuard, notification};
 use std::{
@@ -10,6 +10,14 @@ use std::{
     io::Write,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+const RENDER_WINDOW: Duration = Duration::from_millis(350);
+
+pub(crate) struct QueuedChannel {
+    pub owner: Owner,
+    pub record: Notification,
+    ready: Instant,
+}
 
 /// Display labels resolved through the notification's original session and launch.
 #[derive(Default)]
@@ -27,7 +35,7 @@ impl<'a> Context<'a> {
         session: &SessionInfo,
         registry: &'a RegistrySnapshot,
     ) -> Self {
-        if !source_session_is_current(source, session) {
+        if !source_session_is_current(&source.session, session) {
             return Self::default();
         }
         let pane = registry
@@ -45,7 +53,7 @@ impl<'a> Context<'a> {
         }
     }
 
-    fn description(&self, source: &PaneNotificationSource) -> String {
+    pub(crate) fn description(&self, source: &PaneNotificationSource) -> String {
         let title = self
             .title
             .filter(|title| !title.trim().is_empty())
@@ -64,7 +72,7 @@ pub(crate) struct Target {
     /// Exact attachment slot and admission generation.
     pub owner: Owner,
     /// Historical source revalidated before navigation.
-    pub source: PaneNotificationSource,
+    pub source: NotificationSource,
     expires: Instant,
     id: notification::Id,
 }
@@ -73,53 +81,100 @@ pub(crate) struct Target {
 #[derive(Default)]
 pub(crate) struct Desktop {
     targets: VecDeque<Target>,
+    channels: VecDeque<QueuedChannel>,
 }
 
 impl Desktop {
-    /// Attempt pane presentation without retry or an acceptance/display acknowledgement.
-    pub fn show<'a>(
+    /// Attempt presentation without retry or an acceptance/display acknowledgement.
+    pub fn show(
         &mut self,
         owner: Owner,
         record: Notification,
-        resolve: impl FnOnce(&PaneNotificationSource) -> Option<Context<'a>>,
+        context: &str,
         terminal: &mut TerminalGuard,
         out: &mut impl Write,
     ) -> Result<()> {
-        let NotificationSource::Pane(source) = record.source else {
-            return Ok(());
-        };
-        let Some(context) = resolve(&source) else {
-            return Ok(());
-        };
         let now = Instant::now();
-        let epoch = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let remaining = u128::from(record.expires_at_ms).saturating_sub(epoch);
+        let remaining = u128::from(record.expires_at_ms).saturating_sub(epoch_millis());
         if remaining == 0 {
             return Ok(());
         }
+        let expires = now
+            .checked_add(Duration::from_millis(
+                remaining.min(u128::from(u64::MAX)) as u64
+            ))
+            .unwrap_or(now);
+        let state = match &record.source {
+            NotificationSource::Channel(source) => match source.intent {
+                ChannelAttentionKind::Question => "Channel question",
+                ChannelAttentionKind::Report => "Channel report",
+            },
+            NotificationSource::Pane(_) => match (record.kind, record.attention_kind.as_deref()) {
+                (NotificationKind::Attention, Some("permission")) => "Permission needed",
+                (NotificationKind::Attention, Some("question")) => "Question waiting",
+                (NotificationKind::Attention, Some("auth")) => "Authentication needed",
+                (NotificationKind::Attention, _) => "Attention needed",
+                (NotificationKind::Error, _) => "Error reported",
+                (NotificationKind::Idle, _) => "Became idle",
+                (NotificationKind::Done, _) => "Completion reported",
+            },
+        };
+        self.present(
+            Target {
+                owner,
+                source: record.source,
+                expires,
+                id: notification::Id::new(),
+            },
+            state,
+            context,
+            terminal,
+            out,
+        )
+    }
+
+    /// Give the current channel view a bounded opportunity to render the post
+    /// before deciding whether to show its committed desktop notification.
+    pub(crate) fn queue_channel(&mut self, owner: Owner, record: Notification) {
+        if self.channels.len() < notification::MAX_ACTIVE {
+            self.channels.push_back(QueuedChannel {
+                owner,
+                record,
+                ready: Instant::now() + RENDER_WINDOW,
+            });
+        }
+    }
+
+    pub(crate) fn cancel_channels(&mut self, owner: Owner) {
+        self.channels.retain(|pending| pending.owner != owner);
+    }
+
+    pub(crate) fn next_channel(&mut self, now: Instant) -> Option<QueuedChannel> {
+        let index = self
+            .channels
+            .iter()
+            .position(|pending| pending.ready <= now)?;
+        self.channels.remove(index)
+    }
+
+    fn present(
+        &mut self,
+        target: Target,
+        state: &str,
+        context: &str,
+        terminal: &mut TerminalGuard,
+        out: &mut impl Write,
+    ) -> Result<()> {
         let Some(capabilities) = terminal
             .notification_capabilities()
             .filter(|caps| caps.title)
         else {
             return Ok(());
         };
-        let state = match (record.kind, record.attention_kind.as_deref()) {
-            (NotificationKind::Attention, Some("permission")) => "Permission needed",
-            (NotificationKind::Attention, Some("question")) => "Question waiting",
-            (NotificationKind::Attention, Some("auth")) => "Authentication needed",
-            (NotificationKind::Attention, _) => "Attention needed",
-            (NotificationKind::Error, _) => "Error reported",
-            (NotificationKind::Idle, _) => "Became idle",
-            (NotificationKind::Done, _) => "Completion reported",
-        };
         let title = format!("Bkpr · {state}");
-        let context = context.description(&source);
         let compact;
         let (title, body) = if capabilities.body {
-            (title.as_str(), context.as_str())
+            (title.as_str(), context)
         } else {
             compact = format!("{title} · {context}");
             (compact.as_str(), "")
@@ -131,7 +186,7 @@ impl Desktop {
             (false, true) => notification::Activation::Focus,
             (false, false) => notification::Activation::None,
         };
-        let id = notification::Id::new();
+        let id = target.id;
         let evicted = terminal.show_notification(
             out,
             &notification::Notification {
@@ -153,16 +208,7 @@ impl Desktop {
         {
             terminal.close_notification(out, oldest.id)?;
         }
-        self.targets.push_back(Target {
-            owner,
-            source,
-            expires: now
-                .checked_add(Duration::from_millis(
-                    remaining.min(u128::from(u64::MAX)) as u64
-                ))
-                .unwrap_or(now),
-            id,
-        });
+        self.targets.push_back(target);
         Ok(())
     }
 
@@ -197,18 +243,26 @@ impl Desktop {
 
     /// Earliest retained resource expiry for the existing event-loop deadline.
     pub fn deadline(&self) -> Option<Instant> {
-        self.targets.iter().map(|target| target.expires).min()
+        self.targets
+            .iter()
+            .map(|target| target.expires)
+            .chain(self.channels.iter().map(|alert| alert.ready))
+            .min()
     }
 }
 
+fn epoch_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
 /// Match owner, host incarnation and runtime, independently of display names.
-pub(crate) fn source_session_is_current(
-    source: &PaneNotificationSource,
-    session: &SessionInfo,
-) -> bool {
-    source.session.session_id == session.session_id
-        && source.session.daemon_id == session.daemon_id
-        && source.session.session_instance_id == session.session_instance_id
+pub(crate) fn source_session_is_current(source: &SessionInfo, session: &SessionInfo) -> bool {
+    source.session_id == session.session_id
+        && source.daemon_id == session.daemon_id
+        && source.session_instance_id == session.session_instance_id
 }
 
 /// Reject retired execution or replacement launch/binding before navigation.
@@ -217,7 +271,7 @@ pub(crate) fn source_is_current(
     session: &SessionInfo,
     pane: &PaneInfo,
 ) -> bool {
-    if !source_session_is_current(source, session)
+    if !source_session_is_current(&source.session, session)
         || source.pane_id != pane.id
         || source.workspace_id != pane.workspace_id
         || source.window_id != pane.window_id

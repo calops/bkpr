@@ -29,24 +29,31 @@ fn printable(c: char) -> bool {
 /// Fit sanitized text into `width` cells without splitting extended graphemes.
 /// Leading zero-width graphemes are omitted; trailing marks remain with their base.
 pub fn fit(value: &str, width: u16) -> String {
+    let mut result = String::new();
+    push_fit(&mut result, value, width);
+    result
+}
+
+/// Append at most `width` cells without joining leading marks to the preceding text.
+pub(crate) fn push_fit(result: &mut String, value: &str, width: u16) -> usize {
     let value = if value.chars().all(printable) {
         std::borrow::Cow::Borrowed(value)
     } else {
         std::borrow::Cow::Owned(clean(value))
     };
-    let mut result = String::new();
     let mut columns = 0;
+    let start = result.len();
     for grapheme in value.graphemes(true) {
         let advance = unicode_width::UnicodeWidthStr::width(grapheme);
         if columns + advance > usize::from(width) {
             break;
         }
-        if advance != 0 || !result.is_empty() {
+        if advance != 0 || result.len() > start {
             result.push_str(grapheme);
         }
         columns += advance;
     }
-    result
+    columns
 }
 
 /// Wrap a line of printable UI text by terminal cells, without splitting graphemes.
@@ -227,20 +234,16 @@ pub fn beside(
 
 /// At less than 3x3, omit decoration and give every available cell to content.
 pub fn content(size: Size) -> Rect {
-    if size.cols < 3 || size.rows < 3 {
-        Rect {
-            x: 0,
-            y: 0,
-            width: size.cols,
-            height: size.rows,
-        }
-    } else {
-        Rect {
-            x: 1,
-            y: 1,
-            width: size.cols - 2,
-            height: size.rows - 2,
-        }
+    content_cells(size.cols, size.rows)
+}
+
+pub(crate) fn content_cells(cols: u16, rows: u16) -> Rect {
+    let rim = u16::from(cols >= 3 && rows >= 3);
+    Rect {
+        x: rim,
+        y: rim,
+        width: cols - 2 * rim,
+        height: rows - 2 * rim,
     }
 }
 

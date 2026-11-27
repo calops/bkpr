@@ -5,9 +5,9 @@ use bkpr_protocol::{
     AgentBindingGuard, AgentRequest, AgentScope, HarnessKind, NativeConversation, Operation,
     Payload,
     channels::{
-        ChannelId, ChannelPost, ChannelRequest, ChannelSettings, MAX_ALT_TEXT_BYTES,
-        MAX_ATTACHMENTS, MAX_ID_BYTES, MAX_MEMBERS, MAX_MENTIONS, MAX_NAME_BYTES, MAX_POST_BYTES,
-        MembershipMode, ParticipantId,
+        ChannelId, ChannelMentionSpan, ChannelPost, ChannelRequest, ChannelSettings,
+        MAX_ALT_TEXT_BYTES, MAX_ATTACHMENTS, MAX_ID_BYTES, MAX_MEMBERS, MAX_MENTIONS,
+        MAX_NAME_BYTES, MAX_POST_BYTES, MembershipMode, ParticipantId,
     },
     control::{self, ControlAction},
 };
@@ -116,7 +116,7 @@ fn channel_tools() -> [Value; 10] {
     [
         json!({
             "name":"channel_list",
-            "description":"Page accessible workspace channels and their current wake and attention settings. #desk and #team work directly without discovery. Continue with next_after.",
+            "description":"Page accessible workspace channels and current policy; #desk and #team work without discovery. In new #desk channels, user posts wake addressed agents or all if none were mentioned; agent posts wake only eligible agents explicitly mentioned. Questions and reports request user attention. In new #team channels, posts wake addressed agents or all eligible agents if none were mentioned, excluding the author, with no user attention. Inspect current settings; continue with next_after.",
             "inputSchema":{"type":"object","properties":{"after":id,"limit":limit},"additionalProperties":false}
         }),
         json!({
@@ -148,6 +148,13 @@ fn channel_tools() -> [Value; 10] {
                 "idempotency_key":id,
                 "intent":{"type":"string","enum":["note","report","question"],"default":"note"},
                 "mentions":{"type":"array","items":id,"maxItems":MAX_MENTIONS,"default":[]},
+                "mention_spans":{"type":"array","maxItems":MAX_MENTIONS,"default":[],
+                    "description":"Optional display-only ranges for explicit mentions. Sorted, nonoverlapping UTF-8 byte ranges, start inclusive/end exclusive. Each mention_id must already appear in mentions.",
+                    "items":{"type":"object","properties":{
+                        "start":{"type":"integer","minimum":0,"maximum":MAX_POST_BYTES},
+                        "end":{"type":"integer","minimum":1,"maximum":MAX_POST_BYTES},
+                        "mention_id":id
+                    },"required":["start","end","mention_id"],"additionalProperties":false}},
                 "reply_to":id,
                 "source":{"type":"object","description":"Optional link to an original post. Both IDs must be exact; not a reply or access grant.",
                     "properties":{"channel_id":id,"message_id":id},"required":["channel_id","message_id"],"additionalProperties":false},
@@ -328,8 +335,22 @@ fn channel_post_request(mut request: Value) -> Result<AgentRequest> {
     fields.remove("method");
     let channel_id = fields.remove("channel_id");
     let recipient = fields.remove("recipient");
-    let post: ChannelPost =
+    let spans: Option<Vec<ToolMentionSpan>> = fields
+        .remove("mention_spans")
+        .map(serde_json::from_value)
+        .transpose()
+        .context("invalid channel_post mention spans")?;
+    let mut post: ChannelPost =
         serde_json::from_value(request).context("invalid channel_post arguments")?;
+    post.mention_spans = spans
+        .unwrap_or_default()
+        .into_iter()
+        .map(|span| ChannelMentionSpan {
+            start: span.start,
+            end: span.end,
+            participant_id: span.mention_id,
+        })
+        .collect();
     match (channel_id, recipient) {
         (Some(Value::String(channel_id)), None) => Ok(AgentRequest::Channels {
             request: Box::new(ChannelRequest::Post {
@@ -349,6 +370,14 @@ fn channel_post_request(mut request: Value) -> Result<AgentRequest> {
             bail!("channel_post requires exactly one of channel_id (string) or recipient (object)")
         }
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolMentionSpan {
+    start: u32,
+    end: u32,
+    mention_id: ParticipantId,
 }
 
 #[derive(serde::Deserialize)]
@@ -1115,9 +1144,9 @@ mod tests {
             }}),
             json!({"method":"channel_members","channel_id":"channel"}),
             json!({"method":"channel_post","channel_id":"#desk","text":"Body","idempotency_key":"retry"}),
-            json!({"method":"channel_post","channel_id":"#desk","text":"Body","idempotency_key":"retry","source":{"channel_id":"original-channel","message_id":"original-message"}}),
             json!({"method":"channel_post","channel_id":"direct-channel","reply_to":"original-message","text":"Reply","idempotency_key":"reply"}),
             json!({"method":"channel_post","recipient":{"launch_id":"peer"},"text":"Direct","idempotency_key":"direct"}),
+            json!({"method":"channel_post","channel_id":"#desk","text":"é @Twin","idempotency_key":"retry","mentions":["exact-mention-handle"],"mention_spans":[{"start":3,"end":8,"mention_id":"exact-mention-handle"}],"source":{"channel_id":"original-channel","message_id":"original-message"}}),
             json!({"method":"channel_history","channel_id":"channel","after":0}),
             json!({"method":"channel_read","channel_id":"channel","message_id":"message","offset":16,"max_bytes":128}),
             json!({"method":"channel_ack","channel_id":"channel","message_id":"message"}),
@@ -1175,7 +1204,23 @@ mod tests {
                             request["idempotency_key"].as_str().unwrap()
                         );
                         assert_eq!(post.intent, PostIntent::Note);
-                        assert!(post.mentions.is_empty());
+                        if request.get("mentions").is_some() {
+                            assert_eq!(
+                                post.mentions,
+                                [ParticipantId("exact-mention-handle".into())]
+                            );
+                            assert_eq!(
+                                post.mention_spans,
+                                [ChannelMentionSpan {
+                                    start: 3,
+                                    end: 8,
+                                    participant_id: post.mentions[0].clone(),
+                                }]
+                            );
+                        } else {
+                            assert!(post.mentions.is_empty());
+                            assert!(post.mention_spans.is_empty());
+                        }
                         assert!(post.attachments.is_empty());
                         assert_eq!(
                             post.reply_to.as_ref().map(|id| id.0.as_str()),

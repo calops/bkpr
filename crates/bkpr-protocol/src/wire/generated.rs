@@ -40702,6 +40702,8 @@ pub struct ChannelPost{
         pub reply_to: ::core::option::Option<::planus::alloc::string::String>,
         /// The field `attachments` in the table `ChannelPost`
         pub attachments: ::planus::alloc::vec::Vec<::planus::alloc::string::String>,
+        /// The field `mention_spans` in the table `ChannelPost`
+        pub mention_spans: ::core::option::Option<::planus::alloc::vec::Vec<self::ChannelMentionSpan>>,
         /// The field `source` in the table `ChannelPost`
         pub source: ::core::option::Option<::planus::alloc::boxed::Box<self::ChannelSource>>,}
 
@@ -40716,6 +40718,7 @@ impl ::core::default::Default for ChannelPost {
         mentions: ::core::default::Default::default(),
         reply_to: ::core::default::Default::default(),
         attachments: ::core::default::Default::default(),
+        mention_spans: ::core::default::Default::default(),
         source: ::core::default::Default::default(),
         
         }
@@ -40739,15 +40742,16 @@ impl ChannelPost {
         field_mentions: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
         field_reply_to: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
         field_attachments: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
+        field_mention_spans: impl ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelMentionSpan>]>>,
         field_source: impl ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_idempotency_key = field_idempotency_key.prepare(builder);let prepared_text = field_text.prepare(builder);let prepared_intent = field_intent.prepare(builder, &self::PostIntent::Note);let prepared_mentions = field_mentions.prepare(builder);let prepared_reply_to = field_reply_to.prepare(builder);let prepared_attachments = field_attachments.prepare(builder);let prepared_source = field_source.prepare(builder);
+    ) -> ::planus::Offset<Self> {let prepared_idempotency_key = field_idempotency_key.prepare(builder);let prepared_text = field_text.prepare(builder);let prepared_intent = field_intent.prepare(builder, &self::PostIntent::Note);let prepared_mentions = field_mentions.prepare(builder);let prepared_reply_to = field_reply_to.prepare(builder);let prepared_attachments = field_attachments.prepare(builder);let prepared_mention_spans = field_mention_spans.prepare(builder);let prepared_source = field_source.prepare(builder);
 
         let mut table_writer: ::planus::table_writer::TableWriter::<20> = ::core::default::Default::default();
-        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(3);if prepared_reply_to.is_some() {table_writer.write_entry::<::planus::Offset<str>>(4);}table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(5);if prepared_source.is_some() {table_writer.write_entry::<::planus::Offset<self::ChannelSource>>(7);}if prepared_intent.is_some() {table_writer.write_entry::<self::PostIntent>(2);}
+        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(3);if prepared_reply_to.is_some() {table_writer.write_entry::<::planus::Offset<str>>(4);}table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(5);if prepared_mention_spans.is_some() {table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::ChannelMentionSpan>]>>(6);}if prepared_source.is_some() {table_writer.write_entry::<::planus::Offset<self::ChannelSource>>(7);}if prepared_intent.is_some() {table_writer.write_entry::<self::PostIntent>(2);}
 
         unsafe {
-            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_idempotency_key);object_writer.write::<_, _, 4>(&prepared_text);object_writer.write::<_, _, 4>(&prepared_mentions);if let ::core::option::Option::Some(prepared_reply_to) = prepared_reply_to {object_writer.write::<_, _, 4>(&prepared_reply_to);}object_writer.write::<_, _, 4>(&prepared_attachments);if let ::core::option::Option::Some(prepared_source) = prepared_source {object_writer.write::<_, _, 4>(&prepared_source);}if let ::core::option::Option::Some(prepared_intent) = prepared_intent {object_writer.write::<_, _, 1>(&prepared_intent);}
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_idempotency_key);object_writer.write::<_, _, 4>(&prepared_text);object_writer.write::<_, _, 4>(&prepared_mentions);if let ::core::option::Option::Some(prepared_reply_to) = prepared_reply_to {object_writer.write::<_, _, 4>(&prepared_reply_to);}object_writer.write::<_, _, 4>(&prepared_attachments);if let ::core::option::Option::Some(prepared_mention_spans) = prepared_mention_spans {object_writer.write::<_, _, 4>(&prepared_mention_spans);}if let ::core::option::Option::Some(prepared_source) = prepared_source {object_writer.write::<_, _, 4>(&prepared_source);}if let ::core::option::Option::Some(prepared_intent) = prepared_intent {object_writer.write::<_, _, 1>(&prepared_intent);}
                 
             });
         }builder.current_offset()
@@ -40800,6 +40804,10 @@ impl ::planus::WriteAsOffset<ChannelPost> for ChannelPost {
         
             
             &self.attachments,
+            
+        
+            
+            &self.mention_spans,
             
         
             
@@ -41229,10 +41237,10 @@ impl<
     )
 >
 {
-    /// Setter for the [`source` field](ChannelPost#structfield.source).
+    /// Setter for the [`mention_spans` field](ChannelPost#structfield.mention_spans).
     #[inline]
     #[allow(clippy::type_complexity)]
-    pub fn source<T6>(self, value: T6) -> ChannelPostBuilder<(
+    pub fn mention_spans<T6>(self, value: T6) -> ChannelPostBuilder<(
     
         T0,
     
@@ -41249,7 +41257,7 @@ impl<
         T6,
     
     )>
-    where T6: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>
+    where T6: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelMentionSpan>]>>
     {
         
         let (
@@ -41287,6 +41295,132 @@ impl<
     
 
     
+    /// Sets the [`mention_spans` field](ChannelPost#structfield.mention_spans) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn mention_spans_as_null(self) -> ChannelPostBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+            T5,
+        
+        (),
+    )>
+    {
+        self.mention_spans(())
+    }
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+> ChannelPostBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+    )
+>
+{
+    /// Setter for the [`source` field](ChannelPost#structfield.source).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn source<T7>(self, value: T7) -> ChannelPostBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+    )>
+    where T7: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+        ) = self.0;ChannelPostBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+            value,
+        ))
+    }
+
+    
+
+    
     /// Sets the [`source` field](ChannelPost#structfield.source) to null.
     #[inline]
     #[allow(clippy::type_complexity)]
@@ -41303,6 +41437,8 @@ impl<
             T4,
         
             T5,
+        
+            T6,
         
         (),
     )>
@@ -41330,6 +41466,8 @@ impl<
     
         T6,
     
+        T7,
+    
 > ChannelPostBuilder<(
     
         T0,
@@ -41345,6 +41483,8 @@ impl<
         T5,
     
         T6,
+    
+        T7,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelPost].
@@ -41370,7 +41510,9 @@ impl<
     
         T5: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
     
-        T6: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
+        T6: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelMentionSpan>]>>,
+    
+        T7: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
     
 > ::planus::WriteAs<::planus::Offset<ChannelPost>> for ChannelPostBuilder<(
     
@@ -41387,6 +41529,8 @@ impl<
         T5,
     
         T6,
+    
+        T7,
     
 )> {
     type Prepared = ::planus::Offset<ChannelPost>;
@@ -41411,7 +41555,9 @@ impl<
     
         T5: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
     
-        T6: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
+        T6: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelMentionSpan>]>>,
+    
+        T7: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
     
 > ::planus::WriteAsOptional<::planus::Offset<ChannelPost>> for ChannelPostBuilder<(
     
@@ -41428,6 +41574,8 @@ impl<
         T5,
     
         T6,
+    
+        T7,
     
 )> {
     type Prepared = ::planus::Offset<ChannelPost>;
@@ -41452,7 +41600,9 @@ impl<
     
         T5: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
     
-        T6: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
+        T6: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelMentionSpan>]>>,
+    
+        T7: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
     
 > ::planus::WriteAsOffset<ChannelPost> for ChannelPostBuilder<(
     
@@ -41469,6 +41619,8 @@ impl<
         T5,
     
         T6,
+    
+        T7,
     
 )> {
     #[inline]
@@ -41490,6 +41642,8 @@ impl<
             
                 v6,
             
+                v7,
+            
         ) = &self.0;ChannelPost::create(
             builder,
             
@@ -41506,6 +41660,8 @@ impl<
                 v5,
             
                 v6,
+            
+                v7,
             
         )
     }
@@ -41598,6 +41754,19 @@ impl<'a> ChannelPostRef<'a> {
             
         }
     
+        /// Getter for the [`mention_spans` field](ChannelPost#structfield.mention_spans).
+        #[inline]
+        pub fn mention_spans(&self) -> ::planus::Result<::core::option::Option<::planus::Vector<'a, ::planus::Result<self::ChannelMentionSpanRef<'a>>>>> {
+            
+            
+              
+              self.0.access(6, "ChannelPost", "mention_spans")
+              
+            
+            
+            
+        }
+    
         /// Getter for the [`source` field](ChannelPost#structfield.source).
         #[inline]
         pub fn source(&self) -> ::planus::Result<::core::option::Option<self::ChannelSourceRef<'a>>> {
@@ -41618,7 +41787,9 @@ impl<'a> ::core::fmt::Debug for ChannelPostRef<'a> {
         let mut f = f.debug_struct("ChannelPostRef");
         f.field("idempotency_key", &self.idempotency_key());f.field("text", &self.text());f.field("intent", &self.intent());f.field("mentions", &self.mentions());if let ::core::option::Option::Some(field_reply_to) = self.reply_to().transpose() {
                 f.field("reply_to", &field_reply_to);
-            }f.field("attachments", &self.attachments());if let ::core::option::Option::Some(field_source) = self.source().transpose() {
+            }f.field("attachments", &self.attachments());if let ::core::option::Option::Some(field_mention_spans) = self.mention_spans().transpose() {
+                f.field("mention_spans", &field_mention_spans);
+            }if let ::core::option::Option::Some(field_source) = self.source().transpose() {
                 f.field("source", &field_source);
             }
         f.finish()
@@ -41635,7 +41806,13 @@ impl<'a> ::core::convert::TryFrom<ChannelPostRef<'a>> for ChannelPost {
         ::core::result::Result::Ok(Self {
             idempotency_key: ::core::convert::Into::into(value.idempotency_key()?),text: ::core::convert::Into::into(value.text()?),intent: ::core::convert::TryInto::try_into(value.intent()?)?,mentions: value.mentions()?.to_vec_result()?,reply_to: 
                                 value.reply_to()?.map(::core::convert::Into::into)
-                            ,attachments: value.attachments()?.to_vec_result()?,source: 
+                            ,attachments: value.attachments()?.to_vec_result()?,mention_spans: 
+                            if let ::core::option::Option::Some(mention_spans) = value.mention_spans()? {
+                                ::core::option::Option::Some(mention_spans.to_vec_result()?)
+                            } else {
+                                ::core::option::Option::None
+                            }
+                        ,source: 
                                 if let ::core::option::Option::Some(source) = value.source()? {
                                     ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(source)?))
                                 } else {
@@ -50966,10 +51143,1631 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelRequestCatalogSubscribeRef<'a> {
 }
 
     
+/// The table `ChannelMentionBinding` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ChannelMentionBinding` in the file `crates/bkpr-protocol/src/wire/native.fbs:470`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ChannelMentionBinding{
+    
+        /// The field `participant_id` in the table `ChannelMentionBinding`
+        pub participant_id: ::planus::alloc::string::String,
+        /// The field `launch_id` in the table `ChannelMentionBinding`
+        pub launch_id: ::planus::alloc::string::String,
+        /// The field `binding_generation` in the table `ChannelMentionBinding`
+        pub binding_generation: u64,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ChannelMentionBinding {
+    fn default() -> Self {
+        Self {
+        participant_id: ::core::default::Default::default(),
+        launch_id: ::core::default::Default::default(),
+        binding_generation: 0,
+        
+        }
+    }
+}
+
+
+impl ChannelMentionBinding {
+    /// Creates a [ChannelMentionBindingBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ChannelMentionBindingBuilder<()> {
+        ChannelMentionBindingBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_participant_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_launch_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_binding_generation: impl ::planus::WriteAsDefault<u64, u64>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_participant_id = field_participant_id.prepare(builder);let prepared_launch_id = field_launch_id.prepare(builder);let prepared_binding_generation = field_binding_generation.prepare(builder, &0);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        if prepared_binding_generation.is_some() {table_writer.write_entry::<u64>(2);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_binding_generation) = prepared_binding_generation {object_writer.write::<_, _, 8>(&prepared_binding_generation);}object_writer.write::<_, _, 4>(&prepared_participant_id);object_writer.write::<_, _, 4>(&prepared_launch_id);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ChannelMentionBinding>> for ChannelMentionBinding {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelMentionBinding> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ChannelMentionBinding>> for ChannelMentionBinding {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelMentionBinding>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ChannelMentionBinding> for ChannelMentionBinding {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelMentionBinding> {
+        ChannelMentionBinding::create(
+            builder,
+        
+            
+            &self.participant_id,
+            
+        
+            
+            &self.launch_id,
+            
+        
+            
+            self.binding_generation,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ChannelMentionBinding] type.
+///
+/// Can be created using the [ChannelMentionBinding::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ChannelMentionBindingBuilder<State>(State);
+
+impl<
+    
+> ChannelMentionBindingBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`participant_id` field](ChannelMentionBinding#structfield.participant_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn participant_id<T0>(self, value: T0) -> ChannelMentionBindingBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        ChannelMentionBindingBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> ChannelMentionBindingBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`launch_id` field](ChannelMentionBinding#structfield.launch_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn launch_id<T1>(self, value: T1) -> ChannelMentionBindingBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;ChannelMentionBindingBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ChannelMentionBindingBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`binding_generation` field](ChannelMentionBinding#structfield.binding_generation).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn binding_generation<T2>(self, value: T2) -> ChannelMentionBindingBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;ChannelMentionBindingBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`binding_generation` field](ChannelMentionBinding#structfield.binding_generation) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn binding_generation_as_default(self) -> ChannelMentionBindingBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.binding_generation(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> ChannelMentionBindingBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelMentionBinding].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelMentionBinding>
+        where Self: ::planus::WriteAsOffset<ChannelMentionBinding>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAs<::planus::Offset<ChannelMentionBinding>> for ChannelMentionBindingBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelMentionBinding>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelMentionBinding> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ChannelMentionBinding>> for ChannelMentionBindingBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelMentionBinding>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelMentionBinding>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOffset<ChannelMentionBinding> for ChannelMentionBindingBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelMentionBinding> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;ChannelMentionBinding::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ChannelMentionBinding].
+#[derive(Copy, Clone)]
+pub struct ChannelMentionBindingRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ChannelMentionBindingRef<'a> {
+    
+        /// Getter for the [`participant_id` field](ChannelMentionBinding#structfield.participant_id).
+        #[inline]
+        pub fn participant_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "ChannelMentionBinding", "participant_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`launch_id` field](ChannelMentionBinding#structfield.launch_id).
+        #[inline]
+        pub fn launch_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(1, "ChannelMentionBinding", "launch_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`binding_generation` field](ChannelMentionBinding#structfield.binding_generation).
+        #[inline]
+        pub fn binding_generation(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(2, "ChannelMentionBinding", "binding_generation")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ChannelMentionBindingRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ChannelMentionBindingRef");
+        f.field("participant_id", &self.participant_id());f.field("launch_id", &self.launch_id());f.field("binding_generation", &self.binding_generation());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ChannelMentionBindingRef<'a>> for ChannelMentionBinding {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ChannelMentionBindingRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            participant_id: ::core::convert::Into::into(value.participant_id()?),launch_id: ::core::convert::Into::into(value.launch_id()?),binding_generation: ::core::convert::TryInto::try_into(value.binding_generation()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ChannelMentionBindingRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ChannelMentionBindingRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelMentionBindingRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ChannelMentionBinding>> for ChannelMentionBinding {
+    type Value = ::planus::Offset<ChannelMentionBinding>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ChannelMentionBinding>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ChannelMentionBindingRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelMentionBindingRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `ChannelRequestUserRoster` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ChannelRequestUserRoster` in the file `crates/bkpr-protocol/src/wire/native.fbs:475`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ChannelRequestUserRoster{
+    
+        /// The field `workspace_id` in the table `ChannelRequestUserRoster`
+        pub workspace_id: ::planus::alloc::string::String,
+        /// The field `channel_id` in the table `ChannelRequestUserRoster`
+        pub channel_id: ::core::option::Option<::planus::alloc::string::String>,
+        /// The field `after` in the table `ChannelRequestUserRoster`
+        pub after: ::core::option::Option<::planus::alloc::string::String>,
+        /// The field `limit` in the table `ChannelRequestUserRoster`
+        pub limit: u16,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ChannelRequestUserRoster {
+    fn default() -> Self {
+        Self {
+        workspace_id: ::core::default::Default::default(),
+        channel_id: ::core::default::Default::default(),
+        after: ::core::default::Default::default(),
+        limit: 0,
+        
+        }
+    }
+}
+
+
+impl ChannelRequestUserRoster {
+    /// Creates a [ChannelRequestUserRosterBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ChannelRequestUserRosterBuilder<()> {
+        ChannelRequestUserRosterBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_workspace_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_channel_id: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+        field_after: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+        field_limit: impl ::planus::WriteAsDefault<u16, u16>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_workspace_id = field_workspace_id.prepare(builder);let prepared_channel_id = field_channel_id.prepare(builder);let prepared_after = field_after.prepare(builder);let prepared_limit = field_limit.prepare(builder, &0);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<12> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);if prepared_channel_id.is_some() {table_writer.write_entry::<::planus::Offset<str>>(1);}if prepared_after.is_some() {table_writer.write_entry::<::planus::Offset<str>>(2);}if prepared_limit.is_some() {table_writer.write_entry::<u16>(3);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_workspace_id);if let ::core::option::Option::Some(prepared_channel_id) = prepared_channel_id {object_writer.write::<_, _, 4>(&prepared_channel_id);}if let ::core::option::Option::Some(prepared_after) = prepared_after {object_writer.write::<_, _, 4>(&prepared_after);}if let ::core::option::Option::Some(prepared_limit) = prepared_limit {object_writer.write::<_, _, 2>(&prepared_limit);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ChannelRequestUserRoster>> for ChannelRequestUserRoster {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestUserRoster> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ChannelRequestUserRoster>> for ChannelRequestUserRoster {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelRequestUserRoster>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ChannelRequestUserRoster> for ChannelRequestUserRoster {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestUserRoster> {
+        ChannelRequestUserRoster::create(
+            builder,
+        
+            
+            &self.workspace_id,
+            
+        
+            
+            &self.channel_id,
+            
+        
+            
+            &self.after,
+            
+        
+            
+            self.limit,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ChannelRequestUserRoster] type.
+///
+/// Can be created using the [ChannelRequestUserRoster::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ChannelRequestUserRosterBuilder<State>(State);
+
+impl<
+    
+> ChannelRequestUserRosterBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`workspace_id` field](ChannelRequestUserRoster#structfield.workspace_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn workspace_id<T0>(self, value: T0) -> ChannelRequestUserRosterBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        ChannelRequestUserRosterBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> ChannelRequestUserRosterBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`channel_id` field](ChannelRequestUserRoster#structfield.channel_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn channel_id<T1>(self, value: T1) -> ChannelRequestUserRosterBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;ChannelRequestUserRosterBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`channel_id` field](ChannelRequestUserRoster#structfield.channel_id) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn channel_id_as_null(self) -> ChannelRequestUserRosterBuilder<(
+        
+            T0,
+        
+        (),
+    )>
+    {
+        self.channel_id(())
+    }
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ChannelRequestUserRosterBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`after` field](ChannelRequestUserRoster#structfield.after).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn after<T2>(self, value: T2) -> ChannelRequestUserRosterBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;ChannelRequestUserRosterBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`after` field](ChannelRequestUserRoster#structfield.after) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn after_as_null(self) -> ChannelRequestUserRosterBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        (),
+    )>
+    {
+        self.after(())
+    }
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> ChannelRequestUserRosterBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )
+>
+{
+    /// Setter for the [`limit` field](ChannelRequestUserRoster#structfield.limit).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn limit<T3>(self, value: T3) -> ChannelRequestUserRosterBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )>
+    where T3: ::planus::WriteAsDefault<u16, u16>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = self.0;ChannelRequestUserRosterBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`limit` field](ChannelRequestUserRoster#structfield.limit) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn limit_as_default(self) -> ChannelRequestUserRosterBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.limit(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+> ChannelRequestUserRosterBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelRequestUserRoster].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestUserRoster>
+        where Self: ::planus::WriteAsOffset<ChannelRequestUserRoster>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+        T2: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+        T3: ::planus::WriteAsDefault<u16, u16>,
+    
+> ::planus::WriteAs<::planus::Offset<ChannelRequestUserRoster>> for ChannelRequestUserRosterBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelRequestUserRoster>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestUserRoster> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+        T2: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+        T3: ::planus::WriteAsDefault<u16, u16>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ChannelRequestUserRoster>> for ChannelRequestUserRosterBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelRequestUserRoster>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelRequestUserRoster>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+        T2: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+        T3: ::planus::WriteAsDefault<u16, u16>,
+    
+> ::planus::WriteAsOffset<ChannelRequestUserRoster> for ChannelRequestUserRosterBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestUserRoster> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+        ) = &self.0;ChannelRequestUserRoster::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ChannelRequestUserRoster].
+#[derive(Copy, Clone)]
+pub struct ChannelRequestUserRosterRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ChannelRequestUserRosterRef<'a> {
+    
+        /// Getter for the [`workspace_id` field](ChannelRequestUserRoster#structfield.workspace_id).
+        #[inline]
+        pub fn workspace_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "ChannelRequestUserRoster", "workspace_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`channel_id` field](ChannelRequestUserRoster#structfield.channel_id).
+        #[inline]
+        pub fn channel_id(&self) -> ::planus::Result<::core::option::Option<&'a ::core::primitive::str>> {
+            
+            
+              
+              self.0.access(1, "ChannelRequestUserRoster", "channel_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`after` field](ChannelRequestUserRoster#structfield.after).
+        #[inline]
+        pub fn after(&self) -> ::planus::Result<::core::option::Option<&'a ::core::primitive::str>> {
+            
+            
+              
+              self.0.access(2, "ChannelRequestUserRoster", "after")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`limit` field](ChannelRequestUserRoster#structfield.limit).
+        #[inline]
+        pub fn limit(&self) -> ::planus::Result<u16> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(3, "ChannelRequestUserRoster", "limit")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ChannelRequestUserRosterRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ChannelRequestUserRosterRef");
+        f.field("workspace_id", &self.workspace_id());if let ::core::option::Option::Some(field_channel_id) = self.channel_id().transpose() {
+                f.field("channel_id", &field_channel_id);
+            }if let ::core::option::Option::Some(field_after) = self.after().transpose() {
+                f.field("after", &field_after);
+            }f.field("limit", &self.limit());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ChannelRequestUserRosterRef<'a>> for ChannelRequestUserRoster {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ChannelRequestUserRosterRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            workspace_id: ::core::convert::Into::into(value.workspace_id()?),channel_id: 
+                                value.channel_id()?.map(::core::convert::Into::into)
+                            ,after: 
+                                value.after()?.map(::core::convert::Into::into)
+                            ,limit: ::core::convert::TryInto::try_into(value.limit()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ChannelRequestUserRosterRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ChannelRequestUserRosterRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelRequestUserRosterRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ChannelRequestUserRoster>> for ChannelRequestUserRoster {
+    type Value = ::planus::Offset<ChannelRequestUserRoster>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ChannelRequestUserRoster>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ChannelRequestUserRosterRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelRequestUserRosterRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `ChannelRequestPostUser` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ChannelRequestPostUser` in the file `crates/bkpr-protocol/src/wire/native.fbs:481`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ChannelRequestPostUser{
+    
+        /// The field `channel_id` in the table `ChannelRequestPostUser`
+        pub channel_id: ::planus::alloc::string::String,
+        /// The field `post` in the table `ChannelRequestPostUser`
+        pub post: ::planus::alloc::boxed::Box<self::ChannelPost>,
+        /// The field `bindings` in the table `ChannelRequestPostUser`
+        pub bindings: ::planus::alloc::vec::Vec<self::ChannelMentionBinding>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ChannelRequestPostUser {
+    fn default() -> Self {
+        Self {
+        channel_id: ::core::default::Default::default(),
+        post: ::core::default::Default::default(),
+        bindings: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl ChannelRequestPostUser {
+    /// Creates a [ChannelRequestPostUserBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ChannelRequestPostUserBuilder<()> {
+        ChannelRequestPostUserBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_channel_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_post: impl ::planus::WriteAs<::planus::Offset<self::ChannelPost>>,
+        field_bindings: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::ChannelMentionBinding>]>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_channel_id = field_channel_id.prepare(builder);let prepared_post = field_post.prepare(builder);let prepared_bindings = field_bindings.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<self::ChannelPost>>(1);table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::ChannelMentionBinding>]>>(2);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_channel_id);object_writer.write::<_, _, 4>(&prepared_post);object_writer.write::<_, _, 4>(&prepared_bindings);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ChannelRequestPostUser>> for ChannelRequestPostUser {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestPostUser> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ChannelRequestPostUser>> for ChannelRequestPostUser {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelRequestPostUser>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ChannelRequestPostUser> for ChannelRequestPostUser {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestPostUser> {
+        ChannelRequestPostUser::create(
+            builder,
+        
+            
+            &self.channel_id,
+            
+        
+            
+            &self.post,
+            
+        
+            
+            &self.bindings,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ChannelRequestPostUser] type.
+///
+/// Can be created using the [ChannelRequestPostUser::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ChannelRequestPostUserBuilder<State>(State);
+
+impl<
+    
+> ChannelRequestPostUserBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`channel_id` field](ChannelRequestPostUser#structfield.channel_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn channel_id<T0>(self, value: T0) -> ChannelRequestPostUserBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        ChannelRequestPostUserBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> ChannelRequestPostUserBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`post` field](ChannelRequestPostUser#structfield.post).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn post<T1>(self, value: T1) -> ChannelRequestPostUserBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<self::ChannelPost>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;ChannelRequestPostUserBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ChannelRequestPostUserBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`bindings` field](ChannelRequestPostUser#structfield.bindings).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn bindings<T2>(self, value: T2) -> ChannelRequestPostUserBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::ChannelMentionBinding>]>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;ChannelRequestPostUserBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> ChannelRequestPostUserBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelRequestPostUser].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestPostUser>
+        where Self: ::planus::WriteAsOffset<ChannelRequestPostUser>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ChannelPost>>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::ChannelMentionBinding>]>>,
+    
+> ::planus::WriteAs<::planus::Offset<ChannelRequestPostUser>> for ChannelRequestPostUserBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelRequestPostUser>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestPostUser> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ChannelPost>>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::ChannelMentionBinding>]>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ChannelRequestPostUser>> for ChannelRequestPostUserBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelRequestPostUser>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelRequestPostUser>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ChannelPost>>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::ChannelMentionBinding>]>>,
+    
+> ::planus::WriteAsOffset<ChannelRequestPostUser> for ChannelRequestPostUserBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestPostUser> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;ChannelRequestPostUser::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ChannelRequestPostUser].
+#[derive(Copy, Clone)]
+pub struct ChannelRequestPostUserRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ChannelRequestPostUserRef<'a> {
+    
+        /// Getter for the [`channel_id` field](ChannelRequestPostUser#structfield.channel_id).
+        #[inline]
+        pub fn channel_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "ChannelRequestPostUser", "channel_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`post` field](ChannelRequestPostUser#structfield.post).
+        #[inline]
+        pub fn post(&self) -> ::planus::Result<self::ChannelPostRef<'a>> {
+            
+            
+              
+              self.0.access_required(1, "ChannelRequestPostUser", "post")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`bindings` field](ChannelRequestPostUser#structfield.bindings).
+        #[inline]
+        pub fn bindings(&self) -> ::planus::Result<::planus::Vector<'a, ::planus::Result<self::ChannelMentionBindingRef<'a>>>> {
+            
+            
+              
+              self.0.access_required(2, "ChannelRequestPostUser", "bindings")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ChannelRequestPostUserRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ChannelRequestPostUserRef");
+        f.field("channel_id", &self.channel_id());f.field("post", &self.post());f.field("bindings", &self.bindings());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ChannelRequestPostUserRef<'a>> for ChannelRequestPostUser {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ChannelRequestPostUserRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            channel_id: ::core::convert::Into::into(value.channel_id()?),post: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.post()?)?),bindings: value.bindings()?.to_vec_result()?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ChannelRequestPostUserRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ChannelRequestPostUserRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelRequestPostUserRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ChannelRequestPostUser>> for ChannelRequestPostUser {
+    type Value = ::planus::Offset<ChannelRequestPostUser>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ChannelRequestPostUser>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ChannelRequestPostUserRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelRequestPostUserRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
 /// The union `ChannelRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ChannelRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:470`
+/// * Union `ChannelRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:486`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -51022,6 +52820,12 @@ pub enum ChannelRequest{
     
         /// The variant of type `ChannelRequestCatalogSubscribe` in the union `ChannelRequest`
         ChannelRequestCatalogSubscribe(::planus::alloc::boxed::Box<self::ChannelRequestCatalogSubscribe>),
+    
+        /// The variant of type `ChannelRequestUserRoster` in the union `ChannelRequest`
+        ChannelRequestUserRoster(::planus::alloc::boxed::Box<self::ChannelRequestUserRoster>),
+    
+        /// The variant of type `ChannelRequestPostUser` in the union `ChannelRequest`
+        ChannelRequestPostUser(::planus::alloc::boxed::Box<self::ChannelRequestPostUser>),
     
 }
 
@@ -51161,6 +52965,22 @@ impl ChannelRequest {
         ::planus::UnionOffset::new(16, value.prepare(builder).downcast())
     }
 
+    #[inline]
+    pub fn create_channel_request_user_roster(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::ChannelRequestUserRoster>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(17, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_channel_request_post_user(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::ChannelRequestPostUser>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(18, value.prepare(builder).downcast())
+    }
+
     
 }
 
@@ -51186,6 +53006,8 @@ impl ::planus::WriteAsUnion<ChannelRequest> for ChannelRequest {
             Self::ChannelRequestListExplicitMembers(value) => Self::create_channel_request_list_explicit_members(builder, value),
             Self::ChannelRequestCatalogSnapshot(value) => Self::create_channel_request_catalog_snapshot(builder, value),
             Self::ChannelRequestCatalogSubscribe(value) => Self::create_channel_request_catalog_subscribe(builder, value),
+            Self::ChannelRequestUserRoster(value) => Self::create_channel_request_user_roster(builder, value),
+            Self::ChannelRequestPostUser(value) => Self::create_channel_request_post_user(builder, value),
             
         }
     }
@@ -51364,6 +53186,26 @@ impl ChannelRequestBuilder<::planus::Uninitialized> {
         value: T,
     ) -> ChannelRequestBuilder<::planus::Initialized<16, T>>
         where T: ::planus::WriteAsOffset<self::ChannelRequestCatalogSubscribe> {
+        ChannelRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`ChannelRequestUserRoster` variant](ChannelRequest#variant.ChannelRequestUserRoster).
+    #[inline]
+    pub fn channel_request_user_roster<T>(
+        self,
+        value: T,
+    ) -> ChannelRequestBuilder<::planus::Initialized<17, T>>
+        where T: ::planus::WriteAsOffset<self::ChannelRequestUserRoster> {
+        ChannelRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`ChannelRequestPostUser` variant](ChannelRequest#variant.ChannelRequestPostUser).
+    #[inline]
+    pub fn channel_request_post_user<T>(
+        self,
+        value: T,
+    ) -> ChannelRequestBuilder<::planus::Initialized<18, T>>
+        where T: ::planus::WriteAsOffset<self::ChannelRequestPostUser> {
         ChannelRequestBuilder(::planus::Initialized(value))
     }
 
@@ -51652,6 +53494,40 @@ impl<T> ::planus::WriteAsOptionalUnion<ChannelRequest> for ChannelRequestBuilder
         ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
     }
 }
+impl<T> ::planus::WriteAsUnion<ChannelRequest> for ChannelRequestBuilder<::planus::Initialized<17, T>>
+    where T: ::planus::WriteAsOffset<self::ChannelRequestUserRoster>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<ChannelRequest> {
+        ::planus::UnionOffset::new(17, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<ChannelRequest> for ChannelRequestBuilder<::planus::Initialized<17, T>>
+    where T: ::planus::WriteAsOffset<self::ChannelRequestUserRoster>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<ChannelRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<ChannelRequest> for ChannelRequestBuilder<::planus::Initialized<18, T>>
+    where T: ::planus::WriteAsOffset<self::ChannelRequestPostUser>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<ChannelRequest> {
+        ::planus::UnionOffset::new(18, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<ChannelRequest> for ChannelRequestBuilder<::planus::Initialized<18, T>>
+    where T: ::planus::WriteAsOffset<self::ChannelRequestPostUser>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<ChannelRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
 
 
 /// Reference to a deserialized [ChannelRequest].
@@ -51673,6 +53549,8 @@ pub enum ChannelRequestRef<'a>{
     ChannelRequestListExplicitMembers(self::ChannelRequestListExplicitMembersRef<'a>),
     ChannelRequestCatalogSnapshot(self::ChannelRequestCatalogSnapshotRef<'a>),
     ChannelRequestCatalogSubscribe(self::ChannelRequestCatalogSubscribeRef<'a>),
+    ChannelRequestUserRoster(self::ChannelRequestUserRosterRef<'a>),
+    ChannelRequestPostUser(self::ChannelRequestPostUserRef<'a>),
     
 }
 
@@ -51731,6 +53609,12 @@ impl<'a> ::core::convert::TryFrom<ChannelRequestRef<'a>> for ChannelRequest {
                 ChannelRequestRef::ChannelRequestCatalogSubscribe(value) => Self::ChannelRequestCatalogSubscribe(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
                 
             
+                ChannelRequestRef::ChannelRequestUserRoster(value) => Self::ChannelRequestUserRoster(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                ChannelRequestRef::ChannelRequestPostUser(value) => Self::ChannelRequestPostUser(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
         })
     }
 }
@@ -51740,7 +53624,7 @@ impl<'a> ::core::convert::TryFrom<ChannelRequestRef<'a>> for ChannelRequest {
 impl<'a> ::planus::TableReadUnion<'a> for ChannelRequestRef<'a> {
     fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
         match tag {
-            1 => ::core::result::Result::Ok(Self::ChannelRequestList(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::ChannelRequestListMembers(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::ChannelRequestCreate(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::ChannelRequestSetSettings(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::ChannelRequestSetMembership(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::ChannelRequestPost(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::ChannelRequestHistory(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::ChannelRequestRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::ChannelRequestMarkRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::ChannelRequestSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::ChannelRequestUploadAttachment(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::ChannelRequestGetAttachment(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::ChannelRequestListArchivedWorkspaces(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::ChannelRequestListExplicitMembers(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::ChannelRequestCatalogSnapshot(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::ChannelRequestCatalogSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+            1 => ::core::result::Result::Ok(Self::ChannelRequestList(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::ChannelRequestListMembers(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::ChannelRequestCreate(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::ChannelRequestSetSettings(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::ChannelRequestSetMembership(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::ChannelRequestPost(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::ChannelRequestHistory(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::ChannelRequestRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::ChannelRequestMarkRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::ChannelRequestSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::ChannelRequestUploadAttachment(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::ChannelRequestGetAttachment(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::ChannelRequestListArchivedWorkspaces(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::ChannelRequestListExplicitMembers(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::ChannelRequestCatalogSnapshot(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::ChannelRequestCatalogSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),17 => ::core::result::Result::Ok(Self::ChannelRequestUserRoster(::planus::TableRead::from_buffer(buffer, field_offset)?)),18 => ::core::result::Result::Ok(Self::ChannelRequestPostUser(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
         }
     }
 }
@@ -51756,7 +53640,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ChannelRequestRef<'a> {
 /// The table `OperationChannels` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OperationChannels` in the file `crates/bkpr-protocol/src/wire/native.fbs:488`
+/// * Table `OperationChannels` in the file `crates/bkpr-protocol/src/wire/native.fbs:506`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -52051,7 +53935,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OperationChannelsRef<'a> {
 /// The union `Operation` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `Operation` in the file `crates/bkpr-protocol/src/wire/native.fbs:489`
+/// * Union `Operation` in the file `crates/bkpr-protocol/src/wire/native.fbs:507`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -53698,7 +55582,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for OperationRef<'a> {
 /// The table `PaneRequestInspect` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestInspect` in the file `crates/bkpr-protocol/src/wire/native.fbs:527`
+/// * Table `PaneRequestInspect` in the file `crates/bkpr-protocol/src/wire/native.fbs:545`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -53924,7 +55808,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestInspectRef<'a> {
 /// The table `PaneRequestAttach` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestAttach` in the file `crates/bkpr-protocol/src/wire/native.fbs:530`
+/// * Table `PaneRequestAttach` in the file `crates/bkpr-protocol/src/wire/native.fbs:548`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -54229,7 +56113,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestAttachRef<'a> {
 /// The table `PaneRequestUpdate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestUpdate` in the file `crates/bkpr-protocol/src/wire/native.fbs:533`
+/// * Table `PaneRequestUpdate` in the file `crates/bkpr-protocol/src/wire/native.fbs:551`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -54618,7 +56502,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestUpdateRef<'a> {
 /// The table `PaneRequestDetach` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestDetach` in the file `crates/bkpr-protocol/src/wire/native.fbs:537`
+/// * Table `PaneRequestDetach` in the file `crates/bkpr-protocol/src/wire/native.fbs:555`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -54923,7 +56807,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestDetachRef<'a> {
 /// The table `PaneRequestPoll` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPoll` in the file `crates/bkpr-protocol/src/wire/native.fbs:540`
+/// * Table `PaneRequestPoll` in the file `crates/bkpr-protocol/src/wire/native.fbs:558`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -56146,7 +58030,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPollRef<'a> {
 /// The table `PaneRequestPin` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPin` in the file `crates/bkpr-protocol/src/wire/native.fbs:550`
+/// * Table `PaneRequestPin` in the file `crates/bkpr-protocol/src/wire/native.fbs:568`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -56556,7 +58440,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPinRef<'a> {
 /// The table `PaneRequestInput` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestInput` in the file `crates/bkpr-protocol/src/wire/native.fbs:554`
+/// * Table `PaneRequestInput` in the file `crates/bkpr-protocol/src/wire/native.fbs:572`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -56945,7 +58829,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestInputRef<'a> {
 /// The table `PaneRequestPaste` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPaste` in the file `crates/bkpr-protocol/src/wire/native.fbs:558`
+/// * Table `PaneRequestPaste` in the file `crates/bkpr-protocol/src/wire/native.fbs:576`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -57334,7 +59218,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPasteRef<'a> {
 /// The table `PaneRequestPasteContents` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPasteContents` in the file `crates/bkpr-protocol/src/wire/native.fbs:562`
+/// * Table `PaneRequestPasteContents` in the file `crates/bkpr-protocol/src/wire/native.fbs:580`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -57953,7 +59837,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPasteContentsRef<'a> {
 /// The table `PaneRequestKey` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestKey` in the file `crates/bkpr-protocol/src/wire/native.fbs:568`
+/// * Table `PaneRequestKey` in the file `crates/bkpr-protocol/src/wire/native.fbs:586`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -58342,7 +60226,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestKeyRef<'a> {
 /// The table `PaneRequestMouse` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestMouse` in the file `crates/bkpr-protocol/src/wire/native.fbs:572`
+/// * Table `PaneRequestMouse` in the file `crates/bkpr-protocol/src/wire/native.fbs:590`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -58731,7 +60615,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestMouseRef<'a> {
 /// The table `PaneRequestFocus` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestFocus` in the file `crates/bkpr-protocol/src/wire/native.fbs:576`
+/// * Table `PaneRequestFocus` in the file `crates/bkpr-protocol/src/wire/native.fbs:594`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -59133,7 +61017,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestFocusRef<'a> {
 /// The table `PaneRequestScroll` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestScroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:580`
+/// * Table `PaneRequestScroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:598`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -59535,7 +61419,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestScrollRef<'a> {
 /// The table `PaneRequestSelect` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestSelect` in the file `crates/bkpr-protocol/src/wire/native.fbs:584`
+/// * Table `PaneRequestSelect` in the file `crates/bkpr-protocol/src/wire/native.fbs:602`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -59924,7 +61808,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestSelectRef<'a> {
 /// The table `PaneRequestCopySelection` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestCopySelection` in the file `crates/bkpr-protocol/src/wire/native.fbs:588`
+/// * Table `PaneRequestCopySelection` in the file `crates/bkpr-protocol/src/wire/native.fbs:606`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -60229,7 +62113,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestCopySelectionRef<'a> {
 /// The table `PaneRequestSearch` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestSearch` in the file `crates/bkpr-protocol/src/wire/native.fbs:591`
+/// * Table `PaneRequestSearch` in the file `crates/bkpr-protocol/src/wire/native.fbs:609`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -60607,7 +62491,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestSearchRef<'a> {
 /// The table `PaneRequestClipboard` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestClipboard` in the file `crates/bkpr-protocol/src/wire/native.fbs:595`
+/// * Table `PaneRequestClipboard` in the file `crates/bkpr-protocol/src/wire/native.fbs:613`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -61090,7 +62974,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestClipboardRef<'a> {
 /// The table `PaneRequestColors` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestColors` in the file `crates/bkpr-protocol/src/wire/native.fbs:600`
+/// * Table `PaneRequestColors` in the file `crates/bkpr-protocol/src/wire/native.fbs:618`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -62193,7 +64077,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestColorsRef<'a> {
 /// The table `PaneRequestTerminate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestTerminate` in the file `crates/bkpr-protocol/src/wire/native.fbs:609`
+/// * Table `PaneRequestTerminate` in the file `crates/bkpr-protocol/src/wire/native.fbs:627`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -62498,7 +64382,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestTerminateRef<'a> {
 /// The table `PaneRequestShutdown` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestShutdown` in the file `crates/bkpr-protocol/src/wire/native.fbs:612`
+/// * Table `PaneRequestShutdown` in the file `crates/bkpr-protocol/src/wire/native.fbs:630`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -62724,7 +64608,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestShutdownRef<'a> {
 /// The table `PaneRequestImageResource` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestImageResource` in the file `crates/bkpr-protocol/src/wire/native.fbs:616`
+/// * Table `PaneRequestImageResource` in the file `crates/bkpr-protocol/src/wire/native.fbs:634`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -63113,7 +64997,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestImageResourceRef<'a> {
 /// The union `PaneRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `PaneRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:620`
+/// * Union `PaneRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:638`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -64115,7 +65999,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PaneRequestRef<'a> {
 /// The table `SearchActionQuery` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionQuery` in the file `crates/bkpr-protocol/src/wire/native.fbs:621`
+/// * Table `SearchActionQuery` in the file `crates/bkpr-protocol/src/wire/native.fbs:639`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -64420,7 +66304,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionQueryRef<'a> {
 /// The table `SearchActionNext` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionNext` in the file `crates/bkpr-protocol/src/wire/native.fbs:624`
+/// * Table `SearchActionNext` in the file `crates/bkpr-protocol/src/wire/native.fbs:642`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -64646,7 +66530,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionNextRef<'a> {
 /// The table `SearchActionPrevious` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionPrevious` in the file `crates/bkpr-protocol/src/wire/native.fbs:627`
+/// * Table `SearchActionPrevious` in the file `crates/bkpr-protocol/src/wire/native.fbs:645`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -64872,7 +66756,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionPreviousRef<'a> {
 /// The table `SearchActionClear` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionClear` in the file `crates/bkpr-protocol/src/wire/native.fbs:630`
+/// * Table `SearchActionClear` in the file `crates/bkpr-protocol/src/wire/native.fbs:648`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -65098,7 +66982,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionClearRef<'a> {
 /// The union `SearchAction` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `SearchAction` in the file `crates/bkpr-protocol/src/wire/native.fbs:633`
+/// * Union `SearchAction` in the file `crates/bkpr-protocol/src/wire/native.fbs:651`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -65369,7 +67253,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for SearchActionRef<'a> {
 /// The table `LayoutNodeLeaf` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `LayoutNodeLeaf` in the file `crates/bkpr-protocol/src/wire/native.fbs:634`
+/// * Table `LayoutNodeLeaf` in the file `crates/bkpr-protocol/src/wire/native.fbs:652`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -65674,7 +67558,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for LayoutNodeLeafRef<'a> {
 /// The table `LayoutNodeSplit` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `LayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:637`
+/// * Table `LayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:655`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -66272,7 +68156,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for LayoutNodeSplitRef<'a> {
 /// The union `LayoutNode` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `LayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:643`
+/// * Union `LayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:661`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -66457,7 +68341,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for LayoutNodeRef<'a> {
 /// The table `SpawnLayoutNodeExisting` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeExisting` in the file `crates/bkpr-protocol/src/wire/native.fbs:644`
+/// * Table `SpawnLayoutNodeExisting` in the file `crates/bkpr-protocol/src/wire/native.fbs:662`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -66762,7 +68646,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeExistingRef<'a> {
 /// The table `SpawnLayoutNodeNew` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeNew` in the file `crates/bkpr-protocol/src/wire/native.fbs:647`
+/// * Table `SpawnLayoutNodeNew` in the file `crates/bkpr-protocol/src/wire/native.fbs:665`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -67067,7 +68951,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeNewRef<'a> {
 /// The table `SpawnLayoutNodeSplit` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:650`
+/// * Table `SpawnLayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:668`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -67665,7 +69549,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeSplitRef<'a> {
 /// The union `SpawnLayoutNode` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `SpawnLayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:656`
+/// * Union `SpawnLayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:674`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -67893,7 +69777,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for SpawnLayoutNodeRef<'a> {
 /// The table `NativeConversation` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `NativeConversation` in the file `crates/bkpr-protocol/src/wire/native.fbs:657`
+/// * Table `NativeConversation` in the file `crates/bkpr-protocol/src/wire/native.fbs:675`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -68404,7 +70288,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for NativeConversationRef<'a> {
 /// The table `AgentBindingGuard` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentBindingGuard` in the file `crates/bkpr-protocol/src/wire/native.fbs:662`
+/// * Table `AgentBindingGuard` in the file `crates/bkpr-protocol/src/wire/native.fbs:680`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -68793,7 +70677,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentBindingGuardRef<'a> {
 /// The table `CaptureEventBind` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventBind` in the file `crates/bkpr-protocol/src/wire/native.fbs:666`
+/// * Table `CaptureEventBind` in the file `crates/bkpr-protocol/src/wire/native.fbs:684`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -69425,7 +71309,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventBindRef<'a> {
 /// The table `CaptureEventError` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventError` in the file `crates/bkpr-protocol/src/wire/native.fbs:672`
+/// * Table `CaptureEventError` in the file `crates/bkpr-protocol/src/wire/native.fbs:690`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -69730,7 +71614,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventErrorRef<'a> {
 /// The table `CaptureEventEnd` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:675`
+/// * Table `CaptureEventEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:693`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -69956,7 +71840,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventEndRef<'a> {
 /// The table `CaptureEventPromptSubmitted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventPromptSubmitted` in the file `crates/bkpr-protocol/src/wire/native.fbs:678`
+/// * Table `CaptureEventPromptSubmitted` in the file `crates/bkpr-protocol/src/wire/native.fbs:696`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -70358,7 +72242,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventPromptSubmittedRef<'a> {
 /// The table `CaptureEventStatusEnroll` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventStatusEnroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:682`
+/// * Table `CaptureEventStatusEnroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:700`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -70760,7 +72644,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventStatusEnrollRef<'a> {
 /// The table `CaptureEventStatusReport` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventStatusReport` in the file `crates/bkpr-protocol/src/wire/native.fbs:686`
+/// * Table `CaptureEventStatusReport` in the file `crates/bkpr-protocol/src/wire/native.fbs:704`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -71525,7 +73409,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventStatusReportRef<'a> {
 /// The table `CaptureEventUnbind` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventUnbind` in the file `crates/bkpr-protocol/src/wire/native.fbs:693`
+/// * Table `CaptureEventUnbind` in the file `crates/bkpr-protocol/src/wire/native.fbs:711`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -72055,7 +73939,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventUnbindRef<'a> {
 /// The table `CaptureEventNativeContext` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventNativeContext` in the file `crates/bkpr-protocol/src/wire/native.fbs:698`
+/// * Table `CaptureEventNativeContext` in the file `crates/bkpr-protocol/src/wire/native.fbs:716`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -72444,7 +74328,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventNativeContextRef<'a> {
 /// The union `CaptureEvent` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `CaptureEvent` in the file `crates/bkpr-protocol/src/wire/native.fbs:702`
+/// * Union `CaptureEvent` in the file `crates/bkpr-protocol/src/wire/native.fbs:720`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -72887,7 +74771,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for CaptureEventRef<'a> {
 /// The table `AgentRequestWhoami` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWhoami` in the file `crates/bkpr-protocol/src/wire/native.fbs:703`
+/// * Table `AgentRequestWhoami` in the file `crates/bkpr-protocol/src/wire/native.fbs:721`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -73203,7 +75087,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWhoamiRef<'a> {
 /// The table `AgentRequestControl` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestControl` in the file `crates/bkpr-protocol/src/wire/native.fbs:706`
+/// * Table `AgentRequestControl` in the file `crates/bkpr-protocol/src/wire/native.fbs:724`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -73702,7 +75586,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestControlRef<'a> {
 /// The table `AgentRequestSetTitle` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestSetTitle` in the file `crates/bkpr-protocol/src/wire/native.fbs:711`
+/// * Table `AgentRequestSetTitle` in the file `crates/bkpr-protocol/src/wire/native.fbs:729`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -74007,7 +75891,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestSetTitleRef<'a> {
 /// The table `AgentRequestDiscoverAgents` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestDiscoverAgents` in the file `crates/bkpr-protocol/src/wire/native.fbs:714`
+/// * Table `AgentRequestDiscoverAgents` in the file `crates/bkpr-protocol/src/wire/native.fbs:732`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -74948,7 +76832,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestDiscoverAgentsRef<'a> {
 /// The table `AgentRequestSendMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestSendMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:723`
+/// * Table `AgentRequestSendMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:741`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -75174,7 +77058,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestSendMessageRef<'a> {
 /// The table `AgentRequestReadInbox` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReadInbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:730`
+/// * Table `AgentRequestReadInbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:748`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -75400,7 +77284,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReadInboxRef<'a> {
 /// The table `AgentRequestReadMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReadMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:737`
+/// * Table `AgentRequestReadMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:755`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -75626,7 +77510,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReadMessageRef<'a> {
 /// The table `AgentRequestAckMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestAckMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:742`
+/// * Table `AgentRequestAckMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:760`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -75852,7 +77736,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestAckMessageRef<'a> {
 /// The table `AgentRequestInspectOutbox` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestInspectOutbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:745`
+/// * Table `AgentRequestInspectOutbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:763`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -76078,7 +77962,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestInspectOutboxRef<'a> {
 /// The table `AgentRequestReceiverRegister` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReceiverRegister` in the file `crates/bkpr-protocol/src/wire/native.fbs:750`
+/// * Table `AgentRequestReceiverRegister` in the file `crates/bkpr-protocol/src/wire/native.fbs:768`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -76589,7 +78473,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReceiverRegisterRef<'a> {
 /// The table `AgentRequestReceiverSubscribe` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReceiverSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:755`
+/// * Table `AgentRequestReceiverSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:773`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -76991,7 +78875,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReceiverSubscribeRef<'a> {
 /// The table `AgentRequestWakeValidate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWakeValidate` in the file `crates/bkpr-protocol/src/wire/native.fbs:759`
+/// * Table `AgentRequestWakeValidate` in the file `crates/bkpr-protocol/src/wire/native.fbs:777`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -77489,7 +79373,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeValidateRef<'a> {
 /// The table `AgentRequestWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:764`
+/// * Table `AgentRequestWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:782`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -78078,7 +79962,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeOutcomeRef<'a> {
 /// The table `AgentRequestChannels` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestChannels` in the file `crates/bkpr-protocol/src/wire/native.fbs:770`
+/// * Table `AgentRequestChannels` in the file `crates/bkpr-protocol/src/wire/native.fbs:788`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -78373,7 +80257,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelsRef<'a> {
 /// The table `AgentRequestChannelWake` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestChannelWake` in the file `crates/bkpr-protocol/src/wire/native.fbs:773`
+/// * Table `AgentRequestChannelWake` in the file `crates/bkpr-protocol/src/wire/native.fbs:791`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -78892,7 +80776,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelWakeRef<'a> {
 /// The table `AgentRequestChannelRead` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestChannelRead` in the file `crates/bkpr-protocol/src/wire/native.fbs:778`
+/// * Table `AgentRequestChannelRead` in the file `crates/bkpr-protocol/src/wire/native.fbs:796`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -79527,7 +81411,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelReadRef<'a> {
 /// The table `AgentRequestChannelDirectPost` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestChannelDirectPost` in the file `crates/bkpr-protocol/src/wire/native.fbs:784`
+/// * Table `AgentRequestChannelDirectPost` in the file `crates/bkpr-protocol/src/wire/native.fbs:802`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -79916,7 +81800,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelDirectPostRef<'a> {
 /// The table `AgentRequestChannelAck` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestChannelAck` in the file `crates/bkpr-protocol/src/wire/native.fbs:788`
+/// * Table `AgentRequestChannelAck` in the file `crates/bkpr-protocol/src/wire/native.fbs:806`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -80305,7 +82189,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelAckRef<'a> {
 /// The union `AgentRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:792`
+/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:810`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -81178,7 +83062,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentRequestRef<'a> {
 /// The table `AgentWakeOutcomeAccepted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:793`
+/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:811`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -81404,7 +83288,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeAcceptedRef<'a> {
 /// The table `AgentWakeOutcomeFailed` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:796`
+/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:814`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -81709,7 +83593,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeFailedRef<'a> {
 /// The table `AgentWakeOutcomeUnknown` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:799`
+/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:817`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -82014,7 +83898,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeUnknownRef<'a> {
 /// The union `AgentWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:802`
+/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:820`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -82242,7 +84126,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentWakeOutcomeRef<'a> {
 /// The table `RequestFailureSessionClosing` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:803`
+/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:821`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -82558,7 +84442,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureSessionClosingRef<'a> {
 /// The table `RequestFailureBusy` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureBusy` in the file `crates/bkpr-protocol/src/wire/native.fbs:806`
+/// * Table `RequestFailureBusy` in the file `crates/bkpr-protocol/src/wire/native.fbs:824`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -82863,7 +84747,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureBusyRef<'a> {
 /// The union `RequestFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:809`
+/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:827`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -83048,7 +84932,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for RequestFailureRef<'a> {
 /// The table `OptionalU32` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalU32` in the file `crates/bkpr-protocol/src/wire/native.fbs:810`
+/// * Table `OptionalU32` in the file `crates/bkpr-protocol/src/wire/native.fbs:828`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -83364,7 +85248,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalU32Ref<'a> {
 /// The table `OptionalU64` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:813`
+/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:831`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -83680,7 +85564,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalU64Ref<'a> {
 /// The table `OptionalPalette` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:816`
+/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:834`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -83985,7 +85869,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPaletteRef<'a> {
 /// The table `OptionalUsize` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:819`
+/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:837`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -84301,7 +86185,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalUsizeRef<'a> {
 /// The table `NullValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:824`
+/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:842`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -84527,7 +86411,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for NullValueRef<'a> {
 /// The table `BoolValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:825`
+/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:843`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -84843,7 +86727,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for BoolValueRef<'a> {
 /// The table `SignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:826`
+/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:844`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -85159,7 +87043,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SignedValueRef<'a> {
 /// The table `UnsignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:827`
+/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:845`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -85475,7 +87359,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for UnsignedValueRef<'a> {
 /// The table `FloatValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:828`
+/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:846`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -85791,7 +87675,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for FloatValueRef<'a> {
 /// The table `StringValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:829`
+/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:847`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -86096,7 +87980,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for StringValueRef<'a> {
 /// The table `ArrayValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:830`
+/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:848`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -86401,7 +88285,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ArrayValueRef<'a> {
 /// The table `Entry` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:831`
+/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:849`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -86779,7 +88663,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for EntryRef<'a> {
 /// The table `ObjectValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:832`
+/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:850`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -87084,7 +88968,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ObjectValueRef<'a> {
 /// The union `ValueBody` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:833`
+/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:851`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -87527,7 +89411,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ValueBodyRef<'a> {
 /// The table `Value` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:834`
+/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:852`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -87822,7 +89706,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ValueRef<'a> {
 /// The table `ControlPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:835`
+/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:853`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -88117,7 +90001,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ControlPayloadRef<'a> {
 /// The table `PanePayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:836`
+/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:854`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -88510,7 +90394,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PanePayloadRef<'a> {
 /// The enum `ImagePixelFormat` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Enum `ImagePixelFormat` in the file `crates/bkpr-protocol/src/wire/native.fbs:840`
+/// * Enum `ImagePixelFormat` in the file `crates/bkpr-protocol/src/wire/native.fbs:858`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum ImagePixelFormat {
     
         /// The variant `Rgb` in the enum `ImagePixelFormat`
@@ -88661,7 +90545,7 @@ unsafe impl ::planus::VectorWrite<ImagePixelFormat> for ImagePixelFormat {
 /// The enum `ImageEncoding` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Enum `ImageEncoding` in the file `crates/bkpr-protocol/src/wire/native.fbs:841`
+/// * Enum `ImageEncoding` in the file `crates/bkpr-protocol/src/wire/native.fbs:859`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum ImageEncoding {
     
         /// The variant `Raw` in the enum `ImageEncoding`
@@ -88804,7 +90688,7 @@ unsafe impl ::planus::VectorWrite<ImageEncoding> for ImageEncoding {
 /// The table `ImageDescriptor` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:842`
+/// * Table `ImageDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:860`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -89569,7 +91453,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageDescriptorRef<'a> {
 /// The table `ImagePreparing` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImagePreparing` in the file `crates/bkpr-protocol/src/wire/native.fbs:849`
+/// * Table `ImagePreparing` in the file `crates/bkpr-protocol/src/wire/native.fbs:867`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -89874,7 +91758,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImagePreparingRef<'a> {
 /// The table `ImageStart` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageStart` in the file `crates/bkpr-protocol/src/wire/native.fbs:850`
+/// * Table `ImageStart` in the file `crates/bkpr-protocol/src/wire/native.fbs:868`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -90385,7 +92269,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageStartRef<'a> {
 /// The table `ImageData` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageData` in the file `crates/bkpr-protocol/src/wire/native.fbs:855`
+/// * Table `ImageData` in the file `crates/bkpr-protocol/src/wire/native.fbs:873`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -90881,7 +92765,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageDataRef<'a> {
 /// The table `ImageEnd` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:856`
+/// * Table `ImageEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:874`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -91283,7 +93167,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageEndRef<'a> {
 /// The union `ImageResource` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ImageResource` in the file `crates/bkpr-protocol/src/wire/native.fbs:857`
+/// * Union `ImageResource` in the file `crates/bkpr-protocol/src/wire/native.fbs:875`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -91554,7 +93438,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ImageResourceRef<'a> {
 /// The table `ImageResourcePayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageResourcePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:858`
+/// * Table `ImageResourcePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:876`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -91849,7 +93733,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageResourcePayloadRef<'a> {
 /// The table `ChannelParticipant` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelParticipant` in the file `crates/bkpr-protocol/src/wire/native.fbs:859`
+/// * Table `ChannelParticipant` in the file `crates/bkpr-protocol/src/wire/native.fbs:877`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -92345,7 +94229,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelParticipantRef<'a> {
 /// The table `ChannelSummary` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelSummary` in the file `crates/bkpr-protocol/src/wire/native.fbs:864`
+/// * Table `ChannelSummary` in the file `crates/bkpr-protocol/src/wire/native.fbs:882`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -93715,7 +95599,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelSummaryRef<'a> {
 /// The table `ChannelMessageSummary` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelMessageSummary` in the file `crates/bkpr-protocol/src/wire/native.fbs:875`
+/// * Table `ChannelMessageSummary` in the file `crates/bkpr-protocol/src/wire/native.fbs:893`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -93738,6 +95622,8 @@ pub struct ChannelMessageSummary{
         pub reply_to: ::core::option::Option<::planus::alloc::string::String>,
         /// The field `attachments` in the table `ChannelMessageSummary`
         pub attachments: ::planus::alloc::vec::Vec<::planus::alloc::string::String>,
+        /// The field `mention_spans` in the table `ChannelMessageSummary`
+        pub mention_spans: ::core::option::Option<::planus::alloc::vec::Vec<self::ChannelResolvedMentionSpan>>,
         /// The field `source` in the table `ChannelMessageSummary`
         pub source: ::core::option::Option<::planus::alloc::boxed::Box<self::ChannelSource>>,}
 
@@ -93754,6 +95640,7 @@ impl ::core::default::Default for ChannelMessageSummary {
         mentions: ::core::default::Default::default(),
         reply_to: ::core::default::Default::default(),
         attachments: ::core::default::Default::default(),
+        mention_spans: ::core::default::Default::default(),
         source: ::core::default::Default::default(),
         
         }
@@ -93779,15 +95666,16 @@ impl ChannelMessageSummary {
         field_mentions: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
         field_reply_to: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
         field_attachments: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
+        field_mention_spans: impl ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelResolvedMentionSpan>]>>,
         field_source: impl ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_id = field_id.prepare(builder);let prepared_sequence = field_sequence.prepare(builder, &0);let prepared_author = field_author.prepare(builder);let prepared_posted_at_ms = field_posted_at_ms.prepare(builder, &0);let prepared_intent = field_intent.prepare(builder, &self::PostIntent::Note);let prepared_mentions = field_mentions.prepare(builder);let prepared_reply_to = field_reply_to.prepare(builder);let prepared_attachments = field_attachments.prepare(builder);let prepared_source = field_source.prepare(builder);
+    ) -> ::planus::Offset<Self> {let prepared_id = field_id.prepare(builder);let prepared_sequence = field_sequence.prepare(builder, &0);let prepared_author = field_author.prepare(builder);let prepared_posted_at_ms = field_posted_at_ms.prepare(builder, &0);let prepared_intent = field_intent.prepare(builder, &self::PostIntent::Note);let prepared_mentions = field_mentions.prepare(builder);let prepared_reply_to = field_reply_to.prepare(builder);let prepared_attachments = field_attachments.prepare(builder);let prepared_mention_spans = field_mention_spans.prepare(builder);let prepared_source = field_source.prepare(builder);
 
         let mut table_writer: ::planus::table_writer::TableWriter::<24> = ::core::default::Default::default();
-        if prepared_sequence.is_some() {table_writer.write_entry::<u64>(1);}if prepared_posted_at_ms.is_some() {table_writer.write_entry::<u64>(3);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<self::ChannelParticipant>>(2);table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(5);if prepared_reply_to.is_some() {table_writer.write_entry::<::planus::Offset<str>>(6);}table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(7);if prepared_source.is_some() {table_writer.write_entry::<::planus::Offset<self::ChannelSource>>(9);}if prepared_intent.is_some() {table_writer.write_entry::<self::PostIntent>(4);}
+        if prepared_sequence.is_some() {table_writer.write_entry::<u64>(1);}if prepared_posted_at_ms.is_some() {table_writer.write_entry::<u64>(3);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<self::ChannelParticipant>>(2);table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(5);if prepared_reply_to.is_some() {table_writer.write_entry::<::planus::Offset<str>>(6);}table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(7);if prepared_mention_spans.is_some() {table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::ChannelResolvedMentionSpan>]>>(8);}if prepared_source.is_some() {table_writer.write_entry::<::planus::Offset<self::ChannelSource>>(9);}if prepared_intent.is_some() {table_writer.write_entry::<self::PostIntent>(4);}
 
         unsafe {
-            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_sequence) = prepared_sequence {object_writer.write::<_, _, 8>(&prepared_sequence);}if let ::core::option::Option::Some(prepared_posted_at_ms) = prepared_posted_at_ms {object_writer.write::<_, _, 8>(&prepared_posted_at_ms);}object_writer.write::<_, _, 4>(&prepared_id);object_writer.write::<_, _, 4>(&prepared_author);object_writer.write::<_, _, 4>(&prepared_mentions);if let ::core::option::Option::Some(prepared_reply_to) = prepared_reply_to {object_writer.write::<_, _, 4>(&prepared_reply_to);}object_writer.write::<_, _, 4>(&prepared_attachments);if let ::core::option::Option::Some(prepared_source) = prepared_source {object_writer.write::<_, _, 4>(&prepared_source);}if let ::core::option::Option::Some(prepared_intent) = prepared_intent {object_writer.write::<_, _, 1>(&prepared_intent);}
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_sequence) = prepared_sequence {object_writer.write::<_, _, 8>(&prepared_sequence);}if let ::core::option::Option::Some(prepared_posted_at_ms) = prepared_posted_at_ms {object_writer.write::<_, _, 8>(&prepared_posted_at_ms);}object_writer.write::<_, _, 4>(&prepared_id);object_writer.write::<_, _, 4>(&prepared_author);object_writer.write::<_, _, 4>(&prepared_mentions);if let ::core::option::Option::Some(prepared_reply_to) = prepared_reply_to {object_writer.write::<_, _, 4>(&prepared_reply_to);}object_writer.write::<_, _, 4>(&prepared_attachments);if let ::core::option::Option::Some(prepared_mention_spans) = prepared_mention_spans {object_writer.write::<_, _, 4>(&prepared_mention_spans);}if let ::core::option::Option::Some(prepared_source) = prepared_source {object_writer.write::<_, _, 4>(&prepared_source);}if let ::core::option::Option::Some(prepared_intent) = prepared_intent {object_writer.write::<_, _, 1>(&prepared_intent);}
                 
             });
         }builder.current_offset()
@@ -93848,6 +95736,10 @@ impl ::planus::WriteAsOffset<ChannelMessageSummary> for ChannelMessageSummary {
         
             
             &self.attachments,
+            
+        
+            
+            &self.mention_spans,
             
         
             
@@ -94519,10 +96411,10 @@ impl<
     )
 >
 {
-    /// Setter for the [`source` field](ChannelMessageSummary#structfield.source).
+    /// Setter for the [`mention_spans` field](ChannelMessageSummary#structfield.mention_spans).
     #[inline]
     #[allow(clippy::type_complexity)]
-    pub fn source<T8>(self, value: T8) -> ChannelMessageSummaryBuilder<(
+    pub fn mention_spans<T8>(self, value: T8) -> ChannelMessageSummaryBuilder<(
     
         T0,
     
@@ -94543,7 +96435,7 @@ impl<
         T8,
     
     )>
-    where T8: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>
+    where T8: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelResolvedMentionSpan>]>>
     {
         
         let (
@@ -94589,6 +96481,156 @@ impl<
     
 
     
+    /// Sets the [`mention_spans` field](ChannelMessageSummary#structfield.mention_spans) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn mention_spans_as_null(self) -> ChannelMessageSummaryBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+            T5,
+        
+            T6,
+        
+            T7,
+        
+        (),
+    )>
+    {
+        self.mention_spans(())
+    }
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+> ChannelMessageSummaryBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+    )
+>
+{
+    /// Setter for the [`source` field](ChannelMessageSummary#structfield.source).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn source<T9>(self, value: T9) -> ChannelMessageSummaryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+        T9,
+    
+    )>
+    where T9: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+                v8,
+            
+        ) = self.0;ChannelMessageSummaryBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+                v8,
+            
+            value,
+        ))
+    }
+
+    
+
+    
     /// Sets the [`source` field](ChannelMessageSummary#structfield.source) to null.
     #[inline]
     #[allow(clippy::type_complexity)]
@@ -94609,6 +96651,8 @@ impl<
             T6,
         
             T7,
+        
+            T8,
         
         (),
     )>
@@ -94640,6 +96684,8 @@ impl<
     
         T8,
     
+        T9,
+    
 > ChannelMessageSummaryBuilder<(
     
         T0,
@@ -94659,6 +96705,8 @@ impl<
         T7,
     
         T8,
+    
+        T9,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelMessageSummary].
@@ -94688,7 +96736,9 @@ impl<
     
         T7: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
     
-        T8: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
+        T8: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelResolvedMentionSpan>]>>,
+    
+        T9: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
     
 > ::planus::WriteAs<::planus::Offset<ChannelMessageSummary>> for ChannelMessageSummaryBuilder<(
     
@@ -94709,6 +96759,8 @@ impl<
         T7,
     
         T8,
+    
+        T9,
     
 )> {
     type Prepared = ::planus::Offset<ChannelMessageSummary>;
@@ -94737,7 +96789,9 @@ impl<
     
         T7: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
     
-        T8: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
+        T8: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelResolvedMentionSpan>]>>,
+    
+        T9: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
     
 > ::planus::WriteAsOptional<::planus::Offset<ChannelMessageSummary>> for ChannelMessageSummaryBuilder<(
     
@@ -94758,6 +96812,8 @@ impl<
         T7,
     
         T8,
+    
+        T9,
     
 )> {
     type Prepared = ::planus::Offset<ChannelMessageSummary>;
@@ -94786,7 +96842,9 @@ impl<
     
         T7: ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
     
-        T8: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
+        T8: ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelResolvedMentionSpan>]>>,
+    
+        T9: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
     
 > ::planus::WriteAsOffset<ChannelMessageSummary> for ChannelMessageSummaryBuilder<(
     
@@ -94807,6 +96865,8 @@ impl<
         T7,
     
         T8,
+    
+        T9,
     
 )> {
     #[inline]
@@ -94832,6 +96892,8 @@ impl<
             
                 v8,
             
+                v9,
+            
         ) = &self.0;ChannelMessageSummary::create(
             builder,
             
@@ -94852,6 +96914,8 @@ impl<
                 v7,
             
                 v8,
+            
+                v9,
             
         )
     }
@@ -94970,6 +97034,19 @@ impl<'a> ChannelMessageSummaryRef<'a> {
             
         }
     
+        /// Getter for the [`mention_spans` field](ChannelMessageSummary#structfield.mention_spans).
+        #[inline]
+        pub fn mention_spans(&self) -> ::planus::Result<::core::option::Option<::planus::Vector<'a, ::planus::Result<self::ChannelResolvedMentionSpanRef<'a>>>>> {
+            
+            
+              
+              self.0.access(8, "ChannelMessageSummary", "mention_spans")
+              
+            
+            
+            
+        }
+    
         /// Getter for the [`source` field](ChannelMessageSummary#structfield.source).
         #[inline]
         pub fn source(&self) -> ::planus::Result<::core::option::Option<self::ChannelSourceRef<'a>>> {
@@ -94990,7 +97067,9 @@ impl<'a> ::core::fmt::Debug for ChannelMessageSummaryRef<'a> {
         let mut f = f.debug_struct("ChannelMessageSummaryRef");
         f.field("id", &self.id());f.field("sequence", &self.sequence());f.field("author", &self.author());f.field("posted_at_ms", &self.posted_at_ms());f.field("intent", &self.intent());f.field("mentions", &self.mentions());if let ::core::option::Option::Some(field_reply_to) = self.reply_to().transpose() {
                 f.field("reply_to", &field_reply_to);
-            }f.field("attachments", &self.attachments());if let ::core::option::Option::Some(field_source) = self.source().transpose() {
+            }f.field("attachments", &self.attachments());if let ::core::option::Option::Some(field_mention_spans) = self.mention_spans().transpose() {
+                f.field("mention_spans", &field_mention_spans);
+            }if let ::core::option::Option::Some(field_source) = self.source().transpose() {
                 f.field("source", &field_source);
             }
         f.finish()
@@ -95007,7 +97086,13 @@ impl<'a> ::core::convert::TryFrom<ChannelMessageSummaryRef<'a>> for ChannelMessa
         ::core::result::Result::Ok(Self {
             id: ::core::convert::Into::into(value.id()?),sequence: ::core::convert::TryInto::try_into(value.sequence()?)?,author: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.author()?)?),posted_at_ms: ::core::convert::TryInto::try_into(value.posted_at_ms()?)?,intent: ::core::convert::TryInto::try_into(value.intent()?)?,mentions: value.mentions()?.to_vec_result()?,reply_to: 
                                 value.reply_to()?.map(::core::convert::Into::into)
-                            ,attachments: value.attachments()?.to_vec_result()?,source: 
+                            ,attachments: value.attachments()?.to_vec_result()?,mention_spans: 
+                            if let ::core::option::Option::Some(mention_spans) = value.mention_spans()? {
+                                ::core::option::Option::Some(mention_spans.to_vec_result()?)
+                            } else {
+                                ::core::option::Option::None
+                            }
+                        ,source: 
                                 if let ::core::option::Option::Some(source) = value.source()? {
                                     ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(source)?))
                                 } else {
@@ -95083,7 +97168,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelMessageSummaryRef<'a> {
 /// The table `ChannelChange` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelChange` in the file `crates/bkpr-protocol/src/wire/native.fbs:887`
+/// * Table `ChannelChange` in the file `crates/bkpr-protocol/src/wire/native.fbs:905`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -95496,7 +97581,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelChangeRef<'a> {
 /// The table `AttachmentDescriptor` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AttachmentDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:888`
+/// * Table `AttachmentDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:906`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -96132,7 +98217,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AttachmentDescriptorRef<'a> {
 /// The table `ChannelMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:894`
+/// * Table `ChannelMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:912`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -96615,7 +98700,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelMessageRef<'a> {
 /// The table `ChannelResponseListed` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseListed` in the file `crates/bkpr-protocol/src/wire/native.fbs:899`
+/// * Table `ChannelResponseListed` in the file `crates/bkpr-protocol/src/wire/native.fbs:917`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -97021,7 +99106,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseListedRef<'a> {
 /// The table `ChannelResponseMembers` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseMembers` in the file `crates/bkpr-protocol/src/wire/native.fbs:903`
+/// * Table `ChannelResponseMembers` in the file `crates/bkpr-protocol/src/wire/native.fbs:921`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -97427,7 +99512,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseMembersRef<'a> {
 /// The table `ChannelResponseChannel` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseChannel` in the file `crates/bkpr-protocol/src/wire/native.fbs:907`
+/// * Table `ChannelResponseChannel` in the file `crates/bkpr-protocol/src/wire/native.fbs:925`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -97732,7 +99817,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseChannelRef<'a> {
 /// The table `ChannelResponsePosted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponsePosted` in the file `crates/bkpr-protocol/src/wire/native.fbs:908`
+/// * Table `ChannelResponsePosted` in the file `crates/bkpr-protocol/src/wire/native.fbs:926`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -98368,7 +100453,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponsePostedRef<'a> {
 /// The table `ChannelResponseHistory` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseHistory` in the file `crates/bkpr-protocol/src/wire/native.fbs:914`
+/// * Table `ChannelResponseHistory` in the file `crates/bkpr-protocol/src/wire/native.fbs:932`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -98999,7 +101084,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseHistoryRef<'a> {
 /// The table `ChannelResponseMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:920`
+/// * Table `ChannelResponseMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:938`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -99304,7 +101389,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseMessageRef<'a> {
 /// The table `ChannelResponseReadPosition` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseReadPosition` in the file `crates/bkpr-protocol/src/wire/native.fbs:923`
+/// * Table `ChannelResponseReadPosition` in the file `crates/bkpr-protocol/src/wire/native.fbs:941`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -99620,7 +101705,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseReadPositionRef<'a> {
 /// The table `ChannelResponseChanges` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseChanges` in the file `crates/bkpr-protocol/src/wire/native.fbs:924`
+/// * Table `ChannelResponseChanges` in the file `crates/bkpr-protocol/src/wire/native.fbs:942`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -100239,7 +102324,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseChangesRef<'a> {
 /// The table `ChannelResponseAttachmentUploaded` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseAttachmentUploaded` in the file `crates/bkpr-protocol/src/wire/native.fbs:930`
+/// * Table `ChannelResponseAttachmentUploaded` in the file `crates/bkpr-protocol/src/wire/native.fbs:948`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -100544,7 +102629,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseAttachmentUploadedRef<'a> {
 /// The table `ChannelResponseAttachment` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseAttachment` in the file `crates/bkpr-protocol/src/wire/native.fbs:931`
+/// * Table `ChannelResponseAttachment` in the file `crates/bkpr-protocol/src/wire/native.fbs:949`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -100933,7 +103018,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseAttachmentRef<'a> {
 /// The table `ChannelResponseArchivedWorkspaces` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseArchivedWorkspaces` in the file `crates/bkpr-protocol/src/wire/native.fbs:935`
+/// * Table `ChannelResponseArchivedWorkspaces` in the file `crates/bkpr-protocol/src/wire/native.fbs:953`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -101339,7 +103424,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseArchivedWorkspacesRef<'a> {
 /// The table `ChannelResponseExplicitMembers` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseExplicitMembers` in the file `crates/bkpr-protocol/src/wire/native.fbs:939`
+/// * Table `ChannelResponseExplicitMembers` in the file `crates/bkpr-protocol/src/wire/native.fbs:957`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -101745,7 +103830,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseExplicitMembersRef<'a> {
 /// The table `ChannelCatalogUpsert` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelCatalogUpsert` in the file `crates/bkpr-protocol/src/wire/native.fbs:943`
+/// * Table `ChannelCatalogUpsert` in the file `crates/bkpr-protocol/src/wire/native.fbs:961`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -102050,7 +104135,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelCatalogUpsertRef<'a> {
 /// The table `ChannelCatalogWorkspaceClosed` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelCatalogWorkspaceClosed` in the file `crates/bkpr-protocol/src/wire/native.fbs:944`
+/// * Table `ChannelCatalogWorkspaceClosed` in the file `crates/bkpr-protocol/src/wire/native.fbs:965`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -102355,7 +104440,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelCatalogWorkspaceClosedRef<'a> {
 /// The union `ChannelCatalogChangeBody` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ChannelCatalogChangeBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:945`
+/// * Union `ChannelCatalogChangeBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:966`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -102540,7 +104625,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ChannelCatalogChangeBodyRef<'a> {
 /// The table `ChannelCatalogChange` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelCatalogChange` in the file `crates/bkpr-protocol/src/wire/native.fbs:946`
+/// * Table `ChannelCatalogChange` in the file `crates/bkpr-protocol/src/wire/native.fbs:967`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -102835,7 +104920,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelCatalogChangeRef<'a> {
 /// The table `ChannelResponseCatalogSnapshot` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseCatalogSnapshot` in the file `crates/bkpr-protocol/src/wire/native.fbs:947`
+/// * Table `ChannelResponseCatalogSnapshot` in the file `crates/bkpr-protocol/src/wire/native.fbs:968`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -103341,7 +105426,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseCatalogSnapshotRef<'a> {
 /// The table `ChannelResponseCatalogChanges` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseCatalogChanges` in the file `crates/bkpr-protocol/src/wire/native.fbs:952`
+/// * Table `ChannelResponseCatalogChanges` in the file `crates/bkpr-protocol/src/wire/native.fbs:973`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -103839,7 +105924,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseCatalogChangesRef<'a> {
 /// The table `ChannelResponseCatalogReset` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseCatalogReset` in the file `crates/bkpr-protocol/src/wire/native.fbs:957`
+/// * Table `ChannelResponseCatalogReset` in the file `crates/bkpr-protocol/src/wire/native.fbs:978`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -104062,10 +106147,826 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseCatalogResetRef<'a> {
 }
 
     
+/// The table `ChannelRosterEntry` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ChannelRosterEntry` in the file `crates/bkpr-protocol/src/wire/native.fbs:979`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ChannelRosterEntry{
+    
+        /// The field `participant` in the table `ChannelRosterEntry`
+        pub participant: ::planus::alloc::boxed::Box<self::ChannelParticipant>,
+        /// The field `binding` in the table `ChannelRosterEntry`
+        pub binding: ::core::option::Option<::planus::alloc::boxed::Box<self::ChannelMentionBinding>>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ChannelRosterEntry {
+    fn default() -> Self {
+        Self {
+        participant: ::core::default::Default::default(),
+        binding: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl ChannelRosterEntry {
+    /// Creates a [ChannelRosterEntryBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ChannelRosterEntryBuilder<()> {
+        ChannelRosterEntryBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_participant: impl ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
+        field_binding: impl ::planus::WriteAsOptional<::planus::Offset<self::ChannelMentionBinding>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_participant = field_participant.prepare(builder);let prepared_binding = field_binding.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::ChannelParticipant>>(0);if prepared_binding.is_some() {table_writer.write_entry::<::planus::Offset<self::ChannelMentionBinding>>(1);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_participant);if let ::core::option::Option::Some(prepared_binding) = prepared_binding {object_writer.write::<_, _, 4>(&prepared_binding);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ChannelRosterEntry>> for ChannelRosterEntry {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRosterEntry> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ChannelRosterEntry>> for ChannelRosterEntry {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelRosterEntry>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ChannelRosterEntry> for ChannelRosterEntry {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRosterEntry> {
+        ChannelRosterEntry::create(
+            builder,
+        
+            
+            &self.participant,
+            
+        
+            
+            &self.binding,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ChannelRosterEntry] type.
+///
+/// Can be created using the [ChannelRosterEntry::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ChannelRosterEntryBuilder<State>(State);
+
+impl<
+    
+> ChannelRosterEntryBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`participant` field](ChannelRosterEntry#structfield.participant).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn participant<T0>(self, value: T0) -> ChannelRosterEntryBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>
+    {
+        ChannelRosterEntryBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> ChannelRosterEntryBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`binding` field](ChannelRosterEntry#structfield.binding).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn binding<T1>(self, value: T1) -> ChannelRosterEntryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsOptional<::planus::Offset<self::ChannelMentionBinding>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;ChannelRosterEntryBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`binding` field](ChannelRosterEntry#structfield.binding) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn binding_as_null(self) -> ChannelRosterEntryBuilder<(
+        
+            T0,
+        
+        (),
+    )>
+    {
+        self.binding(())
+    }
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ChannelRosterEntryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelRosterEntry].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRosterEntry>
+        where Self: ::planus::WriteAsOffset<ChannelRosterEntry>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<self::ChannelMentionBinding>>,
+    
+> ::planus::WriteAs<::planus::Offset<ChannelRosterEntry>> for ChannelRosterEntryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelRosterEntry>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRosterEntry> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<self::ChannelMentionBinding>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ChannelRosterEntry>> for ChannelRosterEntryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelRosterEntry>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelRosterEntry>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<self::ChannelMentionBinding>>,
+    
+> ::planus::WriteAsOffset<ChannelRosterEntry> for ChannelRosterEntryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRosterEntry> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = &self.0;ChannelRosterEntry::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ChannelRosterEntry].
+#[derive(Copy, Clone)]
+pub struct ChannelRosterEntryRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ChannelRosterEntryRef<'a> {
+    
+        /// Getter for the [`participant` field](ChannelRosterEntry#structfield.participant).
+        #[inline]
+        pub fn participant(&self) -> ::planus::Result<self::ChannelParticipantRef<'a>> {
+            
+            
+              
+              self.0.access_required(0, "ChannelRosterEntry", "participant")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`binding` field](ChannelRosterEntry#structfield.binding).
+        #[inline]
+        pub fn binding(&self) -> ::planus::Result<::core::option::Option<self::ChannelMentionBindingRef<'a>>> {
+            
+            
+              
+              self.0.access(1, "ChannelRosterEntry", "binding")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ChannelRosterEntryRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ChannelRosterEntryRef");
+        f.field("participant", &self.participant());if let ::core::option::Option::Some(field_binding) = self.binding().transpose() {
+                f.field("binding", &field_binding);
+            }
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ChannelRosterEntryRef<'a>> for ChannelRosterEntry {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ChannelRosterEntryRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            participant: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.participant()?)?),binding: 
+                                if let ::core::option::Option::Some(binding) = value.binding()? {
+                                    ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(binding)?))
+                                } else {
+                                    ::core::option::Option::None
+                                }
+                            ,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ChannelRosterEntryRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ChannelRosterEntryRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelRosterEntryRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ChannelRosterEntry>> for ChannelRosterEntry {
+    type Value = ::planus::Offset<ChannelRosterEntry>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ChannelRosterEntry>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ChannelRosterEntryRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelRosterEntryRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `ChannelResponseUserRoster` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ChannelResponseUserRoster` in the file `crates/bkpr-protocol/src/wire/native.fbs:983`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ChannelResponseUserRoster{
+    
+        /// The field `participants` in the table `ChannelResponseUserRoster`
+        pub participants: ::planus::alloc::vec::Vec<self::ChannelRosterEntry>,
+        /// The field `next_after` in the table `ChannelResponseUserRoster`
+        pub next_after: ::core::option::Option<::planus::alloc::string::String>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ChannelResponseUserRoster {
+    fn default() -> Self {
+        Self {
+        participants: ::core::default::Default::default(),
+        next_after: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl ChannelResponseUserRoster {
+    /// Creates a [ChannelResponseUserRosterBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ChannelResponseUserRosterBuilder<()> {
+        ChannelResponseUserRosterBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_participants: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::ChannelRosterEntry>]>>,
+        field_next_after: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_participants = field_participants.prepare(builder);let prepared_next_after = field_next_after.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::ChannelRosterEntry>]>>(0);if prepared_next_after.is_some() {table_writer.write_entry::<::planus::Offset<str>>(1);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_participants);if let ::core::option::Option::Some(prepared_next_after) = prepared_next_after {object_writer.write::<_, _, 4>(&prepared_next_after);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ChannelResponseUserRoster>> for ChannelResponseUserRoster {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelResponseUserRoster> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ChannelResponseUserRoster>> for ChannelResponseUserRoster {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelResponseUserRoster>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ChannelResponseUserRoster> for ChannelResponseUserRoster {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelResponseUserRoster> {
+        ChannelResponseUserRoster::create(
+            builder,
+        
+            
+            &self.participants,
+            
+        
+            
+            &self.next_after,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ChannelResponseUserRoster] type.
+///
+/// Can be created using the [ChannelResponseUserRoster::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ChannelResponseUserRosterBuilder<State>(State);
+
+impl<
+    
+> ChannelResponseUserRosterBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`participants` field](ChannelResponseUserRoster#structfield.participants).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn participants<T0>(self, value: T0) -> ChannelResponseUserRosterBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::ChannelRosterEntry>]>>
+    {
+        ChannelResponseUserRosterBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> ChannelResponseUserRosterBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`next_after` field](ChannelResponseUserRoster#structfield.next_after).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn next_after<T1>(self, value: T1) -> ChannelResponseUserRosterBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;ChannelResponseUserRosterBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`next_after` field](ChannelResponseUserRoster#structfield.next_after) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn next_after_as_null(self) -> ChannelResponseUserRosterBuilder<(
+        
+            T0,
+        
+        (),
+    )>
+    {
+        self.next_after(())
+    }
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ChannelResponseUserRosterBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelResponseUserRoster].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelResponseUserRoster>
+        where Self: ::planus::WriteAsOffset<ChannelResponseUserRoster>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::ChannelRosterEntry>]>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+> ::planus::WriteAs<::planus::Offset<ChannelResponseUserRoster>> for ChannelResponseUserRosterBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelResponseUserRoster>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelResponseUserRoster> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::ChannelRosterEntry>]>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ChannelResponseUserRoster>> for ChannelResponseUserRosterBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelResponseUserRoster>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelResponseUserRoster>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::ChannelRosterEntry>]>>,
+    
+        T1: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+> ::planus::WriteAsOffset<ChannelResponseUserRoster> for ChannelResponseUserRosterBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelResponseUserRoster> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = &self.0;ChannelResponseUserRoster::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ChannelResponseUserRoster].
+#[derive(Copy, Clone)]
+pub struct ChannelResponseUserRosterRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ChannelResponseUserRosterRef<'a> {
+    
+        /// Getter for the [`participants` field](ChannelResponseUserRoster#structfield.participants).
+        #[inline]
+        pub fn participants(&self) -> ::planus::Result<::planus::Vector<'a, ::planus::Result<self::ChannelRosterEntryRef<'a>>>> {
+            
+            
+              
+              self.0.access_required(0, "ChannelResponseUserRoster", "participants")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`next_after` field](ChannelResponseUserRoster#structfield.next_after).
+        #[inline]
+        pub fn next_after(&self) -> ::planus::Result<::core::option::Option<&'a ::core::primitive::str>> {
+            
+            
+              
+              self.0.access(1, "ChannelResponseUserRoster", "next_after")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ChannelResponseUserRosterRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ChannelResponseUserRosterRef");
+        f.field("participants", &self.participants());if let ::core::option::Option::Some(field_next_after) = self.next_after().transpose() {
+                f.field("next_after", &field_next_after);
+            }
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ChannelResponseUserRosterRef<'a>> for ChannelResponseUserRoster {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ChannelResponseUserRosterRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            participants: value.participants()?.to_vec_result()?,next_after: 
+                                value.next_after()?.map(::core::convert::Into::into)
+                            ,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ChannelResponseUserRosterRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ChannelResponseUserRosterRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelResponseUserRosterRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ChannelResponseUserRoster>> for ChannelResponseUserRoster {
+    type Value = ::planus::Offset<ChannelResponseUserRoster>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ChannelResponseUserRoster>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseUserRosterRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelResponseUserRosterRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
 /// The union `ChannelResponse` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ChannelResponse` in the file `crates/bkpr-protocol/src/wire/native.fbs:958`
+/// * Union `ChannelResponse` in the file `crates/bkpr-protocol/src/wire/native.fbs:987`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -104115,6 +107016,9 @@ pub enum ChannelResponse{
     
         /// The variant of type `ChannelResponseCatalogReset` in the union `ChannelResponse`
         ChannelResponseCatalogReset(::planus::alloc::boxed::Box<self::ChannelResponseCatalogReset>),
+    
+        /// The variant of type `ChannelResponseUserRoster` in the union `ChannelResponse`
+        ChannelResponseUserRoster(::planus::alloc::boxed::Box<self::ChannelResponseUserRoster>),
     
 }
 
@@ -104246,6 +107150,14 @@ impl ChannelResponse {
         ::planus::UnionOffset::new(15, value.prepare(builder).downcast())
     }
 
+    #[inline]
+    pub fn create_channel_response_user_roster(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::ChannelResponseUserRoster>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(16, value.prepare(builder).downcast())
+    }
+
     
 }
 
@@ -104270,6 +107182,7 @@ impl ::planus::WriteAsUnion<ChannelResponse> for ChannelResponse {
             Self::ChannelResponseCatalogSnapshot(value) => Self::create_channel_response_catalog_snapshot(builder, value),
             Self::ChannelResponseCatalogChanges(value) => Self::create_channel_response_catalog_changes(builder, value),
             Self::ChannelResponseCatalogReset(value) => Self::create_channel_response_catalog_reset(builder, value),
+            Self::ChannelResponseUserRoster(value) => Self::create_channel_response_user_roster(builder, value),
             
         }
     }
@@ -104438,6 +107351,16 @@ impl ChannelResponseBuilder<::planus::Uninitialized> {
         value: T,
     ) -> ChannelResponseBuilder<::planus::Initialized<15, T>>
         where T: ::planus::WriteAsOffset<self::ChannelResponseCatalogReset> {
+        ChannelResponseBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`ChannelResponseUserRoster` variant](ChannelResponse#variant.ChannelResponseUserRoster).
+    #[inline]
+    pub fn channel_response_user_roster<T>(
+        self,
+        value: T,
+    ) -> ChannelResponseBuilder<::planus::Initialized<16, T>>
+        where T: ::planus::WriteAsOffset<self::ChannelResponseUserRoster> {
         ChannelResponseBuilder(::planus::Initialized(value))
     }
 
@@ -104709,6 +107632,23 @@ impl<T> ::planus::WriteAsOptionalUnion<ChannelResponse> for ChannelResponseBuild
         ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
     }
 }
+impl<T> ::planus::WriteAsUnion<ChannelResponse> for ChannelResponseBuilder<::planus::Initialized<16, T>>
+    where T: ::planus::WriteAsOffset<self::ChannelResponseUserRoster>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<ChannelResponse> {
+        ::planus::UnionOffset::new(16, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<ChannelResponse> for ChannelResponseBuilder<::planus::Initialized<16, T>>
+    where T: ::planus::WriteAsOffset<self::ChannelResponseUserRoster>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<ChannelResponse>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
 
 
 /// Reference to a deserialized [ChannelResponse].
@@ -104729,6 +107669,7 @@ pub enum ChannelResponseRef<'a>{
     ChannelResponseCatalogSnapshot(self::ChannelResponseCatalogSnapshotRef<'a>),
     ChannelResponseCatalogChanges(self::ChannelResponseCatalogChangesRef<'a>),
     ChannelResponseCatalogReset(self::ChannelResponseCatalogResetRef<'a>),
+    ChannelResponseUserRoster(self::ChannelResponseUserRosterRef<'a>),
     
 }
 
@@ -104784,6 +107725,9 @@ impl<'a> ::core::convert::TryFrom<ChannelResponseRef<'a>> for ChannelResponse {
                 ChannelResponseRef::ChannelResponseCatalogReset(value) => Self::ChannelResponseCatalogReset(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
                 
             
+                ChannelResponseRef::ChannelResponseUserRoster(value) => Self::ChannelResponseUserRoster(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
         })
     }
 }
@@ -104793,7 +107737,7 @@ impl<'a> ::core::convert::TryFrom<ChannelResponseRef<'a>> for ChannelResponse {
 impl<'a> ::planus::TableReadUnion<'a> for ChannelResponseRef<'a> {
     fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
         match tag {
-            1 => ::core::result::Result::Ok(Self::ChannelResponseListed(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::ChannelResponseMembers(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::ChannelResponseChannel(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::ChannelResponsePosted(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::ChannelResponseHistory(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::ChannelResponseMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::ChannelResponseReadPosition(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::ChannelResponseChanges(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::ChannelResponseAttachmentUploaded(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::ChannelResponseAttachment(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::ChannelResponseArchivedWorkspaces(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::ChannelResponseExplicitMembers(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::ChannelResponseCatalogSnapshot(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::ChannelResponseCatalogChanges(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::ChannelResponseCatalogReset(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+            1 => ::core::result::Result::Ok(Self::ChannelResponseListed(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::ChannelResponseMembers(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::ChannelResponseChannel(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::ChannelResponsePosted(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::ChannelResponseHistory(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::ChannelResponseMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::ChannelResponseReadPosition(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::ChannelResponseChanges(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::ChannelResponseAttachmentUploaded(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::ChannelResponseAttachment(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::ChannelResponseArchivedWorkspaces(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::ChannelResponseExplicitMembers(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::ChannelResponseCatalogSnapshot(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::ChannelResponseCatalogChanges(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::ChannelResponseCatalogReset(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::ChannelResponseUserRoster(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
         }
     }
 }
@@ -104809,7 +107753,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ChannelResponseRef<'a> {
 /// The table `ChannelPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:975`
+/// * Table `ChannelPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:1005`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -105104,7 +108048,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelPayloadRef<'a> {
 /// The union `Payload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:976`
+/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:1006`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -105375,7 +108319,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PayloadRef<'a> {
 /// The table `Request` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:977`
+/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:1007`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -105764,7 +108708,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestRef<'a> {
 /// The table `OptionalPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:978`
+/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:1008`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -106059,7 +109003,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPayloadRef<'a> {
 /// The table `OptionalFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:979`
+/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:1009`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -106354,7 +109298,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalFailureRef<'a> {
 /// The table `Response` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:980`
+/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:1010`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -107140,6 +110084,1020 @@ impl<'a> ::planus::ReadAsRoot<'a> for ResponseRef<'a> {
             offset_from_start: 0,
         }, 0).map_err(|error_kind| error_kind.with_error_location(
             "[ResponseRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `ChannelMentionSpan` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ChannelMentionSpan` in the file `crates/bkpr-protocol/src/wire/native.fbs:1012`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ChannelMentionSpan{
+    
+        /// The field `start` in the table `ChannelMentionSpan`
+        pub start: u32,
+        /// The field `end` in the table `ChannelMentionSpan`
+        pub end: u32,
+        /// The field `participant_id` in the table `ChannelMentionSpan`
+        pub participant_id: ::planus::alloc::string::String,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ChannelMentionSpan {
+    fn default() -> Self {
+        Self {
+        start: 0,
+        end: 0,
+        participant_id: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl ChannelMentionSpan {
+    /// Creates a [ChannelMentionSpanBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ChannelMentionSpanBuilder<()> {
+        ChannelMentionSpanBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_start: impl ::planus::WriteAsDefault<u32, u32>,
+        field_end: impl ::planus::WriteAsDefault<u32, u32>,
+        field_participant_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_start = field_start.prepare(builder, &0);let prepared_end = field_end.prepare(builder, &0);let prepared_participant_id = field_participant_id.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        if prepared_start.is_some() {table_writer.write_entry::<u32>(0);}if prepared_end.is_some() {table_writer.write_entry::<u32>(1);}table_writer.write_entry::<::planus::Offset<str>>(2);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_start) = prepared_start {object_writer.write::<_, _, 4>(&prepared_start);}if let ::core::option::Option::Some(prepared_end) = prepared_end {object_writer.write::<_, _, 4>(&prepared_end);}object_writer.write::<_, _, 4>(&prepared_participant_id);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ChannelMentionSpan>> for ChannelMentionSpan {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelMentionSpan> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ChannelMentionSpan>> for ChannelMentionSpan {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelMentionSpan>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ChannelMentionSpan> for ChannelMentionSpan {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelMentionSpan> {
+        ChannelMentionSpan::create(
+            builder,
+        
+            
+            self.start,
+            
+        
+            
+            self.end,
+            
+        
+            
+            &self.participant_id,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ChannelMentionSpan] type.
+///
+/// Can be created using the [ChannelMentionSpan::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ChannelMentionSpanBuilder<State>(State);
+
+impl<
+    
+> ChannelMentionSpanBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`start` field](ChannelMentionSpan#structfield.start).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn start<T0>(self, value: T0) -> ChannelMentionSpanBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsDefault<u32, u32>
+    {
+        ChannelMentionSpanBuilder((
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`start` field](ChannelMentionSpan#structfield.start) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn start_as_default(self) -> ChannelMentionSpanBuilder<(
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.start(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> ChannelMentionSpanBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`end` field](ChannelMentionSpan#structfield.end).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn end<T1>(self, value: T1) -> ChannelMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsDefault<u32, u32>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;ChannelMentionSpanBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`end` field](ChannelMentionSpan#structfield.end) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn end_as_default(self) -> ChannelMentionSpanBuilder<(
+        
+            T0,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.end(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ChannelMentionSpanBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`participant_id` field](ChannelMentionSpan#structfield.participant_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn participant_id<T2>(self, value: T2) -> ChannelMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;ChannelMentionSpanBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> ChannelMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelMentionSpan].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelMentionSpan>
+        where Self: ::planus::WriteAsOffset<ChannelMentionSpan>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u32, u32>,
+    
+        T1: ::planus::WriteAsDefault<u32, u32>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAs<::planus::Offset<ChannelMentionSpan>> for ChannelMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelMentionSpan>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelMentionSpan> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u32, u32>,
+    
+        T1: ::planus::WriteAsDefault<u32, u32>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ChannelMentionSpan>> for ChannelMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelMentionSpan>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelMentionSpan>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u32, u32>,
+    
+        T1: ::planus::WriteAsDefault<u32, u32>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOffset<ChannelMentionSpan> for ChannelMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelMentionSpan> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;ChannelMentionSpan::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ChannelMentionSpan].
+#[derive(Copy, Clone)]
+pub struct ChannelMentionSpanRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ChannelMentionSpanRef<'a> {
+    
+        /// Getter for the [`start` field](ChannelMentionSpan#structfield.start).
+        #[inline]
+        pub fn start(&self) -> ::planus::Result<u32> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(0, "ChannelMentionSpan", "start")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`end` field](ChannelMentionSpan#structfield.end).
+        #[inline]
+        pub fn end(&self) -> ::planus::Result<u32> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(1, "ChannelMentionSpan", "end")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`participant_id` field](ChannelMentionSpan#structfield.participant_id).
+        #[inline]
+        pub fn participant_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(2, "ChannelMentionSpan", "participant_id")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ChannelMentionSpanRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ChannelMentionSpanRef");
+        f.field("start", &self.start());f.field("end", &self.end());f.field("participant_id", &self.participant_id());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ChannelMentionSpanRef<'a>> for ChannelMentionSpan {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ChannelMentionSpanRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            start: ::core::convert::TryInto::try_into(value.start()?)?,end: ::core::convert::TryInto::try_into(value.end()?)?,participant_id: ::core::convert::Into::into(value.participant_id()?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ChannelMentionSpanRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ChannelMentionSpanRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelMentionSpanRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ChannelMentionSpan>> for ChannelMentionSpan {
+    type Value = ::planus::Offset<ChannelMentionSpan>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ChannelMentionSpan>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ChannelMentionSpanRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelMentionSpanRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `ChannelResolvedMentionSpan` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ChannelResolvedMentionSpan` in the file `crates/bkpr-protocol/src/wire/native.fbs:1017`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ChannelResolvedMentionSpan{
+    
+        /// The field `start` in the table `ChannelResolvedMentionSpan`
+        pub start: u32,
+        /// The field `end` in the table `ChannelResolvedMentionSpan`
+        pub end: u32,
+        /// The field `participant` in the table `ChannelResolvedMentionSpan`
+        pub participant: ::planus::alloc::boxed::Box<self::ChannelParticipant>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ChannelResolvedMentionSpan {
+    fn default() -> Self {
+        Self {
+        start: 0,
+        end: 0,
+        participant: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl ChannelResolvedMentionSpan {
+    /// Creates a [ChannelResolvedMentionSpanBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ChannelResolvedMentionSpanBuilder<()> {
+        ChannelResolvedMentionSpanBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_start: impl ::planus::WriteAsDefault<u32, u32>,
+        field_end: impl ::planus::WriteAsDefault<u32, u32>,
+        field_participant: impl ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_start = field_start.prepare(builder, &0);let prepared_end = field_end.prepare(builder, &0);let prepared_participant = field_participant.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        if prepared_start.is_some() {table_writer.write_entry::<u32>(0);}if prepared_end.is_some() {table_writer.write_entry::<u32>(1);}table_writer.write_entry::<::planus::Offset<self::ChannelParticipant>>(2);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_start) = prepared_start {object_writer.write::<_, _, 4>(&prepared_start);}if let ::core::option::Option::Some(prepared_end) = prepared_end {object_writer.write::<_, _, 4>(&prepared_end);}object_writer.write::<_, _, 4>(&prepared_participant);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ChannelResolvedMentionSpan>> for ChannelResolvedMentionSpan {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelResolvedMentionSpan> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ChannelResolvedMentionSpan>> for ChannelResolvedMentionSpan {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelResolvedMentionSpan>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ChannelResolvedMentionSpan> for ChannelResolvedMentionSpan {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelResolvedMentionSpan> {
+        ChannelResolvedMentionSpan::create(
+            builder,
+        
+            
+            self.start,
+            
+        
+            
+            self.end,
+            
+        
+            
+            &self.participant,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ChannelResolvedMentionSpan] type.
+///
+/// Can be created using the [ChannelResolvedMentionSpan::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ChannelResolvedMentionSpanBuilder<State>(State);
+
+impl<
+    
+> ChannelResolvedMentionSpanBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`start` field](ChannelResolvedMentionSpan#structfield.start).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn start<T0>(self, value: T0) -> ChannelResolvedMentionSpanBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsDefault<u32, u32>
+    {
+        ChannelResolvedMentionSpanBuilder((
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`start` field](ChannelResolvedMentionSpan#structfield.start) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn start_as_default(self) -> ChannelResolvedMentionSpanBuilder<(
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.start(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> ChannelResolvedMentionSpanBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`end` field](ChannelResolvedMentionSpan#structfield.end).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn end<T1>(self, value: T1) -> ChannelResolvedMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsDefault<u32, u32>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;ChannelResolvedMentionSpanBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`end` field](ChannelResolvedMentionSpan#structfield.end) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn end_as_default(self) -> ChannelResolvedMentionSpanBuilder<(
+        
+            T0,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.end(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ChannelResolvedMentionSpanBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`participant` field](ChannelResolvedMentionSpan#structfield.participant).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn participant<T2>(self, value: T2) -> ChannelResolvedMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;ChannelResolvedMentionSpanBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> ChannelResolvedMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelResolvedMentionSpan].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelResolvedMentionSpan>
+        where Self: ::planus::WriteAsOffset<ChannelResolvedMentionSpan>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u32, u32>,
+    
+        T1: ::planus::WriteAsDefault<u32, u32>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
+    
+> ::planus::WriteAs<::planus::Offset<ChannelResolvedMentionSpan>> for ChannelResolvedMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelResolvedMentionSpan>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelResolvedMentionSpan> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u32, u32>,
+    
+        T1: ::planus::WriteAsDefault<u32, u32>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ChannelResolvedMentionSpan>> for ChannelResolvedMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelResolvedMentionSpan>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelResolvedMentionSpan>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u32, u32>,
+    
+        T1: ::planus::WriteAsDefault<u32, u32>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
+    
+> ::planus::WriteAsOffset<ChannelResolvedMentionSpan> for ChannelResolvedMentionSpanBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelResolvedMentionSpan> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;ChannelResolvedMentionSpan::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ChannelResolvedMentionSpan].
+#[derive(Copy, Clone)]
+pub struct ChannelResolvedMentionSpanRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ChannelResolvedMentionSpanRef<'a> {
+    
+        /// Getter for the [`start` field](ChannelResolvedMentionSpan#structfield.start).
+        #[inline]
+        pub fn start(&self) -> ::planus::Result<u32> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(0, "ChannelResolvedMentionSpan", "start")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`end` field](ChannelResolvedMentionSpan#structfield.end).
+        #[inline]
+        pub fn end(&self) -> ::planus::Result<u32> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(1, "ChannelResolvedMentionSpan", "end")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`participant` field](ChannelResolvedMentionSpan#structfield.participant).
+        #[inline]
+        pub fn participant(&self) -> ::planus::Result<self::ChannelParticipantRef<'a>> {
+            
+            
+              
+              self.0.access_required(2, "ChannelResolvedMentionSpan", "participant")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ChannelResolvedMentionSpanRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ChannelResolvedMentionSpanRef");
+        f.field("start", &self.start());f.field("end", &self.end());f.field("participant", &self.participant());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ChannelResolvedMentionSpanRef<'a>> for ChannelResolvedMentionSpan {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ChannelResolvedMentionSpanRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            start: ::core::convert::TryInto::try_into(value.start()?)?,end: ::core::convert::TryInto::try_into(value.end()?)?,participant: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.participant()?)?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ChannelResolvedMentionSpanRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ChannelResolvedMentionSpanRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelResolvedMentionSpanRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ChannelResolvedMentionSpan>> for ChannelResolvedMentionSpan {
+    type Value = ::planus::Offset<ChannelResolvedMentionSpan>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ChannelResolvedMentionSpan>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ChannelResolvedMentionSpanRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelResolvedMentionSpanRef]",
             "read_as_root",
             0,
         ))

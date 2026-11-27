@@ -35,6 +35,10 @@ pub enum Context {
     History,
     Search,
     Resize,
+    Chat,
+    ChatChannels,
+    ChatMention,
+    ChatControls,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,6 +146,22 @@ pub enum HistoryAction {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChatAction {
+    Create,
+    Manage,
+    MarkRead,
+    Retry,
+    Send,
+    Newline,
+    /// Edits the active message draft without changing chat focus.
+    Edit(EditAction),
+    /// Opens or dismisses the explicit keyboard channel chooser.
+    ChannelChooser,
+    Choose,
+    Back,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     CommandPrefix,
     SendPrefix,
@@ -202,6 +222,7 @@ pub enum Action {
         cells: u16,
     },
     FinishResize,
+    Chat(ChatAction),
 }
 
 impl Action {
@@ -280,6 +301,8 @@ impl Action {
             Self::DenyClipboard => "deny clipboard access",
             Self::Edit(EditAction::Left) => "cursor left",
             Self::Edit(EditAction::Right) => "cursor right",
+            Self::Edit(EditAction::WordLeft) => "previous word",
+            Self::Edit(EditAction::WordRight) => "next word",
             Self::Edit(EditAction::Home) if context == Context::Finder => "start of query",
             Self::Edit(EditAction::End) if context == Context::Finder => "end of query",
             Self::Edit(EditAction::Home) if context == Context::RecoveryDetails => {
@@ -292,6 +315,9 @@ impl Action {
             Self::Edit(EditAction::End) => "end of field",
             Self::Edit(EditAction::Backspace) => "erase previous",
             Self::Edit(EditAction::Delete) => "erase next",
+            Self::Edit(EditAction::DeletePreviousWord) => "erase previous word",
+            Self::Edit(EditAction::DeleteToLineStart) => "erase to line start",
+            Self::Edit(EditAction::DeleteToLineEnd) => "erase to line end",
             Self::Edit(EditAction::Clear) => "clear field",
             Self::Detach => "detach",
             Self::ToggleChrome => "toggle fancy chrome",
@@ -334,6 +360,27 @@ impl Action {
                 (Direction::Down, true) => "resize down 5 cells",
             },
             Self::FinishResize => "finish resize",
+            Self::Chat(action) => match action {
+                ChatAction::Create => "new channel",
+                ChatAction::Manage => "channel settings",
+                ChatAction::MarkRead => "mark channel read",
+                ChatAction::Retry => "retry identical post",
+                ChatAction::Send => "send message",
+                ChatAction::Newline => "add a line",
+                ChatAction::Edit(EditAction::Home) => "start of line",
+                ChatAction::Edit(EditAction::End) => "end of line",
+                ChatAction::Edit(edit) => Self::Edit(edit).description(context),
+                ChatAction::ChannelChooser if context == Context::ChatChannels => "close chooser",
+                ChatAction::ChannelChooser => "choose channel",
+                ChatAction::Choose if context == Context::ChatMention => "select agent mention",
+                ChatAction::Choose => "open channel",
+                ChatAction::Back => match context {
+                    Context::ChatChannels => "return to composer",
+                    Context::ChatMention => "cancel mention",
+                    Context::ChatControls => "close settings",
+                    _ => "return to native pane",
+                },
+            },
         }
     }
 }
@@ -356,6 +403,13 @@ const SESSIONS: u32 = 1 << 14;
 const RECOVERY: u32 = 1 << 15;
 const IMAGE_VIEWER: u32 = 1 << 16;
 const MENU: u32 = 1 << 17;
+const CHAT: u32 = 1 << 18;
+const CHAT_CHANNELS: u32 = 1 << 19;
+const CHAT_MENTION: u32 = 1 << 20;
+const CHAT_CONTROLS: u32 = 1 << 21;
+const CHAT_COMPOSER: u32 = CHAT | CHAT_MENTION;
+const CHAT_VIEW: u32 = CHAT_COMPOSER | CHAT_CHANNELS;
+const ALT: u16 = 4;
 const SHIFT: u16 = 1;
 const CTRL: u16 = 2;
 const LOCKS: u16 = 16 | 32;
@@ -404,6 +458,10 @@ impl Context {
             Self::Menu => MENU,
             Self::Details => DETAILS,
             Self::ClipboardConsent => CLIPBOARD_CONSENT,
+            Self::Chat => CHAT,
+            Self::ChatChannels => CHAT_CHANNELS,
+            Self::ChatMention => CHAT_MENTION,
+            Self::ChatControls => CHAT_CONTROLS,
         }
     }
 
@@ -428,6 +486,10 @@ impl Context {
             Self::Menu => "Context menu",
             Self::Details => "Details",
             Self::ClipboardConsent => "Clipboard permission",
+            Self::Chat => "Channel",
+            Self::ChatChannels => "Channels",
+            Self::ChatMention => "Mention an agent",
+            Self::ChatControls => "Channel settings",
         }
     }
 }
@@ -446,6 +508,7 @@ pub struct Binding {
     key: Key,
     selected: bool,
     repeat: bool,
+    discoverable: bool,
     /// Structured display chord; produced-text bindings have no extra modifier.
     pub chord: Chord<'static>,
     pub action: Action,
@@ -495,6 +558,7 @@ const fn physical(
         key: Key::Physical(key, modifiers),
         selected: false,
         repeat,
+        discoverable: true,
         chord: Chord {
             key: keycap,
             modifiers: MODIFIER_LABELS[modifiers as usize],
@@ -510,6 +574,7 @@ const fn text(contexts: u32, key: &'static str, action: Action, priority: u8) ->
         key: Key::Text(key),
         selected: false,
         repeat: false,
+        discoverable: true,
         chord: Chord {
             key,
             modifiers: &[],
@@ -535,6 +600,26 @@ use EditAction as E;
 use HistoryAction as H;
 use Navigation as N;
 
+const fn chat_edit(
+    key: &'static str,
+    modifiers: u16,
+    keycap: &'static str,
+    edit: EditAction,
+    priority: u8,
+) -> Binding {
+    let mut binding = physical(
+        CHAT_COMPOSER,
+        key,
+        modifiers,
+        keycap,
+        A::Chat(ChatAction::Edit(edit)),
+        priority,
+        true,
+    );
+    binding.discoverable = false;
+    binding
+}
+
 // These definitions drive lookup and the contextual popup. Prefix commands are
 // deliberately single-press operations; repeated destructive/create commands
 // must never execute because the command key was held down.
@@ -545,7 +630,7 @@ static BINDINGS: &[Binding] = &[
     text(SESSIONS, "s", A::StopSession, 6),
     selected(text(SIDEBAR, "R", A::RefreshCi, 6)),
     physical(
-        APPLICATION | SIDEBAR | SESSIONS | HISTORY | SEARCH | RESIZE,
+        APPLICATION | SIDEBAR | SESSIONS | HISTORY | SEARCH | RESIZE | CHAT_VIEW | CHAT_CONTROLS,
         "KeyB",
         CTRL,
         "b",
@@ -554,12 +639,175 @@ static BINDINGS: &[Binding] = &[
         false,
     ),
     physical(
-        APPLICATION | SIDEBAR | SESSIONS | HISTORY,
+        APPLICATION | SIDEBAR | SESSIONS | HISTORY | CHAT_VIEW | CHAT_CONTROLS,
         "Space",
         CTRL,
         "Space",
         A::ToggleSidebar,
         0,
+        false,
+    ),
+    physical(
+        CHAT,
+        "Enter",
+        0,
+        "Enter",
+        A::Chat(ChatAction::Send),
+        2,
+        false,
+    ),
+    physical(
+        CHAT_COMPOSER,
+        "Enter",
+        SHIFT,
+        "Enter",
+        A::Chat(ChatAction::Newline),
+        3,
+        false,
+    ),
+    chat_edit("Home", 0, "Home", E::Home, 13),
+    chat_edit("KeyA", CTRL, "a", E::Home, 13),
+    chat_edit("End", 0, "End", E::End, 14),
+    chat_edit("KeyE", CTRL, "e", E::End, 14),
+    chat_edit("KeyW", CTRL, "w", E::DeletePreviousWord, 15),
+    chat_edit("KeyU", CTRL, "u", E::DeleteToLineStart, 16),
+    chat_edit("KeyK", CTRL, "k", E::DeleteToLineEnd, 17),
+    chat_edit("ArrowLeft", 0, "←", E::Left, 20),
+    chat_edit("ArrowRight", 0, "→", E::Right, 20),
+    chat_edit("KeyF", CTRL, "f", E::Right, 20),
+    chat_edit("ArrowLeft", CTRL, "←", E::WordLeft, 21),
+    chat_edit("KeyB", ALT, "b", E::WordLeft, 21),
+    chat_edit("ArrowRight", CTRL, "→", E::WordRight, 22),
+    chat_edit("KeyF", ALT, "f", E::WordRight, 22),
+    chat_edit("Backspace", 0, "Backspace", E::Backspace, 23),
+    chat_edit("KeyH", CTRL, "h", E::Backspace, 23),
+    chat_edit("Delete", 0, "Del", E::Delete, 23),
+    chat_edit("KeyD", CTRL, "d", E::Delete, 23),
+    physical(
+        CHAT | CHAT_CHANNELS,
+        "Tab",
+        0,
+        "Tab",
+        A::Chat(ChatAction::ChannelChooser),
+        4,
+        false,
+    ),
+    physical(
+        CHAT_CHANNELS | CHAT_MENTION,
+        "Enter",
+        0,
+        "Enter",
+        A::Chat(ChatAction::Choose),
+        2,
+        false,
+    ),
+    physical(
+        CHAT_MENTION,
+        "Tab",
+        0,
+        "Tab",
+        A::Chat(ChatAction::Choose),
+        2,
+        false,
+    ),
+    physical(
+        CHAT_VIEW | CHAT_CONTROLS,
+        "Escape",
+        0,
+        "Esc",
+        A::Chat(ChatAction::Back),
+        5,
+        false,
+    ),
+    physical(
+        CHAT_VIEW,
+        "KeyN",
+        CTRL,
+        "n",
+        A::Chat(ChatAction::Create),
+        10,
+        false,
+    ),
+    physical(
+        CHAT_VIEW,
+        "KeyE",
+        ALT,
+        "e",
+        A::Chat(ChatAction::Manage),
+        11,
+        false,
+    ),
+    physical(
+        CHAT_VIEW,
+        "KeyM",
+        ALT,
+        "m",
+        A::Chat(ChatAction::MarkRead),
+        12,
+        false,
+    ),
+    physical(
+        CHAT_VIEW,
+        "KeyR",
+        CTRL,
+        "r",
+        A::Chat(ChatAction::Retry),
+        2,
+        false,
+    ),
+    physical(
+        CHAT_VIEW,
+        "PageUp",
+        0,
+        "PgUp",
+        A::History(H::PageUp),
+        6,
+        true,
+    ),
+    physical(
+        CHAT_VIEW,
+        "PageDown",
+        0,
+        "PgDn",
+        A::History(H::PageDown),
+        7,
+        true,
+    ),
+    physical(CHAT_VIEW, "End", CTRL, "End", A::History(H::Live), 8, false),
+    physical(
+        CHAT_CHANNELS | CHAT_MENTION,
+        "ArrowUp",
+        0,
+        "↑",
+        A::Navigate(N::Previous),
+        6,
+        true,
+    ),
+    physical(
+        CHAT_CHANNELS | CHAT_MENTION,
+        "ArrowDown",
+        0,
+        "↓",
+        A::Navigate(N::Next),
+        6,
+        true,
+    ),
+    physical(
+        CHAT_CHANNELS,
+        "Home",
+        0,
+        "Home",
+        A::Navigate(N::First),
+        8,
+        false,
+    ),
+    physical(
+        CHAT_CHANNELS,
+        "End",
+        0,
+        "End",
+        A::Navigate(N::Last),
+        9,
         false,
     ),
     physical(
@@ -1142,6 +1390,33 @@ static PRESENTATION_GROUPS: &[PresentationGroup] = &[
         priority: 22,
     },
     PresentationGroup {
+        contexts: CHAT_COMPOSER,
+        actions: &[
+            A::Chat(ChatAction::Edit(EditAction::Home)),
+            A::Chat(ChatAction::Edit(EditAction::End)),
+        ],
+        description: "start/end of line",
+        priority: 13,
+    },
+    PresentationGroup {
+        contexts: CHAT_COMPOSER,
+        actions: &[
+            A::Chat(ChatAction::Edit(EditAction::Left)),
+            A::Chat(ChatAction::Edit(EditAction::Right)),
+        ],
+        description: "move cursor",
+        priority: 20,
+    },
+    PresentationGroup {
+        contexts: CHAT_COMPOSER,
+        actions: &[
+            A::Chat(ChatAction::Edit(EditAction::Backspace)),
+            A::Chat(ChatAction::Edit(EditAction::Delete)),
+        ],
+        description: "erase",
+        priority: 23,
+    },
+    PresentationGroup {
         contexts: SIDEBAR,
         actions: &[A::LeaveSidebar, A::ToggleSidebar],
         description: "return to app",
@@ -1296,7 +1571,7 @@ pub fn hints(context: Context) -> Vec<Hint> {
 
 pub fn hints_with(context: Context, supported: impl Fn(Action) -> bool) -> Vec<Hint> {
     let mut hints: Vec<Hint> = Vec::new();
-    for binding in bindings_with(context, supported) {
+    for binding in bindings_with(context, supported).filter(|binding| binding.discoverable) {
         let group = PRESENTATION_GROUPS.iter().position(|group| {
             group.contexts & context.mask() != 0 && group.actions.contains(&binding.action)
         });
@@ -1689,6 +1964,65 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    #[test]
+    fn readline_keys_are_composer_only_and_do_not_take_send_or_focus_keys() {
+        let without_edits = |action| !matches!(action, A::Chat(ChatAction::Edit(_)));
+        for context in [Context::Chat, Context::ChatMention] {
+            assert!(
+                !advertised(context).any(|action| matches!(action, A::Chat(ChatAction::Edit(_))))
+            );
+            assert!(advertised(context).any(|action| action == A::Chat(ChatAction::Newline)));
+            for (key, edit) in [
+                ("KeyA", E::Home),
+                ("KeyE", E::End),
+                ("KeyW", E::DeletePreviousWord),
+                ("KeyU", E::DeleteToLineStart),
+                ("KeyK", E::DeleteToLineEnd),
+            ] {
+                let action = A::Chat(ChatAction::Edit(edit));
+                let repeat = event(key, "", CTRL, KeyAction::Repeat);
+                assert_eq!(lookup(context, &repeat), Some(action));
+                assert!(!advertised(context).any(|shown| shown == action));
+                assert_eq!(lookup_with(context, &repeat, without_edits), None);
+                assert_eq!(
+                    lookup(context, &event(key, "", CTRL, KeyAction::Release)),
+                    None
+                );
+                assert_eq!(lookup(Context::ChatChannels, &repeat), None);
+            }
+            assert_eq!(
+                lookup(context, &event("KeyE", "", ALT, KeyAction::Press)),
+                Some(A::Chat(ChatAction::Manage))
+            );
+            assert_eq!(
+                lookup(context, &event("Enter", "", SHIFT, KeyAction::Press)),
+                Some(A::Chat(ChatAction::Newline))
+            );
+            assert_eq!(
+                lookup(context, &event("KeyB", "", CTRL, KeyAction::Press)),
+                Some(A::CommandPrefix)
+            );
+        }
+        let enter = event("Enter", "", 0, KeyAction::Press);
+        let tab = event("Tab", "", 0, KeyAction::Press);
+        assert_eq!(
+            lookup(Context::Chat, &enter),
+            Some(A::Chat(ChatAction::Send))
+        );
+        assert_eq!(
+            lookup(Context::Chat, &tab),
+            Some(A::Chat(ChatAction::ChannelChooser))
+        );
+        assert_eq!(
+            lookup(Context::ChatMention, &enter),
+            Some(A::Chat(ChatAction::Choose))
+        );
+        assert_eq!(
+            lookup(Context::ChatMention, &tab),
+            Some(A::Chat(ChatAction::Choose))
+        );
     }
 
     #[test]

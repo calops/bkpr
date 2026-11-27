@@ -503,26 +503,52 @@ pub(super) fn unbound_channel_participant(
     channels::ParticipantId(Uuid::from_bytes(bytes).to_string())
 }
 
-fn channel_agent(launch: &Launch, agent: &Agent) -> channels::Participant {
+fn channel_agent(
+    launch: &Launch,
+    agent: &Agent,
+    state: &State,
+    pane: &PaneInfo,
+) -> channels::Participant {
     channel_actor(
         launch
             .channel_participant
             .clone()
             .expect("live channel identity"),
         agent,
+        state,
+        pane,
     )
 }
 
-fn channel_actor(id: channels::ParticipantId, agent: &Agent) -> channels::Participant {
+fn channel_actor(
+    id: channels::ParticipantId,
+    agent: &Agent,
+    state: &State,
+    pane: &PaneInfo,
+) -> channels::Participant {
+    let explicit_pane =
+        (!state.record.automatic_titles.contains(&pane.id)).then_some(pane.title.as_str());
+    let display_name = explicit_pane
+        .into_iter()
+        .chain(agent.title.as_deref())
+        .map(str::trim)
+        .find(|title| {
+            !title.is_empty()
+                && title.len() <= channels::MAX_NAME_BYTES
+                && !title.chars().any(char::is_control)
+        })
+        .map_or_else(
+            || {
+                let id = id.as_ref();
+                let end = id.char_indices().nth(6).map_or(id.len(), |(at, _)| at);
+                format!("{}·{}", agent.harness.display_name(), &id[..end])
+            },
+            str::to_owned,
+        );
     channels::Participant {
         id,
         kind: channels::ParticipantKind::Agent,
-        display_name: agent
-            .title
-            .as_ref()
-            .filter(|title| !title.trim().is_empty())
-            .cloned()
-            .unwrap_or_else(|| agent.harness.display_name().to_owned()),
+        display_name,
     }
 }
 
@@ -584,7 +610,7 @@ impl Registry {
             let (current, agent) =
                 channel_caller(&state, pane, workspace, caller, &agents, &captures)
                     .context(ChannelAccessLost)?;
-            channel_agent(current, agent)
+            channel_agent(current, agent, &state, pane)
         } else {
             self.channel_user()
         };
@@ -606,12 +632,13 @@ impl Registry {
                         .iter()
                         .filter_map(|pane| {
                             live_channel_agent(&state, pane, workspace, &agents, &captures, None)
+                                .map(|(launch, agent)| (launch, agent, pane))
                         })
-                        .filter(|(launch, _)| {
+                        .filter(|(launch, _, _)| {
                             launch.channel_participant.as_ref() != Some(&actor.id)
                         })
-                        .map(|(launch, agent)| WorkspaceParticipant {
-                            actor: channel_agent(launch, agent),
+                        .map(|(launch, agent, pane)| WorkspaceParticipant {
+                            actor: channel_agent(launch, agent, &state, pane),
                             launch_id: Some(launch.grant.launch_id.clone()),
                             binding_revision: launch.binding_generation,
                         }),
@@ -666,6 +693,63 @@ impl Registry {
         })
     }
 
+    pub(super) fn fence_user_mentions(
+        &self,
+        workspace: &str,
+        bindings: &[channels::ChannelMentionBinding],
+    ) -> Result<std::sync::MutexGuard<'_, ()>> {
+        use crate::channels::STALE_USER_MENTION;
+
+        let transaction = self.inner.transaction.lock().unwrap();
+        let writer = self.inner.agents.callback_guard()?;
+        {
+            let state = self.inner.state.lock().unwrap();
+            healthy(&state)?;
+            ensure!(
+                !state.closing
+                    && !self.session_end_requested()
+                    && workspace_exists(&state, workspace)
+                    && !state.closing_workspaces.contains(workspace),
+                STALE_USER_MENTION
+            );
+            let agents = self.inner.agents.state.lock().unwrap();
+            let captures = self.inner.captures.lock().unwrap();
+            for binding in bindings {
+                let launch = captures
+                    .launches
+                    .get(&binding.launch_id)
+                    .context(STALE_USER_MENTION)?;
+                let current = state
+                    .record
+                    .registry
+                    .panes
+                    .iter()
+                    .find(|pane| pane.id == launch.grant.pane_id)
+                    .and_then(|pane| {
+                        live_channel_agent(
+                            &state,
+                            pane,
+                            workspace,
+                            &agents,
+                            &captures,
+                            Some(&binding.participant_id),
+                        )
+                    })
+                    .map(|(launch, _)| launch)
+                    .context(STALE_USER_MENTION)?;
+                ensure!(
+                    std::ptr::eq(current, launch)
+                        && current.binding_generation == binding.binding_generation
+                        && current.channel_participant.as_ref() == Some(&binding.participant_id),
+                    STALE_USER_MENTION
+                );
+            }
+        }
+        // The admission point is ordered with registry changes. Hold only the
+        // existing binding writer across the SQLite commit, not registry locks.
+        drop(transaction);
+        Ok(writer)
+    }
     pub(crate) fn agent_subscription_disconnected(
         &self,
         launch_id: &str,

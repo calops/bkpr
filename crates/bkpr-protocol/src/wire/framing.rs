@@ -143,6 +143,9 @@ fn request_has_channel_source(payload: &[u8]) -> planus::Result<bool> {
             g::ChannelRequestRef::ChannelRequestPost(post) => {
                 !matches!(post.post()?.source(), Ok(None))
             }
+            g::ChannelRequestRef::ChannelRequestPostUser(post) => {
+                !matches!(post.post()?.source(), Ok(None))
+            }
             _ => false,
         });
     }

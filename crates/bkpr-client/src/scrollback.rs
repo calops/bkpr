@@ -153,6 +153,11 @@ impl App {
         if self.state.sidebar.active {
             return Ok(());
         }
+        if self.chat.visible() {
+            self.chat.redraw();
+            self.chat.paste(&text, self.options.read_only);
+            return Ok(());
+        }
         if self.search_open() {
             self.search_text(&text);
             return Ok(());
