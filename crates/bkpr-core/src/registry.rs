@@ -172,6 +172,7 @@ struct Inner {
     channels: crate::channels::ChannelEngine,
     channel_expiry: legacy_channels::Expiry,
     agents: Arc<agents::Agents>,
+    roles: agents::RoleService,
     spawn_environment: Mutex<Option<crate::harness::SpawnEnvironment>>,
     ssh_agent: Mutex<Option<Arc<crate::ssh_agent::Relay>>>,
     ssh_agent_sequence: std::sync::atomic::AtomicU64,
@@ -660,6 +661,7 @@ impl Registry {
                 channels,
                 channel_expiry: legacy_channels::Expiry::default(),
                 agents,
+                roles: agents::RoleService::default(),
                 spawn_environment: Mutex::new(None),
                 ssh_agent: Mutex::new(None),
                 ssh_agent_sequence: std::sync::atomic::AtomicU64::new(0),
@@ -705,19 +707,21 @@ impl Registry {
         let owner = Arc::downgrade(&registry.inner);
         registry.inner.channels.set_launch_liveness(move |id| {
             owner.upgrade().is_some_and(|inner| {
-                inner
-                    .captures
-                    .lock()
-                    .unwrap()
-                    .launches
-                    .get(id)
-                    .is_some_and(crate::harness::Launch::channel_launch_alive)
+                inner.agents.tracks_launch(id)
+                    && inner
+                        .captures
+                        .lock()
+                        .unwrap()
+                        .launches
+                        .get(id)
+                        .is_some_and(crate::harness::Launch::channel_launch_alive)
             })
         });
         registry
             .inner
             .channel_expiry
             .start(&registry, legacy_expiry)?;
+        registry.inner.roles.start(&registry)?;
         registry.start_projects(project_events)?;
         registry.start_ci(ci_events)?;
         Ok(registry)
@@ -1014,6 +1018,7 @@ impl Registry {
         let exact_mentions = caller
             .filter(|_| matches!(projection, ChannelProjection::Agent))
             .map(|launch| (launch.grant.launch_id.as_str(), launch.binding_generation));
+        let roster_changed = matches!(&request, ChannelRequest::SetMembership { .. });
         if let Some(caller) = exact_mentions
             && matches!(request, ChannelRequest::ListMembers { .. })
         {
@@ -1039,7 +1044,8 @@ impl Registry {
                 .map(Payload::Control);
         }
 
-        self.inner
+        let response = self
+            .inner
             .channels
             .request_routed(
                 request,
@@ -1062,7 +1068,11 @@ impl Registry {
                     },
                 },
             )
-            .map(Payload::Channels)
+            .map(Payload::Channels)?;
+        if roster_changed {
+            self.role_roster_changed();
+        }
+        Ok(response)
     }
 
     fn request_for_client(
@@ -1372,6 +1382,7 @@ impl Registry {
                     }
                     Ok(())
                 })?;
+                self.role_roster_changed();
                 Ok(json!({"registry":registry}))
             }
             Operation::PaneTerminate { pane_id } => {
@@ -2067,6 +2078,7 @@ impl Registry {
             unbound || state.failed_restores.contains(id)
         };
         self.inner.agents.retire_pane(id);
+        self.role_launches_changed();
         {
             let mut published = pane.shared.published.lock().unwrap();
             published.recovery_title.end();

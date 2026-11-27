@@ -1389,6 +1389,7 @@ mod tests {
             read_through: 0,
             unread_attention: false,
             direct: false,
+            role_thread: None,
         }
     }
 
@@ -1417,6 +1418,7 @@ mod tests {
             attachments: Vec::new(),
             mention_spans: Vec::new(),
             source: None,
+            role: None,
         }
     }
 
@@ -1537,6 +1539,7 @@ mod tests {
             message: posted(5),
             text: "older".into(),
             attachments: Vec::new(),
+            current_delegation: None,
         });
         let page = Completion::History {
             entries: vec![entry],
@@ -1621,6 +1624,7 @@ mod tests {
                                 launch_id: "launch".into(),
                                 binding_generation: 1,
                             }),
+                            role: None,
                         }
                     })
                     .collect()

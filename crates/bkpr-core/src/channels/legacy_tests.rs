@@ -99,6 +99,7 @@ fn authority(actor: &str, kind: ParticipantKind) -> ChannelAuthority {
             kind,
             display_name: "Viewer".into(),
         },
+        launch_id: None,
         writable: true,
         workspace_open: true,
         participants: Vec::new(),
@@ -367,6 +368,7 @@ fn v9(root: &Path, snapshot: &Value) -> ChannelId {
         reply_to: None,
         attachments: Vec::new(),
         source: None,
+        role: None,
     };
     insert_post(
         &tx,

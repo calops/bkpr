@@ -11,16 +11,19 @@ use bkpr_protocol::channels::{
     ChannelSummary, MAX_HISTORY_BYTES, MAX_MENTIONS, MembershipMode, MessageId, MessageSummary,
     Participant, ParticipantId, ParticipantKind, PostIntent, WakePolicy,
 };
+use bkpr_protocol::roles::{RoleGrant, RoleGrantId, RoleThread, WorkspaceRole};
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior, params,
 };
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     fs::{File, OpenOptions},
     io::ErrorKind,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
+    sync::{Arc, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
@@ -29,12 +32,14 @@ use uuid::Uuid;
 pub(super) mod catalog;
 #[path = "legacy.rs"]
 mod legacy;
+#[path = "role_threads.rs"]
+mod role_threads;
 #[path = "wakes.rs"]
 mod wakes;
 
 const APPLICATION_ID: i64 = 0x424b4348;
 // Versions 1–6 predate staging. Version 7 predates wakes.
-const STORE_VERSION: i64 = 16;
+const STORE_VERSION: i64 = 17;
 const ATTENTION_ORIGIN_VERSION: i64 = 16;
 const FIRST_STAGING_VERSION: i64 = 7;
 const STORE_NAME: &str = "channels.sqlite3";
@@ -139,6 +144,8 @@ pub(crate) struct Store {
     pub(super) connection: Connection,
     pub(super) retirement_epoch: u64,
     pub(super) catalog_epoch: Option<u64>,
+    pub(super) launch_active: Option<Arc<OnceLock<Box<super::LaunchActive>>>>,
+    roles: BTreeMap<String, RoleGrant>,
 }
 
 struct StoredChannel {
@@ -146,6 +153,7 @@ struct StoredChannel {
     name: String,
     workspace_wide: bool,
     direct: bool,
+    role_thread: bool,
     settings: ChannelSettings,
     last_sequence: u64,
     change_sequence: u64,
@@ -161,6 +169,8 @@ struct ReplyTarget<'a> {
 #[derive(serde::Serialize)]
 struct MessagePage<'a> {
     message: MessageSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_delegation: Option<&'a RoleGrantId>,
     text: &'a str,
     body_bytes: usize,
     next_offset: Option<usize>,
@@ -252,6 +262,9 @@ impl Store {
             if !has_schema_object("direct_channels")? {
                 tx.execute_batch(include_str!("direct.sql"))?;
             }
+            if !has_schema_object("role_threads")? {
+                tx.execute_batch(include_str!("role_threads.sql"))?;
+            }
             if version < 12 {
                 if !legacy::source_present(root) {
                     tx.execute_batch("DROP TABLE IF EXISTS agent_state;")?;
@@ -288,6 +301,12 @@ impl Store {
         if version != 0 {
             // A new runtime cannot offer abandoned work; old queue rows need no order backfill.
             tx.execute_batch(RETIRE_OLD_WAKE_WORK)?;
+            // Recovery cannot restore a live grant. Report remaining archives
+            // through the same catalog journal as an in-process revocation.
+            tx.execute(
+                "UPDATE role_threads SET archive_reported=1 WHERE archive_reported=0",
+                [],
+            )?;
         }
         tx.commit()?;
         if version == 0 {
@@ -297,6 +316,8 @@ impl Store {
             connection,
             retirement_epoch: 0,
             catalog_epoch: None,
+            launch_active: None,
+            roles: BTreeMap::new(),
         })
     }
 
@@ -412,7 +433,7 @@ impl Store {
     ) -> Result<()> {
         let (channel, authority) = self.access(id, admit, caller_workspace)?;
         channel.require_shared()?;
-        require_write(&authority)
+        self.require_compose(id, &channel, &authority)
     }
 
     pub(super) fn request(
@@ -455,11 +476,25 @@ impl Store {
                 after,
                 limit,
             } => {
+                let mut grant = self.active_role_grant(&workspace_id);
                 let (authority, members) = if let Some(id) = &channel_id {
-                    let (channel, authority) = self.access(id, &admit, routes.workspace)?;
+                    let (channel, mut authority) = self.access(id, &admit, routes.workspace)?;
                     ensure!(channel.workspace_id == workspace_id, ChannelAccessLost);
-                    channel.require_shared()?;
-                    (authority, self.members_if_explicit(id, &channel)?)
+                    let members = if channel.role_thread {
+                        grant = grant.filter(|grant| grant.channel_id == *id);
+                        role_threads::constrain_roster(&mut authority, grant);
+                        None
+                    } else if channel.direct {
+                        let pair = self.direct_pair(id)?.context(ChannelAccessLost)?;
+                        authority.participants.retain(|entry| {
+                            entry.actor.kind == ParticipantKind::User
+                                || pair.contains(&entry.actor.id)
+                        });
+                        None
+                    } else {
+                        self.members_if_explicit(id, &channel)?
+                    };
+                    (authority, members)
                 } else {
                     (workspace_authority(&workspace_id, &admit)?, None)
                 };
@@ -469,6 +504,7 @@ impl Store {
                 let participants = entries
                     .into_iter()
                     .map(|entry| ChannelRosterEntry {
+                        role: role_threads::roster_role(grant, &entry),
                         binding: entry.launch_id.map(|launch_id| ChannelMentionBinding {
                             participant_id: entry.actor.id.clone(),
                             launch_id,
@@ -494,6 +530,10 @@ impl Store {
             } => {
                 let authority = workspace_authority(&workspace_id, &admit)?;
                 require_write(&authority)?;
+                ensure!(
+                    !role_threads::reserved_name(&name),
+                    "reserved role channel name"
+                );
                 self.provision([workspace_id.as_str()])?;
                 return self.create(
                     workspace_id,
@@ -531,15 +571,16 @@ impl Store {
             | ChannelRequest::GetAttachment { channel_id, .. } => channel_id,
             _ => unreachable!("workspace and subscription routes are handled separately"),
         };
-        let (channel, authority) = self.access(channel_id, &admit, routes.workspace)?;
-        if !matches!(
-            request,
-            ChannelRequest::History { .. }
-                | ChannelRequest::Read { .. }
-                | ChannelRequest::MarkRead { .. }
-                | ChannelRequest::Post { .. }
-        ) {
-            channel.require_shared()?;
+        let (channel, mut authority) = self.access(channel_id, &admit, routes.workspace)?;
+        match &request {
+            ChannelRequest::ListExplicitMembers { .. }
+            | ChannelRequest::SetSettings { .. }
+            | ChannelRequest::SetMembership { .. } => channel.require_unmanaged()?,
+            ChannelRequest::ListMembers { .. }
+            | ChannelRequest::PostUser { .. }
+            | ChannelRequest::UploadAttachment { .. }
+            | ChannelRequest::GetAttachment { .. } => channel.require_shared()?,
+            _ => {}
         }
         match request {
             ChannelRequest::ListMembers {
@@ -547,6 +588,10 @@ impl Store {
                 after,
                 limit,
             } => {
+                if channel.role_thread {
+                    let grant = self.active_role_thread(&channel.workspace_id, &channel_id);
+                    role_threads::constrain_roster(&mut authority, grant);
+                }
                 let members = self.members_if_explicit(&channel_id, &channel)?;
                 Ok((
                     list_members(authority, members.as_deref(), after.as_ref(), limit)?,
@@ -610,13 +655,27 @@ impl Store {
                 after,
                 limit,
             } => Ok((
-                self.history(&channel_id, &channel, before, after, limit)?,
+                self.history(
+                    &channel_id,
+                    &channel,
+                    channel.delegation_workspace(&authority, routes.workspace),
+                    before,
+                    after,
+                    limit,
+                )?,
                 false,
             )),
             ChannelRequest::Read {
                 channel_id,
                 message_id,
-            } => Ok((self.read(&channel_id, &message_id)?, false)),
+            } => Ok((
+                self.read(
+                    &channel_id,
+                    &message_id,
+                    channel.delegation_workspace(&authority, routes.workspace),
+                )?,
+                false,
+            )),
             ChannelRequest::MarkRead {
                 channel_id,
                 through,
@@ -629,7 +688,7 @@ impl Store {
                 self.mark_read(&channel_id, &authority.actor.id, through)
             }
             ChannelRequest::UploadAttachment { channel_id, upload } => {
-                require_write(&authority)?;
+                self.require_compose(&channel_id, &channel, &authority)?;
                 Ok((self.upload(&channel_id, upload)?, false))
             }
             ChannelRequest::GetAttachment {
@@ -646,10 +705,20 @@ impl Store {
         workspace: Option<&str>,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
     ) -> Result<Option<ChannelId>> {
-        let Some(workspace) = workspace.filter(|_| matches!(selector.as_ref(), "#desk" | "#team"))
-        else {
+        let Some(workspace) = workspace else {
             return Ok(None);
         };
+        if selector.as_ref() == role_threads::NAME {
+            return Ok(Some(
+                self.active_role_grant(workspace)
+                    .context(ChannelAccessLost)?
+                    .channel_id
+                    .clone(),
+            ));
+        }
+        if !matches!(selector.as_ref(), "#desk" | "#team") {
+            return Ok(None);
+        }
         let lookup = |connection: &Connection| {
             connection
                 .query_row(
@@ -673,13 +742,19 @@ impl Store {
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
         caller_workspace: Option<&str>,
     ) -> Result<(StoredChannel, ChannelAuthority)> {
-        let channel = self.connection.query_row(
-            "SELECT c.workspace_id,COALESCE(d.display_name,c.name),c.workspace_wide,
-                    c.settings,c.last_sequence,c.change_sequence,c.last_attention,d.channel_id IS NOT NULL
-             FROM channels c LEFT JOIN direct_channels d ON d.channel_id=c.id WHERE c.id=?1",
-            [id.as_ref()],
-            |row| StoredChannel::read(row, 0),
-        ).optional()?.context(ChannelAccessLost)?;
+        let channel = self
+            .connection
+            .query_row(
+                "SELECT c.workspace_id,COALESCE(d.display_name,c.name),c.workspace_wide,
+                    c.settings,c.last_sequence,c.change_sequence,c.last_attention,
+                    d.channel_id IS NOT NULL,r.channel_id IS NOT NULL
+             FROM channels c LEFT JOIN direct_channels d ON d.channel_id=c.id
+               LEFT JOIN role_threads r ON r.channel_id=c.id WHERE c.id=?1",
+                [id.as_ref()],
+                |row| StoredChannel::read(row, 0),
+            )
+            .optional()?
+            .context(ChannelAccessLost)?;
         // Direct membership is session-owned. An agent proves its binding in its
         // own workspace; the creator's workspace only groups the user's discovery.
         let workspace = if channel.direct {
@@ -700,6 +775,20 @@ impl Store {
                     )?,
                     ChannelAccessLost
                 );
+            } else if channel.role_thread {
+                ensure!(
+                    caller_workspace.is_none_or(|workspace| workspace == channel.workspace_id)
+                        && self
+                            .active_role_thread(&channel.workspace_id, id)
+                            .is_some_and(|grant| {
+                                role_threads::matches_holder(
+                                    grant,
+                                    &authority.actor,
+                                    authority.launch_id.as_deref(),
+                                )
+                            }),
+                    ChannelAccessLost
+                );
             } else if !channel.workspace_wide {
                 ensure!(
                     self.explicit_member(id, &authority.actor.id)?,
@@ -708,6 +797,22 @@ impl Store {
             }
         }
         Ok((channel, authority))
+    }
+
+    fn require_compose(
+        &self,
+        id: &ChannelId,
+        channel: &StoredChannel,
+        authority: &ChannelAuthority,
+    ) -> Result<()> {
+        require_write(authority)?;
+        if channel.role_thread {
+            ensure!(
+                self.active_role_thread(&channel.workspace_id, id).is_some(),
+                "role channel is archived"
+            );
+        }
+        Ok(())
     }
 
     fn explicit_member(&self, channel: &ChannelId, participant: &ParticipantId) -> Result<bool> {
@@ -740,16 +845,34 @@ impl Store {
                  UNION ALL
                  SELECT channel_id FROM direct_channels
                    WHERE NOT ?4 AND second_participant=?2 AND channel_id>?3
+                 UNION ALL
+                 SELECT ?6 WHERE NOT ?4 AND ?6>?3
                  ORDER BY 1 LIMIT ?5
              )
              SELECT c.id,c.workspace_id,COALESCE(d.display_name,c.name),c.workspace_wide,c.settings,
-                    c.last_sequence,c.change_sequence,c.last_attention,d.channel_id IS NOT NULL,COALESCE(p.through,0)
+                    c.last_sequence,c.change_sequence,c.last_attention,d.channel_id IS NOT NULL,
+                    r.channel_id IS NOT NULL,COALESCE(p.through,0)
              FROM visible v JOIN channels c ON c.id=v.id
                LEFT JOIN direct_channels d ON d.channel_id=c.id
+               LEFT JOIN role_threads r ON r.channel_id=c.id
                LEFT JOIN positions p ON p.channel_id=c.id AND p.participant_id=?2
              ORDER BY v.id",
         )?;
         let user = authority.actor.kind == ParticipantKind::User;
+        let live_role = authority
+            .workspace_open
+            .then(|| self.active_role_grant(workspace_id))
+            .flatten();
+        let live_role_channel = live_role.map(|grant| &grant.channel_id);
+        let visible_role_channel = live_role
+            .filter(|grant| {
+                role_threads::matches_holder(
+                    grant,
+                    &authority.actor,
+                    authority.launch_id.as_deref(),
+                )
+            })
+            .map(|grant| grant.channel_id.as_ref());
         let mut channels = statement
             .query_map(
                 params![
@@ -757,9 +880,14 @@ impl Store {
                     authority.actor.id.as_ref(),
                     after.map_or("", AsRef::as_ref),
                     user,
-                    limit + 1
+                    limit + 1,
+                    visible_role_channel,
                 ],
-                |r| Ok(StoredChannel::read(r, 1)?.summary(ChannelId(r.get(0)?), r.get(9)?, user)),
+                |r| {
+                    let id = ChannelId(r.get(0)?);
+                    let archived = live_role_channel != Some(&id);
+                    Ok(StoredChannel::read(r, 1)?.summary(id, r.get(10)?, user, archived))
+                },
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let next_after =
@@ -877,6 +1005,7 @@ impl Store {
                     read_through: 0,
                     unread_attention: false,
                     direct: false,
+                    role_thread: None,
                 },
             },
             false,
@@ -904,7 +1033,7 @@ impl Store {
         }
         Ok((
             ChannelResponse::Channel {
-                channel: channel.summary(id, through, true),
+                channel: channel.summary(id, through, true, false),
             },
             changed,
         ))
@@ -950,7 +1079,7 @@ impl Store {
         }
         Ok((
             ChannelResponse::Channel {
-                channel: channel.summary(id, through, true),
+                channel: channel.summary(id, through, true, false),
             },
             changed,
         ))
@@ -961,7 +1090,7 @@ impl Store {
         id: &ChannelId,
         channel: &StoredChannel,
     ) -> Result<Option<Vec<ParticipantId>>> {
-        if channel.workspace_wide {
+        if channel.workspace_wide || channel.role_thread {
             return Ok(None);
         }
         let mut statement = self.connection.prepare(
@@ -993,7 +1122,7 @@ impl Store {
                 "structured user mentions of agents require an exact binding from the channel roster"
             );
         }
-        require_write(&authority)?;
+        self.require_compose(id, &channel, &authority)?;
         if channel.direct {
             ensure!(
                 authority.actor.kind == ParticipantKind::Agent,
@@ -1005,6 +1134,10 @@ impl Store {
             );
         }
         let mut authority = authority;
+        if channel.role_thread {
+            let grant = self.active_role_thread(&channel.workspace_id, id);
+            role_threads::constrain_roster(&mut authority, grant);
+        }
         let direct_members = if channel.direct && selected_direct.is_none() {
             let pair = self.direct_pair(id)?.context(ChannelAccessLost)?;
             let peer = pair
@@ -1129,18 +1262,7 @@ impl Store {
             }
         }
         let sequence = channel.last_sequence + 1;
-        let message = MessageSummary {
-            id: MessageId(new_id()),
-            sequence,
-            author: authority.actor,
-            posted_at_ms: unix_time_ms()?,
-            intent: post.intent,
-            mentions: post.mentions,
-            mention_spans,
-            reply_to: post.reply_to,
-            attachments: post.attachments,
-            source: post.source,
-        };
+        let posted_at_ms = unix_time_ms()?;
         // A post admitted before workspace closure still owes the host its immutable
         // attention event. Only the live agent wake is conditional on continued access.
         let pending_wakes =
@@ -1149,7 +1271,7 @@ impl Store {
             self.reclaim_wake_capacity(wakes.len(), routes.binding_live)?;
         }
         if attention {
-            self.reserve_attention(message.posted_at_ms)?;
+            self.reserve_attention(posted_at_ms)?;
         }
         // The store slot serializes channel membership. Final admission checks the
         // selected live bindings after any maintenance, before the post transaction.
@@ -1157,6 +1279,41 @@ impl Store {
             .filter(|bindings| !bindings.is_empty())
             .map(|bindings| (routes.fence_user_mentions)(&channel.workspace_id, bindings))
             .transpose()?;
+        let grant = if channel.role_thread || authority.actor.kind == ParticipantKind::Agent {
+            channel
+                .delegation_workspace(&authority, routes.workspace)
+                .and_then(|workspace| self.active_role_grant(workspace))
+        } else {
+            None
+        };
+        if channel.role_thread {
+            ensure!(
+                grant.is_some_and(|grant| grant.channel_id == *id),
+                ChannelAccessLost
+            );
+        }
+        let role = grant
+            .filter(|grant| {
+                role_threads::matches_holder(
+                    grant,
+                    &authority.actor,
+                    authority.launch_id.as_deref(),
+                )
+            })
+            .map(role_threads::attribution);
+        let message = MessageSummary {
+            id: MessageId(new_id()),
+            sequence,
+            author: authority.actor,
+            posted_at_ms,
+            intent: post.intent,
+            mentions: post.mentions,
+            mention_spans,
+            reply_to: post.reply_to,
+            attachments: post.attachments,
+            source: post.source,
+            role,
+        };
         let tx = self.connection.transaction()?;
         if let Some((peer, true)) = &selected_direct {
             insert_direct_channel(&tx, id, &channel.workspace_id, &message.author, &peer.actor)?;
@@ -1304,7 +1461,7 @@ impl Store {
         pair.sort_unstable();
         let existing = self.connection.query_row(
             "SELECT c.id,c.workspace_id,d.display_name,c.workspace_wide,c.settings,c.last_sequence,
-                    c.change_sequence,c.last_attention,1
+                    c.change_sequence,c.last_attention,1,0
              FROM direct_channels d JOIN channels c ON c.id=d.channel_id
              WHERE d.first_participant=?1 AND d.second_participant=?2",
             pair, |row| Ok((ChannelId(row.get(0)?), StoredChannel::read(row, 1)?)),
@@ -1318,6 +1475,7 @@ impl Store {
                     name: String::new(),
                     workspace_wide: false,
                     direct: true,
+                    role_thread: false,
                     settings: DIRECT_SETTINGS,
                     last_sequence: 0,
                     change_sequence: 0,
@@ -1447,8 +1605,18 @@ impl Store {
         let channel_id = self
             .resolve_builtin(&channel_id, caller_workspace, admit)?
             .unwrap_or(channel_id);
-        let (channel, authority) = self.access(&channel_id, admit, caller_workspace)?;
+        let (channel, mut authority) = self.access(&channel_id, admit, caller_workspace)?;
         channel.require_shared()?;
+        let grant = channel
+            .delegation_workspace(&authority, caller_workspace)
+            .and_then(|workspace| self.active_role_grant(workspace));
+        let grant = if channel.role_thread {
+            let grant = grant.filter(|grant| grant.channel_id == channel_id);
+            role_threads::constrain_roster(&mut authority, grant);
+            grant
+        } else {
+            grant
+        };
         let members = self.members_if_explicit(&channel_id, &channel)?;
         let (entries, next_after) =
             members_page(authority, members.as_deref(), after.as_ref(), limit)?;
@@ -1459,6 +1627,9 @@ impl Store {
             let mention_id = launch.map_or_else(|| entry.actor.id.0.clone(), |(id, generation)| {
                 super::agent_mention_id(id, generation)
             });
+            let role = grant.filter(|grant| {
+                role_threads::matches_holder(grant, &entry.actor, launch.map(|(id, _)| id))
+            }).map(role_threads::attribution);
             let mut member = serde_json::json!({
                 "id":entry.actor.id, "kind":entry.actor.kind, "display_name":entry.actor.display_name,
                 "mention_id":mention_id,
@@ -1466,8 +1637,11 @@ impl Store {
             if let Some((id, _)) = launch {
                 member["launch_id"] = serde_json::Value::String(id.to_owned());
             }
-            member
-        }).collect();
+            if let Some(role) = role {
+                member["role"] = serde_json::to_value(role)?;
+            }
+            Ok(member)
+        }).collect::<Result<_>>()?;
         Ok(
             serde_json::json!({"kind":"members", "participants":participants, "next_after":next_after}),
         )
@@ -1532,6 +1706,7 @@ impl Store {
         &self,
         id: &ChannelId,
         channel: &StoredChannel,
+        workspace: Option<&str>,
         before: Option<u64>,
         after: Option<u64>,
         limit: u16,
@@ -1548,8 +1723,9 @@ impl Store {
         let mut rows = statement.query(params![id.as_ref(), lower, upper, limit])?;
         let mut messages = Vec::new();
         let mut content_bytes = 0;
+        let grant = workspace.and_then(|workspace| self.active_role_grant(workspace));
         while let Some(row) = rows.next()? {
-            let message = self.message(id, row)?;
+            let message = self.message(id, row, grant)?;
             content_bytes += message.content_bytes();
             ensure!(
                 !messages.is_empty() || content_bytes <= MAX_HISTORY_BYTES,
@@ -1582,10 +1758,19 @@ impl Store {
         })
     }
 
-    fn read(&self, id: &ChannelId, message_id: &MessageId) -> Result<ChannelResponse> {
+    fn read(
+        &self,
+        id: &ChannelId,
+        message_id: &MessageId,
+        workspace: Option<&str>,
+    ) -> Result<ChannelResponse> {
         let mut statement = self.connection.prepare(READ_POST)?;
         let mut rows = statement.query(params![id.as_ref(), message_id.as_ref()])?;
-        let message = self.message(id, rows.next()?.context("channel message unavailable")?)?;
+        let message = self.message(
+            id,
+            rows.next()?.context("channel message unavailable")?,
+            workspace.and_then(|workspace| self.active_role_grant(workspace)),
+        )?;
         Ok(ChannelResponse::Message { message })
     }
 
@@ -1607,33 +1792,42 @@ impl Store {
         let channel_id = self
             .resolve_builtin(&channel_id, caller_workspace, admit)?
             .unwrap_or(channel_id);
-        self.access(&channel_id, admit, caller_workspace)?;
-        self.with_message_page(&channel_id, &message_id, offset, maximum, |page| {
-            #[derive(serde::Serialize)]
-            struct Reply<'a> {
-                kind: &'static str,
-                #[serde(flatten)]
-                page: MessagePage<'a>,
-                attachments: Vec<AttachmentDescriptor>,
-            }
-            let attachments = self.message_attachments(&channel_id, &page.message)?;
-            Ok(serde_json::to_value(Reply {
-                kind: "message_page",
-                page,
-                attachments,
-            })?)
-        })
+        let (channel, authority) = self.access(&channel_id, admit, caller_workspace)?;
+        let workspace = channel.delegation_workspace(&authority, caller_workspace);
+        self.with_message_page(
+            &channel_id,
+            &message_id,
+            workspace,
+            offset,
+            maximum,
+            |page| {
+                #[derive(serde::Serialize)]
+                struct Reply<'a> {
+                    kind: &'static str,
+                    #[serde(flatten)]
+                    page: MessagePage<'a>,
+                    attachments: Vec<AttachmentDescriptor>,
+                }
+                let attachments = self.message_attachments(&channel_id, &page.message)?;
+                Ok(serde_json::to_value(Reply {
+                    kind: "message_page",
+                    page,
+                    attachments,
+                })?)
+            },
+        )
     }
 
     fn with_message_page<T>(
         &self,
         channel_id: &ChannelId,
         message_id: &MessageId,
+        workspace: Option<&str>,
         offset: usize,
         maximum: usize,
         project: impl FnOnce(MessagePage<'_>) -> Result<T>,
     ) -> Result<T> {
-        self.optional_message_page(channel_id, message_id, offset, maximum, project)?
+        self.optional_message_page(channel_id, message_id, workspace, offset, maximum, project)?
             .context("channel message unavailable")
     }
 
@@ -1641,6 +1835,7 @@ impl Store {
         &self,
         channel_id: &ChannelId,
         message_id: &MessageId,
+        workspace: Option<&str>,
         offset: usize,
         maximum: usize,
         project: impl FnOnce(MessagePage<'_>) -> Result<T>,
@@ -1656,8 +1851,12 @@ impl Store {
         while !text.is_char_boundary(end) {
             end -= 1;
         }
+        let message = json(row, 0)?;
+        let grant = workspace.and_then(|workspace| self.active_role_grant(workspace));
+        let current_delegation = role_threads::delegation(grant, &message);
         project(MessagePage {
-            message: json(row, 0)?,
+            message,
+            current_delegation,
             text: &text[offset..end],
             body_bytes: text.len(),
             next_offset: (end < text.len()).then_some(end),
@@ -1669,13 +1868,20 @@ impl Store {
         .map(Some)
     }
 
-    fn message(&self, id: &ChannelId, row: &Row<'_>) -> Result<ChannelMessage> {
+    fn message(
+        &self,
+        id: &ChannelId,
+        row: &Row<'_>,
+        grant: Option<&RoleGrant>,
+    ) -> Result<ChannelMessage> {
         let message: MessageSummary = json(row, 0)?;
         let attachments = self.message_attachments(id, &message)?;
+        let current_delegation = role_threads::delegation(grant, &message).cloned();
         Ok(ChannelMessage {
             message,
             text: row.get(1)?,
             attachments,
+            current_delegation,
         })
     }
 
@@ -1731,13 +1937,16 @@ impl Store {
         caller_workspace: Option<&str>,
     ) -> Result<(u64, Vec<ChannelChange>, bool, bool)> {
         let (channel, authority) = self.access(id, admit, caller_workspace)?;
+        let open = authority.workspace_open
+            && (!channel.role_thread
+                || self.active_role_thread(&channel.workspace_id, id).is_some());
         let after = after.unwrap_or(channel.change_sequence);
         ensure!(
             after <= channel.change_sequence,
             "channel cursor is ahead of the change stream"
         );
         if after == channel.change_sequence {
-            return Ok((after, Vec::new(), false, authority.workspace_open));
+            return Ok((after, Vec::new(), false, open));
         }
         let mut statement = self.connection.prepare(
             "SELECT sequence,kind FROM changes
@@ -1770,7 +1979,7 @@ impl Store {
         } else {
             channel.change_sequence
         };
-        Ok((sequence, changes, more, authority.workspace_open))
+        Ok((sequence, changes, more, open))
     }
 
     fn upload(&mut self, id: &ChannelId, upload: AttachmentUpload) -> Result<ChannelResponse> {
@@ -2032,19 +2241,31 @@ pub(super) fn insert_post(
 
 impl StoredChannel {
     fn read(row: &Row<'_>, start: usize) -> rusqlite::Result<Self> {
+        let role_thread = row.get(start + 8)?;
         Ok(Self {
             workspace_id: row.get(start)?,
-            name: row.get(start + 1)?,
+            name: if role_thread {
+                role_threads::NAME.to_owned()
+            } else {
+                row.get(start + 1)?
+            },
             workspace_wide: row.get(start + 2)?,
             settings: json(row, start + 3)?,
             last_sequence: row.get(start + 4)?,
             change_sequence: row.get(start + 5)?,
             last_attention: row.get(start + 6)?,
             direct: row.get(start + 7)?,
+            role_thread,
         })
     }
 
-    fn summary(self, id: ChannelId, read_through: u64, user: bool) -> ChannelSummary {
+    fn summary(
+        self,
+        id: ChannelId,
+        read_through: u64,
+        user: bool,
+        archived: bool,
+    ) -> ChannelSummary {
         ChannelSummary {
             id,
             workspace_id: self.workspace_id,
@@ -2059,6 +2280,10 @@ impl StoredChannel {
             read_through,
             unread_attention: user && self.last_attention > read_through,
             direct: self.direct,
+            role_thread: self.role_thread.then_some(RoleThread {
+                role: WorkspaceRole::Coordinator,
+                archived,
+            }),
         }
     }
 
@@ -2068,6 +2293,25 @@ impl StoredChannel {
             "direct channel does not support this operation"
         );
         Ok(())
+    }
+
+    fn require_unmanaged(&self) -> Result<()> {
+        self.require_shared()?;
+        ensure!(
+            !self.role_thread,
+            "role channel membership and settings are managed"
+        );
+        Ok(())
+    }
+
+    fn delegation_workspace(
+        &self,
+        authority: &ChannelAuthority,
+        caller_workspace: Option<&str>,
+    ) -> Option<&str> {
+        (authority.workspace_open
+            && caller_workspace.is_none_or(|id| id == self.workspace_id.as_str()))
+        .then_some(self.workspace_id.as_str())
     }
 }
 

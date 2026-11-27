@@ -199,4 +199,48 @@ pub enum RoleResponse {
 pub struct RoleEvent {
     /// Session-local revision. Refresh the bounded role snapshot, not a stored prompt.
     pub revision: u64,
+    /// Which attachment projection changed.
+    pub kind: RoleEventKind,
+}
+
+/// Role projections that a registered client can refresh independently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleEventKind {
+    /// Session-wide role or current channel roster change.
+    Roster,
+    /// The receiving attachment's assigned approvals changed or were withdrawn.
+    Approvals,
+}
+
+/// Whether a live launch gained or lost a tenure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleWakeChange {
+    /// A user authorized this tenure for the recipient.
+    Granted,
+    /// This tenure no longer authorizes new work.
+    Revoked,
+}
+
+/// Recipient-scoped native notification pointer, not proof of current delegation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoleWake {
+    /// Workspace owning the tenure.
+    pub workspace_id: String,
+    /// Role affected by this change.
+    pub role: WorkspaceRole,
+    /// Exact tenure that changed.
+    pub grant_id: RoleGrantId,
+    /// Change observed when the backend queued the pointer.
+    pub change: RoleWakeChange,
+}
+
+impl RoleWake {
+    /// Check bounded identifiers before displaying a managed native wake.
+    pub fn validate(&self) -> Result<()> {
+        valid_id(&self.workspace_id)?;
+        valid_id(&self.grant_id.0)
+    }
 }

@@ -296,7 +296,7 @@ impl Registry {
             self.with_current_agent_receiver(launch, &receiver.id, |_| ())?;
             let mut state = service.state.lock().unwrap();
             let (pending, active, _) = ChannelLane::availability(&state, launch);
-            if !pending || active {
+            if !pending || active || RoleLane::availability(&state, launch).1 {
                 return Ok(ChannelClaimPoll::Empty);
             }
             let lane = state

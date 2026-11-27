@@ -46,6 +46,7 @@ fn summary() -> ChannelSummary {
         read_through: 4,
         unread_attention: true,
         direct: false,
+        role_thread: None,
     }
 }
 
@@ -61,6 +62,7 @@ fn message() -> MessageSummary {
         attachments: vec![attachment_id()],
         mention_spans: Vec::new(),
         source: None,
+        role: None,
     }
 }
 
@@ -78,6 +80,7 @@ fn renderable_message() -> ChannelMessage {
         message: message(),
         text: "private body\nwith Unicode \u{1f9ea}".into(),
         attachments: vec![descriptor()],
+        current_delegation: None,
     }
 }
 
@@ -449,10 +452,12 @@ fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
                         display_name: "Agent".into(),
                     },
                     binding: Some(mention_binding()),
+                    role: None,
                 },
                 ChannelRosterEntry {
                     participant: participant(),
                     binding: None,
+                    role: None,
                 },
             ],
             next_after: Some(participant().id),
@@ -952,6 +957,7 @@ fn native_history_budgets_source_ids_even_for_aliased_rows() {
         },
         text: String::new(),
         attachments: vec![],
+        current_delegation: None,
     };
     message.text = "x".repeat(MAX_HISTORY_BYTES / count - message.content_bytes());
     let history = |message: &ChannelMessage| {
@@ -995,10 +1001,11 @@ fn native_history_budgets_source_ids_even_for_aliased_rows() {
         empty_ids,
         None::<Offset<[Offset<g::ChannelResolvedMentionSpan>]>>,
         Some(source),
+        None::<Offset<g::RoleAttribution>>,
     );
     let text = b.create_string(&message.text);
     let attachments = b.create_vector([] as [Offset<g::AttachmentDescriptor>; 0]);
-    let alias = g::ChannelMessage::create(&mut b, metadata, text, attachments);
+    let alias = g::ChannelMessage::create(&mut b, metadata, text, attachments, None::<Offset<str>>);
     let messages = b.create_vector(vec![alias; count].as_slice());
     let cursor = g::ChannelCursor::create(&mut b, id, count as u64);
     let response = g::ChannelResponseHistory::create(
@@ -1246,11 +1253,13 @@ fn native_summary_checks_spans_against_body_only_when_present() {
             empty_ids,
             Some(spans),
             None::<Offset<g::ChannelSource>>,
+            None::<Offset<g::RoleAttribution>>,
         );
         let response = if let Some(text) = text {
             let text = b.create_string(text);
             let attachments = b.create_vector([] as [Offset<g::AttachmentDescriptor>; 0]);
-            let message = g::ChannelMessage::create(&mut b, metadata, text, attachments);
+            let message =
+                g::ChannelMessage::create(&mut b, metadata, text, attachments, None::<Offset<str>>);
             let response = g::ChannelResponseMessage::create(&mut b, message);
             g::ChannelResponse::create_channel_response_message(&mut b, response)
         } else {

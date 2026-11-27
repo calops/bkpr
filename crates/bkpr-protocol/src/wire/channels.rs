@@ -792,6 +792,17 @@ fn write_summary(
     let workspace = write_text(b, &value.workspace_id, budget)?;
     let name = write_text(b, &value.name, budget)?;
     let settings = write_settings(b, value.settings, budget, depth + 1)?;
+    let role_thread = value
+        .role_thread
+        .map(|thread| -> Result<_> {
+            budget.node(depth + 1)?;
+            Ok(g::RoleThread::create(
+                b,
+                super::roles::write_role(thread.role),
+                thread.archived,
+            ))
+        })
+        .transpose()?;
     Ok(g::ChannelSummary::create(
         b,
         id,
@@ -803,6 +814,7 @@ fn write_summary(
         value.read_through,
         value.unread_attention,
         value.direct,
+        role_thread,
     ))
 }
 
@@ -828,6 +840,16 @@ fn read_summary(
         read_through,
         unread_attention: v.unread_attention()?,
         direct: v.direct()?,
+        role_thread: v
+            .role_thread()?
+            .map(|thread| -> Result<_> {
+                budget.node(depth + 1)?;
+                Ok(crate::roles::RoleThread {
+                    role: super::roles::read_role(thread.role()?),
+                    archived: thread.archived()?,
+                })
+            })
+            .transpose()?,
     })
 }
 
@@ -866,6 +888,11 @@ fn write_message(
             })
         })
         .transpose()?;
+    let role = write_attribution(b, value.role.as_ref(), budget, depth + 1)?;
+    ensure!(
+        role.is_none() || value.author.kind == ParticipantKind::Agent,
+        "user posts cannot carry role attribution"
+    );
     Ok(g::ChannelMessageSummary::create(
         b,
         id,
@@ -878,6 +905,7 @@ fn write_message(
         attachments,
         mention_spans,
         source,
+        role,
     ))
 }
 
@@ -918,7 +946,12 @@ fn read_message(
             .transpose()?
             .unwrap_or_default(),
         source: read_source(v.source()?, budget, depth + 1)?,
+        role: read_attribution(v.role()?, budget, depth + 1)?,
     };
+    ensure!(
+        message.role.is_none() || message.author.kind == ParticipantKind::Agent,
+        "user posts cannot carry role attribution"
+    );
     message.validate_mention_spans(text)?;
     Ok(message)
 }
@@ -937,7 +970,19 @@ fn write_renderable_message(
     let attachments = write_vector(b, &value.attachments, budget, |b, value, budget| {
         write_descriptor(b, value, budget, depth + 1)
     })?;
-    Ok(g::ChannelMessage::create(b, message, text, attachments))
+    validate_delegation(value)?;
+    let delegation = value
+        .current_delegation
+        .as_ref()
+        .map(|id| write_text(b, &id.0, budget))
+        .transpose()?;
+    Ok(g::ChannelMessage::create(
+        b,
+        message,
+        text,
+        attachments,
+        delegation,
+    ))
 }
 
 fn read_renderable_message(
@@ -954,9 +999,62 @@ fn read_renderable_message(
         attachments: read_vector(v.attachments()?, MAX_ATTACHMENTS, budget, |v, b| {
             read_descriptor(v, b, depth + 1)
         })?,
+        current_delegation: v
+            .current_delegation()?
+            .map(|id| read_id(id, budget).map(crate::roles::RoleGrantId))
+            .transpose()?,
     };
     message.validate_attachments()?;
+    validate_delegation(&message)?;
     Ok(message)
+}
+
+fn validate_delegation(value: &ChannelMessage) -> Result<()> {
+    ensure!(
+        value.current_delegation.as_ref().is_none_or(|id| {
+            value
+                .message
+                .role
+                .as_ref()
+                .is_some_and(|role| &role.grant_id == id)
+        }),
+        "current delegation must match historical tenure"
+    );
+    Ok(())
+}
+
+fn write_attribution(
+    b: &mut Builder,
+    role: Option<&crate::roles::RoleAttribution>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Option<Offset<g::RoleAttribution>>> {
+    role.map(|role| {
+        budget.node(depth)?;
+        valid_id(&role.grant_id.0)?;
+        let id = write_text(b, &role.grant_id.0, budget)?;
+        Ok(g::RoleAttribution::create(
+            b,
+            super::roles::write_role(role.role),
+            id,
+        ))
+    })
+    .transpose()
+}
+
+fn read_attribution(
+    role: Option<g::RoleAttributionRef<'_>>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Option<crate::roles::RoleAttribution>> {
+    role.map(|role| {
+        budget.node(depth)?;
+        Ok(crate::roles::RoleAttribution {
+            role: super::roles::read_role(role.role()?),
+            grant_id: crate::roles::RoleGrantId(read_id(role.grant_id()?, budget)?),
+        })
+    })
+    .transpose()
 }
 
 fn validate_retained_body(text: &str) -> Result<()> {
@@ -1067,7 +1165,8 @@ fn write_roster_entry(
             write_mention_binding(b, value, budget, depth + 1)
         })
         .transpose()?;
-    Ok(g::ChannelRosterEntry::create(b, participant, binding))
+    let role = write_attribution(b, entry.role.as_ref(), budget, depth + 1)?;
+    Ok(g::ChannelRosterEntry::create(b, participant, binding, role))
 }
 
 fn read_roster_entry(
@@ -1082,6 +1181,7 @@ fn read_roster_entry(
             .binding()?
             .map(|value| read_mention_binding(value, budget, depth + 1))
             .transpose()?,
+        role: read_attribution(value.role()?, budget, depth + 1)?,
     };
     entry.validate_binding_relationship()?;
     Ok(entry)

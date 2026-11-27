@@ -86,6 +86,7 @@ impl Store {
         if needed <= MAX_PENDING.saturating_sub(count(&self.connection)?) {
             return Ok(());
         }
+        self.report_role_archives()?;
         let tx = self.connection.transaction()?;
         tx.execute(
             "UPDATE channel_batches SET outcome='unknown' WHERE outcome IS NULL
@@ -139,13 +140,18 @@ impl Store {
             binding,
             participant,
         } = claim.recipient;
+        let role_channel = caller_workspace
+            .and_then(|workspace| self.active_role_grant(workspace))
+            .filter(|grant| grant.holder.launch_id == launch)
+            .map(|grant| grant.channel_id.as_ref());
         let channel = self
             .connection
             .query_row(
-                "SELECT channel_id FROM notification_work
-               WHERE pending=1 AND launch_id=?1 AND binding_revision=?2 AND participant_id=?3
-               ORDER BY enqueue_ordinal LIMIT 1",
-                params![launch, binding, participant],
+                "SELECT w.channel_id FROM notification_work w
+                 WHERE w.pending=1 AND w.launch_id=?1 AND w.binding_revision=?2 AND w.participant_id=?3
+                   AND (w.channel_id=?4 OR NOT EXISTS(SELECT 1 FROM role_threads r WHERE r.channel_id=w.channel_id))
+                 ORDER BY w.enqueue_ordinal LIMIT 1",
+                params![launch, binding, participant, role_channel],
                 |row| Ok(ChannelId(row.get(0)?)),
             )
             .optional()?;
@@ -290,7 +296,7 @@ impl Store {
             params![batch_id, recipient.launch, recipient.binding, recipient.participant],
             |row| Ok((ChannelId(row.get(0)?), row.get(1)?, row.get::<_, Option<String>>(2)?.map(MessageId))),
         ).optional()?.context(ChannelAccessLost)?;
-        let (channel, _) = self.access(&channel_id, &access, caller_workspace)?;
+        let (channel, authority) = self.access(&channel_id, &access, caller_workspace)?;
         let mut statement = self.connection.prepare(
             "SELECT w.message_id,p.sequence,w.addressed FROM notification_work w JOIN posts p ON p.id=w.message_id
                WHERE w.batch_id=?1 ORDER BY p.sequence LIMIT ?2",
@@ -313,37 +319,39 @@ impl Store {
             });
         let maximum = max_body_bytes.or(source_workspace.map(|_| 2048));
         if let (Some(maximum), Some(id)) = (maximum, selected) {
-            let result = self.with_message_page(&wake.channel_id, id, 0, maximum, |page| {
-                let author = &page.message.author;
-                let author_mention_id = if author.kind == ParticipantKind::Agent
-                    && author.id.as_ref() != recipient.participant
-                    && (channel.workspace_wide
-                        || self.explicit_member(&wake.channel_id, &author.id)?)
-                {
-                    ensure!(connected(), WakeLookupDisconnected);
-                    author_mention(&channel.workspace_id, &author.id)?
-                } else {
-                    None
-                };
-                let project = |source: Option<MessagePage<'_>>| {
-                    wake_reply(
-                        &wake,
-                        &messages,
-                        Some(WakePost {
-                            page: &page,
-                            author_mention_id: author_mention_id.as_deref(),
-                            source,
-                        }),
-                    )
-                };
-                if let Some((link, workspace)) =
-                    page.message.source.as_deref().zip(source_workspace)
-                {
-                    self.with_wake_source(link, maximum, &access, workspace, project)
-                } else {
-                    project(None)
-                }
-            })?;
+            let workspace = channel.delegation_workspace(&authority, caller_workspace);
+            let result =
+                self.with_message_page(&wake.channel_id, id, workspace, 0, maximum, |page| {
+                    let author = &page.message.author;
+                    let author_mention_id = if author.kind == ParticipantKind::Agent
+                        && author.id.as_ref() != recipient.participant
+                        && (channel.workspace_wide
+                            || self.explicit_member(&wake.channel_id, &author.id)?)
+                    {
+                        ensure!(connected(), WakeLookupDisconnected);
+                        author_mention(&channel.workspace_id, &author.id)?
+                    } else {
+                        None
+                    };
+                    let project = |source: Option<MessagePage<'_>>| {
+                        wake_reply(
+                            &wake,
+                            &messages,
+                            Some(WakePost {
+                                page: &page,
+                                author_mention_id: author_mention_id.as_deref(),
+                                source,
+                            }),
+                        )
+                    };
+                    if let Some((link, workspace)) =
+                        page.message.source.as_deref().zip(source_workspace)
+                    {
+                        self.with_wake_source(link, maximum, &access, workspace, project)
+                    } else {
+                        project(None)
+                    }
+                })?;
             ensure!(connected(), WakeLookupDisconnected);
             self.record_channel_read(id, recipient)?;
             return Ok(result);
@@ -359,15 +367,17 @@ impl Store {
         caller_workspace: &str,
         project: impl Fn(Option<MessagePage<'_>>) -> Result<serde_json::Value>,
     ) -> Result<serde_json::Value> {
-        match self.access(&link.channel_id, admit, Some(caller_workspace)) {
-            Ok(_) => (),
-            Err(error) if error.is::<WakeLookupDisconnected>() => return Err(error),
-            Err(error) if error.is::<ChannelAccessLost>() => return project(None),
-            Err(error) => return Err(error),
-        }
+        let (channel, authority) =
+            match self.access(&link.channel_id, admit, Some(caller_workspace)) {
+                Ok(access) => access,
+                Err(error) if error.is::<WakeLookupDisconnected>() => return Err(error),
+                Err(error) if error.is::<ChannelAccessLost>() => return project(None),
+                Err(error) => return Err(error),
+            };
         if let Some(reply) = self.optional_message_page(
             &link.channel_id,
             &link.message_id,
+            channel.delegation_workspace(&authority, Some(caller_workspace)),
             0,
             maximum,
             |mut page| {

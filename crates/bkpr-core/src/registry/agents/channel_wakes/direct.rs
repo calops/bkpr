@@ -124,6 +124,7 @@ impl Registry {
                 writable: true,
                 workspace_open: true,
                 participants,
+                launch_id: Some(current.grant.launch_id.clone()),
             },
         ))
     }

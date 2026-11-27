@@ -168,6 +168,14 @@ test('native root binding, first prompt and queued notifications keep separate f
     expect(queued.at(-1)?.sessionID).toBe(root);
     expect(queued.at(-1)?.text).toBe(JSON.stringify({ channel_wake: wake }));
     expect(requests.find(item => item.notification_id === 'long-native-root' && item.method === 'wake_outcome')?.outcome).toEqual({ state: 'accepted' });
+    const roleWake = { workspace_id: 'workspace', role: 'coordinator', grant_id: 'tenure', change: 'granted' };
+    await notice('role-wake', 5, { channel_wake: undefined, role_wake: roleWake });
+    expect(queued.at(-1)).toMatchObject({ sessionID: root, delivery: 'queue',
+      metadata: { 'bkpr.nativeWake': true }, text: JSON.stringify({ role_wake: roleWake }) });
+    expect(requests.filter(item => item.notification_id === 'role-wake')).toMatchObject([
+      { method: 'wake_validate', generation: 5 },
+      { method: 'wake_outcome', generation: 5, outcome: { state: 'accepted' } },
+    ]);
     const beforeInvalidRoot = facts.length;
     expect(() => session.select(`${root}x`)).toThrow('invalid native session ID');
     expect(facts).toHaveLength(beforeInvalidRoot);

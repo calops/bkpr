@@ -196,7 +196,7 @@ fn kernel_peer(_: &UnixStream) -> Result<(i32, u32, u32)> {
     anyhow::bail!("client peer authentication unsupported")
 }
 
-pub(crate) fn send_lifetime_event(stream: &UnixStream, bytes: &[u8]) {
+pub(crate) fn send_lifetime_event(stream: &UnixStream, bytes: &[u8]) -> bool {
     // Never wait for a displaced frontend's reader, including a stopped process.
     #[cfg(target_os = "macos")]
     {
@@ -211,21 +211,22 @@ pub(crate) fn send_lifetime_event(stream: &UnixStream, bytes: &[u8]) {
             )
         } != 0
         {
-            return;
+            return false;
         }
     }
     #[cfg(target_os = "linux")]
     let flags = libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL;
     #[cfg(not(target_os = "linux"))]
     let flags = libc::MSG_DONTWAIT;
-    unsafe {
+    let sent = unsafe {
         libc::send(
             stream.as_raw_fd(),
             bytes.as_ptr().cast(),
             bytes.len(),
             flags,
-        );
-    }
+        )
+    };
+    sent == bytes.len() as isize
 }
 
 pub(crate) fn lifetime_connected(stream: &UnixStream) -> bool {

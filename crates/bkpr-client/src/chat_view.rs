@@ -1980,6 +1980,7 @@ mod tests {
                 read_through: 0,
                 unread_attention: false,
                 direct: false,
+                role_thread: None,
             },
         )]));
     }
@@ -2019,6 +2020,7 @@ mod tests {
                     launch_id: name.into(),
                     binding_generation: 1,
                 }),
+                role: None,
             })
             .collect();
         active.roster_ready = true;
@@ -2474,9 +2476,11 @@ mod tests {
                     reply_to: None,
                     attachments: Vec::new(),
                     source: None,
+                    role: None,
                 },
                 text: text.into(),
                 attachments: Vec::new(),
+                current_delegation: None,
             })
         })
         .collect();

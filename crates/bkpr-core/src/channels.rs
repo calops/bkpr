@@ -42,6 +42,8 @@ pub struct WorkspaceParticipant {
 pub struct ChannelAuthority {
     /// Authenticated caller, including its stable participant ID.
     pub actor: Participant,
+    /// Exact authenticated agent launch; absent for the session user.
+    pub launch_id: Option<String>,
     /// Whether this caller may mutate state through the current attachment.
     pub writable: bool,
     /// Whether this exact workspace is still active; only the user can inspect an archive.
@@ -116,7 +118,7 @@ pub struct ChannelEngine {
     store: Mutex<StoreSlot>,
     store_ready: Condvar,
     retirement_epoch: AtomicU64,
-    launch_active: std::sync::OnceLock<Box<LaunchActive>>,
+    launch_active: Arc<std::sync::OnceLock<Box<LaunchActive>>>,
     catalog_epoch: AtomicU64,
     requests: AtomicUsize,
     subscriptions: AtomicUsize,
@@ -175,7 +177,7 @@ impl ChannelEngine {
             store: Mutex::new(StoreSlot::Idle(None)),
             store_ready: Condvar::new(),
             retirement_epoch: AtomicU64::new(0),
-            launch_active: std::sync::OnceLock::new(),
+            launch_active: Arc::new(std::sync::OnceLock::new()),
             catalog_epoch: AtomicU64::new(0),
             requests: AtomicUsize::new(0),
             subscriptions: AtomicUsize::new(0),
@@ -336,11 +338,29 @@ impl ChannelEngine {
         workspace_open: &impl Fn(&str) -> bool,
         work: impl FnOnce(&mut store::Store) -> Result<T>,
     ) -> Result<T> {
+        self.with_store_request(cancelled, |writer| writer.run(workspace_open, work))
+    }
+
+    /// Share post/tenure serialization without making volatile revocation
+    /// depend on unrelated durable wake reconciliation.
+    pub(crate) fn with_role_store<T>(
+        &self,
+        cancelled: &impl Fn() -> bool,
+        work: impl FnOnce(&mut store::Store) -> Result<T>,
+    ) -> Result<T> {
+        self.with_store_request(cancelled, |writer| work(writer.store.as_mut().unwrap()))
+    }
+
+    fn with_store_request<T>(
+        &self,
+        cancelled: &impl Fn() -> bool,
+        work: impl FnOnce(&mut StoreGuard<'_>) -> Result<T>,
+    ) -> Result<T> {
         let _permit = Permit::acquire(&self.requests, MAX_REQUESTS)?;
         let mut writer = self
             .acquire_store(Instant::now() + STORE_WAIT, cancelled)
             .map_err(StoreAdmission::into_error)?;
-        writer.run(workspace_open, work)
+        work(&mut writer)
     }
 
     /// Defer only admission backpressure. Once work starts, its errors retain their meaning.
@@ -434,8 +454,10 @@ impl ChannelEngine {
                 *slot = StoreSlot::Busy;
                 drop(slot);
                 if writer.store.is_none() {
-                    writer.store =
-                        Some(store::Store::open(&self.root).map_err(StoreAdmission::Storage)?);
+                    let mut store =
+                        store::Store::open(&self.root).map_err(StoreAdmission::Storage)?;
+                    store.launch_active = Some(self.launch_active.clone());
+                    writer.store = Some(store);
                 }
                 if cancelled() {
                     return Err(StoreAdmission::Cancelled);

@@ -14,6 +14,7 @@ mod status;
 
 use anyhow::{Context, Result, bail};
 use bkpr_protocol::channels::{ChannelWake, MAX_ID_BYTES};
+use bkpr_protocol::roles::RoleWake;
 use bkpr_protocol::{
     CaptureEvent, CaptureGrant, ConversationSource, HarnessKind, Operation, Payload,
 };
@@ -38,33 +39,50 @@ use std::{
 
 const HARNESS_HELP: &str = "Usage: bkpr run HARNESS [--] ARGS...\nHarnesses: claude, codex, omp, agy, opencode, cursor, copilot, aider, cline, goose, pi";
 
-fn channel_wake(notification: &serde_json::Value) -> Result<ChannelWake> {
-    let value = notification
-        .get("channel_wake")
-        .context("missing native channel wake")?;
-    let wake = ChannelWake::deserialize(value).context("invalid native channel wake")?;
-    let valid_id =
-        |id: &str| !id.is_empty() && id.len() <= MAX_ID_BYTES && !id.chars().any(char::is_control);
-    anyhow::ensure!(
-        valid_id(&wake.batch_id)
-            && valid_id(wake.channel_id.as_ref())
-            && wake.pending_count > 0
-            && wake
-                .addressed_message_id
-                .as_ref()
-                .is_none_or(|id| valid_id(id.as_ref())),
-        "invalid native channel wake"
-    );
-    Ok(wake)
+#[derive(serde::Serialize)]
+enum NativeWake {
+    #[serde(rename = "channel_wake")]
+    Channel(ChannelWake),
+    #[serde(rename = "role_wake")]
+    Role(RoleWake),
 }
 
-fn channel_wake_text(wake: &ChannelWake) -> String {
-    #[derive(serde::Serialize)]
-    struct Notice<'a> {
-        channel_wake: &'a ChannelWake,
+impl NativeWake {
+    fn parse(notification: &serde_json::Value) -> Result<Self> {
+        let valid_id = |id: &str| {
+            !id.is_empty() && id.len() <= MAX_ID_BYTES && !id.chars().any(char::is_control)
+        };
+        match (
+            notification.get("channel_wake"),
+            notification.get("role_wake"),
+        ) {
+            (Some(value), None) => {
+                let wake =
+                    ChannelWake::deserialize(value).context("invalid native channel wake")?;
+                anyhow::ensure!(
+                    valid_id(&wake.batch_id)
+                        && valid_id(wake.channel_id.as_ref())
+                        && wake.pending_count > 0
+                        && wake
+                            .addressed_message_id
+                            .as_ref()
+                            .is_none_or(|id| valid_id(id.as_ref())),
+                    "invalid native channel wake"
+                );
+                Ok(Self::Channel(wake))
+            }
+            (None, Some(value)) => {
+                let wake = RoleWake::deserialize(value).context("invalid native role wake")?;
+                wake.validate().context("invalid native role wake")?;
+                Ok(Self::Role(wake))
+            }
+            _ => bail!("expected exactly one native channel or role wake"),
+        }
     }
-    serde_json::to_string(&Notice { channel_wake: wake })
-        .expect("serialize native channel wake metadata")
+
+    fn text(&self) -> String {
+        serde_json::to_string(self).expect("serialize native wake metadata")
+    }
 }
 
 /// Shared CLI entrypoint retains launch-local authentication and Codex relay isolation.

@@ -10,6 +10,10 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 mod channel_wakes;
 use channel_wakes::{ChannelClaimPoll, ChannelLane};
+mod role_wakes;
+mod roles;
+use role_wakes::{RoleLane, is_role_wake};
+pub(super) use roles::RoleService;
 
 const WAKE_BATCH_LEASE_MS: u64 = 30_000;
 const CHANNEL_CLAIM_RETRY: Duration = Duration::from_millis(100);
@@ -35,6 +39,7 @@ struct AgentState {
     receivers: BTreeMap<String, Receiver>,
     waiters: BTreeMap<String, BTreeMap<String, usize>>,
     channel_lanes: BTreeMap<String, ChannelLane>,
+    role_lanes: BTreeMap<String, RoleLane>,
     closing: bool,
     revision: u64,
 }
@@ -180,6 +185,7 @@ impl Agents {
                 receivers: BTreeMap::new(),
                 waiters: BTreeMap::new(),
                 channel_lanes: BTreeMap::new(),
+                role_lanes: BTreeMap::new(),
                 closing: false,
                 revision: 0,
             }),
@@ -216,6 +222,7 @@ impl Agents {
             retired |= state.agents.remove(id).is_some();
             state.receivers.remove(id);
             state.channel_lanes.remove(id);
+            state.role_lanes.remove(id);
         }
         if retired {
             state.revision = state.revision.wrapping_add(1);
@@ -230,6 +237,7 @@ impl Agents {
             agents,
             receivers,
             channel_lanes,
+            role_lanes,
             ..
         } = &mut *state;
         let mut retired = false;
@@ -239,6 +247,7 @@ impl Agents {
             }
             receivers.remove(id);
             channel_lanes.remove(id);
+            role_lanes.remove(id);
             retired = true;
             false
         });
@@ -255,12 +264,17 @@ impl Agents {
         state.agents.clear();
         state.receivers.clear();
         state.channel_lanes.clear();
+        state.role_lanes.clear();
         self.changed.notify_all();
     }
 
     fn require_live(state: &AgentState, id: &str) -> Result<()> {
         ensure!(state.agents.contains_key(id), "agent identity is retired");
         Ok(())
+    }
+
+    pub(super) fn tracks_launch(&self, launch_id: &str) -> bool {
+        self.state.lock().unwrap().agents.contains_key(launch_id)
     }
 }
 fn in_scope(scope: AgentScope, sender: &ContextFact, recipient: &ContextFact) -> bool {
@@ -596,6 +610,7 @@ impl Registry {
                 writable,
                 workspace_open,
                 participants: Vec::new(),
+                launch_id: None,
             });
         }
 
@@ -650,6 +665,7 @@ impl Registry {
             writable,
             workspace_open,
             participants,
+            launch_id: caller.map(|launch| launch.grant.launch_id.clone()),
         })
     }
 
@@ -757,6 +773,12 @@ impl Registry {
         notification_id: &str,
         generation: u64,
     ) -> Result<()> {
+        if is_role_wake(notification_id) {
+            self.inner
+                .agents
+                .settle_role_wake(launch_id, receiver_id, notification_id, generation);
+            return Ok(());
+        }
         self.channel_subscription_disconnected(launch_id, receiver_id, notification_id, generation)
     }
     fn agent_contexts(
@@ -910,6 +932,7 @@ impl Registry {
     }
     pub(super) fn agent_retire(&self, ids: &[String]) {
         self.inner.agents.retire(ids);
+        self.role_launches_changed();
     }
     pub(super) fn agent_capture_event(
         &self,
@@ -937,6 +960,9 @@ impl Registry {
                 lane.pending_binding = None;
                 lane.active = None;
                 lane.revision = lane.revision.wrapping_add(1);
+            }
+            if let Some(lane) = state.role_lanes.get_mut(launch_id) {
+                lane.binding_changed();
             }
             state.revision = state.revision.wrapping_add(1);
             service.changed.notify_all();
@@ -1004,6 +1030,15 @@ impl Registry {
     ) -> Result<Value> {
         let id = &launch.grant.launch_id;
         match request {
+            AgentRequest::RoleRequest { role } => {
+                self.agent_role_request(&launch, role, is_connected)
+            }
+            AgentRequest::RoleRelease { role, grant_id } => {
+                self.agent_role_release(&launch, role, grant_id, is_connected)
+            }
+            AgentRequest::RoleStatus { role } => {
+                self.agent_role_status(&launch, role, is_connected)
+            }
             AgentRequest::ChannelDirectPost { launch_id, post } => {
                 self.agent_channel_direct_post(&launch, launch_id, *post, is_connected)
             }
@@ -1136,13 +1171,23 @@ impl Registry {
                 notification_id,
                 generation,
             } => {
-                let current = self.channel_wake_current(
-                    &launch,
-                    peer,
-                    &receiver_id,
-                    &notification_id,
-                    generation,
-                )?;
+                let current = if is_role_wake(&notification_id) {
+                    self.role_wake_current(
+                        &launch,
+                        peer,
+                        &receiver_id,
+                        &notification_id,
+                        generation,
+                    )?
+                } else {
+                    self.channel_wake_current(
+                        &launch,
+                        peer,
+                        &receiver_id,
+                        &notification_id,
+                        generation,
+                    )?
+                };
                 Ok(json!({"current":current}))
             }
             AgentRequest::WakeOutcome {
@@ -1150,12 +1195,25 @@ impl Registry {
                 notification_id,
                 generation,
                 outcome,
-            } => self.channel_wake_outcome(
-                &launch,
-                peer,
-                (&receiver_id, &notification_id, generation),
-                outcome,
-            ),
+            } => {
+                if is_role_wake(&notification_id) {
+                    self.role_wake_outcome(
+                        &launch,
+                        peer,
+                        &receiver_id,
+                        &notification_id,
+                        generation,
+                        outcome,
+                    )
+                } else {
+                    self.channel_wake_outcome(
+                        &launch,
+                        peer,
+                        (&receiver_id, &notification_id, generation),
+                        outcome,
+                    )
+                }
+            }
             AgentRequest::Whoami { detail } => {
                 let contexts =
                     self.agent_contexts(false, id, ContextSelection::default(), detail)?;
@@ -1219,6 +1277,8 @@ impl Registry {
                 let _writer = self.inner.agents.callback_guard()?;
                 let mut state = self.agent_request_state(&launch)?;
                 state.agents.get_mut(id).expect("live agent").title = Some(title);
+                drop(state);
+                self.role_roster_changed();
                 Ok(json!({"updated":true}))
             }
             AgentRequest::Channels { .. } => unreachable!("channel request dispatched above"),
@@ -1427,7 +1487,11 @@ impl Registry {
                 let state = service.state.lock().unwrap();
                 self.authorize_agent_guard(launch)?;
                 healthy_agents(&state)?;
-                (state.revision, ChannelLane::availability(&state, launch))
+                (
+                    state.revision,
+                    ChannelLane::availability(&state, launch),
+                    RoleLane::availability(&state, launch),
+                )
             };
             let retry_ready = channel_retry.is_some_and(|retry| retry <= Instant::now());
             if retry_ready {
@@ -1435,16 +1499,30 @@ impl Registry {
             }
             if observed_revision != Some(revision) || (retry_ready && Instant::now() < deadline) {
                 self.agent_receiver_peer(launch, peer, &receiver_id)?;
-                let channel = {
+                let (role_wake, channel) = {
                     let state = service.state.lock().unwrap();
                     healthy_agents(&state)?;
-                    if (state.revision, ChannelLane::availability(&state, launch)) != revision {
+                    if (
+                        state.revision,
+                        ChannelLane::availability(&state, launch),
+                        RoleLane::availability(&state, launch),
+                    ) != revision
+                    {
                         continue;
                     }
                     observed_revision = Some(revision);
                     let (pending, busy, _) = revision.1;
-                    pending && !busy && channel_retry.is_none()
+                    let (role_pending, role_busy, _) = revision.2;
+                    (
+                        role_pending && !busy && !role_busy,
+                        pending && !busy && !role_busy && channel_retry.is_none(),
+                    )
                 };
+                if role_wake
+                    && let Some(wake) = self.claim_role_wake(launch, &receiver, is_connected)?
+                {
+                    return Ok(wake);
+                }
                 if channel {
                     match self.claim_channel_wake(
                         launch,
@@ -1467,7 +1545,11 @@ impl Registry {
             let state = service.state.lock().unwrap();
             healthy_agents(&state)?;
             if observed_revision
-                != Some((state.revision, ChannelLane::availability(&state, launch)))
+                != Some((
+                    state.revision,
+                    ChannelLane::availability(&state, launch),
+                    RoleLane::availability(&state, launch),
+                ))
             {
                 continue;
             }

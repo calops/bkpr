@@ -97,13 +97,13 @@ fn read_name(value: &str, budget: &mut Budget) -> Result<String> {
     read_text(value, budget)
 }
 
-fn write_role(role: WorkspaceRole) -> g::WorkspaceRole {
+pub(super) fn write_role(role: WorkspaceRole) -> g::WorkspaceRole {
     match role {
         WorkspaceRole::Coordinator => g::WorkspaceRole::Coordinator,
     }
 }
 
-fn read_role(role: g::WorkspaceRole) -> WorkspaceRole {
+pub(super) fn read_role(role: g::WorkspaceRole) -> WorkspaceRole {
     match role {
         g::WorkspaceRole::Coordinator => WorkspaceRole::Coordinator,
     }
@@ -331,6 +331,21 @@ mod tests {
             approve: false,
         };
         let frame = codec.encode_request(&operation(decision.clone())).unwrap();
+        let framed = crate::wire::encode_frame(crate::wire::Kind::Request, frame).unwrap();
+        let header = &framed[..crate::wire::HEADER_LEN];
+        let capabilities = u64::from_le_bytes(header[16..24].try_into().unwrap());
+        assert_eq!(
+            capabilities,
+            crate::wire::SUPPORTED_CAPABILITIES | crate::wire::CAP_WORKSPACE_ROLES
+        );
+        assert!(
+            crate::wire::frame_payload_len(
+                header,
+                crate::wire::Kind::Request,
+                crate::wire::MAX_REQUEST
+            )
+            .is_ok()
+        );
         let Operation::Client { request, .. } = decode_request(frame).unwrap().operation else {
             panic!()
         };
