@@ -1,6 +1,6 @@
 use super::{
-    ChannelAccessLost, ChannelAuthority, ChannelClaim, ChannelEngine, ChannelRecipient,
-    ChannelWakeAccess, MAX_SUBSCRIBERS, WorkspaceParticipant,
+    CatalogRead, ChannelAccessLost, ChannelAuthority, ChannelClaim, ChannelEngine,
+    ChannelRecipient, ChannelWakeAccess, MAX_SUBSCRIBERS, WorkspaceParticipant,
     store::{MAX_ARCHIVE_CANDIDATES, MAX_STAGED_BYTES, MAX_STAGING_RECLAIM},
 };
 use anyhow::{Result, ensure};
@@ -8,7 +8,7 @@ use bkpr_protocol::channels::*;
 use std::{
     cell::Cell,
     fs,
-    os::unix::fs::{MetadataExt, PermissionsExt, symlink},
+    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt, symlink},
     sync::atomic::{AtomicBool, Ordering},
     thread,
     time::Duration,
@@ -2035,6 +2035,7 @@ fn close_retires_old_and_racing_work_before_new_capacity_is_used() {
                         binding_live: &|_, _| true,
                         direct_peer: &|_| Ok(None),
                     },
+                    None,
                     |store, workspace| {
                         f.engine.flush_retirements(store, &workspace_open)?;
                         let closed = !workspace_open(workspace);
@@ -2150,7 +2151,13 @@ fn visibility_index_migration_preserves_member_access_and_durable_history() {
     let accepted = f.as_actor(&f.a, send(&id, original.clone())).unwrap();
     f.drop_wake_schema();
     f.sql(
-        "DROP TABLE direct_channels;
+        "DROP INDEX pending_channel_attention;
+         DROP TRIGGER catalog_channel_created;
+         DROP TRIGGER catalog_channel_updated;
+         DROP TABLE catalog_workspaces;
+         DROP TABLE catalog_events;
+         DROP TABLE catalog_identity;
+         DROP TABLE direct_channels;
          DROP INDEX visible_explicit_channels;
          DROP TABLE staged_attachments;
          DROP TABLE attachment_budget;
@@ -2175,7 +2182,7 @@ fn visibility_index_migration_preserves_member_access_and_durable_history() {
             ))
         })
         .unwrap();
-    assert_eq!((sync, version), (3, 12));
+    assert_eq!((sync, version), (3, 16));
 }
 
 #[test]
@@ -2484,6 +2491,12 @@ fn legacy_attachment_migration_caps_staged_bytes_and_retains_posted_history() {
     f.sql(
         "DROP TABLE staged_attachments;
          DROP TABLE attachment_budget;
+         DROP INDEX pending_channel_attention;
+         DROP TRIGGER catalog_channel_created;
+         DROP TRIGGER catalog_channel_updated;
+         DROP TABLE catalog_workspaces;
+         DROP TABLE catalog_events;
+         DROP TABLE catalog_identity;
          PRAGMA user_version=4;",
     );
     f.engine
@@ -2627,4 +2640,596 @@ fn upload_reclaims_a_bounded_oldest_first_batch_of_staged_rows() {
         f.staged_bytes(),
         u64::from(first.byte_len + second.byte_len)
     );
+}
+
+#[test]
+fn catalog_pages_stay_at_their_baseline_and_resume_authoritative_unread() {
+    const FIRST_WORKSPACE: &str = "workspace-baseline";
+    let f = Fixture::new();
+    let id = f.wide(ChannelSettings {
+        attention_reports: true,
+        ..quiet()
+    });
+    let report = |key| {
+        posted(
+            f.as_actor(
+                &f.a,
+                send(
+                    &id,
+                    ChannelPost {
+                        intent: PostIntent::Report,
+                        ..post(key)
+                    },
+                ),
+            )
+            .unwrap(),
+        )
+    };
+    let first = report("first report");
+    let workspaces = || {
+        Ok([FIRST_WORKSPACE.into(), WORKSPACE.into()]
+            .into_iter()
+            .collect())
+    };
+    let fetch = |read: CatalogRead<'_>| {
+        f.engine
+            .catalog_request(read, f.user.id.as_ref(), 1, 0, workspaces, || false)
+            .unwrap()
+    };
+    let ChannelResponse::CatalogSnapshot {
+        mut channels,
+        cursor,
+        mut next_after,
+    } = fetch(CatalogRead::Snapshot(None))
+    else {
+        panic!("expected catalog baseline");
+    };
+    assert_eq!(channels[0].workspace_id, FIRST_WORKSPACE);
+    assert_ne!(channels[0].id, id);
+    let channel_created_later = f.create(
+        &f.user,
+        FIRST_WORKSPACE,
+        MembershipMode::WorkspaceWide,
+        vec![],
+        quiet(),
+    );
+    f.request(ChannelRequest::MarkRead {
+        channel_id: id.clone(),
+        through: first.sequence,
+    })
+    .unwrap();
+    let second = report("second report");
+    while let Some(after) = next_after {
+        let ChannelResponse::CatalogSnapshot {
+            channels: page,
+            cursor: same,
+            next_after: next,
+        } = fetch(CatalogRead::Snapshot(Some(&after)))
+        else {
+            panic!("expected stable continuation");
+        };
+        assert_eq!(same, cursor);
+        assert_eq!(page.len(), 1);
+        channels.extend(page);
+        next_after = next;
+    }
+    assert_eq!(channels.len(), 5);
+    assert_eq!(
+        channels
+            .iter()
+            .filter(|c| c.workspace_id == FIRST_WORKSPACE)
+            .count(),
+        2
+    );
+    let baseline = channels.iter().find(|c| c.id == id).unwrap();
+    assert_eq!(
+        (
+            baseline.last_sequence,
+            baseline.read_through,
+            baseline.unread_attention
+        ),
+        (1, 0, true)
+    );
+    assert!(channels.iter().all(|c| c.id != channel_created_later));
+
+    let mut cursor = cursor;
+    let mut created = false;
+    let mut updated = false;
+    loop {
+        let ChannelResponse::CatalogChanges {
+            changes,
+            cursor: next,
+            more,
+        } = fetch(CatalogRead::Changes(&cursor))
+        else {
+            panic!("expected catalog catchup");
+        };
+        assert_eq!(changes.len(), 1);
+        assert!(next.sequence > cursor.sequence);
+        cursor = next;
+        let ChannelCatalogChange::Upsert { channel } = &changes[0] else {
+            panic!("expected channel upsert");
+        };
+        if channel.id == id {
+            assert_eq!(
+                (
+                    channel.last_sequence,
+                    channel.read_through,
+                    channel.unread_attention
+                ),
+                (2, 1, true)
+            );
+            updated = true;
+        } else {
+            assert_eq!(channel.id, channel_created_later);
+            created = true;
+        }
+        if !more {
+            break;
+        }
+    }
+    assert!(created && updated);
+    f.as_actor(
+        &f.a,
+        ChannelRequest::MarkRead {
+            channel_id: id.clone(),
+            through: second.sequence,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        fetch(CatalogRead::Changes(&cursor)),
+        ChannelResponse::CatalogChanges {
+            changes: vec![],
+            cursor: cursor.clone(),
+            more: false
+        }
+    );
+    f.request(ChannelRequest::MarkRead {
+        channel_id: id,
+        through: second.sequence,
+    })
+    .unwrap();
+    let ChannelResponse::CatalogChanges { changes, .. } = fetch(CatalogRead::Changes(&cursor))
+    else {
+        panic!("expected user read update");
+    };
+    assert!(
+        matches!(changes.as_slice(), [ChannelCatalogChange::Upsert { channel }]
+        if channel.read_through == second.sequence && !channel.unread_attention)
+    );
+}
+
+#[test]
+fn catalog_retirement_only_reconciles_topology_for_workspace_closure() {
+    let f = Fixture::new();
+    let fetch = |workspaces: &[&str]| {
+        f.engine
+            .catalog_request(
+                CatalogRead::Snapshot(None),
+                f.user.id.as_ref(),
+                8,
+                0,
+                || {
+                    Ok(workspaces
+                        .iter()
+                        .map(|workspace| (*workspace).into())
+                        .collect())
+                },
+                || false,
+            )
+            .unwrap()
+    };
+    let baseline = fetch(&[WORKSPACE, OTHER_WORKSPACE]);
+    f.engine.reconcile_retired_work();
+    // The topology provider's empty set is ignored when only pending work was retired.
+    assert_eq!(fetch(&[]), baseline);
+    f.engine.retire_workspace();
+    let ChannelResponse::CatalogSnapshot { channels, .. } = fetch(&[WORKSPACE]) else {
+        panic!("expected fresh catalog after closure");
+    };
+    assert_eq!(channels.len(), 2);
+    assert!(
+        channels
+            .iter()
+            .all(|channel| channel.workspace_id == WORKSPACE)
+    );
+}
+
+#[test]
+fn catalog_subscription_returns_progress_past_filtered_changes() {
+    let f = Fixture::new();
+    let id = f.wide(quiet());
+    let workspaces = || Ok([OTHER_WORKSPACE.into()].into_iter().collect());
+    let ChannelResponse::CatalogSnapshot { cursor, .. } = f
+        .engine
+        .catalog_request(
+            CatalogRead::Snapshot(None),
+            f.user.id.as_ref(),
+            8,
+            0,
+            workspaces,
+            || false,
+        )
+        .unwrap()
+    else {
+        panic!("expected catalog baseline");
+    };
+    // This journal entry is in a workspace outside the live catalog.
+    f.engine
+        .with_store(|store| {
+            store.connection.execute(
+                "UPDATE channels SET workspace_wide=1-workspace_wide WHERE id=?1",
+                [id.as_ref()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    thread::scope(|scope| {
+        let (completed, result) = crossbeam_channel::bounded(1);
+        let (fixture, cursor) = (&f, &cursor);
+        scope.spawn(move || {
+            let response = fixture.engine.catalog_request(
+                CatalogRead::Changes(cursor),
+                fixture.user.id.as_ref(),
+                8,
+                MAX_WAIT_MS,
+                workspaces,
+                || false,
+            );
+            let _ = completed.send(response);
+        });
+        assert_eq!(
+            result
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap(),
+            ChannelResponse::CatalogChanges {
+                cursor: ChannelCatalogCursor {
+                    store_id: cursor.store_id.clone(),
+                    sequence: cursor.sequence + 1,
+                },
+                changes: vec![],
+                more: false,
+            }
+        );
+    });
+}
+
+#[test]
+fn catalog_overrun_resets_without_losing_history_or_unread() {
+    let f = Fixture::new();
+    let id = f.wide(ChannelSettings {
+        attention_questions: true,
+        ..quiet()
+    });
+    let workspaces = || Ok([WORKSPACE.into()].into_iter().collect());
+    let fetch = |read: CatalogRead<'_>| {
+        f.engine
+            .catalog_request(read, f.user.id.as_ref(), 1, 0, workspaces, || false)
+            .unwrap()
+    };
+    let ChannelResponse::CatalogSnapshot {
+        cursor,
+        next_after: Some(after),
+        ..
+    } = fetch(CatalogRead::Snapshot(None))
+    else {
+        panic!("expected paged baseline");
+    };
+    f.as_actor(
+        &f.a,
+        send(
+            &id,
+            ChannelPost {
+                intent: PostIntent::Question,
+                ..post("still unread")
+            },
+        ),
+    )
+    .unwrap();
+    // Exercise the real bounded journal without one fsync per synthetic settings update.
+    f.engine
+        .with_store(|store| {
+            let tx = store.connection.transaction()?;
+            {
+                let mut update =
+                    tx.prepare("UPDATE channels SET workspace_wide=1-workspace_wide WHERE id=?1")?;
+                for _ in 0..4096 {
+                    update.execute([id.as_ref()])?;
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        fetch(CatalogRead::Changes(&cursor)),
+        ChannelResponse::CatalogReset {}
+    );
+    assert_eq!(
+        fetch(CatalogRead::Snapshot(Some(&after))),
+        ChannelResponse::CatalogReset {}
+    );
+    let user_catalog = f
+        .engine
+        .catalog_request(
+            CatalogRead::Snapshot(None),
+            f.user.id.as_ref(),
+            4,
+            0,
+            workspaces,
+            || false,
+        )
+        .unwrap();
+    let ChannelResponse::CatalogSnapshot { channels, .. } = user_catalog else {
+        panic!("expected fresh catalog");
+    };
+    assert!(
+        channels
+            .iter()
+            .any(|c| c.id == id && c.unread_attention && c.last_sequence == 1)
+    );
+    let ChannelResponse::History { messages, .. } = f.request(messages(&id, None, 4)).unwrap()
+    else {
+        panic!("expected history");
+    };
+    assert_eq!(messages[0].text, post("still unread").text);
+}
+
+#[test]
+fn pending_channel_attention_survives_migrating_pre_ordered_catalog() {
+    let f = Fixture::new();
+    let id = f.wide(ChannelSettings {
+        attention_reports: true,
+        ..quiet()
+    });
+    let post = posted(
+        f.as_actor(
+            &f.a,
+            send(
+                &id,
+                ChannelPost {
+                    intent: PostIntent::Report,
+                    ..post("recoverable report")
+                },
+            ),
+        )
+        .unwrap(),
+    );
+    f.drop_ordered_wake_schema();
+    f.sql(
+        "DROP INDEX pending_channel_attention;
+         ALTER TABLE notification_work DROP COLUMN attention_posted_ms;
+         ALTER TABLE notification_work DROP COLUMN attention_origin;
+         CREATE INDEX pending_channel_attention ON notification_work(message_id)
+            WHERE pending=1 AND launch_id IS NULL;
+         PRAGMA user_version=14;",
+    );
+    let Fixture { root, engine, .. } = f;
+    drop(engine);
+    let read_pending = || {
+        let store = super::store::AttentionStore::open(root.path())
+            .unwrap()
+            .unwrap();
+        let event = store.next().unwrap().unwrap();
+        assert_eq!(event.channel_id, id);
+        assert_eq!(event.message_id, post.id);
+        assert_eq!(event.posted_at_ms, post.posted_at_ms);
+        assert!(event.origin.is_none());
+        store
+    };
+    read_pending();
+    let reopened = ChannelEngine::new(root.path().to_owned());
+    reopened.with_store(|_| Ok(())).unwrap();
+    let store = read_pending();
+    store.finish(&post.id, false).unwrap();
+    assert!(store.next().unwrap().is_none());
+}
+
+#[test]
+fn attention_survives_last_workspace_closure_and_waits_for_host_ack() {
+    use crate::notifications::NotificationService;
+    use crate::registry::notification_capture::ChannelAttentionWorker;
+    use bkpr_protocol::{
+        ChannelAttentionKind, ChannelNotificationSource, NotificationPage, NotificationQuery,
+        NotificationRequest, NotificationSource, SessionInfo,
+    };
+    use std::time::Instant;
+
+    let mut f = Fixture::new();
+    let origin = SessionInfo {
+        name: format!("x{}", "é".repeat(600)),
+        session_id: "origin-session".into(),
+        daemon_id: "origin-daemon".into(),
+        session_instance_id: "origin-instance".into(),
+    };
+    let sessions = f.root.path().join("sessions");
+    let session_root = sessions.join(bkpr_protocol::session_key(&origin.name).unwrap());
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&session_root)
+        .unwrap();
+    f.engine = ChannelEngine::for_session(session_root.clone(), &origin);
+    let channel = f.wide(ChannelSettings {
+        attention_reports: true,
+        agent_wake: WakePolicy::All,
+        ..quiet()
+    });
+    let committed = posted(
+        f.engine
+            .request(
+                send(
+                    &channel,
+                    ChannelPost {
+                        intent: PostIntent::Report,
+                        ..post("accepted-before-workspace-closure")
+                    },
+                ),
+                |workspace| f.authority(&f.a, workspace),
+                |_| false, // Closed after authority admitted the post.
+                || false,
+            )
+            .unwrap(),
+    );
+    let work = f.work(&committed.id);
+    assert!(
+        work.iter()
+            .any(|(_, launch, _, pending)| launch.is_none() && *pending)
+    );
+    assert!(
+        work.iter()
+            .any(|(_, launch, _, pending)| launch.is_some() && !*pending)
+    );
+    let Fixture { root, engine, .. } = f;
+    drop(engine);
+
+    let notifications = root.path().join("notifications");
+    let host = NotificationService::open(&notifications).unwrap();
+    host.shutdown().unwrap();
+    assert!(
+        super::deliver_channel_attention(
+            &session_root,
+            &host,
+            || panic!("origin must be persisted"),
+            &mut 0,
+            &|| false,
+        )
+        .unwrap()
+        .is_some()
+    );
+    let outbox = super::store::AttentionStore::open(&session_root)
+        .unwrap()
+        .unwrap();
+    let failed = outbox.next().unwrap().unwrap();
+    assert_eq!(failed.message_id, committed.id);
+    let source = ChannelNotificationSource {
+        session: failed.origin.unwrap(),
+        workspace_id: failed.workspace_id,
+        channel_id: failed.channel_id,
+        message_id: committed.id,
+        sequence: committed.sequence,
+        intent: ChannelAttentionKind::Report,
+    };
+    assert_eq!(source.session.session_id, origin.session_id);
+    assert_eq!(source.session.daemon_id, origin.daemon_id);
+    assert_eq!(
+        source.session.session_instance_id,
+        origin.session_instance_id
+    );
+    assert_eq!(source.session.name, origin.name[..1023]);
+
+    let host = NotificationService::open(&notifications).unwrap();
+    // Simulate host commit followed by loss of the ACK before clearing the outbox.
+    host.record_channel_attention(source.clone(), committed.posted_at_ms, &|| true)
+        .unwrap();
+    assert!(outbox.next().unwrap().is_some());
+    let worker = ChannelAttentionWorker::host(sessions, host.clone()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while outbox.next().unwrap().is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "closed session's outbox did not drain"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    let page: NotificationPage = serde_json::from_value(
+        host.request(
+            NotificationRequest::Inspect {
+                query: NotificationQuery {
+                    include_channel_attention: true,
+                    ..Default::default()
+                },
+                after: None,
+            },
+            None,
+            &|| true,
+        )
+        .unwrap()
+        .into_json()
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(page.notifications.len(), 1);
+    assert_eq!(
+        page.notifications[0].source,
+        NotificationSource::Channel(source),
+    );
+    worker.stop();
+    host.shutdown().unwrap();
+}
+
+#[test]
+fn blocked_host_rechecks_at_the_oldest_post_expiry() {
+    use super::store::{AttentionStore, unix_time_ms};
+    use crate::notifications::{CHANNEL_ATTENTION_RETRY_MS, NotificationService};
+
+    let f = Fixture::new();
+    let channel = f.wide(ChannelSettings {
+        attention_reports: true,
+        ..quiet()
+    });
+    let send_report = |key| {
+        posted(
+            f.as_actor(
+                &f.a,
+                send(
+                    &channel,
+                    ChannelPost {
+                        intent: PostIntent::Report,
+                        ..post(key)
+                    },
+                ),
+            )
+            .unwrap(),
+        )
+        .id
+    };
+    let mut ids = [send_report("one"), send_report("two")];
+    ids.sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
+    let [younger, older] = ids;
+    let set_timestamp = |id: &MessageId, posted_at_ms| {
+        f.engine
+            .with_store(|store| {
+                let tx = store.connection.transaction()?;
+                tx.execute(
+                    "UPDATE posts SET summary=json_set(summary,'$.posted_at_ms',?2) WHERE id=?1",
+                    rusqlite::params![id.as_ref(), posted_at_ms],
+                )?;
+                tx.execute(
+                    "UPDATE notification_work SET attention_posted_ms=?2 WHERE message_id=?1",
+                    rusqlite::params![id.as_ref(), posted_at_ms],
+                )?;
+                tx.commit()?;
+                Ok(())
+            })
+            .unwrap();
+    };
+    let now = unix_time_ms().unwrap();
+    set_timestamp(&younger, now);
+    let nearly_expired = now - CHANNEL_ATTENTION_RETRY_MS + 60_000;
+    set_timestamp(&older, nearly_expired);
+
+    let service = NotificationService::open(&f.root.path().join("notifications")).unwrap();
+    let next_due = || {
+        let mut host_retry_at = u64::MAX;
+        super::deliver_channel_attention(
+            f.root.path(),
+            &service,
+            || panic!("a blocked host must not try to deliver"),
+            &mut host_retry_at,
+            &|| false,
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        next_due(),
+        Some(nearly_expired + CHANNEL_ATTENTION_RETRY_MS)
+    );
+    set_timestamp(&older, now - CHANNEL_ATTENTION_RETRY_MS);
+    assert_eq!(next_due(), Some(now + CHANNEL_ATTENTION_RETRY_MS));
+    let outbox = AttentionStore::open(f.root.path()).unwrap().unwrap();
+    assert_eq!(outbox.next().unwrap().unwrap().message_id, younger);
+    service.shutdown().unwrap();
 }

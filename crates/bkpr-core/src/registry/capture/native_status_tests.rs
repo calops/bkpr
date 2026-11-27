@@ -642,11 +642,12 @@ fn notification_capture_keeps_bursts_before_frames_and_deduplicates_reports() {
         Some("question")
     );
     assert!(page.notifications.iter().all(|notification| {
+        let source = notification.source.as_pane().unwrap();
         notification.kind == NotificationKind::Attention
-            && notification.source.process.pid == fixture.peer.pid as u32
-            && notification.source.process.birth == fixture.peer.birth
-            && notification.source.launch_id.as_deref() == Some(fixture.grant.launch_id.as_str())
-            && notification.source.binding_generation == Some(1)
+            && source.process.pid == fixture.peer.pid as u32
+            && source.process.birth == fixture.peer.birth
+            && source.launch_id.as_deref() == Some(fixture.grant.launch_id.as_str())
+            && source.binding_generation == Some(1)
     }));
     let original = {
         let mut captures = fixture.fixture.registry.inner.captures.lock().unwrap();
@@ -802,7 +803,14 @@ fn notification_capture_rejects_stale_birth_binding_and_mid_feed_authority() {
         1,
         "retired feed cannot acquire the replacement authority"
     );
-    assert_eq!(page.notifications[0].source.binding_generation, Some(2));
+    assert_eq!(
+        page.notifications[0]
+            .source
+            .as_pane()
+            .unwrap()
+            .binding_generation,
+        Some(2)
+    );
     shared.status_feed_epoch.store(
         shared.status_epoch.load(Ordering::Acquire),
         Ordering::Release,
@@ -822,7 +830,14 @@ fn notification_capture_rejects_stale_birth_binding_and_mid_feed_authority() {
         .unwrap();
     let page = notification_page(&service);
     assert_eq!(page.notifications.len(), 2);
-    assert_eq!(page.notifications[1].source.binding_generation, Some(3));
+    assert_eq!(
+        page.notifications[1]
+            .source
+            .as_pane()
+            .unwrap()
+            .binding_generation,
+        Some(3)
+    );
     fixture.fixture.registry.shutdown().unwrap();
     service.shutdown().unwrap();
 }

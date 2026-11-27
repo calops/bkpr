@@ -5,16 +5,19 @@ use bkpr_protocol::channels::{
     AttachmentMediaType, AttachmentUpload, ChannelCursor, ChannelId, ChannelRequest,
     ChannelResponse, ChannelSubscriptionStatus, Participant, ParticipantId,
 };
+use bkpr_protocol::{ChannelNotificationSource, SessionInfo};
 use std::{
+    collections::BTreeSet,
     io::Cursor,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
-        Condvar, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 
+pub(crate) use store::catalog::CatalogRead;
 mod store;
 #[cfg(test)]
 mod tests;
@@ -104,15 +107,33 @@ pub(crate) struct ChannelRoutes<'a> {
 
 /// Channel storage and bounded subscription admission for one exclusively leased session.
 pub struct ChannelEngine {
-    root: PathBuf,
+    root: Arc<Path>,
     store: Mutex<StoreSlot>,
     store_ready: Condvar,
     retirement_epoch: AtomicU64,
     launch_active: std::sync::OnceLock<Box<LaunchActive>>,
+    catalog_epoch: AtomicU64,
     requests: AtomicUsize,
     subscriptions: AtomicUsize,
     generation: Mutex<u64>,
     changed: Condvar,
+    attention_origin: Option<String>,
+    attention_wake: std::sync::OnceLock<AttentionWaker>,
+}
+
+/// Bounded per-root wake hints; overflow requests a scan of the durable outboxes.
+#[derive(Clone)]
+pub(crate) struct AttentionWaker {
+    pub(crate) roots: crossbeam_channel::Sender<Arc<Path>>,
+    pub(crate) overflow: crossbeam_channel::Sender<()>,
+}
+
+impl AttentionWaker {
+    fn signal(&self, root: &Arc<Path>) {
+        if let Err(crossbeam_channel::TrySendError::Full(_)) = self.roots.try_send(root.clone()) {
+            let _ = self.overflow.try_send(());
+        }
+    }
 }
 
 type LaunchActive = dyn Fn(&str) -> bool + Send + Sync;
@@ -145,16 +166,28 @@ impl ChannelEngine {
     /// Construct a lazy engine beneath an existing private, exclusively leased session root.
     pub fn new(root: PathBuf) -> Self {
         Self {
-            root,
+            root: root.into(),
             store: Mutex::new(StoreSlot::Idle(None)),
             store_ready: Condvar::new(),
             retirement_epoch: AtomicU64::new(0),
             launch_active: std::sync::OnceLock::new(),
+            catalog_epoch: AtomicU64::new(0),
             requests: AtomicUsize::new(0),
             subscriptions: AtomicUsize::new(0),
             generation: Mutex::new(0),
             changed: Condvar::new(),
+            attention_origin: None,
+            attention_wake: std::sync::OnceLock::new(),
         }
+    }
+
+    pub(crate) fn for_session(root: PathBuf, session: &SessionInfo) -> Self {
+        let mut engine = Self::new(root);
+        engine.attention_origin = Some(
+            serde_json::to_string(&attention_session(session))
+                .expect("typed attention origin serialization is infallible"),
+        );
+        engine
     }
 
     /// Provision committed workspaces without making their lifecycle depend on channel
@@ -261,13 +294,30 @@ impl ChannelEngine {
         }
         let mut writer = with_store(Instant::now() + STORE_WAIT)?;
         writer.run(&workspace_open, |store| {
-            let (response, changed) =
-                store.request(request, admit, routes, |store, workspace| {
+            let (response, changed) = store.request(
+                request,
+                admit,
+                routes,
+                self.attention_origin.as_deref(),
+                |store, workspace| {
                     self.flush_retirements(store, &workspace_open)?;
                     Ok(!workspace_open(workspace))
-                })?;
+                },
+            )?;
             if changed {
                 self.invalidate();
+            }
+            if changed
+                && matches!(
+                    &response,
+                    ChannelResponse::Posted {
+                        attention: true,
+                        ..
+                    }
+                )
+                && let Some(wake) = self.attention_wake.get()
+            {
+                wake.signal(&self.root);
             }
             Ok(response)
         })
@@ -304,6 +354,11 @@ impl ChannelEngine {
         }
     }
 
+    pub(crate) fn set_attention_waker(&self, wake: AttentionWaker) {
+        assert!(self.attention_wake.set(wake).is_ok());
+        self.attention_wake.get().unwrap().signal(&self.root);
+    }
+
     /// Wake waiters to recheck authority after workspace, attachment or session invalidation.
     /// This never opens storage or acquires the channel writer.
     pub fn invalidate(&self) {
@@ -312,10 +367,16 @@ impl ChannelEngine {
         self.changed.notify_all();
     }
 
+    pub(crate) fn workspace_added(&self) {
+        self.catalog_epoch.fetch_add(1, Ordering::Release);
+        self.invalidate();
+    }
+
     /// Queue retirement after durable workspace closure and wake subscriptions.
     /// The next store operation reconciles pending work against committed workspace presence.
     /// Opening the store retires all work from a previous runtime. This never takes the writer.
     pub fn retire_workspace(&self) {
+        self.catalog_epoch.fetch_add(1, Ordering::Release);
         self.reconcile_retired_work();
     }
 
@@ -394,6 +455,82 @@ impl ChannelEngine {
         operation(writer.store.as_mut().unwrap())
     }
 
+    pub(crate) fn catalog_request(
+        &self,
+        read: CatalogRead<'_>,
+        actor_id: &str,
+        limit: u16,
+        wait_ms: u32,
+        workspaces: impl Fn() -> Result<BTreeSet<String>>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<ChannelResponse> {
+        let (admission, capacity) = match read {
+            CatalogRead::Snapshot(_) => (&self.requests, MAX_REQUESTS),
+            CatalogRead::Changes(_) => (&self.subscriptions, MAX_SUBSCRIBERS),
+        };
+        let _permit = Permit::acquire(admission, capacity)?;
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(u64::from(wait_ms));
+        let read_deadline = if wait_ms == 0 {
+            started + STORE_WAIT
+        } else {
+            deadline
+        };
+        let mut waiting = false;
+        loop {
+            let observed = *self.generation.lock().unwrap();
+            let mut writer = self
+                .acquire_store(read_deadline.min(Instant::now() + STORE_WAIT), &cancelled)
+                .map_err(StoreAdmission::into_error)?;
+            let epoch = self.catalog_epoch.load(Ordering::Acquire);
+            let store = writer.store.as_mut().unwrap();
+            if store.catalog_epoch != Some(epoch) {
+                store.sync_catalog(workspaces()?, actor_id)?;
+                store.catalog_epoch = Some(epoch);
+            }
+            let page = store.read_catalog(read, actor_id, limit)?;
+            drop(writer);
+            ensure!(!cancelled(), "channel catalog request disconnected");
+            if self.catalog_epoch.load(Ordering::Acquire) != epoch {
+                // A committed closure crossed the read. Never return its old live entries.
+                if Instant::now() >= read_deadline {
+                    return Err(StoreAdmission::Busy.into_error());
+                }
+                continue;
+            }
+            // A filtered journal tail can advance the cursor without yielding a visible change.
+            // Return that progress rather than scanning it again after every wake.
+            if !matches!(
+                (&page, read),
+                (ChannelResponse::CatalogChanges { changes, cursor, .. }, CatalogRead::Changes(after))
+                    if changes.is_empty() && cursor == after
+            ) || Instant::now() >= deadline
+            {
+                return Ok(page);
+            }
+            if !waiting {
+                crate::diagnostics::record("channels.catalog", None, "waiting");
+                waiting = true;
+            }
+            self.wait_for_change(observed, deadline, &cancelled);
+        }
+    }
+
+    fn wait_for_change(&self, observed: u64, deadline: Instant, cancelled: &impl Fn() -> bool) {
+        while !cancelled() {
+            let generation = self.generation.lock().unwrap();
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if *generation != observed || remaining.is_zero() {
+                return;
+            }
+            drop(
+                self.changed
+                    .wait_timeout(generation, remaining.min(CANCEL_CHECK))
+                    .unwrap(),
+            );
+        }
+    }
+
     fn subscribe(
         &self,
         subscription: Subscription,
@@ -411,7 +548,7 @@ impl ChannelEngine {
         let deadline = Instant::now() + Duration::from_millis(u64::from(wait_ms));
         let supplied = after.map(|cursor| cursor.sequence);
         let mut after = supplied;
-        'observe: loop {
+        loop {
             // Capture before reading; a commit during observation must prevent sleeping.
             let observed = *self.generation.lock().unwrap();
             let result =
@@ -443,21 +580,7 @@ impl ChannelEngine {
                 });
             }
             after = Some(sequence);
-            loop {
-                if cancelled() {
-                    break 'observe;
-                }
-                let generation = self.generation.lock().unwrap();
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if *generation != observed || remaining.is_zero() {
-                    break;
-                }
-                drop(
-                    self.changed
-                        .wait_timeout(generation, remaining.min(CANCEL_CHECK))
-                        .unwrap(),
-                );
-            }
+            self.wait_for_change(observed, deadline, &cancelled);
         }
         Ok(ChannelResponse::Changes {
             cursor: ChannelCursor {
@@ -469,6 +592,88 @@ impl ChannelEngine {
             status: ChannelSubscriptionStatus::Closed,
         })
     }
+}
+
+/// The notification envelope carries a display label, not the exact session name
+/// used to derive the native endpoint. Preserve runtime IDs without truncation.
+fn attention_session(session: &SessionInfo) -> SessionInfo {
+    SessionInfo {
+        name: session.name[..session.name.floor_char_boundary(1024)].to_owned(),
+        session_id: session.session_id.clone(),
+        daemon_id: session.daemon_id.clone(),
+        session_instance_id: session.session_instance_id.clone(),
+    }
+}
+
+/// Advance a bounded batch of durable attention independently of any live session.
+/// Returns the next useful Unix-ms deadline. Host saturation is shared across roots,
+/// but every root still gets a chance to expire its own oldest pending events.
+pub(crate) fn deliver_channel_attention(
+    root: &Path,
+    service: &crate::notifications::NotificationService,
+    legacy_origin: impl Fn() -> Result<SessionInfo>,
+    host_retry_at: &mut u64,
+    cancelled: &impl Fn() -> bool,
+) -> Result<Option<u64>> {
+    use crate::notifications::{CHANNEL_ATTENTION_RETRY_MS, ChannelAttentionCapacity};
+
+    if cancelled() {
+        return Ok(None);
+    }
+    let Some(outbox) = store::AttentionStore::open(root)? else {
+        return Ok(None);
+    };
+    for _ in 0..16 {
+        if cancelled() {
+            return Ok(None);
+        }
+        let Some(event) = outbox.next()? else {
+            return Ok(None);
+        };
+        let now = store::unix_time_ms()?;
+        let at = event.posted_at_ms;
+        let expires = at.saturating_add(CHANNEL_ATTENTION_RETRY_MS);
+        let has_origin = event.origin.is_some();
+        if now >= expires {
+            outbox.finish(&event.message_id, has_origin)?;
+            continue;
+        }
+        if now < *host_retry_at {
+            return Ok(Some(expires.min(*host_retry_at)));
+        }
+        let id = event.message_id;
+        let source = ChannelNotificationSource {
+            session: match event.origin {
+                Some(origin) => origin,
+                None => legacy_origin()?,
+            },
+            workspace_id: event.workspace_id,
+            channel_id: event.channel_id,
+            message_id: id.clone(),
+            sequence: event.sequence,
+            intent: event.intent,
+        };
+        // The SELECT has ended. Never hold a SQLite statement, transaction, or
+        // registry writer while waiting for the host's durable acknowledgement.
+        if let Err(error) = service.record_channel_attention(source, at, &|| !cancelled()) {
+            if cancelled() {
+                return Ok(None);
+            }
+            let now = store::unix_time_ms()?;
+            *host_retry_at = match error.downcast_ref::<ChannelAttentionCapacity>() {
+                Some(capacity) => capacity.next_expiry_ms.max(now.saturating_add(25)),
+                None => {
+                    crate::diagnostics::record("channels.attention", None, "deferred");
+                    now.saturating_add(1_000)
+                }
+            };
+            return Ok(Some(expires.min(*host_retry_at)));
+        }
+        // If this write fails (or the process exits before it), the next scan
+        // repeats the same immutable event; the host owns deduplication.
+        outbox.finish(&id, has_origin)?;
+    }
+    Ok(Some(store::unix_time_ms()?))
 }
 
 enum StoreAdmission {

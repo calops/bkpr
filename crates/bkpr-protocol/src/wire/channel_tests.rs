@@ -87,6 +87,21 @@ fn cursor(sequence: u64) -> ChannelCursor {
     }
 }
 
+fn catalog_cursor() -> ChannelCatalogCursor {
+    ChannelCatalogCursor {
+        store_id: "catalog-store".into(),
+        sequence: 41,
+    }
+}
+
+fn catalog_page() -> ChannelCatalogPage {
+    ChannelCatalogPage {
+        cursor: catalog_cursor(),
+        workspace_id: "workspace".into(),
+        channel_id: channel(),
+    }
+}
+
 fn post() -> ChannelPost {
     ChannelPost {
         idempotency_key: "same-request".into(),
@@ -197,6 +212,15 @@ fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
         ChannelRequest::GetAttachment {
             channel_id: channel(),
             attachment_id: attachment_id(),
+        },
+        ChannelRequest::CatalogSnapshot {
+            after: Some(catalog_page()),
+            limit: 1,
+        },
+        ChannelRequest::CatalogSubscribe {
+            after: catalog_cursor(),
+            limit: 64,
+            wait_ms: MAX_WAIT_MS,
         },
     ] {
         let operation = Operation::Channels {
@@ -401,6 +425,22 @@ fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
             attachment,
             bytes: bytes::Bytes::from_static(&[0, 255, 6]),
         },
+        ChannelResponse::CatalogSnapshot {
+            channels: vec![summary()],
+            cursor: catalog_cursor(),
+            next_after: Some(catalog_page()),
+        },
+        ChannelResponse::CatalogChanges {
+            cursor: catalog_cursor(),
+            changes: vec![
+                ChannelCatalogChange::Upsert { channel: summary() },
+                ChannelCatalogChange::WorkspaceClosed {
+                    workspace_id: "closed-workspace".into(),
+                },
+            ],
+            more: true,
+        },
+        ChannelResponse::CatalogReset {},
     ] {
         assert!(!format!("{response:?}").contains("private"));
         let response = reply(response);

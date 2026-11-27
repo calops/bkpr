@@ -12,6 +12,8 @@
 * **channels:** let managed agents upload and fetch PNG attachments without putting image bytes in tool context ([#75](https://github.com/calops/bkpr/issues/75))
 * **channels:** include a live author mention in the selected wake post so peers can address their reply without a roster lookup
 * **channels:** route private messages through the channel engine and preserve private history after acknowledgement and session restart ([#76](https://github.com/calops/bkpr/issues/76))
+* **channels:** expose a resumable session catalog and unread attention for local and SSH attachments ([#79](https://github.com/calops/bkpr/issues/79))
+* **channels:** route questions and reports through host notifications without sending chat bodies
 
 ### Bug Fixes
 

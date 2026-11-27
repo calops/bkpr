@@ -1,8 +1,8 @@
 use crate::tree::Owner;
 use anyhow::Result;
 use bkpr_protocol::{
-    Notification, NotificationKind, NotificationSource, PaneInfo, PaneStatus, RegistrySnapshot,
-    SessionInfo,
+    Notification, NotificationKind, NotificationSource, PaneInfo, PaneNotificationSource,
+    PaneStatus, RegistrySnapshot, SessionInfo,
 };
 use bkpr_tui_framework::{TerminalGuard, notification};
 use std::{
@@ -23,7 +23,7 @@ pub(crate) struct Context<'a> {
 impl<'a> Context<'a> {
     /// Resolve labels without borrowing a replacement launch's title.
     pub fn resolve(
-        source: &NotificationSource,
+        source: &PaneNotificationSource,
         session: &SessionInfo,
         registry: &'a RegistrySnapshot,
     ) -> Self {
@@ -45,7 +45,7 @@ impl<'a> Context<'a> {
         }
     }
 
-    fn description(&self, source: &NotificationSource) -> String {
+    fn description(&self, source: &PaneNotificationSource) -> String {
         let title = self
             .title
             .filter(|title| !title.trim().is_empty())
@@ -64,7 +64,7 @@ pub(crate) struct Target {
     /// Exact attachment slot and admission generation.
     pub owner: Owner,
     /// Historical source revalidated before navigation.
-    pub source: NotificationSource,
+    pub source: PaneNotificationSource,
     expires: Instant,
     id: notification::Id,
 }
@@ -76,15 +76,21 @@ pub(crate) struct Desktop {
 }
 
 impl Desktop {
-    /// Attempt presentation without retry or an acceptance/display acknowledgement.
-    pub fn show(
+    /// Attempt pane presentation without retry or an acceptance/display acknowledgement.
+    pub fn show<'a>(
         &mut self,
         owner: Owner,
         record: Notification,
-        context: Context<'_>,
+        resolve: impl FnOnce(&PaneNotificationSource) -> Option<Context<'a>>,
         terminal: &mut TerminalGuard,
         out: &mut impl Write,
     ) -> Result<()> {
+        let NotificationSource::Pane(source) = record.source else {
+            return Ok(());
+        };
+        let Some(context) = resolve(&source) else {
+            return Ok(());
+        };
         let now = Instant::now();
         let epoch = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -110,7 +116,7 @@ impl Desktop {
             (NotificationKind::Done, _) => "Completion reported",
         };
         let title = format!("Bkpr · {state}");
-        let context = context.description(&record.source);
+        let context = context.description(&source);
         let compact;
         let (title, body) = if capabilities.body {
             (title.as_str(), context.as_str())
@@ -149,7 +155,7 @@ impl Desktop {
         }
         self.targets.push_back(Target {
             owner,
-            source: record.source,
+            source,
             expires: now
                 .checked_add(Duration::from_millis(
                     remaining.min(u128::from(u64::MAX)) as u64
@@ -197,7 +203,7 @@ impl Desktop {
 
 /// Match owner, host incarnation and runtime, independently of display names.
 pub(crate) fn source_session_is_current(
-    source: &NotificationSource,
+    source: &PaneNotificationSource,
     session: &SessionInfo,
 ) -> bool {
     source.session.session_id == session.session_id
@@ -207,7 +213,7 @@ pub(crate) fn source_session_is_current(
 
 /// Reject retired execution or replacement launch/binding before navigation.
 pub(crate) fn source_is_current(
-    source: &NotificationSource,
+    source: &PaneNotificationSource,
     session: &SessionInfo,
     pane: &PaneInfo,
 ) -> bool {
@@ -241,14 +247,14 @@ mod tests {
         ProcessIdentity,
     };
 
-    fn fixture() -> (SessionInfo, NotificationSource, PaneInfo) {
+    fn fixture() -> (SessionInfo, PaneNotificationSource, PaneInfo) {
         let session = SessionInfo {
             name: "Main".into(),
             session_id: "session".into(),
             daemon_id: "host".into(),
             session_instance_id: "instance".into(),
         };
-        let source = NotificationSource {
+        let source = PaneNotificationSource {
             session: session.clone(),
             workspace_id: Some("workspace".into()),
             window_id: Some("window".into()),

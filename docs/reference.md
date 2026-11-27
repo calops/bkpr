@@ -2084,6 +2084,27 @@ even when a page contains no archives. An archived subscription reports closure
 after its final page; backend failures are returned as errors. A new workspace
 with the same name does not inherit archived channels.
 
+### Session catalog and unread badges
+
+Use `ChannelRequest::CatalogSnapshot` through the owning session's active user
+attachment, local or SSH. It lists channel summaries from all live workspaces,
+including unselected workspaces and read-only direct threads. Each page has at
+most 64 entries. Follow `next_after` to complete the same snapshot, then call
+`CatalogSubscribe` with its cursor. A workspace badge is the logical OR of
+`unread_attention` on its live entries. Merely listing, browsing history or
+reconnecting does not mark anything read.
+
+Apply `Upsert` by channel ID and remove a workspace's live entries on
+`WorkspaceClosed`. A change page can return the latest summary for an earlier
+revision; the returned cursor, not the channel's post sequence, is the next
+resume point. Drain `more` before waiting. Empty pages may advance the cursor.
+The same owning session can resume through a new attachment or daemon restart.
+If the cursor belongs to another store, has fallen outside the last 4,096
+revisions, or would continue a snapshot across a workspace closure, the daemon
+returns `CatalogReset`. Discard the old projection and start another snapshot.
+Journal retention does not affect message history or read positions. Neither
+snapshots nor catch-up pages replay desktop alerts.
+
 ### Agent access and native wakes
 
 The shared MCP derives workspace and authorship from the verified live launch.

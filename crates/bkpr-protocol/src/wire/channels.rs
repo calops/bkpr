@@ -206,6 +206,23 @@ pub(super) fn write_request(
             let offset = g::ChannelRequestGetAttachment::create(b, channel, attachment);
             G::create_channel_request_get_attachment(b, offset)
         }
+        ChannelRequest::CatalogSnapshot { after, limit } => {
+            let after = after
+                .as_ref()
+                .map(|page| write_catalog_page(b, page, budget, depth))
+                .transpose()?;
+            let offset = g::ChannelRequestCatalogSnapshot::create(b, after, *limit);
+            G::create_channel_request_catalog_snapshot(b, offset)
+        }
+        ChannelRequest::CatalogSubscribe {
+            after,
+            limit,
+            wait_ms,
+        } => {
+            let after = write_catalog_cursor(b, after, budget, depth)?;
+            let offset = g::ChannelRequestCatalogSubscribe::create(b, after, *limit, *wait_ms);
+            G::create_channel_request_catalog_subscribe(b, offset)
+        }
     })
 }
 
@@ -299,6 +316,18 @@ pub(super) fn read_request(
         R::ChannelRequestGetAttachment(v) => ChannelRequest::GetAttachment {
             channel_id: ChannelId(read_id(v.channel_id()?, budget)?),
             attachment_id: AttachmentId(read_id(v.attachment_id()?, budget)?),
+        },
+        R::ChannelRequestCatalogSnapshot(v) => ChannelRequest::CatalogSnapshot {
+            after: v
+                .after()?
+                .map(|page| read_catalog_page(page, budget, depth))
+                .transpose()?,
+            limit: v.limit()?,
+        },
+        R::ChannelRequestCatalogSubscribe(v) => ChannelRequest::CatalogSubscribe {
+            after: read_catalog_cursor(v.after()?, budget, depth)?,
+            limit: v.limit()?,
+            wait_ms: v.wait_ms()?,
         },
     };
     request.validate()?;
@@ -428,6 +457,35 @@ pub(super) fn write_response(
             let offset = g::ChannelResponseAttachment::create(b, attachment, bytes);
             G::create_channel_response_attachment(b, offset)
         }
+        ChannelResponse::CatalogSnapshot {
+            channels,
+            cursor,
+            next_after,
+        } => {
+            let channels = write_page(b, channels, budget, write_summary)?;
+            let cursor = write_catalog_cursor(b, cursor, budget, 1)?;
+            let next_after = next_after
+                .as_ref()
+                .map(|page| write_catalog_page(b, page, budget, 1))
+                .transpose()?;
+            let offset = g::ChannelResponseCatalogSnapshot::create(b, channels, cursor, next_after);
+            G::create_channel_response_catalog_snapshot(b, offset)
+        }
+        ChannelResponse::CatalogChanges {
+            cursor,
+            changes,
+            more,
+        } => {
+            let cursor = write_catalog_cursor(b, cursor, budget, 1)?;
+            let changes = write_page(b, changes, budget, write_catalog_change)?;
+            let offset = g::ChannelResponseCatalogChanges::create(b, cursor, changes, *more);
+            G::create_channel_response_catalog_changes(b, offset)
+        }
+        ChannelResponse::CatalogReset {} => {
+            budget.node(1)?;
+            let offset = g::ChannelResponseCatalogReset::create(b);
+            G::create_channel_response_catalog_reset(b, offset)
+        }
     })
 }
 
@@ -531,6 +589,30 @@ pub(super) fn read_response(
                 attachment,
                 bytes: retain_binary(bytes, owner, budget)?,
             }
+        }
+        R::ChannelResponseCatalogSnapshot(v) => ChannelResponse::CatalogSnapshot {
+            channels: read_vector(v.channels()?, MAX_PAGE_LIMIT.into(), budget, |v, b| {
+                read_summary(v, b, 1)
+            })?,
+            cursor: read_catalog_cursor(v.cursor()?, budget, 1)?,
+            next_after: v
+                .next_after()?
+                .map(|page| read_catalog_page(page, budget, 1))
+                .transpose()?,
+        },
+        R::ChannelResponseCatalogChanges(v) => ChannelResponse::CatalogChanges {
+            cursor: read_catalog_cursor(v.cursor()?, budget, 1)?,
+            changes: read_vector(
+                v.changes()?,
+                MAX_PAGE_LIMIT.into(),
+                budget,
+                read_catalog_change,
+            )?,
+            more: v.more()?,
+        },
+        R::ChannelResponseCatalogReset(_) => {
+            budget.node(1)?;
+            ChannelResponse::CatalogReset {}
         }
     })
 }
@@ -868,6 +950,100 @@ fn read_cursor(
     Ok(ChannelCursor {
         channel_id: ChannelId(read_id(v.channel_id()?, budget)?),
         sequence: v.sequence()?,
+    })
+}
+
+fn write_catalog_cursor(
+    b: &mut Builder,
+    cursor: &ChannelCatalogCursor,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Offset<g::ChannelCatalogCursor>> {
+    budget.node(depth)?;
+    valid_id(&cursor.store_id)?;
+    let store = write_text(b, &cursor.store_id, budget)?;
+    Ok(g::ChannelCatalogCursor::create(b, store, cursor.sequence))
+}
+
+fn read_catalog_cursor(
+    cursor: g::ChannelCatalogCursorRef<'_>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<ChannelCatalogCursor> {
+    budget.node(depth)?;
+    Ok(ChannelCatalogCursor {
+        store_id: read_id(cursor.store_id()?, budget)?,
+        sequence: cursor.sequence()?,
+    })
+}
+
+fn write_catalog_page(
+    b: &mut Builder,
+    page: &ChannelCatalogPage,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Offset<g::ChannelCatalogPage>> {
+    budget.node(depth)?;
+    valid_id(&page.workspace_id)?;
+    valid_id(page.channel_id.as_ref())?;
+    let cursor = write_catalog_cursor(b, &page.cursor, budget, depth + 1)?;
+    let workspace = write_text(b, &page.workspace_id, budget)?;
+    let channel = write_text(b, page.channel_id.as_ref(), budget)?;
+    Ok(g::ChannelCatalogPage::create(b, cursor, workspace, channel))
+}
+
+fn read_catalog_page(
+    page: g::ChannelCatalogPageRef<'_>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<ChannelCatalogPage> {
+    budget.node(depth)?;
+    Ok(ChannelCatalogPage {
+        cursor: read_catalog_cursor(page.cursor()?, budget, depth + 1)?,
+        workspace_id: read_id(page.workspace_id()?, budget)?,
+        channel_id: ChannelId(read_id(page.channel_id()?, budget)?),
+    })
+}
+
+fn write_catalog_change(
+    b: &mut Builder,
+    change: &ChannelCatalogChange,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Offset<g::ChannelCatalogChange>> {
+    use g::ChannelCatalogChangeBody as Body;
+    budget.node(depth)?;
+    budget.node(depth + 1)?;
+    let body = match change {
+        ChannelCatalogChange::Upsert { channel } => {
+            let channel = write_summary(b, channel, budget, depth + 2)?;
+            let offset = g::ChannelCatalogUpsert::create(b, channel);
+            Body::create_channel_catalog_upsert(b, offset)
+        }
+        ChannelCatalogChange::WorkspaceClosed { workspace_id } => {
+            valid_id(workspace_id)?;
+            let workspace = write_text(b, workspace_id, budget)?;
+            let offset = g::ChannelCatalogWorkspaceClosed::create(b, workspace);
+            Body::create_channel_catalog_workspace_closed(b, offset)
+        }
+    };
+    Ok(g::ChannelCatalogChange::create(b, body))
+}
+
+fn read_catalog_change(
+    change: g::ChannelCatalogChangeRef<'_>,
+    budget: &mut Budget,
+) -> Result<ChannelCatalogChange> {
+    use g::ChannelCatalogChangeBodyRef as Body;
+    budget.node(1)?;
+    budget.node(2)?;
+    Ok(match change.body()? {
+        Body::ChannelCatalogUpsert(v) => ChannelCatalogChange::Upsert {
+            channel: read_summary(v.channel()?, budget, 3)?,
+        },
+        Body::ChannelCatalogWorkspaceClosed(v) => ChannelCatalogChange::WorkspaceClosed {
+            workspace_id: read_id(v.workspace_id()?, budget)?,
+        },
     })
 }
 

@@ -77,7 +77,7 @@ impl Store {
     ) -> Result<()> {
         let count = |connection: &rusqlite::Connection| -> rusqlite::Result<usize> {
             connection.query_row(
-                "SELECT (SELECT count(*) FROM notification_work WHERE pending=1)
+                "SELECT (SELECT count(*) FROM notification_work WHERE pending=1 AND launch_id IS NOT NULL)
                    + (SELECT COALESCE(sum(pending_count),0) FROM channel_batches WHERE outcome IS NULL AND revoked=0)",
                 [],
                 |row| row.get(0),

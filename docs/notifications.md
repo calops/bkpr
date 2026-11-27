@@ -96,6 +96,17 @@ CI completion, application bells and explicit OSC application notification reque
 
 Existing agent inbox wake `Notification` and `whoami.notification_ready` remain their current native receiver/delivery domain. User alerts never reuse agent inboxes, wake receipts or processed-message acknowledgements.
 
+Channel policy selects which agent questions and reports request user attention.
+For eligible posts, the channel transaction retains bounded pending work. The
+host commits its policy decision before the session retires that work, recording
+a notification and destination jobs only when their policies allow it.
+An interrupted transfer retries the same message identity, independently of the
+unread badge and agent wakes. Pending transfer expires seven days after the post.
+The notification source identifies the original session, workspace, channel and
+message. Push does not contain chat text or attachment contents.
+Native notification queries opt in with `include_channel_attention`. Older
+queries retain their pane-only view and advance past filtered channel records.
+
 ## Events, notifications and deliveries
 
 Keep distinct records:

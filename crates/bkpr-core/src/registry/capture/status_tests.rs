@@ -236,13 +236,10 @@ fn registry_watcher_receives_hidden_harness_status_without_admitting_any_views()
             NotificationKind::Done
         ]
     );
-    assert!(
-        page.notifications
-            .iter()
-            .all(|record| record.source.pane_id == pane_id
-                && record.source.launch_id.is_none()
-                && !record.source.process.birth.is_empty())
-    );
+    assert!(page.notifications.iter().all(|record| {
+        let source = record.source.as_pane().unwrap();
+        source.pane_id == pane_id && source.launch_id.is_none() && !source.process.birth.is_empty()
+    }));
     fixture.registry.shutdown().unwrap();
     notifications.shutdown().unwrap();
 }

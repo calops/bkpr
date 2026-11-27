@@ -67,6 +67,7 @@ impl Drop for HostLease {
 struct Inner {
     config: HostConfig,
     info: DaemonInfo,
+    channel_attention: registry::notification_capture::ChannelAttentionWorker,
     notifications: crate::notifications::NotificationService,
     listener: Mutex<Option<BoundSocket>>,
     wake: Mutex<Option<UnixStream>>,
@@ -135,6 +136,10 @@ impl HostDaemon {
         )?;
         let listener = transport::bind(&config.socket)?;
         let (stop, wake) = Stop::new()?;
+        let channel_attention = registry::notification_capture::ChannelAttentionWorker::host(
+            config.state_root.join("sessions"),
+            notifications.clone(),
+        )?;
         Ok(Self {
             inner: Arc::new(Inner {
                 config,
@@ -142,6 +147,7 @@ impl HostDaemon {
                     daemon_id: Uuid::new_v4().to_string(),
                     pid: std::process::id(),
                 },
+                channel_attention,
                 notifications,
                 listener: Mutex::new(Some(listener)),
                 wake: Mutex::new(Some(wake)),
@@ -380,7 +386,10 @@ impl HostDaemon {
         }
         let root = self.inner.config.state_root.join("sessions").join(key);
         let registry = Registry::open_named_in_host(&root, name, &self.info().daemon_id)?;
-        registry.configure_notifications(self.inner.notifications.clone())?;
+        registry.configure_host_notifications(
+            self.inner.notifications.clone(),
+            &self.inner.channel_attention,
+        )?;
         let released = registry.lease_released();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
             ensure!(
@@ -474,6 +483,7 @@ impl HostDaemon {
     /// Drains sessions before the host notification worker and reports either failure.
     pub(crate) fn shutdown(&self) -> Result<()> {
         let sessions = self.shutdown_sessions();
+        self.inner.channel_attention.stop();
         let notifications = self.inner.notifications.shutdown();
         sessions.and(notifications)
     }

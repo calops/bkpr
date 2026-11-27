@@ -189,6 +189,7 @@ fn write_query(
         scope,
         kinds,
         value.limit,
+        value.include_channel_attention,
     ))
 }
 
@@ -202,6 +203,7 @@ fn read_query(
         scope: read_scope(value.scope()?, budget, depth + 1)?,
         kinds: read_kinds(value.kinds()?, budget)?,
         limit: value.limit()?,
+        include_channel_attention: value.include_channel_attention()?,
     })
 }
 

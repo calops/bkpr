@@ -2,8 +2,7 @@
 use crate::transport::Endpoint;
 use anyhow::{Context, Result};
 use bkpr_protocol::{
-    MAX_NOTIFICATION_LIMIT, MAX_NOTIFICATION_WAIT_MS, NotificationPage, NotificationQuery,
-    NotificationRequest, Operation,
+    MAX_NOTIFICATION_WAIT_MS, NotificationPage, NotificationQuery, NotificationRequest, Operation,
 };
 use std::{
     io::{Read, Write},
@@ -88,7 +87,7 @@ async fn observe(
         let operation = Operation::Notifications {
             request: NotificationRequest::Subscribe {
                 query: NotificationQuery {
-                    limit: MAX_NOTIFICATION_LIMIT,
+                    include_channel_attention: true,
                     ..NotificationQuery::default()
                 },
                 wait_ms: if after.is_none() {
@@ -154,9 +153,11 @@ async fn observe(
 mod tests {
     use super::*;
     use crate::transport::test_wire::{read_request, write_response};
+    use bkpr_protocol::channels::{ChannelId, MessageId};
     use bkpr_protocol::{
-        HarnessKind, Notification, NotificationCursor, NotificationHealth, NotificationKind,
-        NotificationSource, PROTOCOL_VERSION, ProcessIdentity, Response, SessionInfo,
+        ChannelAttentionKind, ChannelNotificationSource, HarnessKind, Notification,
+        NotificationCursor, NotificationHealth, NotificationKind, NotificationSource,
+        PROTOCOL_VERSION, PaneNotificationSource, ProcessIdentity, Response, SessionInfo,
     };
     use std::{os::unix::net::UnixListener, time::Duration};
 
@@ -174,7 +175,7 @@ mod tests {
                 .map(|&sequence| Notification {
                     sequence,
                     id: format!("record-{sequence}"),
-                    source: NotificationSource {
+                    source: NotificationSource::Pane(PaneNotificationSource {
                         session: SessionInfo {
                             name: "fixture".into(),
                             session_id: "session".into(),
@@ -191,7 +192,7 @@ mod tests {
                         },
                         launch_id: None,
                         binding_generation: None,
-                    },
+                    }),
                     kind: NotificationKind::Attention,
                     attention_kind: Some("question".into()),
                     observed_at_ms: 1,
@@ -230,7 +231,13 @@ mod tests {
         else {
             panic!("expected notification subscription");
         };
-        assert_eq!(query, NotificationQuery::default());
+        assert_eq!(
+            query,
+            NotificationQuery {
+                include_channel_attention: true,
+                ..NotificationQuery::default()
+            },
+        );
         assert_eq!(
             requested
                 .as_ref()
@@ -278,10 +285,29 @@ mod tests {
                 subscribe(&listener, Some(("first", 41))),
                 page("first", 42, &[42]),
             );
-            respond(
-                subscribe(&listener, Some(("first", 42))),
-                page("first", 43, &[43]),
-            );
+            let mut channel_page = page("first", 43, &[]);
+            channel_page.notifications.push(Notification {
+                sequence: 43,
+                id: "record-43".into(),
+                source: NotificationSource::Channel(ChannelNotificationSource {
+                    session: SessionInfo {
+                        name: "fixture".into(),
+                        session_id: "session".into(),
+                        daemon_id: "daemon".into(),
+                        session_instance_id: "instance".into(),
+                    },
+                    workspace_id: "workspace".into(),
+                    channel_id: ChannelId("channel".into()),
+                    message_id: MessageId("message".into()),
+                    sequence: 8,
+                    intent: ChannelAttentionKind::Question,
+                }),
+                kind: NotificationKind::Attention,
+                attention_kind: None,
+                observed_at_ms: 1,
+                expires_at_ms: 100,
+            });
+            respond(subscribe(&listener, Some(("first", 42))), channel_page);
             respond(
                 subscribe(&listener, Some(("first", 43))),
                 page("replacement", 100, &[100]),
@@ -307,11 +333,19 @@ mod tests {
                         let baseline = receiver.recv().await.unwrap().unwrap();
                         assert_eq!(baseline.cursor.sequence, 40);
                         assert!(baseline.notifications.is_empty());
-                        for sequence in [42, 43] {
-                            let value = receiver.recv().await.unwrap().unwrap();
-                            assert_eq!(value.notifications.len(), 1);
-                            assert_eq!(value.notifications[0].sequence, sequence);
-                        }
+                        let pane = receiver.recv().await.unwrap().unwrap();
+                        assert_eq!(pane.notifications.len(), 1);
+                        assert_eq!(pane.notifications[0].sequence, 42);
+                        assert_eq!(pane.notifications[0].source.pane_id(), Some("pane"));
+                        let channel = receiver.recv().await.unwrap().unwrap();
+                        assert_eq!(channel.notifications.len(), 1);
+                        assert_eq!(channel.notifications[0].sequence, 43);
+                        let NotificationSource::Channel(source) = &channel.notifications[0].source
+                        else {
+                            panic!("expected channel notification");
+                        };
+                        assert_eq!(source.intent, ChannelAttentionKind::Question);
+                        assert_eq!(source.sequence, 8);
                         let baseline = receiver.recv().await.unwrap().unwrap();
                         assert_eq!(baseline.cursor.store_id, "replacement");
                         assert_eq!(baseline.cursor.sequence, 110);
