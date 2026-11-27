@@ -1084,7 +1084,7 @@ impl Chat {
                     full,
                     bkpr_protocol::Axis::Horizontal,
                     self.rail_width
-                        .unwrap_or_else(|| (size.cols / 4).clamp(15, 24) - 1)
+                        .unwrap_or_else(|| (size.cols / 4).clamp(19, 24) - 1)
                         .clamp(12, size.cols.saturating_sub(24).max(12)),
                 )
             })
@@ -1137,7 +1137,8 @@ impl Chat {
         let writing = !read_only && summary.is_some_and(Self::can_write);
         let can_create = !read_only && self.catalog_ready && self.catalog_error.is_none();
         if let Some(outer) = list {
-            let body = paint.inlay(theme, outer, list_background, None);
+            let frame_body = paint.inlay(theme, outer, list_background, None);
+            let body = rail_content(frame_body);
             paint.target(outer, Hit::List);
             let reserved = 1 + u16::from(!self.ids.is_empty());
             let has_settings =
@@ -1184,7 +1185,7 @@ impl Chat {
                 .enumerate()
             {
                 let summary = &self.catalog[id];
-                let lead = if summary.unread_attention { "! " } else { "  " };
+                let lead = if summary.unread_attention { "!" } else { " " };
                 let name = if summary.role_thread.is_some_and(|thread| thread.archived) {
                     let short: String = id.as_ref().chars().take(6).collect();
                     format!("Archive {}", safe_text(&short))
@@ -1212,7 +1213,10 @@ impl Chat {
                     }
                     paint.card_line(theme, bounds, &full, role, chosen, list_background);
                 }
-                paint.target(bounds, Hit::Channel(index));
+                paint.target(
+                    row(frame_body.x, bounds.y, frame_body.width),
+                    Hit::Channel(index),
+                );
             }
             if has_create {
                 let visible = (self.ids.len().saturating_sub(offset)).min(usize::from(list_height));
@@ -1221,14 +1225,13 @@ impl Chat {
                         body.x,
                         body.y + first_channel + visible as u16 + 1,
                         body.width,
-                    )
-                    .inset_horizontal(1),
+                    ),
                     Hit::Create,
                 );
             }
             if has_settings {
                 paint.target(
-                    row(body.x, body.y + body.height - 1, body.width).inset_horizontal(1),
+                    row(body.x, body.y + body.height - 1, body.width),
                     Hit::Manage,
                 );
             }
@@ -1238,8 +1241,7 @@ impl Chat {
                         body.x,
                         body.y + body.height - 1 - u16::from(has_settings),
                         body.width,
-                    )
-                    .inset_horizontal(1),
+                    ),
                     Hit::Members,
                 );
             }
@@ -1619,6 +1621,10 @@ fn invite_available(channel: &ChannelSummary) -> bool {
     super::chat_controls::Editor::can_invite(channel)
 }
 
+fn rail_content(body: Rect) -> Rect {
+    body.inset_horizontal(u16::from(body.width >= 3))
+}
+
 fn paint_members(
     paint: &mut Paint,
     theme: &Theme,
@@ -1628,7 +1634,7 @@ fn paint_members(
     active: &Active,
     offset: &mut usize,
 ) {
-    let body = paint.inlay(theme, outer, background, None);
+    let body = rail_content(paint.inlay(theme, outer, background, None));
     if body.width == 0 || body.height == 0 {
         return;
     }
@@ -2640,7 +2646,7 @@ mod tests {
             panic!("expected only the list card");
         };
         assert_eq!(
-            chat.surface().frame.rows[usize::from(body.y + 1)].cells[usize::from(body.x)]
+            chat.surface().frame.rows[usize::from(body.y + 1)].cells[usize::from(body.x + 1)]
                 .style
                 .background_source,
             theme.selected_style(Role::Accent).background_source
