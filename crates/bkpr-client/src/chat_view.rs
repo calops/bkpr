@@ -1124,7 +1124,12 @@ impl Chat {
             {
                 let summary = &self.catalog[id];
                 let lead = if summary.unread_attention { "! " } else { "  " };
-                let name = channel_name(summary);
+                let name = if summary.role_thread.is_some_and(|thread| thread.archived) {
+                    let short: String = id.as_ref().chars().take(6).collect();
+                    format!("Archive {}", safe_text(&short))
+                } else {
+                    channel_name(summary)
+                };
                 let full = format!("{lead}{name}");
                 let bounds = row(body.x, body.y + first_channel + line as u16, body.width);
                 let chosen = list_only && self.list_cursor == index;
