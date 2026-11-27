@@ -149,6 +149,7 @@ pub(super) enum Hit {
     Divider(bkpr_protocol::Axis),
     Invite,
     Assign,
+    AssignAgent(usize),
 }
 
 impl Paint {
@@ -157,13 +158,12 @@ impl Paint {
     }
 }
 
-const CHANNEL_BUTTONS: [(Hit, &str); 6] = [
+const CHANNEL_BUTTONS: [(Hit, &str); 5] = [
     (Hit::Create, "\u{f0415} New channel"),
     (Hit::Manage, "\u{f0493} Settings"),
     (Hit::Members, "Members"),
     (Hit::MemberBack, MEMBER_BACK),
     (Hit::Invite, "Invite member"),
-    (Hit::Assign, "Assign coordinator"),
 ];
 
 const MEMBER_BACK: &str = "Back";
@@ -1334,11 +1334,63 @@ impl Chat {
                     && self.roles_enabled == Some(true)
                     && y + 1 < thread.y + thread.height
                 {
-                    let width = Button::new("Assign coordinator").width().min(thread.width);
-                    paint.target(
-                        row(thread.x + (thread.width - width) / 2, y + 1, width),
-                        Hit::Assign,
+                    use bkpr_tui_framework::dropdown::Dropdown;
+                    let width = 30.min(thread.width);
+                    let trigger = row(thread.x + (thread.width - width) / 2, y + 1, width);
+                    let label = [(0, "Assign coordinator")];
+                    let (_, text, _) = Dropdown::new(&label).trigger_with_face(
+                        trigger,
+                        0,
+                        self.assign_cursor.is_some(),
+                        false,
                     );
+                    paint.card_line(theme, trigger, &text, Role::Accent, false, list_background);
+                    paint.target(trigger, Hit::Assign);
+                    if let Some(index) = self.assign_cursor {
+                        let active = self.active.as_ref().unwrap();
+                        let labels: Vec<_> = active
+                            .roster
+                            .iter()
+                            .filter(|entry| entry.binding.is_some())
+                            .map(|entry| safe_text(&entry.participant.display_name))
+                            .collect();
+                        let choices: Vec<_> = labels
+                            .iter()
+                            .enumerate()
+                            .map(|(i, label)| (i, label.as_str()))
+                            .collect();
+                        let menu = Dropdown::new(&choices);
+                        if active.roster_ready
+                            && let Some(layout) = menu.layout(trigger, thread, index)
+                        {
+                            for i in 0..choices.len() {
+                                if let Some((rect, text, _)) = menu.option(layout, i, usize::MAX) {
+                                    paint.fill_card(theme, rect, list_background);
+                                    paint.card_line(
+                                        theme,
+                                        rect,
+                                        &text,
+                                        Role::Accent,
+                                        i == index,
+                                        list_background,
+                                    );
+                                    paint.target(rect, Hit::AssignAgent(i));
+                                }
+                            }
+                        } else {
+                            let text =
+                                active
+                                    .roster_error
+                                    .as_deref()
+                                    .unwrap_or(if active.roster_ready {
+                                        "No eligible agents"
+                                    } else {
+                                        "Loading eligible agents…"
+                                    });
+                            let rect = row(trigger.x, trigger.y + 1, width);
+                            paint.card_line(theme, rect, text, Role::Muted, false, list_background);
+                        }
+                    }
                 }
                 return;
             }

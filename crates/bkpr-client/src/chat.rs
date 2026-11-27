@@ -187,6 +187,7 @@ pub(super) struct Chat {
     rail_width: Option<u16>,
     channels_height: Option<u16>,
     divider_drag: Option<bkpr_protocol::Axis>,
+    assign_cursor: Option<usize>,
     roles_enabled: Option<bool>,
     list_cursor: usize,
     drafts: HashMap<ChannelId, Draft>,
@@ -261,6 +262,7 @@ impl Chat {
             return;
         }
         self.retain_active_history();
+        self.assign_cursor = None;
         self.workspace = None;
         self.channel_chooser = false;
         self.members_scroll = None;
@@ -504,6 +506,10 @@ impl Chat {
             .position(|candidate| *candidate == id)
             .unwrap_or(0);
         let mut active = Active::new(id);
+        self.assign_cursor = None;
+        if active.id.0.is_empty() {
+            active.refresh_roster(true);
+        }
         if let Some(index) = self
             .recent_history
             .iter()
@@ -754,16 +760,7 @@ impl Chat {
                 self.set_members(self.members_scroll.is_none());
             }
             Hit::MemberBack => self.set_members(false),
-            Hit::Assign if !read_only && self.roles_enabled == Some(true) => {
-                if let Some(workspace) = self.workspace.clone() {
-                    self.next = self.next.wrapping_add(1);
-                    self.editor = Some(Editor {
-                        token: self.next,
-                        form: chat_controls::Editor::assign(workspace),
-                    });
-                    self.redraw();
-                }
-            }
+            Hit::Assign if !read_only => self.toggle_assignment(),
             Hit::Invite if !read_only => {
                 if let Some(form) = self.summary().and_then(chat_controls::Editor::invite) {
                     self.next = self.next.wrapping_add(1);
@@ -802,30 +799,6 @@ impl Chat {
             chat_controls::EditorAction::Close => {
                 self.close_editor();
                 Effect::None
-            }
-            chat_controls::EditorAction::Assign(target) => {
-                let (Some(workspace_id), Some(active)) =
-                    (self.workspace.clone(), self.active.as_ref())
-                else {
-                    return Effect::None;
-                };
-                if !active.id.0.is_empty()
-                    || self.roles_enabled != Some(true)
-                    || self.sends.contains_key(&active.id)
-                {
-                    return Effect::None;
-                }
-                let id = active.id.clone();
-                self.close_editor();
-                self.sends.insert(id.clone(), Send::SettingRole);
-                Effect::Submit(
-                    JobKind::RoleSet(id),
-                    Job::Role(RoleRequest::Set {
-                        workspace_id,
-                        role: WorkspaceRole::Coordinator,
-                        target: Some(target),
-                    }),
-                )
             }
             chat_controls::EditorAction::Submit(request) => {
                 let editor = self.editor.as_ref().expect("active controls");
@@ -882,7 +855,96 @@ impl Chat {
         }
     }
 
+    fn toggle_assignment(&mut self) {
+        if self.roles_enabled == Some(true)
+            && self
+                .active
+                .as_ref()
+                .is_some_and(|active| active.id.0.is_empty())
+            && !self.sends.contains_key(&Self::vacant_id())
+        {
+            self.assign_cursor = self.assign_cursor.is_none().then_some(0);
+            self.redraw();
+        }
+    }
+
+    fn assign_at(&mut self, index: usize) -> Effect {
+        let Some(active) = self
+            .active
+            .as_ref()
+            .filter(|active| active.id.0.is_empty() && active.roster_ready)
+        else {
+            return Effect::None;
+        };
+        let Some(target) = active
+            .roster
+            .iter()
+            .filter_map(|entry| entry.binding.as_ref())
+            .nth(index)
+            .cloned()
+        else {
+            return Effect::None;
+        };
+        let Some(workspace_id) = self.workspace.clone() else {
+            return Effect::None;
+        };
+        if self.assign_cursor.is_none()
+            || self.roles_enabled != Some(true)
+            || self.sends.contains_key(&active.id)
+        {
+            return Effect::None;
+        }
+        let id = active.id.clone();
+        self.assign_cursor = None;
+        self.redraw();
+        self.sends.insert(id.clone(), Send::SettingRole);
+        Effect::Submit(
+            JobKind::RoleSet(id),
+            Job::Role(RoleRequest::Set {
+                workspace_id,
+                role: WorkspaceRole::Coordinator,
+                target: Some(target),
+            }),
+        )
+    }
+
     pub(super) fn key(&mut self, event: &KeyEvent, read_only: bool) -> Effect {
+        if !read_only
+            && !self.channel_chooser
+            && self.editor.is_none()
+            && event.action == KeyAction::Press
+            && event.modifiers == 0
+            && self
+                .active
+                .as_ref()
+                .is_some_and(|active| active.id.0.is_empty())
+        {
+            match (event.key.as_str(), self.assign_cursor) {
+                ("Enter", None) | ("Escape", Some(_)) => {
+                    self.toggle_assignment();
+                    return Effect::None;
+                }
+                ("Enter", Some(index)) => return self.assign_at(index),
+                ("ArrowUp" | "ArrowDown", Some(index)) => {
+                    let count = self
+                        .active
+                        .as_ref()
+                        .unwrap()
+                        .roster
+                        .iter()
+                        .filter(|entry| entry.binding.is_some())
+                        .count();
+                    self.assign_cursor = Some(
+                        index
+                            .saturating_add_signed(if event.key == "ArrowDown" { 1 } else { -1 })
+                            .min(count.saturating_sub(1)),
+                    );
+                    self.redraw();
+                    return Effect::None;
+                }
+                _ => {}
+            }
+        }
         if let Some(editor) = &mut self.editor {
             let action = editor.form.key(event, !read_only);
             return self.editor_action(action);
@@ -1227,6 +1289,9 @@ impl Chat {
                 self.set_channel_chooser(false);
             }
             (B::Left, A::Press, Some(Hit::OpenChannels)) => self.set_channel_chooser(true),
+            (B::Left, A::Press, Some(Hit::AssignAgent(index))) if !read_only => {
+                return self.assign_at(index);
+            }
             (B::Left, A::Press, Some(Hit::Mention(index))) if writable => {
                 if let Some(active) = &mut self.active
                     && let Some(draft) = self.drafts.get_mut(&active.id)
@@ -1262,6 +1327,26 @@ impl Chat {
             return Some((JobKind::EditorRead(editor.token), Job::Request(request)));
         }
         let active = self.active.as_mut()?;
+        if active.id.0.is_empty() {
+            let epoch = self.epoch;
+            if self.assign_cursor.is_none()
+                || self
+                    .pending
+                    .values()
+                    .any(|kind| *kind == JobKind::Roster(epoch))
+            {
+                return None;
+            }
+            return Some((
+                JobKind::Roster(epoch),
+                Job::Request(ChannelRequest::UserRoster {
+                    workspace_id: self.workspace.clone()?,
+                    channel_id: None,
+                    after: active.roster_next.take()?,
+                    limit: MAX_PAGE_LIMIT,
+                }),
+            ));
+        }
         if active.workspace_roster
             && self
                 .drafts
