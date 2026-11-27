@@ -915,9 +915,10 @@ wake again, and a recipient selector does not redirect to a replacement launch.
 
 Use the wake hint's `batch_id` with `channel_wake`, then `channel_read` with
 the exact `channel_id` and `message_id` for any body pages you need. Metadata-only
-wake lookups and history do not record a delivery read. A returned message body
-records a read of that delivery but does not acknowledge it. After processing,
-call `channel_ack` with the exact channel and message IDs. It returns
+wake lookups and history do not record a delivery read. A body page records a
+read of the selected delivery, not of a linked source preview. To acknowledge a
+source that was delivered separately, read it with `channel_read` first. After
+processing, call `channel_ack` with the exact channel and message IDs. It returns
 `acknowledged: true` when it records acknowledgement, or `false` when already
 acknowledged by that recipient. A wake alone is not a reason to acknowledge.
 
@@ -980,13 +981,15 @@ to the thread or change its membership; unrelated agents cannot list or read it.
 Acknowledgement does not remove history. Retained private history survives
 workspace closure and recoverable session shutdown. A verified native resume
 can recover the participant's history, but not old live notification authority
-or pending wakes. A fresh or unrelated launch inherits neither. Previously
-purged bodies are not restored. Authentication tokens and receiver credentials
-are never persisted.
+or pending wakes. A fresh or unrelated launch inherits neither. Upgrade keeps
+unexpired legacy inbox bodies as user-readable history only when their original
+workspace can be verified. It never guesses membership or restores purged
+bodies. Bodies without verified ownership expire on the old recipient deadline.
+Authentication tokens and receiver credentials are never persisted.
 
-Durable-store failure suspends delivery and all commit callbacks until restart.
-An ambiguous mutation is reported as such, not silently retried. Native wake
-hints carry no bodies; read and processed acknowledgement remain separate.
+A store write failure does not confirm a commit. A later operation can succeed
+after the storage problem clears; never blindly retry an ambiguous mutation.
+Native wake hints carry no bodies. Read and processed acknowledgement remain separate.
 Ordinary shell and terminal input remain independent of waiting receivers.
 
 The daemon writes a private, body-free mutation/lifecycle diagnostic trail under

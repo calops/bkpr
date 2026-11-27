@@ -1,5 +1,5 @@
 use super::*;
-use crate::channels::{ChannelAccessLost, ChannelRoutes, WorkspaceParticipant};
+use crate::channels::{ChannelAccessLost, ChannelAuthority, ChannelRoutes, WorkspaceParticipant};
 use bkpr_protocol::channels::{ChannelPost, ParticipantId};
 
 impl Registry {
@@ -56,13 +56,12 @@ impl Registry {
                 }),
             "channel post contains a private capability"
         );
-        let workspace = self.channel_caller_workspace(launch)?;
         let (response, changed) = self.inner.channels.with_delivery_store(
             &|| !connected() || self.session_end_requested(),
             &|id| self.delivery_workspace_open(id),
             |store| {
-                let authority =
-                    self.channel_authority(&workspace, Some(launch), true, connected)?;
+                let (workspace, authority) =
+                    self.channel_direct_sender(launch, &post, connected)?;
                 store.post_direct(
                     post,
                     authority,
@@ -75,6 +74,7 @@ impl Registry {
                         binding_live: &|id, binding| self.channel_binding_live(id, binding),
                         direct_peer: &|_| Ok(None),
                     },
+                    || self.channel_direct_target(launch, &launch_id, &workspace, connected),
                 )
             },
         )?;
@@ -82,6 +82,85 @@ impl Registry {
             self.inner.channels.invalidate();
         }
         channel_tool_reply(Payload::Channels(response))
+    }
+
+    fn channel_direct_sender(
+        &self,
+        caller: &Launch,
+        post: &ChannelPost,
+        connected: &dyn Fn() -> bool,
+    ) -> Result<(String, ChannelAuthority)> {
+        let state = self.inner.state.lock().unwrap();
+        self.channel_registry_admission(&state, connected)?;
+        let pane = channel_pane(&state, &caller.grant.pane_id).context(ChannelAccessLost)?;
+        let workspace = pane.workspace_id.as_deref().context(ChannelAccessLost)?;
+        ensure!(
+            workspace_exists(&state, workspace) && !state.closing_workspaces.contains(workspace),
+            ChannelAccessLost
+        );
+        let agents = self.inner.agents.state.lock().unwrap();
+        healthy_agents(&agents)?;
+        let captures = self.inner.captures.lock().unwrap();
+        let (current, agent) = channel_caller(&state, pane, workspace, caller, &agents, &captures)
+            .context(ChannelAccessLost)?;
+        let participants = if post
+            .mentions
+            .iter()
+            .any(|mention| mention.as_ref() == self.inner.session.session_id.as_str())
+        {
+            vec![WorkspaceParticipant {
+                actor: self.channel_user(),
+                launch_id: None,
+                binding_revision: 0,
+            }]
+        } else {
+            Vec::new()
+        };
+        Ok((
+            workspace.to_owned(),
+            ChannelAuthority {
+                actor: channel_agent(current, agent),
+                writable: true,
+                workspace_open: true,
+                participants,
+            },
+        ))
+    }
+
+    fn channel_direct_target(
+        &self,
+        caller: &Launch,
+        launch_id: &str,
+        workspace: &str,
+        connected: &dyn Fn() -> bool,
+    ) -> Result<WorkspaceParticipant> {
+        let state = self.inner.state.lock().unwrap();
+        self.channel_registry_admission(&state, connected)?;
+        ensure!(
+            !state.closing_workspaces.contains(workspace),
+            ChannelAccessLost
+        );
+        let agents = self.inner.agents.state.lock().unwrap();
+        healthy_agents(&agents)?;
+        let captures = self.inner.captures.lock().unwrap();
+        captures.authorize(caller).context(ChannelAccessLost)?;
+        let (launch, agent) = captures
+            .launches
+            .get(launch_id)
+            .and_then(|launch| channel_pane(&state, &launch.grant.pane_id))
+            .filter(|pane| {
+                pane.harness
+                    .as_ref()
+                    .and_then(|harness| harness.managed.as_ref())
+                    .is_some_and(|visible| visible.launch_id == launch_id)
+            })
+            .and_then(|pane| live_channel_agent(&state, pane, workspace, &agents, &captures, None))
+            .context("direct recipient is not a live launch in your workspace")?;
+        Ok(WorkspaceParticipant {
+            actor: channel_agent(launch, agent),
+            launch_id: Some(launch.grant.launch_id.clone()),
+            binding_revision: launch.binding_generation,
+        })
     }
 
     pub(in crate::registry) fn channel_direct_peer(

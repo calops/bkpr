@@ -169,6 +169,22 @@ impl ChannelEngine {
         }
     }
 
+    pub(crate) fn maintain_legacy(
+        &self,
+        now_ms: u64,
+        workspace_for_pane: impl Fn(&str) -> Option<String>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Option<u64>> {
+        let mut writer = self
+            .acquire_store(Instant::now() + STORE_WAIT, &cancelled)
+            .map_err(StoreAdmission::into_error)?;
+        writer
+            .store
+            .as_mut()
+            .unwrap()
+            .maintain_legacy(&self.root, now_ms, &workspace_for_pane)
+    }
+
     /// Execute one typed operation, checking authority against the resolved workspace.
     ///
     /// `admit` must sample live authority without blocking on I/O or returning a registry

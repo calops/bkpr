@@ -153,7 +153,7 @@ fn channel_tools() -> [Value; 10] {
                     "properties":{"channel_id":id,"message_id":id},"required":["channel_id","message_id"],"additionalProperties":false},
                 "attachments":{"type":"array","items":id,"maxItems":MAX_ATTACHMENTS,"default":[],"description":"Existing attachment IDs in the same channel."}
             },"required":["text","idempotency_key"],
-                "oneOf":[{"required":["channel_id"]},{"required":["recipient"]}],"additionalProperties":false}
+                "additionalProperties":false}
         }),
         json!({
             "name":"channel_upload",
@@ -1028,9 +1028,12 @@ mod tests {
             .find(|tool| tool["name"] == "channel_post")
             .unwrap();
         let schema = &post["inputSchema"];
-        assert_eq!(
-            schema["oneOf"],
-            json!([{"required":["channel_id"]},{"required":["recipient"]}])
+        assert_eq!(schema["type"], "object");
+        assert!(
+            ["oneOf", "anyOf", "allOf", "not"]
+                .iter()
+                .all(|keyword| schema.get(keyword).is_none()),
+            "Anthropic tools require a flat object schema"
         );
         let recipient = &schema["properties"]["recipient"];
         assert_eq!(recipient["required"], json!(["launch_id"]));

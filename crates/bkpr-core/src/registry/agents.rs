@@ -461,21 +461,25 @@ fn live_channel_agent<'a>(
     launch.channel_launch_alive().then_some((launch, agent))
 }
 
+fn channel_pane<'a>(state: &'a State, id: &str) -> Option<&'a PaneInfo> {
+    state
+        .record
+        .registry
+        .panes
+        .iter()
+        .find(|pane| pane.id == id)
+}
+
 fn channel_caller<'a>(
     state: &State,
+    pane: &PaneInfo,
     workspace: &str,
     caller: &Launch,
     agents: &'a AgentState,
     captures: &'a crate::harness::Captures,
 ) -> Result<(&'a Launch, &'a Agent)> {
     captures.authorize(caller)?;
-    let (current, agent) = state
-        .record
-        .registry
-        .panes
-        .iter()
-        .find(|pane| pane.id == caller.grant.pane_id)
-        .and_then(|pane| live_channel_agent(state, pane, workspace, agents, captures, None))
+    let (current, agent) = live_channel_agent(state, pane, workspace, agents, captures, None)
         .context("no bound participant in this workspace")?;
     ensure!(
         current.grant.launch_id == caller.grant.launch_id
@@ -523,6 +527,28 @@ fn channel_actor(id: channels::ParticipantId, agent: &Agent) -> channels::Partic
 }
 
 impl Registry {
+    fn channel_user(&self) -> channels::Participant {
+        channels::Participant {
+            id: channels::ParticipantId(self.inner.session.session_id.clone()),
+            kind: channels::ParticipantKind::User,
+            display_name: "User".into(),
+        }
+    }
+
+    fn channel_registry_admission(
+        &self,
+        state: &State,
+        connected: &dyn Fn() -> bool,
+    ) -> Result<()> {
+        ensure!(connected(), crate::channels::ChannelAccessLost);
+        healthy(state)?;
+        ensure!(
+            !state.closing && !self.session_end_requested(),
+            SessionClosing("session is shutting down")
+        );
+        Ok(())
+    }
+
     // `caller` is an OS-validated capture with a request-local binding witness.
     // Recheck that generation under the store's admission before any channel access.
     pub(super) fn channel_authority(
@@ -533,25 +559,14 @@ impl Registry {
         connected: &dyn Fn() -> bool,
     ) -> Result<crate::channels::ChannelAuthority> {
         use crate::channels::{ChannelAccessLost, ChannelAuthority, WorkspaceParticipant};
-        use channels::{Participant, ParticipantId, ParticipantKind};
 
         let state = self.inner.state.lock().unwrap();
-        ensure!(connected(), ChannelAccessLost);
-        healthy(&state)?;
-        ensure!(
-            !state.closing && !self.session_end_requested(),
-            SessionClosing("session is shutting down")
-        );
+        self.channel_registry_admission(&state, connected)?;
         let workspace_open = workspace_exists(&state, workspace);
         let writable = workspace_open && !state.closing_workspaces.contains(workspace);
-        let user = || Participant {
-            id: ParticipantId(self.inner.session.session_id.clone()),
-            kind: ParticipantKind::User,
-            display_name: "User".into(),
-        };
         if caller.is_none() && (!with_roster || !workspace_open) {
             return Ok(ChannelAuthority {
-                actor: user(),
+                actor: self.channel_user(),
                 writable,
                 workspace_open,
                 participants: Vec::new(),
@@ -565,17 +580,19 @@ impl Registry {
         let captures = self.inner.captures.lock().unwrap();
         let actor = if let Some(caller) = caller {
             ensure!(writable, ChannelAccessLost);
-            let (current, agent) = channel_caller(&state, workspace, caller, &agents, &captures)
-                .context(ChannelAccessLost)?;
+            let pane = channel_pane(&state, &caller.grant.pane_id).context(ChannelAccessLost)?;
+            let (current, agent) =
+                channel_caller(&state, pane, workspace, caller, &agents, &captures)
+                    .context(ChannelAccessLost)?;
             channel_agent(current, agent)
         } else {
-            user()
+            self.channel_user()
         };
         let mut participants = Vec::new();
         if with_roster {
             if caller.is_some() {
                 participants.push(WorkspaceParticipant {
-                    actor: user(),
+                    actor: self.channel_user(),
                     launch_id: None,
                     binding_revision: 0,
                 });
@@ -626,7 +643,9 @@ impl Registry {
         let agents = self.inner.agents.state.lock().unwrap();
         healthy_agents(&agents)?;
         let captures = self.inner.captures.lock().unwrap();
-        channel_caller(&state, workspace, caller, &agents, &captures)?;
+        let pane = channel_pane(&state, &caller.grant.pane_id)
+            .context("no bound participant in this workspace")?;
+        channel_caller(&state, pane, workspace, caller, &agents, &captures)?;
         let mut eligible = state
             .record
             .registry

@@ -8,6 +8,7 @@ mod ci;
 mod context;
 mod control;
 mod directories;
+mod legacy_channels;
 pub(crate) mod notification_capture;
 mod project;
 pub(crate) mod recovery;
@@ -168,6 +169,7 @@ struct Inner {
     captures: Mutex<crate::harness::Captures>,
     notifications: std::sync::OnceLock<crate::notifications::NotificationService>,
     channels: crate::channels::ChannelEngine,
+    channel_expiry: legacy_channels::Expiry,
     agents: Arc<agents::Agents>,
     spawn_environment: Mutex<Option<crate::harness::SpawnEnvironment>>,
     ssh_agent: Mutex<Option<Arc<crate::ssh_agent::Relay>>>,
@@ -506,6 +508,7 @@ impl Drop for Registry {
         {
             // A worker's temporary Inner reference is not an owner of the state
             // root. Join while this last public handle still retains the lease.
+            self.inner.channel_expiry.stop();
             self.stop_projects();
             self.stop_ci();
         }
@@ -618,6 +621,7 @@ impl Registry {
         let (ci_wake, ci_events) = crossbeam_channel::bounded(1);
         let agents = Arc::new(agents::Agents::new());
         let channels = crate::channels::ChannelEngine::new(root.to_owned());
+        let legacy_expiry = legacy_channels::migrate(root, &record, &channels)?;
         if !record.registry.workspaces.is_empty() {
             channels.provision(record.registry.workspaces.iter().map(|w| w.id.as_str()));
         }
@@ -649,6 +653,7 @@ impl Registry {
                 captures: Mutex::new(crate::harness::Captures::default()),
                 notifications: std::sync::OnceLock::new(),
                 channels,
+                channel_expiry: legacy_channels::Expiry::default(),
                 agents,
                 spawn_environment: Mutex::new(None),
                 ssh_agent: Mutex::new(None),
@@ -704,6 +709,10 @@ impl Registry {
                     .is_some_and(crate::harness::Launch::channel_launch_alive)
             })
         });
+        registry
+            .inner
+            .channel_expiry
+            .start(&registry, legacy_expiry)?;
         registry.start_projects(project_events)?;
         registry.start_ci(ci_events)?;
         Ok(registry)
@@ -2383,6 +2392,7 @@ impl Registry {
             state.live.values().cloned().collect::<Vec<_>>()
         };
         self.inner.channels.invalidate();
+        self.inner.channel_expiry.stop();
         self.detach_all_clients("shutdown");
         self.inner.agents.shutdown();
         let forwarding = self.inner.ssh_agent.lock().unwrap().clone();

@@ -1,4 +1,4 @@
-use super::{ChannelAccessLost, ChannelAuthority, ChannelRoutes, WakeTarget};
+use super::{ChannelAccessLost, ChannelAuthority, ChannelRoutes, WakeTarget, WorkspaceParticipant};
 use anyhow::{Context, Result, bail, ensure};
 use bkpr_protocol::channels::{
     AttachmentDescriptor, AttachmentId, AttachmentUpload, ChannelChange, ChannelChangeKind,
@@ -20,6 +20,8 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "legacy.rs"]
+mod legacy;
 #[path = "wakes.rs"]
 mod wakes;
 
@@ -157,18 +159,23 @@ struct MessagePage<'a> {
     reply_target: ReplyTarget<'a>,
 }
 
+fn open_session_directory(root: &Path) -> Result<File> {
+    let directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(root)
+        .context("open channel session directory")?;
+    let metadata = directory.metadata()?;
+    ensure!(
+        metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o077 == 0,
+        "channel session directory is not private"
+    );
+    Ok(directory)
+}
+
 impl Store {
     pub(super) fn open(root: &Path) -> Result<Self> {
-        let directory = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(root)
-            .context("open channel session directory")?;
-        let metadata = directory.metadata()?;
-        ensure!(
-            metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o077 == 0,
-            "channel session directory is not private"
-        );
+        let directory = open_session_directory(root)?;
         for sidecar in [
             "channels.sqlite3-journal",
             "channels.sqlite3-wal",
@@ -238,9 +245,11 @@ impl Store {
             {
                 tx.execute_batch(include_str!("direct.sql"))?;
             }
+            if !legacy::source_present(root) {
+                tx.execute_batch("DROP TABLE IF EXISTS agent_state;")?;
+            }
             tx.execute_batch(
-                "DROP TABLE IF EXISTS agent_state;
-                 ALTER TABLE notification_work ADD COLUMN read_at INTEGER;
+                "ALTER TABLE notification_work ADD COLUMN read_at INTEGER;
                  ALTER TABLE notification_work ADD COLUMN acknowledged_at INTEGER;",
             )?;
             tx.pragma_update(None, "user_version", STORE_VERSION)?;
@@ -257,6 +266,15 @@ impl Store {
             connection,
             retirement_epoch: 0,
         })
+    }
+
+    pub(super) fn maintain_legacy(
+        &mut self,
+        root: &Path,
+        now_ms: u64,
+        workspace_for_pane: &impl Fn(&str) -> Option<String>,
+    ) -> Result<Option<u64>> {
+        legacy::maintain(&mut self.connection, root, now_ms, workspace_for_pane)
     }
 
     pub(super) fn retire_closed_workspaces(
@@ -894,7 +912,7 @@ impl Store {
         retire: impl FnOnce(&mut Self, &str) -> Result<bool>,
         routes: ChannelRoutes<'_>,
         (id, fingerprint): (&ChannelId, &[u8]),
-        new_pair: Option<(&Participant, &Participant)>,
+        selected_direct: Option<(WorkspaceParticipant, bool)>,
     ) -> Result<(ChannelResponse, bool)> {
         require_write(&authority)?;
         if channel.direct {
@@ -908,11 +926,8 @@ impl Store {
             );
         }
         let mut authority = authority;
-        let direct_members = if channel.direct {
-            let pair = match new_pair {
-                Some((a, b)) => [a.id.clone(), b.id.clone()],
-                None => self.direct_pair(id)?.context(ChannelAccessLost)?,
-            };
+        let direct_members = if channel.direct && selected_direct.is_none() {
+            let pair = self.direct_pair(id)?.context(ChannelAccessLost)?;
             let peer = pair
                 .iter()
                 .find(|p| **p != authority.actor.id)
@@ -926,6 +941,9 @@ impl Store {
         } else {
             None
         };
+        let selected_peer = selected_direct.as_ref().map(|(peer, _)| peer);
+        let recipients =
+            selected_peer.map_or(authority.participants.as_slice(), std::slice::from_ref);
         let (policy, attention) = match authority.actor.kind {
             ParticipantKind::User => (channel.settings.user_wake, false),
             ParticipantKind::Agent => (
@@ -937,11 +955,10 @@ impl Store {
                 },
             ),
         };
-        let may_wake = !authority.participants.is_empty()
+        let may_wake = !recipients.is_empty()
             && policy != WakePolicy::None
             && (policy != WakePolicy::AddressedOnly || !post.mentions.is_empty());
-        let shared_members = if direct_members.is_none() && (may_wake || !post.mentions.is_empty())
-        {
+        let shared_members = if !channel.direct && (may_wake || !post.mentions.is_empty()) {
             self.members_if_explicit(id, &channel)?
         } else {
             None
@@ -950,13 +967,23 @@ impl Store {
             .as_ref()
             .map(|pair| pair.as_slice())
             .or(shared_members.as_deref());
-        let can_mention = |participant: &Participant| member(participant, explicit_members);
+        let can_mention = |participant: &Participant| match selected_peer {
+            Some(peer) => {
+                participant.kind == ParticipantKind::User
+                    || participant.id == authority.actor.id
+                    || participant.id == peer.actor.id
+            }
+            None => member(participant, explicit_members),
+        };
         let mut addressed_agent = false;
         for mention in &mut post.mentions {
             let target = if let Some(caller) = routes.exact_mentions {
-                exact_mention(&authority, mention, caller)
+                exact_mention(&authority, recipients, mention, caller)
             } else {
-                authority.roster().find(|actor| actor.id == *mention)
+                authority
+                    .roster()
+                    .chain(selected_peer.map(|peer| &peer.actor))
+                    .find(|actor| actor.id == *mention)
             }
             .filter(|actor| can_mention(actor))
             .context("channel mention no longer names a current member; refresh the roster")?;
@@ -967,7 +994,7 @@ impl Store {
         }
         let mut wakes = Vec::new();
         if may_wake {
-            for entry in &authority.participants {
+            for entry in recipients {
                 let Some(launch) = entry.launch_id.as_deref() else {
                     continue;
                 };
@@ -1016,8 +1043,8 @@ impl Store {
             self.reclaim_wake_capacity(needed, routes.binding_live)?;
         }
         let tx = self.connection.transaction()?;
-        if let Some((a, b)) = new_pair {
-            insert_direct_channel(&tx, id, &channel.workspace_id, a, b)?;
+        if let Some((peer, true)) = &selected_direct {
+            insert_direct_channel(&tx, id, &channel.workspace_id, &message.author, &peer.actor)?;
         }
         if let Some(reply) = &message.reply_to {
             ensure!(
@@ -1134,6 +1161,7 @@ impl Store {
         ).optional()?)
     }
 
+    /// Post to an exact launch, resolving the same-workspace target only on a receipt miss.
     pub(crate) fn post_direct(
         &mut self,
         post: ChannelPost,
@@ -1141,24 +1169,19 @@ impl Store {
         launch_id: &str,
         workspace: &str,
         routes: ChannelRoutes<'_>,
+        resolve_target: impl FnOnce() -> Result<WorkspaceParticipant>,
     ) -> Result<(ChannelResponse, bool)> {
         let selector = ChannelId(format!("\u{1}{launch_id}"));
         let fingerprint = fingerprint_for(&post, Some(&selector));
         if let Some(receipt) = self.retry_post(&authority.actor.id, &post, &fingerprint, None)? {
             return Ok((receipt, false));
         }
-        let target = authority
-            .participants
-            .iter()
-            .find(|p| p.launch_id.as_deref() == Some(launch_id))
-            .context("direct recipient is not a live launch in your workspace")?
-            .actor
-            .clone();
+        let target = resolve_target()?;
         ensure!(
-            target.id != authority.actor.id,
+            target.actor.id != authority.actor.id,
             "cannot post a direct message to yourself"
         );
-        let mut pair = [authority.actor.id.as_ref(), target.id.as_ref()];
+        let mut pair = [authority.actor.id.as_ref(), target.actor.id.as_ref()];
         pair.sort_unstable();
         let existing = self.connection.query_row(
             "SELECT c.id,c.workspace_id,d.display_name,c.workspace_wide,c.settings,c.last_sequence,
@@ -1167,7 +1190,6 @@ impl Store {
              WHERE d.first_participant=?1 AND d.second_participant=?2",
             pair, |row| Ok((ChannelId(row.get(0)?), StoredChannel::read(row, 1)?)),
         ).optional()?;
-        let author = authority.actor.clone();
         let is_new = existing.is_none();
         let (id, channel) = existing.unwrap_or_else(|| {
             (
@@ -1191,7 +1213,7 @@ impl Store {
             |_, _| Ok(false),
             routes,
             (&id, &fingerprint),
-            is_new.then_some((&author, &target)),
+            Some((target, is_new)),
         )
     }
 
@@ -1249,7 +1271,7 @@ impl Store {
             return Ok(false);
         }
         Ok(self.connection.execute(
-            "UPDATE notification_work SET acknowledged_at=?6,pending=0
+            "UPDATE notification_work SET acknowledged_at=?6
              WHERE channel_id=?1 AND message_id=?2 AND participant_id=?3
                 AND launch_id=?4 AND binding_revision=?5",
             params![
@@ -1992,6 +2014,7 @@ fn members_page(
 
 fn exact_mention<'a>(
     authority: &'a ChannelAuthority,
+    recipients: &'a [WorkspaceParticipant],
     mention: &ParticipantId,
     caller: (&str, u64),
 ) -> Option<&'a Participant> {
@@ -2009,8 +2032,7 @@ fn exact_mention<'a>(
         if caller == (launch, binding) {
             return Some(&authority.actor);
         }
-        return authority
-            .participants
+        return recipients
             .iter()
             .find(|entry| {
                 entry.launch_id.as_deref() == Some(launch) && entry.binding_revision == binding

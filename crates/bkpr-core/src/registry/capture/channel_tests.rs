@@ -3,7 +3,7 @@ use bkpr_protocol::channels::{
     ChannelId, ChannelPost, ChannelRequest, ChannelResponse, ChannelSource, MembershipMode,
     MessageId, ParticipantId, PostIntent,
 };
-use bkpr_protocol::{AgentReceiverMode, AgentWakeOutcome};
+use bkpr_protocol::{AgentReceiverMode, AgentWakeOutcome, LayoutNode, Window, Workspace};
 
 const NATIVE_ID: &str = "owned-channel-conversation";
 
@@ -2103,6 +2103,256 @@ fn authenticated_channel_attachments_require_live_member() {
             "unknown or ended launch"
         );
     }
+}
+
+fn add_channel_peer(registry: &Registry, spec: PaneSpawnSpec) -> Launch {
+    let workspace = registry.snapshot().unwrap().workspaces.remove(0);
+    send(
+        registry,
+        Operation::WindowCreate {
+            workspace_id: workspace.id,
+            expected_revision: workspace.revision,
+            name: None,
+            spec: spec.clone(),
+        },
+    );
+    live(registry, &spec.home)
+}
+
+fn open_channel_pair(root: &Path) -> (Registry, ServerGuard, Launch, Launch) {
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.join("omp")).unwrap();
+    let (registry, server) = open(root);
+    let first = launch_spec(root, "first", "first");
+    send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: Some(first.clone()),
+        },
+    );
+    let first = live(&registry, &first.home);
+    let second = add_channel_peer(&registry, launch_spec(root, "second", "second"));
+    (registry, server, first, second)
+}
+
+fn channel_peer_window<'a>(workspace: &'a Workspace, launch: &Launch) -> &'a Window {
+    workspace
+        .windows
+        .iter()
+        .find(|window| {
+            matches!(&window.layout, Some(LayoutNode::Leaf { pane_id }) if pane_id == &launch.grant.pane_id)
+        })
+        .unwrap()
+}
+
+#[test]
+fn resumed_participant_reads_retained_direct_history_but_cannot_ack_old_delivery() {
+    let root = private_root();
+    let root = root.path();
+    let (registry, server, sender, old) = open_channel_pair(root);
+    let body = "read before restart, never acknowledged";
+    let receipt = agent(
+        &registry,
+        &sender,
+        direct_post(&old.grant.launch_id, body, "before-restart"),
+    );
+    assert_eq!(receipt["wake_count"], 1);
+    let channel_id = ChannelId(receipt["channel_id"].as_str().unwrap().into());
+    let message_id = MessageId(receipt["message"]["id"].as_str().unwrap().into());
+    let read = || AgentRequest::ChannelRead {
+        channel_id: channel_id.clone(),
+        message_id: message_id.clone(),
+        offset: None,
+        max_bytes: None,
+    };
+    let original_receiver = receiver(&registry, &old);
+    let wake = subscribe(&registry, &old, &original_receiver);
+    assert_eq!(wake["channel_wake"]["addressed_message_id"], message_id.0);
+    assert_eq!(
+        settle_wake(&registry, &old, &original_receiver, &wake)["recorded"],
+        true
+    );
+    assert_eq!(agent(&registry, &old, read())["text"], body);
+
+    let delivery = || {
+        let db = rusqlite::Connection::open_with_flags(
+            root.join("state/channels.sqlite3"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        db.query_row(
+            "SELECT launch_id,binding_revision,read_at,acknowledged_at FROM notification_work
+             WHERE channel_id=?1 AND message_id=?2",
+            [channel_id.as_ref(), message_id.as_ref()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            },
+        )
+        .unwrap()
+    };
+    let before = delivery();
+    assert_eq!(before.0, old.grant.launch_id);
+    assert_eq!(before.1, old.binding_generation);
+    assert!(before.2.is_some());
+    assert_eq!(before.3, None);
+
+    let pane = &old.grant.pane_id;
+    drop(server);
+    drop(registry);
+
+    let (registry, _server) = open(root);
+    let expected = registry
+        .recovery_candidates()
+        .unwrap()
+        .into_iter()
+        .find(|candidate| &candidate.pane_id == pane)
+        .unwrap()
+        .harness;
+    let workspace = registry.snapshot().unwrap().workspaces.remove(0);
+    let window = channel_peer_window(&workspace, &old);
+    let window_id = window.id.clone();
+    let revision = window.revision;
+    let spec = launch_spec(root, "second", "second");
+    registry
+        .spawn_inner(
+            SpawnTarget::Reopen {
+                pane_id: pane.clone(),
+                workspace_id: workspace.id,
+                window_id,
+                expected_revision: revision,
+            },
+            spec.clone(),
+            Some(recovery::ResumeAttempt {
+                source: pane.clone(),
+                expected,
+                workspace: None,
+            }),
+            None,
+        )
+        .unwrap();
+    let recovered = live(&registry, &spec.home);
+    assert_ne!(recovered.grant.launch_id, old.grant.launch_id);
+    assert_eq!(recovered.channel_participant, old.channel_participant);
+    let retained = agent_channel(&registry, &recovered, history(&channel_id)).unwrap();
+    assert_eq!(retained["messages"], json!([receipt["message"]]));
+    assert_eq!(agent(&registry, &recovered, read())["text"], body);
+    assert!(
+        agent_result(
+            &registry,
+            &recovered,
+            AgentRequest::ChannelAck {
+                channel_id: channel_id.clone(),
+                message_id: message_id.clone(),
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(delivery(), before);
+    let recovered_receiver = receiver(&registry, &recovered);
+    assert!(subscribe(&registry, &recovered, &recovered_receiver).is_null());
+}
+
+#[test]
+fn exact_direct_retry_survives_target_replacement_and_early_ack_keeps_wake() {
+    let root = private_root();
+    let root = root.path();
+    let (registry, _server, sender, target) = open_channel_pair(root);
+    let body = "dispatch even if already acknowledged";
+    let original = || direct_post(&target.grant.launch_id, body, "exact");
+    let receipt = agent(&registry, &sender, original());
+    assert_eq!(receipt["wake_count"], 1);
+    let channel_id = ChannelId(receipt["channel_id"].as_str().unwrap().into());
+    let message_id = MessageId(receipt["message"]["id"].as_str().unwrap().into());
+    let initial_history = agent_channel(&registry, &sender, history(&channel_id)).unwrap();
+    assert_eq!(initial_history["messages"], json!([receipt["message"]]));
+    assert_eq!(
+        agent(
+            &registry,
+            &target,
+            AgentRequest::ChannelRead {
+                channel_id: channel_id.clone(),
+                message_id: message_id.clone(),
+                offset: None,
+                max_bytes: None,
+            }
+        )["text"],
+        body
+    );
+    assert_eq!(
+        agent(
+            &registry,
+            &target,
+            AgentRequest::ChannelAck {
+                channel_id: channel_id.clone(),
+                message_id: message_id.clone(),
+            }
+        )["acknowledged"],
+        true
+    );
+    let target_receiver = receiver(&registry, &target);
+    let wake = subscribe(&registry, &target, &target_receiver);
+    assert_eq!(wake["channel_wake"]["addressed_message_id"], message_id.0);
+    assert_eq!(
+        validate_wake(&registry, &target, &target_receiver, &wake)["current"],
+        true
+    );
+    assert_eq!(
+        settle_wake(&registry, &target, &target_receiver, &wake)["recorded"],
+        true
+    );
+
+    let workspace = registry.snapshot().unwrap().workspaces.remove(0);
+    let window = channel_peer_window(&workspace, &target);
+    send(
+        &registry,
+        Operation::WindowClose {
+            workspace_id: workspace.id.clone(),
+            window_id: window.id.clone(),
+            expected_revision: window.revision,
+        },
+    );
+    assert_eq!(agent(&registry, &sender, original()), receipt);
+    let native = &target.managed.conversation.as_ref().unwrap().id;
+    let replacement = add_channel_peer(&registry, launch_spec(root, "replacement", native));
+    assert_ne!(replacement.grant.launch_id, target.grant.launch_id);
+    let replacement_receiver = receiver(&registry, &replacement);
+    assert!(subscribe(&registry, &replacement, &replacement_receiver).is_null());
+    assert_eq!(agent(&registry, &sender, original()), receipt);
+    assert!(
+        agent_result(
+            &registry,
+            &sender,
+            direct_post(&target.grant.launch_id, body, "fresh")
+        )
+        .is_err()
+    );
+    assert_eq!(
+        agent_channel(&registry, &sender, history(&channel_id)).unwrap(),
+        initial_history
+    );
+    assert!(subscribe(&registry, &replacement, &replacement_receiver).is_null());
+
+    let fresh = agent(
+        &registry,
+        &sender,
+        direct_post(&replacement.grant.launch_id, "new target", "fresh"),
+    );
+    let wake = subscribe(&registry, &replacement, &replacement_receiver);
+    assert_eq!(
+        wake["channel_wake"]["addressed_message_id"],
+        fresh["message"]["id"]
+    );
+    assert_eq!(wake["message_count"], 1);
+    assert_eq!(
+        settle_wake(&registry, &replacement, &replacement_receiver, &wake)["recorded"],
+        true
+    );
+    assert!(subscribe(&registry, &replacement, &replacement_receiver).is_null());
 }
 
 #[test]

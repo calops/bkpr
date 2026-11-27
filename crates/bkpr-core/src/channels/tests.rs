@@ -2335,6 +2335,13 @@ fn direct_version_nine_migration_keeps_history_and_uses_the_ordered_queue() {
                         binding_live: &|_, _| true,
                         direct_peer: &|_| Ok(None),
                     },
+                    || {
+                        Ok(WorkspaceParticipant {
+                            actor: f.a.clone(),
+                            launch_id: Some("launch-a".into()),
+                            binding_revision: 1,
+                        })
+                    },
                 )
             })
             .unwrap();
@@ -2402,6 +2409,56 @@ fn direct_version_nine_migration_keeps_history_and_uses_the_ordered_queue() {
     assert_eq!(first_batch.channel_id, shared);
     assert_eq!(second_batch.channel_id, direct);
     assert_eq!(second_batch.addressed_message_id, Some(next.id));
+}
+
+#[test]
+fn first_direct_post_accepts_descending_pair_and_replays_without_resolving_target() {
+    let f = Fixture::new();
+    let mut original = post("descending-pair");
+    original.mentions = vec![ParticipantId(super::agent_mention_id("launch-b", 1))];
+    let send = |resolve_target: fn(&Fixture) -> Result<WorkspaceParticipant>| {
+        f.engine
+            .with_store(|store| {
+                let mut sender = f.authority(&f.b, WORKSPACE)?;
+                sender.participants.clear();
+                store.post_direct(
+                    original.clone(),
+                    sender,
+                    "launch-a",
+                    WORKSPACE,
+                    super::ChannelRoutes {
+                        workspace: Some(WORKSPACE),
+                        exact_mentions: Some(("launch-b", 1)),
+                        publish: &|_| {},
+                        binding_live: &|_, _| true,
+                        direct_peer: &|_| Ok(None),
+                    },
+                    || resolve_target(&f),
+                )
+            })
+            .unwrap()
+    };
+    let (receipt, committed) = send(|f| {
+        Ok(WorkspaceParticipant {
+            actor: f.a.clone(),
+            launch_id: Some("launch-a".into()),
+            binding_revision: 1,
+        })
+    });
+    assert!(committed);
+    let ChannelResponse::Posted {
+        message,
+        wake_count: 1,
+        ..
+    } = &receipt
+    else {
+        panic!("first direct post must queue one wake");
+    };
+    assert_eq!(message.mentions, std::slice::from_ref(&f.b.id));
+    assert_eq!(
+        send(|_| anyhow::bail!("recipient has retired")),
+        (receipt, false)
+    );
 }
 
 #[test]
