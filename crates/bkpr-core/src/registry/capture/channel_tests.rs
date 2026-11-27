@@ -473,11 +473,20 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
     let old_disk = rusqlite::Connection::open(root.join("state/channels.sqlite3")).unwrap();
     old_disk
         .execute_batch(
-            "ALTER TABLE notification_work DROP COLUMN read_at;
-         ALTER TABLE notification_work DROP COLUMN acknowledged_at;
-         CREATE TABLE agent_state(singleton INTEGER PRIMARY KEY, snapshot BLOB);
-         INSERT INTO agent_state VALUES(1,x'00');
-         PRAGMA user_version=9;",
+            "DELETE FROM notification_work WHERE channel_id IN (SELECT channel_id FROM direct_channels);
+             DROP INDEX pending_launch_enqueue;
+             DROP INDEX pending_channel_sequence;
+             DROP INDEX wake_batch_membership;
+             DROP INDEX active_batch_launch;
+             DROP INDEX unsettled_batch_deadline;
+             ALTER TABLE channel_batches DROP COLUMN revoked;
+             ALTER TABLE notification_work DROP COLUMN enqueue_ordinal;
+             ALTER TABLE notification_work DROP COLUMN channel_sequence;
+             ALTER TABLE notification_work DROP COLUMN read_at;
+             ALTER TABLE notification_work DROP COLUMN acknowledged_at;
+             CREATE TABLE agent_state(singleton INTEGER PRIMARY KEY, snapshot BLOB);
+             INSERT INTO agent_state VALUES(1,x'00');
+             PRAGMA user_version=9;",
         )
         .unwrap();
     drop(old_disk);
