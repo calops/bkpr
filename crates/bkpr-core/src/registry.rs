@@ -1001,7 +1001,8 @@ impl Registry {
             ChannelRequest::ListMembers { .. }
             | ChannelRequest::UserRoster { .. }
             | ChannelRequest::Post { .. }
-            | ChannelRequest::PostUser { .. } => true,
+            | ChannelRequest::PostUser { .. }
+            | ChannelRequest::PostUserWithCoordinator { .. } => true,
             ChannelRequest::Create { members, .. }
             | ChannelRequest::SetMembership { members, .. } => !members.is_empty(),
             _ => false,

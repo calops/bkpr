@@ -208,6 +208,12 @@ fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
             post: annotated_post,
             bindings: vec![mention_binding()],
         },
+        ChannelRequest::PostUserWithCoordinator {
+            channel_id: channel(),
+            post: post(),
+            bindings: vec![mention_binding()],
+            coordinator_grant_id: crate::roles::RoleGrantId("tenure".into()),
+        },
         ChannelRequest::History {
             channel_id: channel(),
             before: Some(8),
@@ -381,6 +387,28 @@ fn source_post_frames_fail_legacy_header_admission_without_breaking_ordinary_pos
             panic!("expected fenced channel post");
         };
         assert_eq!(actual, fenced);
+        let ChannelRequest::PostUser {
+            channel_id,
+            post: fenced_post,
+            bindings,
+        } = fenced
+        else {
+            unreachable!();
+        };
+        let coordinator = Operation::Channels {
+            request: ChannelRequest::PostUserWithCoordinator {
+                channel_id,
+                post: fenced_post,
+                bindings,
+                coordinator_grant_id: crate::roles::RoleGrantId("tenure".into()),
+            },
+        };
+        check_frames(
+            codec
+                .encode_client_request(&authority, &coordinator)
+                .unwrap(),
+            has_source,
+        );
 
         let agent = Request::new(Operation::Agent {
             launch_id: "launch".into(),
@@ -673,6 +701,12 @@ fn channel_validation_rejects_client_authorship_and_invalid_reference_shapes() {
                 binding_generation: 0,
                 ..mention_binding()
             },
+        },
+        ChannelRequest::PostUserWithCoordinator {
+            channel_id: channel(),
+            post: post(),
+            bindings: vec![],
+            coordinator_grant_id: crate::roles::RoleGrantId("tenure".into()),
         },
         ChannelRequest::Post {
             channel_id: channel(),

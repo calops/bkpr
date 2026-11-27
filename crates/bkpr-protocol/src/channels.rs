@@ -757,6 +757,19 @@ pub enum ChannelRequest {
         /// Agent from the owning workspace's current roster; stale bindings are rejected.
         target: ChannelMentionBinding,
     },
+    /// Commit a user post with a structured `@coordinator` mention. The exact
+    /// selected tenure and holder must still be current and eligible in this channel.
+    PostUserWithCoordinator {
+        /// Exact owning channel identity.
+        channel_id: ChannelId,
+        /// Body, retry key and structured references, including the holder's participant ID.
+        post: ChannelPost,
+        /// Exact bindings for mentioned agents, including the selected holder.
+        bindings: Vec<ChannelMentionBinding>,
+        /// Tenure selected from the same roster row as the holder's binding.
+        /// Part of the retry fingerprint; not a channel access grant.
+        coordinator_grant_id: crate::roles::RoleGrantId,
+    },
 }
 
 /// Typed channel replies. Only an attachment fetch includes encoded raster bytes.
@@ -1045,7 +1058,24 @@ impl ChannelRequest {
                 channel_id,
                 post,
                 bindings,
+            }
+            | Self::PostUserWithCoordinator {
+                channel_id,
+                post,
+                bindings,
+                ..
             } => {
+                if let Self::PostUserWithCoordinator {
+                    coordinator_grant_id,
+                    ..
+                } = self
+                {
+                    valid_id(&coordinator_grant_id.0)?;
+                    ensure!(
+                        !bindings.is_empty(),
+                        "coordinator mention requires an exact holder binding"
+                    );
+                }
                 valid_id(channel_id.as_ref())?;
                 post.validate()?;
                 ensure!(

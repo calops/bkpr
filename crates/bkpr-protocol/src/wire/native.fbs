@@ -487,6 +487,12 @@ table ChannelRequestInviteUser {
   channel_id:string (required);
   target:ChannelMentionBinding (required);
 }
+table ChannelRequestPostUserWithCoordinator {
+  channel_id:string (required);
+  post:ChannelPost (required);
+  bindings:[ChannelMentionBinding] (required);
+  coordinator_grant_id:string (required);
+}
 union ChannelRequest {
   ChannelRequestList,
   ChannelRequestListMembers,
@@ -506,7 +512,8 @@ union ChannelRequest {
   ChannelRequestCatalogSubscribe,
   ChannelRequestUserRoster,
   ChannelRequestPostUser,
-  ChannelRequestInviteUser
+  ChannelRequestInviteUser,
+  ChannelRequestPostUserWithCoordinator
 }
 table OperationChannels { request:ChannelRequest (required); }
 enum WorkspaceRole:ubyte { Coordinator = 1 }

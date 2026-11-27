@@ -157,6 +157,9 @@ fn request_capabilities(payload: &[u8]) -> planus::Result<u64> {
             g::ChannelRequestRef::ChannelRequestPostUser(post) => {
                 !matches!(post.post()?.source(), Ok(None))
             }
+            g::ChannelRequestRef::ChannelRequestPostUserWithCoordinator(post) => {
+                !matches!(post.post()?.source(), Ok(None))
+            }
             _ => false,
         }));
     }

@@ -565,6 +565,7 @@ impl Store {
             | ChannelRequest::InviteUser { channel_id, .. }
             | ChannelRequest::Post { channel_id, .. }
             | ChannelRequest::PostUser { channel_id, .. }
+            | ChannelRequest::PostUserWithCoordinator { channel_id, .. }
             | ChannelRequest::History { channel_id, .. }
             | ChannelRequest::Read { channel_id, .. }
             | ChannelRequest::MarkRead { channel_id, .. }
@@ -580,6 +581,7 @@ impl Store {
             | ChannelRequest::InviteUser { .. } => channel.require_unmanaged()?,
             ChannelRequest::ListMembers { .. }
             | ChannelRequest::PostUser { .. }
+            | ChannelRequest::PostUserWithCoordinator { .. }
             | ChannelRequest::UploadAttachment { .. }
             | ChannelRequest::GetAttachment { .. } => channel.require_shared()?,
             _ => {}
@@ -633,18 +635,31 @@ impl Store {
                     routes.fence_user_mentions,
                 )
             }
-            request @ (ChannelRequest::Post { .. } | ChannelRequest::PostUser { .. }) => {
-                let (channel_id, post, bindings) = match request {
-                    ChannelRequest::Post { channel_id, post } => (channel_id, post, None),
+            request @ (ChannelRequest::Post { .. }
+            | ChannelRequest::PostUser { .. }
+            | ChannelRequest::PostUserWithCoordinator { .. }) => {
+                let (channel_id, post, bindings, coordinator_grant_id) = match request {
+                    ChannelRequest::Post { channel_id, post } => (channel_id, post, None, None),
                     ChannelRequest::PostUser {
                         channel_id,
                         post,
                         bindings,
-                    } => (channel_id, post, Some(bindings)),
+                    } => (channel_id, post, Some(bindings), None),
+                    ChannelRequest::PostUserWithCoordinator {
+                        channel_id,
+                        post,
+                        bindings,
+                        coordinator_grant_id,
+                    } => (channel_id, post, Some(bindings), Some(coordinator_grant_id)),
                     _ => unreachable!(),
                 };
                 let bindings = bindings.as_deref();
-                let fingerprint = fingerprint_for(&post, selector.as_ref(), bindings);
+                let fingerprint = fingerprint_for(
+                    &post,
+                    selector.as_ref(),
+                    bindings,
+                    coordinator_grant_id.as_ref(),
+                );
                 if let Some(receipt) =
                     self.retry_post(&authority.actor.id, &post, &fingerprint, Some(&channel_id))?
                 {
@@ -658,6 +673,7 @@ impl Store {
                     routes,
                     attention_origin,
                     (&channel_id, &fingerprint, bindings),
+                    coordinator_grant_id.as_ref(),
                     None,
                 )
             }
@@ -1166,6 +1182,7 @@ impl Store {
         routes: ChannelRoutes<'_>,
         attention_origin: Option<&str>,
         (id, fingerprint, bindings): (&ChannelId, &[u8], Option<&[ChannelMentionBinding]>),
+        coordinator_grant_id: Option<&RoleGrantId>,
         selected_direct: Option<(WorkspaceParticipant, bool)>,
     ) -> Result<(ChannelResponse, bool)> {
         if bindings.is_some() {
@@ -1333,6 +1350,21 @@ impl Store {
             .filter(|bindings| !bindings.is_empty())
             .map(|bindings| (routes.fence_user_mentions)(&channel.workspace_id, bindings))
             .transpose()?;
+        // All tenure changes use this store slot; the binding guard also pins
+        // the selected launch/binding until the post and its wakes commit.
+        if let Some(expected) = coordinator_grant_id {
+            ensure!(
+                self.role_grant(&channel.workspace_id).is_some_and(|grant| {
+                    grant.role == WorkspaceRole::Coordinator
+                        && grant.id == *expected
+                        && bindings.into_iter().flatten().any(|binding| {
+                            binding.launch_id == grant.holder.launch_id
+                                && binding.participant_id == grant.holder.participant_id
+                        })
+                }),
+                "selected @coordinator grant changed or ended; select @coordinator again; nothing was posted"
+            );
+        }
         let grant = if channel.role_thread || authority.actor.kind == ParticipantKind::Agent {
             channel
                 .delegation_workspace(&authority, routes.workspace)
@@ -1502,7 +1534,7 @@ impl Store {
         resolve_target: impl FnOnce() -> Result<WorkspaceParticipant>,
     ) -> Result<(ChannelResponse, bool)> {
         let selector = ChannelId(format!("\u{1}{launch_id}"));
-        let fingerprint = fingerprint_for(&post, Some(&selector), None);
+        let fingerprint = fingerprint_for(&post, Some(&selector), None, None);
         if let Some(receipt) = self.retry_post(&authority.actor.id, &post, &fingerprint, None)? {
             return Ok((receipt, false));
         }
@@ -1545,6 +1577,7 @@ impl Store {
             routes,
             None,
             (&id, &fingerprint, None),
+            None,
             Some((target, is_new)),
         )
     }
@@ -2792,6 +2825,7 @@ fn fingerprint_for(
     post: &ChannelPost,
     selector: Option<&ChannelId>,
     bindings: Option<&[ChannelMentionBinding]>,
+    coordinator_grant_id: Option<&RoleGrantId>,
 ) -> [u8; 32] {
     let mut writer = Sha256::new();
     if let Some(selector) = selector {
@@ -2803,6 +2837,10 @@ fn fingerprint_for(
         writer.update(b"\0user mention bindings\0");
         serde_json::to_writer(&mut writer, bindings)
             .expect("typed mention binding serialization is infallible");
+    }
+    if let Some(grant) = coordinator_grant_id {
+        writer.update(b"\0coordinator mention grant\0");
+        writer.update(grant.0.as_bytes());
     }
     writer.finalize().into()
 }

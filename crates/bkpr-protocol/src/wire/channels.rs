@@ -162,14 +162,32 @@ pub(super) fn write_request(
             channel_id,
             post,
             bindings,
+        }
+        | ChannelRequest::PostUserWithCoordinator {
+            channel_id,
+            post,
+            bindings,
+            ..
         } => {
             let channel = write_text(b, channel_id.as_ref(), budget)?;
             let post = write_post(b, post, budget, depth)?;
             let bindings = write_vector(b, bindings, budget, |b, binding, budget| {
                 write_mention_binding(b, binding, budget, depth)
             })?;
-            let offset = g::ChannelRequestPostUser::create(b, channel, post, bindings);
-            G::create_channel_request_post_user(b, offset)
+            if let ChannelRequest::PostUserWithCoordinator {
+                coordinator_grant_id,
+                ..
+            } = request
+            {
+                let grant = write_text(b, &coordinator_grant_id.0, budget)?;
+                let offset = g::ChannelRequestPostUserWithCoordinator::create(
+                    b, channel, post, bindings, grant,
+                );
+                G::create_channel_request_post_user_with_coordinator(b, offset)
+            } else {
+                let offset = g::ChannelRequestPostUser::create(b, channel, post, bindings);
+                G::create_channel_request_post_user(b, offset)
+            }
         }
         ChannelRequest::History {
             channel_id,
@@ -321,6 +339,17 @@ pub(super) fn read_request(
             bindings: read_vector(v.bindings()?, MAX_MENTIONS, budget, |value, budget| {
                 read_mention_binding(value, budget, depth)
             })?,
+        },
+        R::ChannelRequestPostUserWithCoordinator(v) => ChannelRequest::PostUserWithCoordinator {
+            channel_id: ChannelId(read_id(v.channel_id()?, budget)?),
+            post: read_post(v.post()?, budget, depth)?,
+            bindings: read_vector(v.bindings()?, MAX_MENTIONS, budget, |value, budget| {
+                read_mention_binding(value, budget, depth)
+            })?,
+            coordinator_grant_id: crate::roles::RoleGrantId(read_id(
+                v.coordinator_grant_id()?,
+                budget,
+            )?),
         },
         R::ChannelRequestHistory(v) => ChannelRequest::History {
             channel_id: ChannelId(read_id(v.channel_id()?, budget)?),

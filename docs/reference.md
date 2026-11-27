@@ -2248,6 +2248,13 @@ launch doesn't inherit access. A `role_wake` tells a live holder that a grant
 changed; use `role_status` to check current authority and pass its exact grant
 ID to `role_release` to relinquish it.
 
+For a structured `@coordinator` mention, use `PostUserWithCoordinator` with the
+selected channel roster row's binding and `role.grant_id`. The backend checks the
+grant and normal channel mention eligibility together. If the grant changes
+before a new post commits, reselect the mention. Exact retries of committed posts
+return the original receipt. Literal `@coordinator` text doesn't resolve a mention
+or change the channel's normal wake policy.
+
 Registered role-capable clients opt into lifetime invalidations by sending
 `RoleRequest::Activity` in `Operation::Roles`. `Snapshot` exposes only that
 attachment's current prompts. `Decide` fences the exact request, requester binding,

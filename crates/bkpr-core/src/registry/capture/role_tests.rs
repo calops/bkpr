@@ -225,6 +225,154 @@ fn user_invites_add_exact_live_members_without_replacing_concurrent_edits() {
 }
 
 #[test]
+fn coordinator_alias_fences_tenure_without_changing_named_mentions_or_retries() {
+    use bkpr_protocol::channels::{ChannelSettings, WakePolicy};
+
+    let root = private_root();
+    let (registry, _server, first, second) = open_channel_pair(root.path());
+    let workspace = registry.snapshot().unwrap().workspaces.remove(0).id;
+    let (client, _stream) = registry.test_role_client();
+    activity(&registry, &client, true);
+    let channel_request = |request| channel(&registry, None, request);
+    let create = |name: &str, membership, members| {
+        let ChannelResponse::Channel { channel } = channel_request(ChannelRequest::Create {
+            workspace_id: workspace.clone(),
+            name: name.into(),
+            membership,
+            members,
+            settings: ChannelSettings {
+                user_wake: WakePolicy::AddressedOnly,
+                ..ChannelSettings::default()
+            },
+        })
+        .unwrap() else {
+            panic!("expected created channel");
+        };
+        channel.id
+    };
+    let shared = create("addressed", MembershipMode::WorkspaceWide, vec![]);
+    let private = create(
+        "restricted",
+        MembershipMode::Explicit,
+        vec![binding(&second).participant_id],
+    );
+    let roster = |id: &ChannelId| {
+        let ChannelResponse::UserRoster { participants, .. } =
+            channel_request(ChannelRequest::UserRoster {
+                workspace_id: workspace.clone(),
+                channel_id: Some(id.clone()),
+                after: None,
+                limit: 8,
+            })
+            .unwrap()
+        else {
+            panic!("expected channel roster");
+        };
+        participants
+            .into_iter()
+            .find_map(|row| Some((row.binding?, row.role?.grant_id)))
+    };
+    assert!(roster(&shared).is_none());
+    let grant_first = grant(user(&registry, &client, set(&workspace, Some(&first))).unwrap());
+    let (target, tenure) = roster(&shared).unwrap();
+    assert_eq!(target, binding(&first));
+    assert_eq!(tenure, grant_first.id);
+    assert!(roster(&private).is_none());
+
+    let alias = |id: &ChannelId, text, target: &ChannelMentionBinding, tenure: &RoleGrantId| {
+        let ChannelRequest::PostUser {
+            channel_id,
+            post,
+            bindings,
+        } = mention_as_user(id, text, target.clone())
+        else {
+            unreachable!();
+        };
+        ChannelRequest::PostUserWithCoordinator {
+            channel_id,
+            post,
+            bindings,
+            coordinator_grant_id: tenure.clone(),
+        }
+    };
+    let addressed = |request, expected: &ChannelMentionBinding| {
+        let response = channel_request(request).unwrap();
+        let ChannelResponse::Posted {
+            message,
+            wake_count: 1,
+            ..
+        } = &response
+        else {
+            panic!("expected exactly one addressed wake: {response:?}");
+        };
+        assert_eq!(message.mentions, [expected.participant_id.clone()]);
+        response
+    };
+    let restricted = alias(&private, "cannot access @coordinator", &target, &tenure);
+    assert!(channel_request(restricted).is_err());
+    let prior = alias(&shared, "original @coordinator", &target, &tenure);
+    let prior_receipt = addressed(prior.clone(), &target);
+
+    let grant_second = grant(user(&registry, &client, set(&workspace, Some(&second))).unwrap());
+    let (replacement, replacement_id) = roster(&shared).unwrap();
+    assert_eq!(replacement, binding(&second));
+    assert_eq!(replacement_id, grant_second.id);
+    let stale = alias(&shared, "stale @coordinator", &target, &tenure);
+    let error = channel_request(stale.clone()).unwrap_err().to_string();
+    assert!(error.contains("select @coordinator again"), "{error}");
+    let mismatch = alias(&shared, "wrong holder", &target, &replacement_id);
+    assert!(channel_request(mismatch).is_err());
+    assert_eq!(channel_request(prior).unwrap(), prior_receipt);
+    addressed(
+        mention_as_user(&shared, "named first", target.clone()),
+        &target,
+    );
+    addressed(
+        alias(
+            &shared,
+            "replacement @coordinator",
+            &replacement,
+            &replacement_id,
+        ),
+        &replacement,
+    );
+
+    user(&registry, &client, set(&workspace, None)).unwrap();
+    assert!(roster(&shared).is_none());
+    let regrant = grant(user(&registry, &client, set(&workspace, Some(&first))).unwrap());
+    assert_ne!(regrant.id, tenure);
+    assert!(channel_request(stale).is_err());
+    let changed_key_fingerprint = alias(&shared, "original @coordinator", &target, &regrant.id);
+    let error = channel_request(changed_key_fingerprint)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("conflicts with an existing retry key"),
+        "{error}"
+    );
+    assert!(matches!(
+        channel_request(post(&shared, "literal @coordinator", PostIntent::Note)).unwrap(),
+        ChannelResponse::Posted { message, wake_count: 0, .. } if message.mentions.is_empty()
+    ));
+    let ChannelResponse::History { messages, .. } = channel_request(history(&shared)).unwrap()
+    else {
+        panic!("expected channel history");
+    };
+    assert_eq!(
+        messages
+            .iter()
+            .map(|message| message.text.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "original @coordinator",
+            "named first",
+            "replacement @coordinator",
+            "literal @coordinator"
+        ]
+    );
+}
+
+#[test]
 fn workspace_role_approval_fences_and_native_wakes() {
     let root = private_root();
     let (registry, _server, first, second) = open_channel_pair(root.path());
