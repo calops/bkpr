@@ -3,11 +3,11 @@ use super::{
     validate_response,
 };
 use anyhow::{Context, Result, bail, ensure};
+use bkpr_protocol::roles::{RoleEventKind, RoleRequest};
 use bkpr_protocol::{
     ClientAuthority, Operation, PaneSnapshot, Payload, Request, SessionInfo, scene_wire,
     wire::{self, Codec, Kind},
 };
-use bkpr_protocol::roles::{RoleEventKind, RoleRequest};
 use serde::Deserialize;
 use serde_json::Value;
 use std::{
@@ -1641,6 +1641,41 @@ mod tests {
         assert_eq!(client.poll_lifecycle().unwrap(), Lifecycle::TransportClosed);
         assert_eq!(client.poll_lifecycle().unwrap(), Lifecycle::TransportClosed);
         assert!(!client.endpoint().session_ended());
+    }
+
+    #[test]
+    fn role_events_do_not_revoke_the_attachment_or_hide_a_later_detach() {
+        use bkpr_protocol::roles::RoleEvent;
+
+        let (mut client, mut server) = lifecycle_pair();
+        let mut codec = Codec::new();
+        for (kind, revision) in [
+            (RoleEventKind::Approvals, 4),
+            (RoleEventKind::Roster, 5),
+            (RoleEventKind::Approvals, 6),
+        ] {
+            let event = ClientEvent::roles_changed(RoleEvent { revision, kind });
+            wire::write_frame(
+                &mut server,
+                Kind::ClientEvent,
+                codec.encode_client_event(&event).unwrap(),
+            )
+            .unwrap();
+        }
+        assert_eq!(client.poll_lifecycle().unwrap(), Lifecycle::Active);
+        let updates = client.take_role_events();
+        assert!(updates.roster);
+        assert_eq!(updates.approvals, Some(6));
+        assert!(!client.endpoint().is_revoked());
+
+        server.write_all(&detached("shutdown")).unwrap();
+        assert_eq!(
+            client.poll_lifecycle().unwrap(),
+            Lifecycle::Detached {
+                reason: "shutdown".into(),
+            }
+        );
+        assert!(client.endpoint().is_revoked());
     }
 
     #[test]

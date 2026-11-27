@@ -2593,7 +2593,11 @@ impl App {
             && self.sidebar_menu.is_none()
             && !self.picker_open()
             && !self.chat.dialog_open()
-            && !self.consent_prompt_open()
+            && self
+                .consent
+                .as_ref()
+                .is_none_or(|consent| consent.state.sent)
+            && self.role_prompt().is_none()
             && self.pointer_capture.is_none()
             && !self.resize_capturing()
     }

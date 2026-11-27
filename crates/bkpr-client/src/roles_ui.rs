@@ -1,21 +1,31 @@
 use super::{App, Background, jobs};
 use crate::transport::{self, Endpoint};
 use anyhow::{Result, anyhow};
-use bkpr_protocol::roles::{RoleApproval, RoleRequest, RoleRequestId, RoleResponse, WorkspaceRole};
+use bkpr_protocol::roles::{
+    APPROVAL_TIMEOUT_MS, RoleApproval, RoleRequest, RoleRequestId, RoleResponse, WorkspaceRole,
+};
 use bkpr_protocol::{Operation, Payload, Size};
 use bkpr_tui_framework::{Rect, Role, RoleSpan, Theme, UiSurface, safe_text, text_width, window};
+use std::time::{Duration, Instant};
 
 pub(super) const ACTIVITY: &str = "roles:activity";
 pub(super) const SNAPSHOT: &str = "roles:snapshot";
 pub(super) const DECISION: &str = "roles:decision";
 
 pub(super) fn request(endpoint: &Endpoint, request: RoleRequest) -> Result<RoleResponse> {
-    let mutation = matches!(request, RoleRequest::Decide { .. } | RoleRequest::Set { .. });
+    let mutation = matches!(
+        request,
+        RoleRequest::Decide { .. } | RoleRequest::Set { .. }
+    );
     match endpoint.checked_payload(Operation::Roles { request })? {
         Payload::Roles(response) => Ok(response),
         _ => {
             let error = anyhow!("session returned a non-role response");
-            Err(if mutation { transport::mark_outcome_unknown(error) } else { error })
+            Err(if mutation {
+                transport::mark_outcome_unknown(error)
+            } else {
+                error
+            })
         }
     }
 }
@@ -36,12 +46,12 @@ pub(super) struct State {
     snapshot_pending: bool,
     revision: u64,
     approvals: Vec<RoleApproval>,
-    focus_epoch: u64,
-    snapshot_epoch: u64,
+    prompt_epoch: u64,
+    snapshot_epoch: Option<u64>,
     surface_open: bool,
     presented: bool,
     deciding: Option<RoleRequestId>,
-    spent: Vec<RoleRequestId>,
+    spent: Vec<(RoleRequestId, Instant)>,
 }
 
 impl State {
@@ -59,7 +69,7 @@ impl State {
         }
         let changed = self.eligible != Some(eligible);
         if changed {
-            self.focus_epoch = self.focus_epoch.wrapping_add(1);
+            self.prompt_epoch = self.prompt_epoch.wrapping_add(1);
             self.snapshot_pending |= eligible;
         }
         if changed || eligible && interaction {
@@ -108,14 +118,22 @@ impl State {
         }
     }
 
-    pub(super) fn next_snapshot(&mut self) -> Option<RoleRequest> {
-        if self.snapshot_pending
+    fn can_snapshot(&self) -> bool {
+        self.snapshot_pending
+            && self.snapshot_epoch.is_none()
             && self.supported()
             && self.reported == Some(true)
             && self.sending_activity != Some(false)
             && self.eligible()
-        {
-            self.snapshot_epoch = self.focus_epoch;
+    }
+
+    fn has_work(&self) -> bool {
+        self.activity_pending && self.sending_activity.is_none() || self.can_snapshot()
+    }
+
+    pub(super) fn next_snapshot(&mut self) -> Option<RoleRequest> {
+        if self.can_snapshot() {
+            self.snapshot_epoch = Some(self.prompt_epoch);
             self.snapshot_pending = false;
             Some(RoleRequest::Snapshot {})
         } else {
@@ -124,16 +142,23 @@ impl State {
     }
 
     pub(super) fn apply_snapshot(&mut self, revision: u64, mut approvals: Vec<RoleApproval>) {
+        let stamp = self.snapshot_epoch.take();
         if revision < self.revision
-            || self.snapshot_epoch != self.focus_epoch
+            || stamp != Some(self.prompt_epoch)
             || !self.eligible()
             || self.reported != Some(true)
         {
             return;
         }
         self.revision = revision;
-        self.spent.retain(|id| approvals.iter().any(|approval| &approval.id == id));
-        approvals.retain(|approval| !self.spent.contains(&approval.id));
+        let now = Instant::now();
+        self.spent.retain(|(_, until)| *until > now);
+        approvals.retain(|approval| !self.spent.iter().any(|(id, _)| id == &approval.id));
+        approvals.sort_unstable_by(|a, b| {
+            a.expires_at_ms
+                .cmp(&b.expires_at_ms)
+                .then_with(|| a.id.0.cmp(&b.id.0))
+        });
         self.presented &= self.approvals.first() == approvals.first();
         self.approvals = approvals;
         self.snapshot_pending = false;
@@ -166,10 +191,17 @@ impl State {
         self.presented = false;
     }
 
-    pub(super) fn complete_decision(&mut self) {
-        if let Some(id) = self.deciding.take() {
-            self.spent.push(id);
+    pub(super) fn complete_decision(&mut self, unknown: bool) {
+        if let Some(id) = self.deciding.take()
+            && unknown
+        {
+            // A fresh assignment may omit this still-pending ID during owner transfer.
+            self.spent.push((
+                id,
+                Instant::now() + Duration::from_millis(APPROVAL_TIMEOUT_MS),
+            ));
         }
+        self.prompt_epoch = self.prompt_epoch.wrapping_add(1);
         self.clear_prompt();
         self.snapshot_pending = true;
     }
@@ -228,26 +260,25 @@ impl App {
     fn submit_role_job(&mut self, key: &'static str, request: RoleRequest) -> Result<()> {
         let endpoint = self.socket.clone();
         self.jobs.submit(key.into(), move || {
-            Ok(Background::Role(Box::new(self::request(&endpoint, request))))
+            self::request(&endpoint, request).map(Background::Role)
         })
     }
 
     pub(super) fn schedule_roles(&mut self) {
-        if self.jobs.is_full() {
+        if !self.roles.has_work() || self.jobs.is_full() {
             return;
         }
-        if !self.jobs.contains(SNAPSHOT)
-            && let Some(request) = self.roles.next_snapshot()
-        {
+        if let Some(request) = self.roles.next_snapshot() {
             if let Err(error) = self.submit_role_job(SNAPSHOT, request) {
+                self.roles.snapshot_epoch = None;
                 self.report_failure("Couldn't load workspace role requests.", &error);
             }
-        } else if let Some(request) = self.roles.next_activity() {
-            if let Err(error) = self.submit_role_job(ACTIVITY, request) {
-                self.roles.complete_activity(false);
-                self.chat.set_roles_enabled(false);
-                self.report_failure("Couldn't register for workspace roles.", &error);
-            }
+        } else if let Some(request) = self.roles.next_activity()
+            && let Err(error) = self.submit_role_job(ACTIVITY, request)
+        {
+            self.roles.complete_activity(false);
+            self.chat.set_roles_enabled(false);
+            self.report_failure("Couldn't register for workspace roles.", &error);
         }
     }
 
@@ -271,17 +302,26 @@ impl App {
                 self.chat.set_roles_enabled(supported);
             }
             SNAPSHOT => match result {
-                Ok(RoleResponse::Snapshot { revision, approvals, .. }) => {
+                Ok(RoleResponse::Snapshot {
+                    revision,
+                    approvals,
+                    ..
+                }) => {
                     self.roles.apply_snapshot(revision, approvals);
                 }
                 result => {
-                    let error = result.err().unwrap_or_else(|| anyhow!("unexpected role snapshot"));
+                    self.roles.snapshot_epoch = None;
+                    let error = result
+                        .err()
+                        .unwrap_or_else(|| anyhow!("unexpected role snapshot"));
                     self.report_failure("Couldn't load workspace role requests.", &error);
                 }
             },
             DECISION => {
-                self.roles.complete_decision();
-                if let Err(error) = decision_receipt(result) {
+                let result = decision_receipt(result);
+                let unknown = result.as_ref().is_err_and(transport::outcome_unknown);
+                self.roles.complete_decision(unknown);
+                if let Err(error) = result {
                     self.report_failure("Couldn't confirm the workspace role decision.", &error);
                 }
             }
@@ -292,7 +332,7 @@ impl App {
 
 fn role_receipt(result: Result<Background>) -> Result<RoleResponse> {
     result.and_then(|background| match background {
-        Background::Role(result) => *result,
+        Background::Role(result) => Ok(result),
         _ => Err(anyhow!("role job returned an unrelated completion")),
     })
 }
@@ -349,26 +389,57 @@ impl Paint {
 fn paint(surface: &mut UiSurface, size: Size, theme: &Theme, prompt: &RoleApproval) -> bool {
     let role = label(prompt.role);
     let mut lines = vec![format!("{role} request")];
-    lines.push(identity("Requester: ", &prompt.participant.display_name, &prompt.requester.launch_id, size.cols));
+    lines.push(identity(
+        "Requester: ",
+        &prompt.participant.display_name,
+        &prompt.requester.launch_id,
+        size.cols,
+    ));
     lines.push(format!("Workspace: {}", safe_text(&prompt.workspace_name)));
     if let Some(holder) = &prompt.prior_holder {
-        lines.push(identity("Replace: ", &holder.display_name, &holder.holder.launch_id, size.cols));
+        lines.push(identity(
+            "Replace: ",
+            &holder.display_name,
+            &holder.holder.launch_id,
+            size.cols,
+        ));
     }
     let complete = usize::from(size.rows) >= lines.len() && size.cols >= 20;
     let title = line(0, size.cols);
     surface.paint(
         size,
-        lines.into_iter().take(usize::from(size.rows)).enumerate()
-            .map(|(y, text)| (line(y as u16, size.cols), window::fit(&text, size.cols), false))
+        lines
+            .into_iter()
+            .take(usize::from(size.rows))
+            .enumerate()
+            .map(|(y, text)| {
+                (
+                    line(y as u16, size.cols),
+                    window::fit(&text, size.cols),
+                    false,
+                )
+            })
             .collect(),
         None,
     );
-    surface.apply_theme(theme, Role::Panel, &[RoleSpan { rect: title, role: Role::Warning }]);
+    surface.apply_theme(
+        theme,
+        Role::Panel,
+        &[RoleSpan {
+            rect: title,
+            role: Role::Warning,
+        }],
+    );
     complete
 }
 
 fn line(y: u16, width: u16) -> Rect {
-    Rect { x: 0, y, width, height: 1 }
+    Rect {
+        x: 0,
+        y,
+        width,
+        height: 1,
+    }
 }
 
 fn identity(prefix: &str, name: &str, launch: &str, width: u16) -> String {
@@ -381,7 +452,9 @@ fn identity(prefix: &str, name: &str, launch: &str, width: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bkpr_protocol::channels::{ChannelId, ChannelMentionBinding, Participant, ParticipantId, ParticipantKind};
+    use bkpr_protocol::channels::{
+        ChannelId, ChannelMentionBinding, Participant, ParticipantId, ParticipantKind,
+    };
     use bkpr_protocol::roles::{RoleGrant, RoleGrantId, RoleOrigin};
 
     fn prompt() -> RoleApproval {
@@ -419,7 +492,10 @@ mod tests {
     fn withdrawn_prompt_cannot_act_and_late_snapshot_cannot_restore_it() {
         let mut state = State::default();
         state.observe(true, false);
-        assert!(matches!(state.next_activity(), Some(RoleRequest::Activity { eligible: true })));
+        assert!(matches!(
+            state.next_activity(),
+            Some(RoleRequest::Activity { eligible: true })
+        ));
         state.complete_activity(true);
         state.next_snapshot().unwrap();
         let approval = prompt();
@@ -436,7 +512,9 @@ mod tests {
             }),
         );
         state.invalidate(2);
-        state.apply_snapshot(1, vec![approval]);
+        state.next_snapshot().unwrap();
+        state.invalidate(3);
+        state.apply_snapshot(2, vec![approval]);
         assert!(state.prompt().is_none());
         assert!(state.decision(false).is_none());
     }

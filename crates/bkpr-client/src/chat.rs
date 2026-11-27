@@ -1,8 +1,8 @@
 use super::{chat_controls, chat_draft::Draft, chat_images, transport};
 use crate::keyguide::{self, Action, ChatAction, Context, HistoryAction, Navigation};
 use anyhow::{Result, bail};
-use bkpr_protocol::{KeyAction, KeyEvent, Operation, Payload, channels::*};
 use bkpr_protocol::roles::{RoleRequest, RoleResponse, WorkspaceRole};
+use bkpr_protocol::{KeyAction, KeyEvent, Operation, Payload, channels::*};
 use bkpr_tui_framework::{Role, UiSurface, safe_text};
 use std::collections::{HashMap, VecDeque};
 
@@ -122,10 +122,6 @@ pub(super) enum Job {
     Image(ChannelId, AttachmentId),
 }
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "bounded job results move the decoded response without a second allocation"
-)]
 pub(super) enum Completion {
     Response(ChannelResponse),
     Role(RoleResponse),
@@ -157,7 +153,9 @@ impl Job {
                     response => Completion::Response(response),
                 })
             }
-            Self::Role(request) => super::roles_ui::request(endpoint, request).map(Completion::Role),
+            Self::Role(request) => {
+                super::roles_ui::request(endpoint, request).map(Completion::Role)
+            }
             Self::Image(channel, attachment) => {
                 chat_images::load(endpoint, channel, attachment).map(Completion::Image)
             }
@@ -572,8 +570,8 @@ impl Chat {
         }
     }
 
-    fn can_show_members(&self, channel: &ChannelSummary) -> bool {
-        !channel.direct || self.roles_enabled == Some(true)
+    fn can_show_members(channel: &ChannelSummary, roles_enabled: Option<bool>) -> bool {
+        !channel.direct || roles_enabled == Some(true)
     }
 
     fn can_manage(channel: &ChannelSummary) -> bool {
@@ -581,7 +579,9 @@ impl Chat {
     }
 
     fn can_write(channel: &ChannelSummary) -> bool {
-        channel.role_thread.map_or(!channel.direct, |thread| !thread.archived)
+        channel
+            .role_thread
+            .map_or(!channel.direct, |thread| !thread.archived)
     }
 
     fn writable(&self, read_only: bool) -> bool {
@@ -733,7 +733,9 @@ impl Chat {
         match action {
             ChatAction::Create => !read_only && self.catalog_ready && self.catalog_error.is_none(),
             ChatAction::Manage => !read_only && self.summary().is_some_and(Self::can_manage),
-            ChatAction::Members => self.summary().is_some_and(|channel| self.can_show_members(channel)),
+            ChatAction::Members => self
+                .summary()
+                .is_some_and(|channel| Self::can_show_members(channel, self.roles_enabled)),
             ChatAction::MarkRead => !read_only && self.active.is_some(),
             ChatAction::Retry => self.writable(read_only) && matches!(send, Some(Send::Unknown(_))),
             ChatAction::Send | ChatAction::Newline | ChatAction::Edit(_) => {
@@ -930,16 +932,13 @@ impl Chat {
             None => {
                 let draft = self.drafts.entry(id.clone()).or_default();
                 if let Some(target) = draft.role_target() {
+                    let target = target.and_then(|target| match self.roles_enabled {
+                        Some(true) => Ok(target.cloned()),
+                        Some(false) => Err("Workspace roles unavailable on this session"),
+                        None => Err("Checking workspace role support; submit again when ready"),
+                    });
                     let target = match target {
-                        Ok(target) if self.roles_enabled == Some(true) => target.cloned(),
-                        Ok(_) => {
-                            draft.error = Some(if self.roles_enabled.is_none() {
-                                "Checking workspace role support; submit again when ready"
-                            } else {
-                                "Workspace roles unavailable on this session"
-                            }.into());
-                            return Effect::None;
-                        }
+                        Ok(target) => target,
                         Err(error) => {
                             draft.error = Some(error.into());
                             return Effect::None;
@@ -1227,7 +1226,12 @@ impl Chat {
     pub(super) fn is_shutdown_write(&self, key: &str) -> bool {
         matches!(
             self.pending.get(key),
-            Some(JobKind::Send(_) | JobKind::RoleSet(_) | JobKind::EditorWrite(_) | JobKind::Mark { .. })
+            Some(
+                JobKind::Send(_)
+                    | JobKind::RoleSet(_)
+                    | JobKind::EditorWrite(_)
+                    | JobKind::Mark { .. }
+            )
         )
     }
 
@@ -1446,10 +1450,14 @@ impl Chat {
         if !matches!(self.sends.remove(&channel), Some(Send::SettingRole)) {
             return None;
         }
+        let visible = self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.id == channel);
         let error = match result {
             Ok(Completion::Role(RoleResponse::Updated { grant })) => {
                 self.drafts.remove(&channel);
-                if self.active.as_ref().is_some_and(|active| active.id == channel) {
+                if visible {
                     let notice = grant.map_or_else(
                         || "Coordinator cleared".into(),
                         |grant| format!("Coordinator set to {}", safe_text(&grant.display_name)),
@@ -1459,12 +1467,14 @@ impl Chat {
                 return None;
             }
             Err(error) => error,
-            _ => transport::mark_outcome_unknown(anyhow::anyhow!("unexpected role command receipt")),
+            _ => {
+                transport::mark_outcome_unknown(anyhow::anyhow!("unexpected role command receipt"))
+            }
         };
         if transport::outcome_unknown(&error) {
             // Unlike chat posts, a role command has no idempotency key.
             self.drafts.remove(&channel);
-            if self.active.as_ref().is_some_and(|active| active.id == channel) {
+            if visible {
                 self.notice = Some((
                     Role::Warning,
                     "Role command outcome unknown · check Members".into(),
@@ -1598,7 +1608,10 @@ mod tests {
     #[test]
     fn a_role_command_cannot_fall_back_to_a_post_or_retry_an_unknown_write() {
         let (mut chat, id) = open_chat();
-        chat.drafts.entry(id.clone()).or_default().paste("/role coordinator none");
+        chat.drafts
+            .entry(id.clone())
+            .or_default()
+            .paste("/role coordinator none");
         assert!(matches!(chat.send(false), Effect::None));
         chat.set_roles_enabled(true);
         let Effect::Submit(

@@ -56,9 +56,9 @@ impl Draft {
     pub(super) fn completing_role_target(&self) -> bool {
         self.completion.as_ref().is_some_and(|completion| {
             !self.input.value.contains('\n')
-                && role_argument(&self.input.value).flatten().is_some_and(|(start, _)| {
-                    start == completion.start
-                })
+                && role_argument(&self.input.value)
+                    .flatten()
+                    .is_some_and(|(start, _)| start == completion.start)
         })
     }
 
