@@ -238,6 +238,7 @@ enum PointerCapture {
     Pane(Arc<PointerOrigin>),
     Selection(Arc<PointerOrigin>),
     ChatSelection,
+    ChatDivider,
 }
 struct PressedPointer {
     origin: Arc<PointerOrigin>,
@@ -4713,9 +4714,29 @@ impl App {
             };
             (event_button, action)
         });
-        let chat_target = self.chat.visible() && hits.hit_test(mouse.x, mouse.y) == Some("ui:chat");
+        let point = (mouse.x, mouse.y);
+        let chat_target = self.chat.visible()
+            && match hits.hit_test(mouse.x, mouse.y) {
+                Some("ui:chat") => true,
+                Some("ui:resize:edges") => self.chat.divider(point).is_some(),
+                _ => false,
+            };
         if !chat_target || wheel {
             self.chat.hover_channel(None);
+        }
+        if matches!(self.pointer_capture, Some(PointerCapture::ChatDivider)) {
+            if !wheel {
+                self.last_button = button;
+                let release = action == MouseAction::Release && event_button == MouseButton::Left;
+                if release || action == MouseAction::Motion {
+                    self.chat.update_divider_drag(point, release);
+                }
+                if release {
+                    self.pointer_capture = None;
+                    self.update_resize_hover(size, chat_target.then_some(point));
+                }
+            }
+            return Ok(());
         }
         if matches!(self.pointer_capture, Some(PointerCapture::ChatSelection)) {
             if !wheel
@@ -4746,7 +4767,6 @@ impl App {
             mouse.y,
             !wheel && matches!(event_button, MouseButton::Left | MouseButton::None),
         );
-        let point = (mouse.x, mouse.y);
         self.button_pointer = None;
         self.chat.update_button_pointer(None);
         if !chat_target && action == MouseAction::Release && event_button == MouseButton::Left {
@@ -5136,11 +5156,6 @@ impl App {
         }
         if matches!(&captured, Some(PointerCapture::Ui)) && !wheel {
             if event_button == MouseButton::Left && action == MouseAction::Release {
-                self.chat.update_divider_drag(point, true);
-            } else if action == MouseAction::Motion {
-                self.chat.update_divider_drag(point, false);
-            }
-            if event_button == MouseButton::Left && action == MouseAction::Release {
                 self.chat
                     .update_button_pointer(chat_target.then_some(point));
                 self.chat.release_button(self.options.read_only);
@@ -5314,7 +5329,7 @@ impl App {
                     && !self.options.read_only
                     && self.chat.begin_divider_drag(point)
                 {
-                    self.pointer_capture = Some(PointerCapture::Ui);
+                    self.pointer_capture = Some(PointerCapture::ChatDivider);
                     return Ok(());
                 }
                 if event_button == MouseButton::Left
