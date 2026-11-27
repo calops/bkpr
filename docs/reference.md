@@ -1408,10 +1408,13 @@ dialog. Use **Settings** or Alt-e to edit wake policy, attention or membership.
 Tab moves between controls. Enter opens a floating dropdown; use the arrows
 and Enter to choose, or Esc to discard the choice. Close the dialog to return
 to the composer without losing your draft.
-Use **Members** or Alt-u to see the selected channel's roster. Coordinator
-appears first when the current holder is a member, followed by agents and users.
-Use arrows, PageUp/PageDown or the mouse wheel to scroll. Esc returns to the
-thread without changing the draft. Read-only attachments can browse members.
+The **Members** pane below Channels shows the selected channel's roster.
+Coordinator appears first when the current holder is a member, followed by
+other agents and users. Scroll each pane with the mouse wheel over it. Drag
+the divider beside the thread or between Channels and Members to resize.
+When the terminal is too small for the Members pane, use Alt-u and press Esc
+to return to the thread without changing the draft. Read-only attachments
+can browse members.
 
 In a writable channel, type `/role coordinator @`, select an agent from the
 mention picker, then press Enter again to grant or replace Coordinator. Use
