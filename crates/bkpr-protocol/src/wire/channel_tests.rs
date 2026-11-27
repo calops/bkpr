@@ -348,6 +348,33 @@ fn source_post_frames_fail_legacy_header_admission_without_breaking_ordinary_pos
             codec.encode_request(&Request::new(user)).unwrap(),
             has_source,
         );
+        let mut fenced_post = post();
+        let binding = mention_binding();
+        fenced_post.mentions = vec![binding.participant_id.clone()];
+        fenced_post.source = has_source.then(source);
+        let fenced = ChannelRequest::PostUser {
+            channel_id: channel(),
+            post: fenced_post,
+            bindings: vec![binding],
+        };
+        let user = Operation::Channels {
+            request: fenced.clone(),
+        };
+        let decoded = check_frames(
+            codec.encode_client_request(&authority, &user).unwrap(),
+            has_source,
+        );
+        let Operation::Client {
+            request: wrapped, ..
+        } = decoded.operation
+        else {
+            panic!("expected authenticated user post");
+        };
+        let Operation::Channels { request: actual } = *wrapped else {
+            panic!("expected fenced channel post");
+        };
+        assert_eq!(actual, fenced);
+
         let agent = Request::new(Operation::Agent {
             launch_id: "launch".into(),
             token: "secret".into(),

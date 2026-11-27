@@ -726,7 +726,14 @@ impl Registry {
                     .iter()
                     .find(|pane| pane.id == launch.grant.pane_id)
                     .and_then(|pane| {
-                        live_channel_agent(&state, pane, workspace, &agents, &captures)
+                        live_channel_agent(
+                            &state,
+                            pane,
+                            workspace,
+                            &agents,
+                            &captures,
+                            Some(&binding.participant_id),
+                        )
                     })
                     .map(|(launch, _)| launch)
                     .context(STALE_USER_MENTION)?;

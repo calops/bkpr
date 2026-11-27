@@ -851,10 +851,21 @@ fn wake_claim_uses_oldest_channel_and_caps_each_batch_in_sequence_order() {
     let mut remaining = vec![older.id];
     for sequence in 2..=33 {
         let mut next = post(&format!("post-{sequence}"));
-        if matches!(sequence, 2 | 32 | 33) {
+        let request = if matches!(sequence, 2 | 32 | 33) {
             next.mentions.push(f.a.id.clone());
-        }
-        remaining.push(posted(f.request(send(&first, next)).unwrap()).id);
+            send_user(
+                &first,
+                next,
+                vec![ChannelMentionBinding {
+                    participant_id: f.a.id.clone(),
+                    launch_id: "launch-a".into(),
+                    binding_generation: 1,
+                }],
+            )
+        } else {
+            send(&first, next)
+        };
+        remaining.push(posted(f.request(request).unwrap()).id);
     }
 
     let claim = f.wake_claim("first-32", 1);
@@ -2628,6 +2639,7 @@ fn direct_version_nine_migration_keeps_history_and_uses_the_ordered_queue() {
                         publish: &|_| {},
                         binding_live: &|_, _| true,
                         direct_peer: &|_| Ok(None),
+                        fence_user_mentions: &|_, _| unreachable!("agent direct post"),
                     },
                     || {
                         Ok(WorkspaceParticipant {
