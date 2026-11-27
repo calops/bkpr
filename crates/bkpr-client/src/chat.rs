@@ -799,12 +799,12 @@ impl Chat {
             }
             ChatAction::Choose if !self.channel_chooser && self.completing() => {
                 self.active.as_ref().is_some_and(|active| {
-                    active.roster_ready
-                        && self.drafts.get(&active.id).is_some_and(|draft| {
-                            draft
+                    self.drafts.get(&active.id).is_some_and(|draft| {
+                        (active.roster_ready || draft.slash_completing())
+                            && draft
                                 .choices(&active.roster, self.paint.completion_capacity())
                                 .any(|(_, _, chosen)| chosen)
-                        })
+                    })
                 })
             }
             ChatAction::Choose => !self.ids.is_empty(),
@@ -866,10 +866,13 @@ impl Chat {
                 }
             }
             Some(Action::Chat(ChatAction::Choose)) if !self.channel_chooser => {
-                if let Some(active) = &self.active
+                if let Some(active) = &mut self.active
                     && let Some(draft) = self.drafts.get_mut(&active.id)
                 {
-                    draft.select_mention(&active.roster, self.paint.completion_capacity(), None);
+                    if draft.select_mention(&active.roster, self.paint.completion_capacity(), None)
+                    {
+                        active.refresh_roster(draft.completing_role_target());
+                    }
                     self.redraw_composer();
                 }
             }
@@ -924,9 +927,9 @@ impl Chat {
         }
         if !self.channel_chooser {
             if let Some(active) = &self.active
-                && active.roster_ready
                 && self.paint.completion_capacity() > 0
                 && let Some(draft) = self.drafts.get_mut(&active.id)
+                && (active.roster_ready || draft.slash_completing())
             {
                 let delta = if navigation == Navigation::Previous {
                     -1
@@ -1155,15 +1158,17 @@ impl Chat {
             }
             (B::Left, A::Press, Some(Hit::OpenChannels)) => self.set_channel_chooser(true),
             (B::Left, A::Press, Some(Hit::Mention(index))) if writable => {
-                if let Some(active) = &self.active
-                    && active.roster_ready
+                if let Some(active) = &mut self.active
                     && let Some(draft) = self.drafts.get_mut(&active.id)
+                    && (active.roster_ready || draft.slash_completing())
                 {
-                    draft.select_mention(
+                    if draft.select_mention(
                         &active.roster,
                         self.paint.completion_capacity(),
                         Some(index),
-                    );
+                    ) {
+                        active.refresh_roster(draft.completing_role_target());
+                    }
                 }
             }
             (B::Left, A::Press, Some(Hit::Latest)) => self.live_tail(),
@@ -1950,7 +1955,10 @@ mod tests {
         let roster = &chat.active.as_ref().unwrap().roster;
         let choices: Vec<_> = chat.drafts[&id]
             .choices(roster, usize::MAX)
-            .map(|(_, entry, _)| entry)
+            .filter_map(|(_, entry, _)| match entry {
+                crate::app::chat_draft::Choice::Agent(entry) => Some(entry),
+                crate::app::chat_draft::Choice::Slash(_) => None,
+            })
             .collect();
         assert_eq!(choices.len(), bound_pages * limit + 1);
         assert_eq!(

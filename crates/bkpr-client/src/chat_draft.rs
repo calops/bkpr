@@ -11,6 +11,30 @@ struct Mention {
 pub(super) struct Completion {
     start: usize,
     selected: usize,
+    slash: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Choice<'a> {
+    Agent(&'a ChannelRosterEntry),
+    Slash(&'static str),
+}
+
+fn slash_options(value: &str) -> Option<(usize, &'static [&'static str])> {
+    if !value.starts_with('/') || value.contains('\n') || value == "/role coordinator none" {
+        return None;
+    }
+    let (start, options): (_, &[_]) = if value.starts_with("/role coordinator ") {
+        ("/role coordinator ".len(), &["none", "@"])
+    } else if value.starts_with("/role ") {
+        ("/role ".len(), &["coordinator"])
+    } else {
+        (0, &["/role"])
+    };
+    options
+        .iter()
+        .any(|choice| choice.starts_with(&value[start..]))
+        .then_some((start, options))
 }
 
 pub(super) struct Draft {
@@ -55,11 +79,18 @@ impl Draft {
 
     pub(super) fn completing_role_target(&self) -> bool {
         self.completion.as_ref().is_some_and(|completion| {
-            !self.input.value.contains('\n')
+            !completion.slash
+                && !self.input.value.contains('\n')
                 && role_argument(&self.input.value)
                     .flatten()
                     .is_some_and(|(start, _)| start == completion.start)
         })
+    }
+
+    pub(super) fn slash_completing(&self) -> bool {
+        self.completion
+            .as_ref()
+            .is_some_and(|completion| completion.slash)
     }
 
     pub(super) fn invalidate_completion(&mut self) -> bool {
@@ -106,9 +137,24 @@ impl Draft {
                 self.completion = Some(Completion {
                     start: at,
                     selected: 0,
+                    slash: false,
                 });
                 return true;
             }
+        }
+        if typed
+            && self.input.cursor == self.input.value.len()
+            && (self.slash_completing()
+                || value == "/"
+                || matches!(self.input.value.as_str(), "/role " | "/role coordinator "))
+            && let Some((start, _)) = slash_options(&self.input.value)
+        {
+            self.completion = Some(Completion {
+                start,
+                selected: 0,
+                slash: true,
+            });
+            return false;
         }
         self.update_query();
         false
@@ -152,6 +198,9 @@ impl Draft {
 
     fn query(&self) -> Option<&str> {
         let start = self.completion.as_ref()?.start;
+        if self.slash_completing() {
+            return None;
+        }
         let source = self
             .input
             .value
@@ -161,7 +210,11 @@ impl Draft {
     }
 
     fn update_query(&mut self) {
-        if self.query().is_none() {
+        if !(self.slash_completing()
+            && self.input.cursor == self.input.value.len()
+            && slash_options(&self.input.value).is_some())
+            && self.query().is_none()
+        {
             self.completion = None;
         } else if let Some(completion) = &mut self.completion {
             completion.selected = 0;
@@ -188,7 +241,7 @@ impl Draft {
     }
 
     pub(super) fn move_completion(&mut self, delta: isize, roster: &[ChannelRosterEntry]) {
-        let count = self.matches(roster).count();
+        let count = self.candidates(roster).count();
         if let Some(completion) = &mut self.completion {
             completion.selected = completion
                 .selected
@@ -197,16 +250,33 @@ impl Draft {
         }
     }
 
+    fn candidates<'a>(&self, roster: &'a [ChannelRosterEntry]) -> impl Iterator<Item = Choice<'a>> {
+        let slash = if self.slash_completing() {
+            slash_options(&self.input.value)
+        } else {
+            None
+        };
+        let commands = slash.into_iter().flat_map(move |(start, options)| {
+            options
+                .iter()
+                .copied()
+                .filter(move |choice| choice.starts_with(&self.input.value[start..]))
+        });
+        commands
+            .map(Choice::Slash)
+            .chain(self.matches(roster).map(Choice::Agent))
+    }
+
     pub(super) fn choices<'a>(
         &self,
         roster: &'a [ChannelRosterEntry],
         capacity: usize,
-    ) -> impl Iterator<Item = (usize, &'a ChannelRosterEntry, bool)> {
+    ) -> impl Iterator<Item = (usize, Choice<'a>, bool)> {
         let selected = self
             .completion
             .as_ref()
             .map_or(0, |completion| completion.selected);
-        self.matches(roster)
+        self.candidates(roster)
             .enumerate()
             .skip(selected.saturating_sub(capacity.saturating_sub(1)))
             .take(capacity)
@@ -218,24 +288,39 @@ impl Draft {
         roster: &[ChannelRosterEntry],
         capacity: usize,
         index: Option<usize>,
-    ) {
+    ) -> bool {
         if capacity == 0 {
-            return;
+            return false;
         }
         let Some(completion) = &self.completion else {
-            return;
+            return false;
         };
         let Some((_, entry, _)) = self
             .choices(roster, capacity)
             .find(|&(choice, _, chosen)| index.map_or(chosen, |index| choice == index))
         else {
-            return;
+            return false;
+        };
+        if let Choice::Slash(command) = entry {
+            let range = completion.start..self.input.cursor;
+            if command == "@" {
+                return self.insert("@", true);
+            }
+            let Some(inserted) = self.input.replace_range(range.clone(), command) else {
+                return false;
+            };
+            self.splice(range, inserted.len());
+            self.completion = None;
+            return self.insert(" ", true);
+        }
+        let Choice::Agent(entry) = entry else {
+            unreachable!()
         };
         let value = format!("@{} ", safe_text(&entry.participant.display_name));
         let range = completion.start..self.input.cursor;
         let Some(inserted) = self.input.replace_range(range.clone(), &value) else {
             self.error = Some("Mention would exceed the message size limit".into());
-            return;
+            return false;
         };
         let binding = entry.binding.as_ref().expect("eligible selection").clone();
         self.splice(range, inserted.len());
@@ -245,6 +330,7 @@ impl Draft {
         });
         self.completion = None;
         self.error = None;
+        false
     }
 
     pub(super) fn selection_label(entry: &ChannelRosterEntry, index: usize) -> (String, String) {
@@ -261,7 +347,7 @@ impl Draft {
 
     pub(super) fn completion_wake_preview(&self, policy: WakePolicy) -> Option<&'static str> {
         self.completion.as_ref()?;
-        if self.completing_role_target() {
+        if self.slash_completing() || self.completing_role_target() {
             return None;
         }
         Some(match policy {
@@ -445,6 +531,25 @@ mod tests {
             panic!("expected user post");
         };
         assert!(post.mentions.is_empty() && bindings.is_empty());
+    }
+
+    #[test]
+    fn slash_completion_edits_without_creating_a_mention_binding() {
+        let mut draft = Draft::default();
+        draft.insert("/", true);
+        draft.select_mention(&[], 2, None);
+        assert_eq!(draft.input.value, "/role ");
+        draft.select_mention(&[], 2, None);
+        assert_eq!(draft.input.value, "/role coordinator ");
+        draft.move_completion(1, &[]);
+        assert!(draft.select_mention(&[], 2, None));
+        assert_eq!(draft.input.value, "/role coordinator @");
+        assert!(matches!(draft.role_target(), Some(Err(_))));
+        assert!(draft.completing_role_target());
+        let mut ordinary = Draft::default();
+        ordinary.insert("path", true);
+        ordinary.insert("/", true);
+        assert!(ordinary.completion.is_none());
     }
 
     #[test]

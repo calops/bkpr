@@ -1428,8 +1428,8 @@ impl Chat {
         };
         let mut choices = [None; MAX_COMPLETIONS];
         if completion_capacity != 0
-            && active.roster_ready
             && let Some(draft) = draft
+            && (active.roster_ready || draft.slash_completing())
         {
             for (slot, choice) in choices
                 .iter_mut()
@@ -1536,7 +1536,15 @@ impl Chat {
             } else {
                 for (i, (index, entry, chosen)) in choices.into_iter().flatten().enumerate() {
                     let bounds = row(thread.x, completion_at + i as u16, thread.width);
-                    let (label, mut hint) = Draft::selection_label(entry, index);
+                    let (label, mut hint, role) = match entry {
+                        crate::app::chat_draft::Choice::Slash(command) => {
+                            (command.to_owned(), String::new(), Role::Accent)
+                        }
+                        crate::app::chat_draft::Choice::Agent(entry) => {
+                            let (label, hint) = Draft::selection_label(entry, index);
+                            (label, hint, sender_role(&entry.participant))
+                        }
+                    };
                     let label_width = text_width(&label).min(usize::from(bounds.width)) as u16;
                     if chosen
                         && let Some(scope) =
@@ -1555,7 +1563,7 @@ impl Chat {
                     } else {
                         list_background
                     };
-                    let mut style = card_style(theme, sender_role(&entry.participant), background);
+                    let mut style = card_style(theme, role, background);
                     style.bold |= chosen;
                     paint.styled_line(row(bounds.x, bounds.y, label_width), &label, &style, false);
                     paint.card_line(
