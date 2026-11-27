@@ -931,11 +931,17 @@ impl App {
             );
     }
     pub(super) fn leave_sidebar(&mut self) {
+        self.finish_sidebar(false);
+    }
+
+    fn finish_sidebar(&mut self, preserve_hover: bool) {
         {
             let mut tree = self.tree.lock().unwrap();
             tree.active = false;
-            tree.hover(None);
-            tree.pointer_row = None;
+            if !preserve_hover {
+                tree.hover(None);
+                tree.pointer_row = None;
+            }
             tree.leave_session_roots(self.tree_owner());
             tree.follow_active(self.tree_owner());
         }
@@ -1051,6 +1057,7 @@ impl App {
                 target: menu.target,
                 action,
                 size,
+                preserve_hover: false,
             });
         }
     }
@@ -1067,6 +1074,7 @@ impl App {
                 target,
                 action,
                 size,
+                preserve_hover: false,
             });
         }
     }
@@ -1458,10 +1466,13 @@ impl App {
                 self.finder = None;
                 self.overlays.remove("ui:modal");
                 if let Some(workspace) = target.workspace_id {
-                    self.activate_sidebar(SidebarTarget::Pane {
-                        workspace,
-                        pane: target.pane_id,
-                    })?;
+                    self.activate_sidebar(
+                        SidebarTarget::Pane {
+                            workspace,
+                            pane: target.pane_id,
+                        },
+                        false,
+                    )?;
                 } else {
                     self.show_existing(target.pane_id)?;
                     self.leave_sidebar();
@@ -1628,7 +1639,6 @@ impl App {
         self.close_search();
         self.popover.hide();
         self.chat.open(workspace);
-        self.leave_sidebar();
     }
 
     fn submit_chat(&mut self, kind: chat::JobKind, job: chat::Job) {
@@ -3834,7 +3844,7 @@ impl App {
         self.state.form.as_mut().unwrap().target = Some((target, revision));
         Ok(())
     }
-    fn activate_sidebar(&mut self, target: SidebarTarget) -> Result<()> {
+    fn activate_sidebar(&mut self, target: SidebarTarget, preserve_hover: bool) -> Result<()> {
         match target {
             SidebarTarget::Workspace(id) => self.open_chat(id),
             SidebarTarget::Window { workspace, window } => {
@@ -3850,7 +3860,7 @@ impl App {
             }
             SidebarTarget::Pane { pane, .. } => self.show_existing(pane)?,
         }
-        self.leave_sidebar();
+        self.finish_sidebar(preserve_hover);
         Ok(())
     }
     fn tree_dispatch_action(action: crate::keyguide::Action) -> bool {
@@ -3884,6 +3894,7 @@ impl App {
         target: Option<&SidebarTarget>,
         action: crate::keyguide::Action,
         size: Size,
+        preserve_hover: bool,
     ) -> Result<()> {
         use crate::keyguide::Action;
         if let Some(target) = target {
@@ -3934,7 +3945,7 @@ impl App {
         match action {
             Action::ActivateSelected => {
                 let target = target.context("no selected native tree target")?;
-                self.activate_sidebar(target.clone())?;
+                self.activate_sidebar(target.clone(), preserve_hover)?;
             }
             Action::RenameSelected => self.edit_sidebar(false)?,
             Action::CloseSelected => self.edit_sidebar(true)?,
@@ -5189,6 +5200,7 @@ impl App {
                         target,
                         action: crate::keyguide::Action::ActivateSelected,
                         size,
+                        preserve_hover: true,
                     });
                 }
             }
@@ -9881,6 +9893,7 @@ pub(super) mod tests {
             target,
             action,
             size,
+            preserve_hover,
         } = app.session_action.take().unwrap()
         else {
             panic!("expected tree action");
@@ -9889,7 +9902,7 @@ pub(super) mod tests {
             panic!("expected native target");
         };
         assert_eq!(target.owner, app.tree_owner());
-        app.dispatch_tree_action(Some(&native), action, size)
+        app.dispatch_tree_action(Some(&native), action, size, preserve_hover)
             .unwrap();
         assert_eq!(app.state.workspace.as_deref(), Some("remote"));
         assert!(
@@ -12702,10 +12715,13 @@ pub(super) mod tests {
                 .all(|(pane, _)| pane != "hidden-pane")
         );
         // A stale sidebar workspace hint cannot transfer pane ownership.
-        app.activate_sidebar(SidebarTarget::Pane {
-            workspace: "history".into(),
-            pane: "hidden-pane".into(),
-        })
+        app.activate_sidebar(
+            SidebarTarget::Pane {
+                workspace: "history".into(),
+                pane: "hidden-pane".into(),
+            },
+            false,
+        )
         .unwrap();
         assert_eq!(app.state.workspace.as_deref(), Some("other"));
         assert_eq!(app.state.window.as_deref(), Some("other-window"));
