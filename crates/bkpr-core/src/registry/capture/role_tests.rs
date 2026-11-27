@@ -274,6 +274,33 @@ fn workspace_role_delegation_does_not_replay_or_share_private_history() {
     assert!(read_agent(&registry, &first, &first_grant.channel_id, &secret).is_err());
     assert!(!status(&registry, &first)["grant"].is_null());
 
+    let retired_post = agent_channel(
+        &registry,
+        &first,
+        post(desk, "before retirement", PostIntent::Note),
+    )
+    .unwrap();
+    assert_eq!(
+        read_agent(&registry, &second, desk, &retired_post).unwrap()["current_delegation"],
+        second_grant.id.0
+    );
+    launch_request(
+        &registry,
+        &first,
+        Operation::HarnessEvent {
+            launch_id: first.grant.launch_id.clone(),
+            token: first.grant.token.clone(),
+            event: CaptureEvent::End,
+        },
+    )
+    .unwrap();
+    assert!(snapshot(&registry, &client).0.is_empty());
+    assert!(
+        read_agent(&registry, &second, desk, &retired_post).unwrap()["current_delegation"]
+            .is_null()
+    );
+    user(&registry, &client, set(&workspace, Some(&second))).unwrap();
+
     drop(server);
     drop(registry);
     let (reopened, _server) = open(root.path());
