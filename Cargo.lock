@@ -335,6 +335,7 @@ dependencies = [
  "libc",
  "mio",
  "notify",
+ "png",
  "portable-pty",
  "reqwest",
  "rusqlite",

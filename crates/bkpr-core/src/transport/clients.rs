@@ -108,6 +108,42 @@ impl ClientOwner {
         let _ = version;
         Ok(())
     }
+
+    pub(crate) fn ensure_external_to_daemon(&self) -> Result<()> {
+        let process = self.peer.current()?;
+        check_external_ancestry(
+            process.pid,
+            process.parent,
+            std::process::id() as i32,
+            crate::harness_process::parent_pid,
+        )?;
+        anyhow::ensure!(
+            self.peer.current()?.parent == process.parent && self.is_alive(),
+            "channel client owner or ancestry changed"
+        );
+        Ok(())
+    }
+}
+
+fn check_external_ancestry(
+    mut pid: i32,
+    mut parent: i32,
+    daemon: i32,
+    lookup_parent: impl Fn(i32) -> Result<Option<i32>>,
+) -> Result<()> {
+    for _ in 0..128 {
+        anyhow::ensure!(
+            pid != daemon && parent != daemon,
+            "daemon-owned processes cannot act as the channel user"
+        );
+        if pid == 1 || parent == 1 {
+            return Ok(());
+        }
+        anyhow::ensure!(parent > 0, "cannot verify channel client process ancestry");
+        pid = parent;
+        parent = lookup_parent(pid)?.context("cannot verify channel client process ancestry")?;
+    }
+    anyhow::bail!("channel client process ancestry exceeds bound")
 }
 
 #[cfg(target_os = "linux")]
@@ -246,4 +282,41 @@ pub(super) fn watch_client(
         }
     };
     registry.detach_client(client, reason);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_ancestry_accepts_external_peer_through_foreign_uid_parent() {
+        // The peer is already authenticated; the foreign login parent contributes
+        // only its kernel-observed parent PID, never an authenticated Process.
+        check_external_ancestry(42, 7, 18, |pid| {
+            assert_eq!(pid, 7);
+            Ok(Some(1))
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn channel_ancestry_rejects_daemon_at_pid_one() {
+        let denied = check_external_ancestry(42, 7, 1, |pid| {
+            assert_eq!(pid, 7);
+            Ok(Some(1))
+        })
+        .unwrap_err();
+        assert!(
+            denied
+                .to_string()
+                .contains("daemon-owned processes cannot act as the channel user")
+        );
+    }
+
+    #[test]
+    fn channel_ancestry_rejects_unknown_or_unbounded_topology() {
+        assert!(check_external_ancestry(42, 0, 18, |_| unreachable!()).is_err());
+        assert!(check_external_ancestry(42, 7, 18, |_| Ok(None)).is_err());
+        assert!(check_external_ancestry(42, 7, 18, |_| Ok(Some(7))).is_err());
+    }
 }

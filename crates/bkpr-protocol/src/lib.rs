@@ -5,6 +5,7 @@
 pub mod administration;
 mod agent;
 pub use agent::*;
+pub mod channels;
 mod ci;
 mod context;
 pub mod control;

@@ -48,8 +48,7 @@ pub(crate) async fn request_async(
     response_limit: usize,
 ) -> Result<Response> {
     let mut codec = Codec::new();
-    let frame = wire::encode_frame(Kind::Request, codec.encode_request(request)?)
-        .context(OutcomeUnknown)?;
+    let frame = wire::encode_frame(Kind::Request, codec.encode_request(request)?)?;
     request_frame_async(stream, frame, response_limit).await
 }
 
@@ -62,8 +61,7 @@ pub(crate) async fn request_client_async(
     let frame = wire::encode_frame(
         Kind::Request,
         codec.encode_client_request(authority, operation)?,
-    )
-    .context(OutcomeUnknown)?;
+    )?;
     request_frame_async(stream, frame, wire::MAX_RESPONSE).await
 }
 
@@ -190,7 +188,7 @@ pub fn request(socket: &Path, request: &Request) -> Result<Response> {
 /// Configure read/write deadlines before dispatch; no request is replayed.
 pub fn request_stream(stream: &mut UnixStream, request: &Request) -> Result<Response> {
     let mut codec = Codec::new();
-    let payload = codec.encode_request(request).context(OutcomeUnknown)?;
+    let payload = codec.encode_request(request)?;
     request_encoded_stream(stream, payload)
 }
 
@@ -200,13 +198,15 @@ fn request_client_stream(
     operation: &Operation,
 ) -> Result<Response> {
     let mut codec = Codec::new();
-    let payload = codec
-        .encode_client_request(authority, operation)
-        .context(OutcomeUnknown)?;
+    let payload = codec.encode_client_request(authority, operation)?;
     request_encoded_stream(stream, payload)
 }
 
 fn request_encoded_stream(stream: &mut UnixStream, payload: &[u8]) -> Result<Response> {
+    anyhow::ensure!(
+        payload.len() <= wire::MAX_REQUEST,
+        "native request exceeds frame limit"
+    );
     // A missing or invalid reply cannot establish whether a mutation executed.
     // Keep that uncertainty typed through caller error contexts.
     let response = (|| -> Result<Response> {
@@ -303,6 +303,41 @@ pub(crate) mod test_wire {
 mod tests {
     use super::*;
     use std::{os::unix::net::UnixListener, thread};
+
+    #[test]
+    fn invalid_channel_mutation_has_known_outcome_before_dispatch() {
+        use bkpr_protocol::channels::{ChannelId, ChannelPost, ChannelRequest};
+
+        let (mut client, mut peer) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let authority = ClientAuthority {
+            client_id: "client".into(),
+            token: "token".into(),
+        };
+        let error = request_client_stream(
+            &mut client,
+            &authority,
+            &Operation::Channels {
+                request: ChannelRequest::Post {
+                    channel_id: ChannelId("channel".into()),
+                    post: ChannelPost {
+                        idempotency_key: "request".into(),
+                        text: String::new(),
+                        intent: Default::default(),
+                        mentions: vec![],
+                        reply_to: None,
+                        attachments: vec![],
+                    },
+                },
+            },
+        )
+        .unwrap_err();
+        assert!(!outcome_unknown(&error));
+        drop(client);
+        assert_eq!(std::io::Read::read(&mut peer, &mut [0u8; 1]).unwrap(), 0);
+    }
 
     fn reply(response: Response) -> Vec<u8> {
         let mut codec = Codec::new();

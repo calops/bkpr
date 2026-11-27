@@ -93,6 +93,12 @@ impl ClientLease {
     pub(crate) fn is_active(&self) -> bool {
         self.active.load(Ordering::Acquire) && !self.detached.load(Ordering::Acquire)
     }
+    fn channel_connected(&self, stream: &UnixStream) -> bool {
+        self.is_active()
+            && crate::transport::lifetime_connected(stream)
+            && crate::transport::lifetime_connected(&self.lifetime)
+            && self.owner.is_alive()
+    }
     pub(crate) fn owner(&self) -> &crate::transport::ClientOwner {
         &self.owner
     }
@@ -314,6 +320,11 @@ impl Registry {
                     && crate::transport::lifetime_connected(stream)
                     && crate::transport::lifetime_connected(&client.lifetime)
             }),
+            Operation::Channels { request } => {
+                client.ensure_active()?;
+                client.owner.ensure_external_to_daemon()?;
+                self.request_channels(request, &|| client.channel_connected(stream))
+            }
             Operation::Client { .. }
             | Operation::ClientRegister { .. }
             | Operation::Shutdown
