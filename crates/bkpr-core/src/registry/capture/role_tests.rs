@@ -212,7 +212,7 @@ fn user_invites_add_exact_live_members_without_replacing_concurrent_edits() {
         channel_id: restricted,
         after: Some(cursor),
         limit: 8,
-        wait_ms: 0,
+        wait_ms: 2_000,
     })
     .unwrap()
     else {
