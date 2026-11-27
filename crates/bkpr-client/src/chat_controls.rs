@@ -44,6 +44,8 @@ pub(super) enum EditorAction {
     Close,
     /// One explicitly requested write; resolve it with a matching receipt.
     Submit(ChannelRequest),
+    /// Assign the exact workspace agent as coordinator.
+    Assign(ChannelMentionBinding),
 }
 
 /// The receipt for an editor's one outstanding write, qualified by its owner in the app.
@@ -183,6 +185,7 @@ pub(super) struct Editor {
     in_flight: Option<(Read, Option<ParticipantId>)>,
     roster: Vec<Participant>,
     invite: bool,
+    assign: bool,
     invite_bindings: BTreeMap<ParticipantId, ChannelMentionBinding>,
     roster_after: Option<ParticipantId>,
     roster_next: Option<ParticipantId>,
@@ -230,6 +233,20 @@ impl Editor {
             && summary.membership == MembershipMode::Explicit
     }
 
+    pub(super) fn assign(workspace: String) -> Self {
+        let mut editor = Self::new(
+            workspace,
+            None,
+            "Assign coordinator".into(),
+            MembershipMode::Explicit,
+            ChannelSettings::default(),
+        );
+        editor.invite = true;
+        editor.assign = true;
+        editor.rebuild_rows();
+        editor
+    }
+
     pub(super) fn invite(summary: &ChannelSummary) -> Option<Self> {
         if !Self::can_invite(summary) {
             return None;
@@ -270,6 +287,7 @@ impl Editor {
             in_flight: None,
             roster: Vec::new(),
             invite: false,
+            assign: false,
             invite_bindings: BTreeMap::new(),
             roster_after: None,
             roster_next: None,
@@ -292,7 +310,7 @@ impl Editor {
 
     /// Whether this editor creates rather than updates a channel.
     pub(super) fn is_create(&self) -> bool {
-        self.channel_id.is_none()
+        self.channel_id.is_none() && !self.assign
     }
 
     /// Take one page request for the current draft, if no older page is in flight.
@@ -743,6 +761,13 @@ impl Editor {
             }
             Field::Reports => self.settings.attention_reports = !self.settings.attention_reports,
             Field::Member(id) if self.invite => {
+                if self.assign {
+                    return self
+                        .invite_bindings
+                        .get(&id)
+                        .cloned()
+                        .map_or(EditorAction::None, EditorAction::Assign);
+                }
                 let (Some(channel), Some(binding)) =
                     (&self.channel_id, self.invite_bindings.get(&id))
                 else {

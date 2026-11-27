@@ -148,6 +148,7 @@ pub(super) enum Hit {
     MemberRail,
     Divider(bkpr_protocol::Axis),
     Invite,
+    Assign,
 }
 
 impl Paint {
@@ -156,12 +157,13 @@ impl Paint {
     }
 }
 
-const CHANNEL_BUTTONS: [(Hit, &str); 5] = [
+const CHANNEL_BUTTONS: [(Hit, &str); 6] = [
     (Hit::Create, "\u{f0415} New channel"),
     (Hit::Manage, "\u{f0493} Settings"),
     (Hit::Members, "Members"),
     (Hit::MemberBack, MEMBER_BACK),
     (Hit::Invite, "Invite member"),
+    (Hit::Assign, "Assign coordinator"),
 ];
 
 const MEMBER_BACK: &str = "Back";
@@ -169,7 +171,7 @@ const MEMBER_BACK: &str = "Back";
 fn is_channel_button(hit: Hit) -> bool {
     matches!(
         hit,
-        Hit::Create | Hit::Manage | Hit::Members | Hit::MemberBack | Hit::Invite
+        Hit::Create | Hit::Manage | Hit::Members | Hit::MemberBack | Hit::Invite | Hit::Assign
     )
 }
 
@@ -1200,18 +1202,21 @@ impl Chat {
                 .take(list_height.into())
                 .enumerate()
             {
-                let summary = &self.catalog[id];
-                let lead = if summary.unread_attention { "!" } else { " " };
-                let name = if summary.role_thread.is_some_and(|thread| thread.archived) {
-                    let short: String = id.as_ref().chars().take(6).collect();
-                    format!("Archive {}", safe_text(&short))
-                } else {
-                    channel_name(summary)
+                let summary = self.catalog.get(id);
+                let unread = summary.is_some_and(|summary| summary.unread_attention);
+                let lead = if unread { "!" } else { " " };
+                let name = match summary {
+                    Some(summary) if summary.role_thread.is_some_and(|thread| thread.archived) => {
+                        let short: String = id.as_ref().chars().take(6).collect();
+                        format!("Archive {}", safe_text(&short))
+                    }
+                    Some(summary) => channel_name(summary),
+                    None => "#coordinator".into(),
                 };
                 let full = format!("{lead}{name}");
                 let bounds = row(body.x, body.y + first_channel + line as u16, body.width);
                 let chosen = list_only && self.list_cursor == index;
-                let role = if summary.unread_attention {
+                let role = if unread {
                     Role::Warning
                 } else if selected == Some(id) {
                     Role::Accent
@@ -1300,6 +1305,43 @@ impl Chat {
                 );
                 reserve
             };
+            if self
+                .active
+                .as_ref()
+                .is_some_and(|active| active.id.0.is_empty())
+                && self.catalog_ready
+                && self.catalog_error.is_none()
+            {
+                let pending = self.sends.contains_key(&Self::vacant_id());
+                let label = match (self.roles_enabled, pending) {
+                    (_, true) => "Assigning coordinator…",
+                    (Some(true), false) => "No coordinator assigned",
+                    (Some(false), false) => "Workspace roles unavailable",
+                    (None, false) => "Checking workspace roles…",
+                };
+                let y = thread.y + thread.height.saturating_sub(1) / 2;
+                let width = text_width(label).min(usize::from(thread.width)) as u16;
+                paint.card_line(
+                    theme,
+                    row(thread.x + (thread.width - width) / 2, y, width),
+                    label,
+                    Role::Muted,
+                    false,
+                    list_background,
+                );
+                if !read_only
+                    && !pending
+                    && self.roles_enabled == Some(true)
+                    && y + 1 < thread.y + thread.height
+                {
+                    let width = Button::new("Assign coordinator").width().min(thread.width);
+                    paint.target(
+                        row(thread.x + (thread.width - width) / 2, y + 1, width),
+                        Hit::Assign,
+                    );
+                }
+                return;
+            }
             let (label, role) = if let Some(error) = &self.catalog_error {
                 (error.as_str(), Role::Error)
             } else if self.catalog_ready {
@@ -2591,7 +2633,7 @@ mod tests {
             })
         };
         for (hit, y) in [
-            (Hit::Create, list_body.y + 4),
+            (Hit::Create, list_body.y + 5),
             (Hit::Manage, list_body.y + list_body.height - 1),
         ] {
             let button = row(list_body.x, y, list_body.width).inset_horizontal(1);
@@ -2616,7 +2658,7 @@ mod tests {
         ));
         assert!(matches!(
             chat.paint.hit(list_body.x, list_body.y + 3),
-            Some(Hit::List)
+            Some(Hit::Channel(1))
         ));
 
         chat.active.as_mut().unwrap().history.anchor = Some(Anchor {

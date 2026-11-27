@@ -423,6 +423,10 @@ impl Chat {
         self.attention.keys().map(String::as_str)
     }
 
+    fn vacant_id() -> ChannelId {
+        ChannelId(String::new())
+    }
+
     fn refresh_channels(&mut self) {
         let Some(workspace) = &self.workspace else {
             return;
@@ -439,13 +443,29 @@ impl Chat {
             let right = &self.catalog[right];
             channel_order(left).cmp(&channel_order(right))
         });
+        if !self.ids.iter().any(|id| self.live_coordinator(id)) {
+            self.ids.push(Self::vacant_id());
+        }
         let selection = self
             .selected
             .get(workspace)
-            .filter(|id| self.catalog.contains_key(*id))
-            .or_else(|| self.ids.first())
+            .filter(|id| id.0.is_empty() || self.catalog.contains_key(*id))
+            .or_else(|| self.ids.iter().find(|id| !id.0.is_empty()))
             .cloned();
         if let Some(id) = selection {
+            let id = if id.0.is_empty()
+                || self.active.as_ref().is_some_and(|active| active.id == id)
+                    && self.catalog.get(&id).is_some_and(|channel| {
+                        channel.role_thread.is_some_and(|thread| thread.archived)
+                    }) {
+                self.ids
+                    .iter()
+                    .find(|candidate| self.live_coordinator(candidate))
+                    .cloned()
+                    .unwrap_or_else(Self::vacant_id)
+            } else {
+                id
+            };
             self.select(id);
         } else {
             self.active = None;
@@ -455,17 +475,28 @@ impl Chat {
         }
     }
 
+    fn live_coordinator(&self, id: &ChannelId) -> bool {
+        self.catalog
+            .get(id)
+            .is_some_and(|channel| channel.role_thread.is_some_and(|thread| !thread.archived))
+    }
+
     fn select(&mut self, id: ChannelId) {
         let Some(workspace) = &self.workspace else {
             return;
         };
-        if !self.contains_channel(workspace, &id) {
+        if !id.0.is_empty() && !self.contains_channel(workspace, &id) {
             return;
         }
         if self.active.as_ref().is_some_and(|active| active.id == id) {
             return;
         }
-        self.selected.insert(workspace.clone(), id.clone());
+        let selection = if self.live_coordinator(&id) {
+            Self::vacant_id()
+        } else {
+            id.clone()
+        };
+        self.selected.insert(workspace.clone(), selection);
         self.retain_active_history();
         self.list_cursor = self
             .ids
@@ -480,7 +511,12 @@ impl Chat {
         {
             active.history = self.recent_history.remove(index).expect("cached history").1;
         }
-        if self.visible() && Self::can_show_members(&self.catalog[&active.id], self.roles_enabled) {
+        if self.visible()
+            && self
+                .catalog
+                .get(&active.id)
+                .is_some_and(|channel| Self::can_show_members(channel, self.roles_enabled))
+        {
             active.refresh_roster(false);
         }
         self.active = Some(active);
@@ -718,6 +754,16 @@ impl Chat {
                 self.set_members(self.members_scroll.is_none());
             }
             Hit::MemberBack => self.set_members(false),
+            Hit::Assign if !read_only && self.roles_enabled == Some(true) => {
+                if let Some(workspace) = self.workspace.clone() {
+                    self.next = self.next.wrapping_add(1);
+                    self.editor = Some(Editor {
+                        token: self.next,
+                        form: chat_controls::Editor::assign(workspace),
+                    });
+                    self.redraw();
+                }
+            }
             Hit::Invite if !read_only => {
                 if let Some(form) = self.summary().and_then(chat_controls::Editor::invite) {
                     self.next = self.next.wrapping_add(1);
@@ -756,6 +802,30 @@ impl Chat {
             chat_controls::EditorAction::Close => {
                 self.close_editor();
                 Effect::None
+            }
+            chat_controls::EditorAction::Assign(target) => {
+                let (Some(workspace_id), Some(active)) =
+                    (self.workspace.clone(), self.active.as_ref())
+                else {
+                    return Effect::None;
+                };
+                if !active.id.0.is_empty()
+                    || self.roles_enabled != Some(true)
+                    || self.sends.contains_key(&active.id)
+                {
+                    return Effect::None;
+                }
+                let id = active.id.clone();
+                self.close_editor();
+                self.sends.insert(id.clone(), Send::SettingRole);
+                Effect::Submit(
+                    JobKind::RoleSet(id),
+                    Job::Role(RoleRequest::Set {
+                        workspace_id,
+                        role: WorkspaceRole::Coordinator,
+                        target: Some(target),
+                    }),
+                )
             }
             chat_controls::EditorAction::Submit(request) => {
                 let editor = self.editor.as_ref().expect("active controls");
