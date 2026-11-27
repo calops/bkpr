@@ -610,6 +610,8 @@ fn verified_resume_inherits_channel_history_but_not_live_delivery() {
     old_disk
         .execute_batch(
             "DELETE FROM notification_work WHERE channel_id IN (SELECT channel_id FROM direct_channels);
+             DROP TABLE role_threads;
+             ALTER TABLE catalog_events DROP COLUMN role_archive;
              DROP INDEX pending_launch_enqueue;
              DROP INDEX pending_channel_sequence;
              DROP INDEX wake_batch_membership;

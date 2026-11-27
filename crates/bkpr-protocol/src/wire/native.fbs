@@ -828,7 +828,7 @@ table AgentRequestChannelAck {
 table AgentRequestRoleRequest { role:WorkspaceRole = Coordinator; }
 table AgentRequestRoleRelease { role:WorkspaceRole = Coordinator; grant_id:string (required); }
 table AgentRequestRoleStatus { role:WorkspaceRole = Coordinator; }
-union AgentRequest { AgentRequestWhoami, AgentRequestControl, AgentRequestSetTitle, AgentRequestDiscoverAgents, AgentRequestSendMessage, AgentRequestReadInbox, AgentRequestReadMessage, AgentRequestAckMessage, AgentRequestInspectOutbox, AgentRequestReceiverRegister, AgentRequestReceiverSubscribe, AgentRequestWakeValidate, AgentRequestWakeOutcome, AgentRequestChannels, AgentRequestChannelWake, AgentRequestChannelRead, AgentRequestChannelDirectPost, AgentRequestChannelAck, AgentRequestRoleRequest, AgentRequestRoleRelease, AgentRequestRoleStatus }
+union AgentRequest { AgentRequestWhoami, AgentRequestControl, AgentRequestSetTitle, AgentRequestDiscoverAgents, AgentRequestSendMessage, AgentRequestReadInbox, AgentRequestAckMessage, AgentRequestInspectOutbox, AgentRequestReceiverRegister, AgentRequestReceiverSubscribe, AgentRequestWakeValidate, AgentRequestWakeOutcome, AgentRequestReadMessage, AgentRequestChannels, AgentRequestChannelWake, AgentRequestChannelRead, AgentRequestChannelDirectPost, AgentRequestChannelAck, AgentRequestRoleRequest, AgentRequestRoleRelease, AgentRequestRoleStatus }
 table AgentWakeOutcomeAccepted {
 
 }

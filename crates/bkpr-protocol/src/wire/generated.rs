@@ -85820,9 +85820,6 @@ pub enum AgentRequest{
         /// The variant of type `AgentRequestReadInbox` in the union `AgentRequest`
         AgentRequestReadInbox(::planus::alloc::boxed::Box<self::AgentRequestReadInbox>),
     
-        /// The variant of type `AgentRequestReadMessage` in the union `AgentRequest`
-        AgentRequestReadMessage(::planus::alloc::boxed::Box<self::AgentRequestReadMessage>),
-    
         /// The variant of type `AgentRequestAckMessage` in the union `AgentRequest`
         AgentRequestAckMessage(::planus::alloc::boxed::Box<self::AgentRequestAckMessage>),
     
@@ -85840,6 +85837,9 @@ pub enum AgentRequest{
     
         /// The variant of type `AgentRequestWakeOutcome` in the union `AgentRequest`
         AgentRequestWakeOutcome(::planus::alloc::boxed::Box<self::AgentRequestWakeOutcome>),
+    
+        /// The variant of type `AgentRequestReadMessage` in the union `AgentRequest`
+        AgentRequestReadMessage(::planus::alloc::boxed::Box<self::AgentRequestReadMessage>),
     
         /// The variant of type `AgentRequestChannels` in the union `AgentRequest`
         AgentRequestChannels(::planus::alloc::boxed::Box<self::AgentRequestChannels>),
@@ -85924,19 +85924,11 @@ impl AgentRequest {
     }
 
     #[inline]
-    pub fn create_agent_request_read_message(
-      builder: &mut ::planus::Builder,
-      value: impl ::planus::WriteAsOffset<self::AgentRequestReadMessage>,
-    ) -> ::planus::UnionOffset<Self> {
-        ::planus::UnionOffset::new(7, value.prepare(builder).downcast())
-    }
-
-    #[inline]
     pub fn create_agent_request_ack_message(
       builder: &mut ::planus::Builder,
       value: impl ::planus::WriteAsOffset<self::AgentRequestAckMessage>,
     ) -> ::planus::UnionOffset<Self> {
-        ::planus::UnionOffset::new(8, value.prepare(builder).downcast())
+        ::planus::UnionOffset::new(7, value.prepare(builder).downcast())
     }
 
     #[inline]
@@ -85944,7 +85936,7 @@ impl AgentRequest {
       builder: &mut ::planus::Builder,
       value: impl ::planus::WriteAsOffset<self::AgentRequestInspectOutbox>,
     ) -> ::planus::UnionOffset<Self> {
-        ::planus::UnionOffset::new(9, value.prepare(builder).downcast())
+        ::planus::UnionOffset::new(8, value.prepare(builder).downcast())
     }
 
     #[inline]
@@ -85952,7 +85944,7 @@ impl AgentRequest {
       builder: &mut ::planus::Builder,
       value: impl ::planus::WriteAsOffset<self::AgentRequestReceiverRegister>,
     ) -> ::planus::UnionOffset<Self> {
-        ::planus::UnionOffset::new(10, value.prepare(builder).downcast())
+        ::planus::UnionOffset::new(9, value.prepare(builder).downcast())
     }
 
     #[inline]
@@ -85960,7 +85952,7 @@ impl AgentRequest {
       builder: &mut ::planus::Builder,
       value: impl ::planus::WriteAsOffset<self::AgentRequestReceiverSubscribe>,
     ) -> ::planus::UnionOffset<Self> {
-        ::planus::UnionOffset::new(11, value.prepare(builder).downcast())
+        ::planus::UnionOffset::new(10, value.prepare(builder).downcast())
     }
 
     #[inline]
@@ -85968,13 +85960,21 @@ impl AgentRequest {
       builder: &mut ::planus::Builder,
       value: impl ::planus::WriteAsOffset<self::AgentRequestWakeValidate>,
     ) -> ::planus::UnionOffset<Self> {
-        ::planus::UnionOffset::new(12, value.prepare(builder).downcast())
+        ::planus::UnionOffset::new(11, value.prepare(builder).downcast())
     }
 
     #[inline]
     pub fn create_agent_request_wake_outcome(
       builder: &mut ::planus::Builder,
       value: impl ::planus::WriteAsOffset<self::AgentRequestWakeOutcome>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(12, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_agent_request_read_message(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::AgentRequestReadMessage>,
     ) -> ::planus::UnionOffset<Self> {
         ::planus::UnionOffset::new(13, value.prepare(builder).downcast())
     }
@@ -86058,13 +86058,13 @@ impl ::planus::WriteAsUnion<AgentRequest> for AgentRequest {
             Self::AgentRequestDiscoverAgents(value) => Self::create_agent_request_discover_agents(builder, value),
             Self::AgentRequestSendMessage(value) => Self::create_agent_request_send_message(builder, value),
             Self::AgentRequestReadInbox(value) => Self::create_agent_request_read_inbox(builder, value),
-            Self::AgentRequestReadMessage(value) => Self::create_agent_request_read_message(builder, value),
             Self::AgentRequestAckMessage(value) => Self::create_agent_request_ack_message(builder, value),
             Self::AgentRequestInspectOutbox(value) => Self::create_agent_request_inspect_outbox(builder, value),
             Self::AgentRequestReceiverRegister(value) => Self::create_agent_request_receiver_register(builder, value),
             Self::AgentRequestReceiverSubscribe(value) => Self::create_agent_request_receiver_subscribe(builder, value),
             Self::AgentRequestWakeValidate(value) => Self::create_agent_request_wake_validate(builder, value),
             Self::AgentRequestWakeOutcome(value) => Self::create_agent_request_wake_outcome(builder, value),
+            Self::AgentRequestReadMessage(value) => Self::create_agent_request_read_message(builder, value),
             Self::AgentRequestChannels(value) => Self::create_agent_request_channels(builder, value),
             Self::AgentRequestChannelWake(value) => Self::create_agent_request_channel_wake(builder, value),
             Self::AgentRequestChannelRead(value) => Self::create_agent_request_channel_read(builder, value),
@@ -86154,22 +86154,12 @@ impl AgentRequestBuilder<::planus::Uninitialized> {
         AgentRequestBuilder(::planus::Initialized(value))
     }
 
-    /// Creates an instance of the [`AgentRequestReadMessage` variant](AgentRequest#variant.AgentRequestReadMessage).
-    #[inline]
-    pub fn agent_request_read_message<T>(
-        self,
-        value: T,
-    ) -> AgentRequestBuilder<::planus::Initialized<7, T>>
-        where T: ::planus::WriteAsOffset<self::AgentRequestReadMessage> {
-        AgentRequestBuilder(::planus::Initialized(value))
-    }
-
     /// Creates an instance of the [`AgentRequestAckMessage` variant](AgentRequest#variant.AgentRequestAckMessage).
     #[inline]
     pub fn agent_request_ack_message<T>(
         self,
         value: T,
-    ) -> AgentRequestBuilder<::planus::Initialized<8, T>>
+    ) -> AgentRequestBuilder<::planus::Initialized<7, T>>
         where T: ::planus::WriteAsOffset<self::AgentRequestAckMessage> {
         AgentRequestBuilder(::planus::Initialized(value))
     }
@@ -86179,7 +86169,7 @@ impl AgentRequestBuilder<::planus::Uninitialized> {
     pub fn agent_request_inspect_outbox<T>(
         self,
         value: T,
-    ) -> AgentRequestBuilder<::planus::Initialized<9, T>>
+    ) -> AgentRequestBuilder<::planus::Initialized<8, T>>
         where T: ::planus::WriteAsOffset<self::AgentRequestInspectOutbox> {
         AgentRequestBuilder(::planus::Initialized(value))
     }
@@ -86189,7 +86179,7 @@ impl AgentRequestBuilder<::planus::Uninitialized> {
     pub fn agent_request_receiver_register<T>(
         self,
         value: T,
-    ) -> AgentRequestBuilder<::planus::Initialized<10, T>>
+    ) -> AgentRequestBuilder<::planus::Initialized<9, T>>
         where T: ::planus::WriteAsOffset<self::AgentRequestReceiverRegister> {
         AgentRequestBuilder(::planus::Initialized(value))
     }
@@ -86199,7 +86189,7 @@ impl AgentRequestBuilder<::planus::Uninitialized> {
     pub fn agent_request_receiver_subscribe<T>(
         self,
         value: T,
-    ) -> AgentRequestBuilder<::planus::Initialized<11, T>>
+    ) -> AgentRequestBuilder<::planus::Initialized<10, T>>
         where T: ::planus::WriteAsOffset<self::AgentRequestReceiverSubscribe> {
         AgentRequestBuilder(::planus::Initialized(value))
     }
@@ -86209,7 +86199,7 @@ impl AgentRequestBuilder<::planus::Uninitialized> {
     pub fn agent_request_wake_validate<T>(
         self,
         value: T,
-    ) -> AgentRequestBuilder<::planus::Initialized<12, T>>
+    ) -> AgentRequestBuilder<::planus::Initialized<11, T>>
         where T: ::planus::WriteAsOffset<self::AgentRequestWakeValidate> {
         AgentRequestBuilder(::planus::Initialized(value))
     }
@@ -86219,8 +86209,18 @@ impl AgentRequestBuilder<::planus::Uninitialized> {
     pub fn agent_request_wake_outcome<T>(
         self,
         value: T,
-    ) -> AgentRequestBuilder<::planus::Initialized<13, T>>
+    ) -> AgentRequestBuilder<::planus::Initialized<12, T>>
         where T: ::planus::WriteAsOffset<self::AgentRequestWakeOutcome> {
+        AgentRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`AgentRequestReadMessage` variant](AgentRequest#variant.AgentRequestReadMessage).
+    #[inline]
+    pub fn agent_request_read_message<T>(
+        self,
+        value: T,
+    ) -> AgentRequestBuilder<::planus::Initialized<13, T>>
+        where T: ::planus::WriteAsOffset<self::AgentRequestReadMessage> {
         AgentRequestBuilder(::planus::Initialized(value))
     }
 
@@ -86420,7 +86420,7 @@ impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::p
     }
 }
 impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<7, T>>
-    where T: ::planus::WriteAsOffset<self::AgentRequestReadMessage>
+    where T: ::planus::WriteAsOffset<self::AgentRequestAckMessage>
 {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<AgentRequest> {
@@ -86429,7 +86429,7 @@ impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::I
 }
 
 impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<7, T>>
-    where T: ::planus::WriteAsOffset<self::AgentRequestReadMessage>
+    where T: ::planus::WriteAsOffset<self::AgentRequestAckMessage>
 {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<AgentRequest>> {
@@ -86437,7 +86437,7 @@ impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::p
     }
 }
 impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<8, T>>
-    where T: ::planus::WriteAsOffset<self::AgentRequestAckMessage>
+    where T: ::planus::WriteAsOffset<self::AgentRequestInspectOutbox>
 {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<AgentRequest> {
@@ -86446,7 +86446,7 @@ impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::I
 }
 
 impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<8, T>>
-    where T: ::planus::WriteAsOffset<self::AgentRequestAckMessage>
+    where T: ::planus::WriteAsOffset<self::AgentRequestInspectOutbox>
 {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<AgentRequest>> {
@@ -86454,7 +86454,7 @@ impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::p
     }
 }
 impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<9, T>>
-    where T: ::planus::WriteAsOffset<self::AgentRequestInspectOutbox>
+    where T: ::planus::WriteAsOffset<self::AgentRequestReceiverRegister>
 {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<AgentRequest> {
@@ -86463,7 +86463,7 @@ impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::I
 }
 
 impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<9, T>>
-    where T: ::planus::WriteAsOffset<self::AgentRequestInspectOutbox>
+    where T: ::planus::WriteAsOffset<self::AgentRequestReceiverRegister>
 {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<AgentRequest>> {
@@ -86471,7 +86471,7 @@ impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::p
     }
 }
 impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<10, T>>
-    where T: ::planus::WriteAsOffset<self::AgentRequestReceiverRegister>
+    where T: ::planus::WriteAsOffset<self::AgentRequestReceiverSubscribe>
 {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<AgentRequest> {
@@ -86480,7 +86480,7 @@ impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::I
 }
 
 impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<10, T>>
-    where T: ::planus::WriteAsOffset<self::AgentRequestReceiverRegister>
+    where T: ::planus::WriteAsOffset<self::AgentRequestReceiverSubscribe>
 {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<AgentRequest>> {
@@ -86488,7 +86488,7 @@ impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::p
     }
 }
 impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<11, T>>
-    where T: ::planus::WriteAsOffset<self::AgentRequestReceiverSubscribe>
+    where T: ::planus::WriteAsOffset<self::AgentRequestWakeValidate>
 {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<AgentRequest> {
@@ -86497,7 +86497,7 @@ impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::I
 }
 
 impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<11, T>>
-    where T: ::planus::WriteAsOffset<self::AgentRequestReceiverSubscribe>
+    where T: ::planus::WriteAsOffset<self::AgentRequestWakeValidate>
 {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<AgentRequest>> {
@@ -86505,7 +86505,7 @@ impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::p
     }
 }
 impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<12, T>>
-    where T: ::planus::WriteAsOffset<self::AgentRequestWakeValidate>
+    where T: ::planus::WriteAsOffset<self::AgentRequestWakeOutcome>
 {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<AgentRequest> {
@@ -86514,7 +86514,7 @@ impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::I
 }
 
 impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<12, T>>
-    where T: ::planus::WriteAsOffset<self::AgentRequestWakeValidate>
+    where T: ::planus::WriteAsOffset<self::AgentRequestWakeOutcome>
 {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<AgentRequest>> {
@@ -86522,7 +86522,7 @@ impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::p
     }
 }
 impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<13, T>>
-    where T: ::planus::WriteAsOffset<self::AgentRequestWakeOutcome>
+    where T: ::planus::WriteAsOffset<self::AgentRequestReadMessage>
 {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<AgentRequest> {
@@ -86531,7 +86531,7 @@ impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::I
 }
 
 impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<13, T>>
-    where T: ::planus::WriteAsOffset<self::AgentRequestWakeOutcome>
+    where T: ::planus::WriteAsOffset<self::AgentRequestReadMessage>
 {
     #[inline]
     fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<AgentRequest>> {
@@ -86685,13 +86685,13 @@ pub enum AgentRequestRef<'a>{
     AgentRequestDiscoverAgents(self::AgentRequestDiscoverAgentsRef<'a>),
     AgentRequestSendMessage(self::AgentRequestSendMessageRef<'a>),
     AgentRequestReadInbox(self::AgentRequestReadInboxRef<'a>),
-    AgentRequestReadMessage(self::AgentRequestReadMessageRef<'a>),
     AgentRequestAckMessage(self::AgentRequestAckMessageRef<'a>),
     AgentRequestInspectOutbox(self::AgentRequestInspectOutboxRef<'a>),
     AgentRequestReceiverRegister(self::AgentRequestReceiverRegisterRef<'a>),
     AgentRequestReceiverSubscribe(self::AgentRequestReceiverSubscribeRef<'a>),
     AgentRequestWakeValidate(self::AgentRequestWakeValidateRef<'a>),
     AgentRequestWakeOutcome(self::AgentRequestWakeOutcomeRef<'a>),
+    AgentRequestReadMessage(self::AgentRequestReadMessageRef<'a>),
     AgentRequestChannels(self::AgentRequestChannelsRef<'a>),
     AgentRequestChannelWake(self::AgentRequestChannelWakeRef<'a>),
     AgentRequestChannelRead(self::AgentRequestChannelReadRef<'a>),
@@ -86728,9 +86728,6 @@ impl<'a> ::core::convert::TryFrom<AgentRequestRef<'a>> for AgentRequest {
                 AgentRequestRef::AgentRequestReadInbox(value) => Self::AgentRequestReadInbox(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
                 
             
-                AgentRequestRef::AgentRequestReadMessage(value) => Self::AgentRequestReadMessage(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
-                
-            
                 AgentRequestRef::AgentRequestAckMessage(value) => Self::AgentRequestAckMessage(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
                 
             
@@ -86747,6 +86744,9 @@ impl<'a> ::core::convert::TryFrom<AgentRequestRef<'a>> for AgentRequest {
                 
             
                 AgentRequestRef::AgentRequestWakeOutcome(value) => Self::AgentRequestWakeOutcome(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                AgentRequestRef::AgentRequestReadMessage(value) => Self::AgentRequestReadMessage(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
                 
             
                 AgentRequestRef::AgentRequestChannels(value) => Self::AgentRequestChannels(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
@@ -86782,7 +86782,7 @@ impl<'a> ::core::convert::TryFrom<AgentRequestRef<'a>> for AgentRequest {
 impl<'a> ::planus::TableReadUnion<'a> for AgentRequestRef<'a> {
     fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
         match tag {
-            1 => ::core::result::Result::Ok(Self::AgentRequestWhoami(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::AgentRequestControl(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::AgentRequestSetTitle(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::AgentRequestDiscoverAgents(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::AgentRequestSendMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::AgentRequestReadInbox(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::AgentRequestReadMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::AgentRequestAckMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::AgentRequestInspectOutbox(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::AgentRequestReceiverRegister(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::AgentRequestReceiverSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::AgentRequestWakeValidate(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::AgentRequestWakeOutcome(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::AgentRequestChannels(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::AgentRequestChannelWake(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::AgentRequestChannelRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),17 => ::core::result::Result::Ok(Self::AgentRequestChannelDirectPost(::planus::TableRead::from_buffer(buffer, field_offset)?)),18 => ::core::result::Result::Ok(Self::AgentRequestChannelAck(::planus::TableRead::from_buffer(buffer, field_offset)?)),19 => ::core::result::Result::Ok(Self::AgentRequestRoleRequest(::planus::TableRead::from_buffer(buffer, field_offset)?)),20 => ::core::result::Result::Ok(Self::AgentRequestRoleRelease(::planus::TableRead::from_buffer(buffer, field_offset)?)),21 => ::core::result::Result::Ok(Self::AgentRequestRoleStatus(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+            1 => ::core::result::Result::Ok(Self::AgentRequestWhoami(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::AgentRequestControl(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::AgentRequestSetTitle(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::AgentRequestDiscoverAgents(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::AgentRequestSendMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::AgentRequestReadInbox(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::AgentRequestAckMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::AgentRequestInspectOutbox(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::AgentRequestReceiverRegister(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::AgentRequestReceiverSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::AgentRequestWakeValidate(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::AgentRequestWakeOutcome(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::AgentRequestReadMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::AgentRequestChannels(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::AgentRequestChannelWake(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::AgentRequestChannelRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),17 => ::core::result::Result::Ok(Self::AgentRequestChannelDirectPost(::planus::TableRead::from_buffer(buffer, field_offset)?)),18 => ::core::result::Result::Ok(Self::AgentRequestChannelAck(::planus::TableRead::from_buffer(buffer, field_offset)?)),19 => ::core::result::Result::Ok(Self::AgentRequestRoleRequest(::planus::TableRead::from_buffer(buffer, field_offset)?)),20 => ::core::result::Result::Ok(Self::AgentRequestRoleRelease(::planus::TableRead::from_buffer(buffer, field_offset)?)),21 => ::core::result::Result::Ok(Self::AgentRequestRoleStatus(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
         }
     }
 }
