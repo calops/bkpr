@@ -4950,6 +4950,27 @@ impl App {
             let route = self
                 .overlays
                 .route_pointer(mouse.x, mouse.y, phase, event_button);
+            if self.role_prompt().is_some()
+                && event_button == MouseButton::Left
+                && matches!(action, MouseAction::Press | MouseAction::Release)
+            {
+                let hit = self.overlays.layer("ui:modal").and_then(|layer| {
+                    let body = layer.placement.content;
+                    if !body.contains(mouse.x, mouse.y) {
+                        return None;
+                    }
+                    roles_ui::buttons(body.width, body.height)
+                        .into_iter()
+                        .find_map(|(rect, _, choice)| {
+                            rect.contains(mouse.x - body.x, mouse.y - body.y)
+                                .then_some(choice)
+                        })
+                });
+                if let Some(choice) = self.roles.pointer(hit, action == MouseAction::Release) {
+                    self.decide_role(choice);
+                }
+                return Ok(());
+            }
             if primary_release
                 && (consent_open
                     || !matches!(
@@ -6242,7 +6263,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     let placement = OverlayPlacement::centered(
                         size,
                         size.cols.saturating_sub(4).clamp(1, 82),
-                        size.rows.min(if role_open { 7 } else { 6 }),
+                        size.rows.min(if role_open { 10 } else { 6 }),
                     );
                     (placement.outer, placement.content)
                 } else {

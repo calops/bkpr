@@ -1161,14 +1161,13 @@ impl Chat {
                 if let Some(active) = &mut self.active
                     && let Some(draft) = self.drafts.get_mut(&active.id)
                     && (active.roster_ready || draft.slash_completing())
-                {
-                    if draft.select_mention(
+                    && draft.select_mention(
                         &active.roster,
                         self.paint.completion_capacity(),
                         Some(index),
-                    ) {
-                        active.refresh_roster(draft.completing_role_target());
-                    }
+                    )
+                {
+                    active.refresh_roster(draft.completing_role_target());
                 }
             }
             (B::Left, A::Press, Some(Hit::Latest)) => self.live_tail(),

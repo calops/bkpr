@@ -1994,7 +1994,7 @@ fn paint_history(
         if let Some(attribution) = &meta.role {
             if let Some(y) = relative(line) {
                 let label = format!("Posted as {}", roles_ui::label(attribution.role));
-                paint.line(theme, row(x, y, width), &label, Role::Muted, false);
+                paint.line(theme, row(x, y, width), &label, Role::BrightAccent, false);
             }
             line += 1;
         }

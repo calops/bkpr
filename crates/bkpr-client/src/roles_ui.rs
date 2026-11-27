@@ -5,7 +5,7 @@ use bkpr_protocol::roles::{
     APPROVAL_TIMEOUT_MS, RoleApproval, RoleRequest, RoleRequestId, RoleResponse, WorkspaceRole,
 };
 use bkpr_protocol::{Operation, Payload, Size};
-use bkpr_tui_framework::{Rect, Role, RoleSpan, Theme, UiSurface, safe_text, text_width, window};
+use bkpr_tui_framework::{Rect, Role, Theme, UiSurface, safe_text};
 use std::time::{Duration, Instant};
 
 pub(super) const ACTIVITY: &str = "roles:activity";
@@ -50,6 +50,7 @@ pub(super) struct State {
     snapshot_epoch: Option<u64>,
     surface_open: bool,
     presented: bool,
+    pressed: Option<bool>,
     deciding: Option<RoleRequestId>,
     spent: Vec<(RoleRequestId, Instant)>,
 }
@@ -108,6 +109,7 @@ impl State {
     fn clear_prompt(&mut self) {
         self.approvals.clear();
         self.presented = false;
+        self.pressed = None;
     }
 
     pub(super) fn invalidate(&mut self, revision: u64) {
@@ -159,7 +161,9 @@ impl State {
                 .cmp(&b.expires_at_ms)
                 .then_with(|| a.id.0.cmp(&b.id.0))
         });
-        self.presented &= self.approvals.first() == approvals.first();
+        if self.approvals.first() != approvals.first() {
+            self.mark_presented(false);
+        }
         self.approvals = approvals;
         self.snapshot_pending = false;
     }
@@ -174,6 +178,17 @@ impl State {
 
     pub(super) fn mark_presented(&mut self, present: bool) {
         self.presented = present;
+        if !present {
+            self.pressed = None;
+        }
+    }
+    pub(super) fn pointer(&mut self, hit: Option<bool>, release: bool) -> Option<bool> {
+        if release {
+            let pressed = self.pressed.take();
+            return hit.filter(|choice| self.presented && pressed == Some(*choice));
+        }
+        self.pressed = hit.filter(|_| self.presented);
+        None
     }
 
     pub(super) fn decision(&self, approve: bool) -> Option<RoleRequest> {
@@ -318,6 +333,7 @@ impl App {
                 }
             },
             DECISION => {
+                self.roles.pressed = None;
                 let result = decision_receipt(result);
                 let unknown = result.as_ref().is_err_and(transport::outcome_unknown);
                 self.roles.complete_decision(unknown);
@@ -386,50 +402,72 @@ impl Paint {
     }
 }
 
+pub(super) fn buttons(width: u16, height: u16) -> [(Rect, &'static str, bool); 2] {
+    let x = width.saturating_sub(10) / 2;
+    let y = height.saturating_sub(1);
+    [
+        (
+            Rect {
+                x,
+                width: 5,
+                ..line(y, width)
+            },
+            "Yes",
+            true,
+        ),
+        (
+            Rect {
+                x: x + 6,
+                width: 4,
+                ..line(y, width)
+            },
+            "No",
+            false,
+        ),
+    ]
+}
+
 fn paint(surface: &mut UiSurface, size: Size, theme: &Theme, prompt: &RoleApproval) -> bool {
     let role = label(prompt.role);
-    let mut lines = vec![format!("{role} request")];
-    lines.push(identity(
-        "Requester: ",
+    let requester = identity(
         &prompt.participant.display_name,
         &prompt.requester.launch_id,
-        size.cols,
-    ));
-    lines.push(format!("Workspace: {}", safe_text(&prompt.workspace_name)));
-    if let Some(holder) = &prompt.prior_holder {
-        lines.push(identity(
-            "Replace: ",
-            &holder.display_name,
-            &holder.holder.launch_id,
-            size.cols,
-        ));
-    }
-    let complete = usize::from(size.rows) >= lines.len() && size.cols >= 20;
-    let title = line(0, size.cols);
+    );
+    let workspace = safe_text(&prompt.workspace_name);
+    let question = if let Some(holder) = &prompt.prior_holder {
+        let holder = identity(&holder.display_name, &holder.holder.launch_id);
+        format!("Replace {holder} with {requester} as {role} for {workspace}?")
+    } else {
+        format!("Make {requester} the {role} for {workspace}?")
+    };
+    let lines = textwrap::wrap(&question, usize::from(size.cols).max(1));
+    let complete = lines.len() + 1 < usize::from(size.rows) && size.cols >= 20;
     surface.paint(
         size,
         lines
             .into_iter()
             .take(usize::from(size.rows))
             .enumerate()
-            .map(|(y, text)| {
-                (
-                    line(y as u16, size.cols),
-                    window::fit(&text, size.cols),
-                    false,
-                )
-            })
+            .map(|(y, text)| (line(y as u16, size.cols), text.into_owned(), false))
             .collect(),
         None,
     );
-    surface.apply_theme(
-        theme,
-        Role::Panel,
-        &[RoleSpan {
-            rect: title,
-            role: Role::Warning,
-        }],
-    );
+    surface.apply_theme(theme, Role::Panel, &[]);
+    if complete {
+        use bkpr_tui_framework::button::{Button, State};
+        for (rect, label, _) in buttons(size.cols, size.rows) {
+            Button::new(label).paint(
+                &mut surface.frame,
+                rect,
+                theme.style(Role::Panel),
+                State::Idle,
+                false,
+            );
+            let shortcut =
+                &mut surface.frame.rows[usize::from(rect.y)].cells[usize::from(rect.x + 1)];
+            shortcut.style.bold = true;
+        }
+    }
     complete
 }
 
@@ -442,11 +480,9 @@ fn line(y: u16, width: u16) -> Rect {
     }
 }
 
-fn identity(prefix: &str, name: &str, launch: &str, width: u16) -> String {
+fn identity(name: &str, launch: &str) -> String {
     let suffix: String = launch.chars().take(8).collect();
-    let budget = usize::from(width).saturating_sub(text_width(prefix) + text_width(&suffix) + 3);
-    let name = window::fit(&safe_text(name), budget as u16);
-    format!("{prefix}{name} · {}", safe_text(&suffix))
+    format!("{} ({})", safe_text(name), safe_text(&suffix))
 }
 
 #[cfg(test)]
