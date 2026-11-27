@@ -258,6 +258,8 @@ pub(super) struct Paint {
     button_pointer: Option<(u16, u16)>,
     button_press: Option<(Rect, Hit)>,
     painted_buttons: [Option<(ButtonState, bool)>; CHANNEL_BUTTONS.len()],
+    assignment_menu: Option<bkpr_tui_framework::dropdown::Layout>,
+    assignment_face: Option<(ButtonState, bool, bool)>,
     hovered_channel: Option<ChannelId>,
     row_highlights: [Option<Rect>; 2],
     inlays: Vec<(Rect, Rect, Option<u8>)>,
@@ -342,6 +344,8 @@ impl Default for Paint {
             button_pointer: None,
             button_press: None,
             painted_buttons: [None; CHANNEL_BUTTONS.len()],
+            assignment_menu: None,
+            assignment_face: None,
             hovered_channel: None,
             row_highlights: [None; 2],
             inlays: Vec::with_capacity(2),
@@ -469,6 +473,8 @@ impl Paint {
         self.rendered.clear();
         self.hits.clear();
         self.painted_buttons = [None; CHANNEL_BUTTONS.len()];
+        self.assignment_menu = None;
+        self.assignment_face = None;
         self.row_highlights = [None; 2];
         self.inlays.clear();
         self.inlay_mask = None;
@@ -763,8 +769,10 @@ impl Chat {
         &mut self,
         effects: &mut Frame,
         theme: &Theme,
-        mut place: impl FnMut(&mut Frame, Rect, ButtonState) -> bool,
+        graphics: &crate::chrome_graphics::ChromeGraphics,
     ) {
+        use crate::chrome_graphics::FormControlFace;
+        let mut place = graphics.form_control_painter();
         let paint = &mut self.paint;
         effects.size = paint.surface.frame.size;
         effects.images.clear();
@@ -779,7 +787,7 @@ impl Chat {
                 paint.button_pointer,
                 paint.button_press == Some((rect, hit)),
             );
-            let graphical = place(effects, rect, state);
+            let graphical = place(effects, rect, state, FormControlFace::Action);
             let presentation = Some((state, graphical));
             if paint.painted_buttons[index] != presentation {
                 Button::new(label).paint(
@@ -790,6 +798,63 @@ impl Chat {
                     graphical,
                 );
                 paint.painted_buttons[index] = presentation;
+            }
+        }
+        if let Some(&(trigger, _)) = paint.hits.iter().find(|(_, hit)| *hit == Hit::Assign) {
+            let open = self.assign_cursor.is_some();
+            let state = ButtonState::at(
+                trigger,
+                paint.button_pointer,
+                open || paint.button_press == Some((trigger, Hit::Assign)),
+            );
+            let graphical = place(effects, trigger, state, FormControlFace::Neutral);
+            let rim = paint.assignment_menu.is_some_and(|layout| {
+                layout.outer() != layout.bounds()
+                    && graphics.decorate_window_in_clipped(
+                        effects,
+                        layout.outer(),
+                        true,
+                        4096,
+                        &[layout.bounds()],
+                    )
+            });
+            if paint.assignment_face != Some((state, graphical, rim)) {
+                use bkpr_tui_framework::dropdown::Dropdown;
+                let background = paint.key.expect("painted assignment").backgrounds[0];
+                let (_, text, _) = Dropdown::new(&[(0, "Assign coordinator")])
+                    .trigger_with_face(trigger, 0, open, graphical);
+                paint.card_line(theme, trigger, &text, Role::Accent, false, background);
+                if let Some(layout) = paint.assignment_menu {
+                    let active = self.active.as_ref().expect("assignment roster");
+                    let labels: Vec<_> = active
+                        .roster
+                        .iter()
+                        .filter(|entry| entry.binding.is_some())
+                        .map(|entry| safe_text(&entry.participant.display_name))
+                        .collect();
+                    let choices: Vec<_> = labels
+                        .iter()
+                        .enumerate()
+                        .map(|(i, label)| (i, label.as_str()))
+                        .collect();
+                    let mut popup = UiSurface::new(layout.outer().size(paint.surface.frame.size));
+                    Dropdown::new(&choices).paint_popup(
+                        &mut popup,
+                        layout,
+                        usize::MAX,
+                        (self.assign_cursor.unwrap_or_default(), None),
+                        theme,
+                        rim,
+                    );
+                    let area = layout.outer();
+                    for (y, row) in popup.frame.rows.iter().enumerate() {
+                        let x = usize::from(area.x);
+                        paint.surface.frame.rows[usize::from(area.y) + y].cells
+                            [x..x + usize::from(area.width)]
+                            .clone_from_slice(&row.cells[..usize::from(area.width)]);
+                    }
+                }
+                paint.assignment_face = Some((state, graphical, rim));
             }
         }
     }
@@ -1363,17 +1428,9 @@ impl Chat {
                         if active.roster_ready
                             && let Some(layout) = menu.layout(trigger, thread, index)
                         {
-                            for i in 0..choices.len() {
-                                if let Some((rect, text, _)) = menu.option(layout, i, usize::MAX) {
-                                    paint.fill_card(theme, rect, list_background);
-                                    paint.card_line(
-                                        theme,
-                                        rect,
-                                        &text,
-                                        Role::Accent,
-                                        i == index,
-                                        list_background,
-                                    );
+                            paint.assignment_menu = Some(layout);
+                            for i in layout.indices() {
+                                if let Some(rect) = layout.row(i) {
                                     paint.target(rect, Hit::AssignAgent(i));
                                 }
                             }

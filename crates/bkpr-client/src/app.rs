@@ -6993,11 +6993,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     app.chat.row_highlights(),
                 );
                 app.chat.set_graphical_inlays(ready, &theme);
-                app.chat.paint_buttons(
-                    &mut chat_button_effects,
-                    &theme,
-                    graphics.button_painter(true),
-                );
+                app.chat
+                    .paint_buttons(&mut chat_button_effects, &theme, &graphics);
                 let transports = app.chat.transports();
                 if !transports.is_empty() {
                     terminal.register_prepared_transports(&transports);
