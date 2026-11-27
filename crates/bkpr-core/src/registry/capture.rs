@@ -100,7 +100,13 @@ impl Registry {
                 };
                 let title_lifetime = descriptor
                     .as_ref()
-                    .and_then(|_| crate::control_lease::ProcessLifetime::observe(&launch.root).ok());
+                    .and_then(|_| {
+                        launch.channel_lifetime.clone().or_else(|| {
+                            crate::control_lease::ProcessLifetime::observe(&launch.root)
+                                .ok()
+                                .map(Arc::new)
+                        })
+                    });
                 // Binding remains useful explicit recovery when foreground role
                 // cannot be verified. Only proven activity grants automatic intent.
                 let automatic_binding = descriptor.is_some()
@@ -154,6 +160,7 @@ impl Registry {
                         .unwrap()
                         .event(&launch_id, &token, event)?;
                     let published = self.publish_capture_change(&launch);
+                    self.inner.channels.reconcile_retired_work();
                     retired?;
                     ended_intent?;
                     published?;
@@ -190,6 +197,7 @@ impl Registry {
                                 .event(&launch_id, &token, CaptureEvent::End)
                                 .ok();
                             let _ = self.publish_capture_change(&launch);
+                            self.inner.channels.reconcile_retired_work();
                         }
                         return Err(error);
                     }
@@ -212,11 +220,13 @@ impl Registry {
                             .event(&launch_id, &token, CaptureEvent::End)
                             .ok();
                         let _ = self.agent_retire(std::slice::from_ref(&launch_id));
+                        self.inner.channels.reconcile_retired_work();
                         let _ = self.publish_capture_change(&launch);
                         return Err(error);
                     }
                 }
                 if changes_binding {
+                    self.inner.channels.invalidate();
                     let captures = self.inner.captures.lock().unwrap();
                     Ok(json!({
                         "accepted":true,
@@ -964,6 +974,8 @@ impl Registry {
             }
             captures.version = captures.version.wrapping_add(1);
             version = captures.version;
+            drop(captures);
+            self.inner.channels.reconcile_retired_work();
         }
         if !self.publish_process_sample(&panes, &valid_launches, table, version, scoped.is_some())
             && let Ok(full) = proc::fresh_snapshot()

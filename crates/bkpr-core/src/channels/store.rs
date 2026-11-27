@@ -28,6 +28,26 @@ pub(super) const MAX_ARCHIVE_CANDIDATES: usize = 128;
 pub(super) const MAX_STAGED_BYTES: u64 = 64 * 1024 * 1024;
 const STAGING_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 pub(super) const MAX_STAGING_RECLAIM: usize = 128;
+const PRESETS: [(&str, ChannelSettings); 2] = [
+    (
+        "#desk",
+        ChannelSettings {
+            user_wake: WakePolicy::AddressedOrAll,
+            agent_wake: WakePolicy::None,
+            attention_questions: true,
+            attention_reports: true,
+        },
+    ),
+    (
+        "#team",
+        ChannelSettings {
+            user_wake: WakePolicy::All,
+            agent_wake: WakePolicy::All,
+            attention_questions: false,
+            attention_reports: false,
+        },
+    ),
+];
 
 // Shared by fresh initialization and the one-time staging migration.
 const ATTACHMENT_STAGING_SCHEMA: &str = "
@@ -169,6 +189,66 @@ impl Store {
         Ok(())
     }
 
+    pub(super) fn retire_inactive_launches(&mut self, active: &dyn Fn(&str) -> bool) -> Result<()> {
+        let mut inactive = Vec::new();
+        let mut launches = std::collections::BTreeMap::<String, bool>::new();
+        {
+            let mut statement = self.connection.prepare(
+                "SELECT launch_id,message_id,participant_id FROM notification_work
+                 WHERE pending=1 AND launch_id IS NOT NULL",
+            )?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                let launch = row.get_ref(0)?.as_str()?;
+                let live = match launches.get(launch) {
+                    Some(live) => *live,
+                    None => {
+                        let live = active(launch);
+                        launches.insert(launch.to_owned(), live);
+                        live
+                    }
+                };
+                if !live {
+                    inactive.push((row.get::<_, String>(1)?, row.get::<_, String>(2)?));
+                }
+            }
+        }
+        if !inactive.is_empty() {
+            let tx = self.connection.transaction()?;
+            {
+                let mut update = tx.prepare(
+                    "UPDATE notification_work SET pending=0 WHERE message_id=?1 AND participant_id=?2",
+                )?;
+                for (message, participant) in inactive {
+                    update.execute([message, participant])?;
+                }
+            }
+            tx.commit()?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn provision<'a>(
+        &mut self,
+        workspaces: impl IntoIterator<Item = &'a str>,
+    ) -> Result<()> {
+        let tx = self.connection.transaction()?;
+        {
+            let mut exists = tx.prepare(
+                "SELECT EXISTS(SELECT 1 FROM channels WHERE workspace_id=?1 AND name=?2)",
+            )?;
+            for workspace in workspaces {
+                for (name, settings) in PRESETS {
+                    if !exists.query_row([workspace, name], |row| row.get::<_, bool>(0))? {
+                        insert_channel(&tx, &ChannelId(new_id()), workspace, name, true, settings)?;
+                    }
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub(super) fn authorize_upload(
         &self,
         id: &ChannelId,
@@ -191,7 +271,9 @@ impl Store {
                 limit,
             } => {
                 let authority = workspace_authority(&workspace_id, &admit)?;
-                if !authority.workspace_open {
+                if authority.workspace_open {
+                    self.provision([workspace_id.as_str()])?;
+                } else {
                     let retained: bool = self.connection.query_row(
                         "SELECT EXISTS(SELECT 1 FROM channels WHERE workspace_id=?1)",
                         [&workspace_id],
@@ -216,6 +298,7 @@ impl Store {
             } => {
                 let authority = workspace_authority(&workspace_id, &admit)?;
                 require_write(&authority)?;
+                self.provision([workspace_id.as_str()])?;
                 return self.create(
                     workspace_id,
                     name,
@@ -474,10 +557,7 @@ impl Store {
         validate_members(&members, &[], authority)?;
         let id = ChannelId(new_id());
         let tx = self.connection.transaction()?;
-        tx.execute(
-            "INSERT INTO channels(id,workspace_id,name,workspace_wide,settings) VALUES(?1,?2,?3,?4,?5)",
-            params![id.as_ref(), workspace_id, name, workspace_wide, serde_json::to_string(&settings)?],
-        )?;
+        insert_channel(&tx, &id, &workspace_id, &name, workspace_wide, settings)?;
         insert_members(&tx, &id, &workspace_id, &members)?;
         tx.commit()?;
         Ok((
@@ -1097,6 +1177,27 @@ fn migrate_attachment_staging(tx: &Transaction<'_>) -> Result<()> {
         staged -= reclaimed;
     }
     set_staged_bytes(tx, staged)
+}
+
+fn insert_channel(
+    tx: &Transaction<'_>,
+    id: &ChannelId,
+    workspace: &str,
+    name: &str,
+    workspace_wide: bool,
+    settings: ChannelSettings,
+) -> Result<()> {
+    tx.execute(
+        "INSERT INTO channels(id,workspace_id,name,workspace_wide,settings) VALUES(?1,?2,?3,?4,?5)",
+        params![
+            id.as_ref(),
+            workspace,
+            name,
+            workspace_wide,
+            serde_json::to_string(&settings)?
+        ],
+    )?;
+    Ok(())
 }
 
 impl StoredChannel {

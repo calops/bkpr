@@ -827,7 +827,152 @@ fn cursor_start(
     );
     Ok(messages.partition_point(|candidate| candidate.sequence <= m.sequence))
 }
+
+fn live_channel_agent<'a>(
+    state: &State,
+    pane: &PaneInfo,
+    workspace: &str,
+    agents: &'a AgentState,
+    captures: &'a crate::harness::Captures,
+) -> Option<(&'a Launch, &'a Agent)> {
+    if pane.workspace_id.as_deref() != Some(workspace)
+        || pane.status != PaneStatus::Running
+        || state.closing_panes.contains(&pane.id)
+        || state.closing_document_panes.contains(&pane.id)
+        || state.live.get(&pane.id).is_none_or(|pane| {
+            pane.shared
+                .finished
+                .load(std::sync::atomic::Ordering::Acquire)
+        })
+    {
+        return None;
+    }
+    let visible = pane.harness.as_ref()?.managed.as_ref()?;
+    let launch = captures.launches.get(&visible.launch_id)?;
+    let agent = agents.store.agents.get(&visible.launch_id)?;
+    (launch.grant.pane_id == pane.id
+        && launch.channel_participant.is_some()
+        && launch.channel_launch_alive()
+        && visible.conversation.is_some()
+        && visible.conversation == launch.managed.conversation
+        && agent.exited_at.is_none())
+    .then_some((launch, agent))
+}
+
+fn channel_agent(launch: &Launch, agent: &Agent) -> channels::Participant {
+    channels::Participant {
+        id: launch
+            .channel_participant
+            .clone()
+            .expect("live channel identity"),
+        kind: channels::ParticipantKind::Agent,
+        display_name: agent
+            .title
+            .as_ref()
+            .filter(|title| !title.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| launch.grant.kind.display_name().to_owned()),
+    }
+}
+
 impl Registry {
+    // `caller` is an OS-validated capture with a request-local binding witness.
+    // Recheck that generation under the store's admission before any channel access.
+    pub(super) fn channel_authority(
+        &self,
+        workspace: &str,
+        caller: Option<&Launch>,
+        with_roster: bool,
+        connected: &dyn Fn() -> bool,
+    ) -> Result<crate::channels::ChannelAuthority> {
+        use crate::channels::{ChannelAccessLost, ChannelAuthority, WorkspaceParticipant};
+        use channels::{Participant, ParticipantId, ParticipantKind};
+
+        let state = self.inner.state.lock().unwrap();
+        ensure!(connected(), ChannelAccessLost);
+        healthy(&state)?;
+        ensure!(
+            !state.closing && !self.session_end_requested(),
+            SessionClosing("session is shutting down")
+        );
+        let workspace_open = workspace_exists(&state, workspace);
+        let writable = workspace_open && !state.closing_workspaces.contains(workspace);
+        let user = || Participant {
+            id: ParticipantId(self.inner.session.session_id.clone()),
+            kind: ParticipantKind::User,
+            display_name: "User".into(),
+        };
+        if caller.is_none() && (!with_roster || !workspace_open) {
+            return Ok(ChannelAuthority {
+                actor: user(),
+                writable,
+                workspace_open,
+                participants: Vec::new(),
+            });
+        }
+
+        let agents = self.inner.agents.state.lock().unwrap();
+        if caller.is_some() {
+            healthy_agents(&agents)?;
+        }
+        let captures = self.inner.captures.lock().unwrap();
+        let actor = if let Some(caller) = caller {
+            ensure!(writable, ChannelAccessLost);
+            captures.authorize(caller).context(ChannelAccessLost)?;
+            let (current, agent) = state
+                .record
+                .registry
+                .panes
+                .iter()
+                .find(|pane| pane.id == caller.grant.pane_id)
+                .and_then(|pane| live_channel_agent(&state, pane, workspace, &agents, &captures))
+                .context(ChannelAccessLost)?;
+            ensure!(
+                current.grant.launch_id == caller.grant.launch_id
+                    && current.binding_generation == caller.binding_generation
+                    && current.channel_participant == caller.channel_participant,
+                ChannelAccessLost
+            );
+            channel_agent(current, agent)
+        } else {
+            user()
+        };
+        let mut participants = Vec::new();
+        if with_roster {
+            if caller.is_some() {
+                participants.push(WorkspaceParticipant {
+                    actor: user(),
+                    launch_id: None,
+                });
+            }
+            if healthy_agents(&agents).is_ok() {
+                participants.extend(
+                    state
+                        .record
+                        .registry
+                        .panes
+                        .iter()
+                        .filter_map(|pane| {
+                            live_channel_agent(&state, pane, workspace, &agents, &captures)
+                        })
+                        .filter(|(launch, _)| {
+                            launch.channel_participant.as_ref() != Some(&actor.id)
+                        })
+                        .map(|(launch, agent)| WorkspaceParticipant {
+                            actor: channel_agent(launch, agent),
+                            launch_id: Some(launch.grant.launch_id.clone()),
+                        }),
+                );
+            }
+        }
+        Ok(ChannelAuthority {
+            actor,
+            writable,
+            workspace_open,
+            participants,
+        })
+    }
+
     pub(super) fn start_agent_maintenance(&self) -> Result<()> {
         let weak = Arc::downgrade(&self.inner.agents);
         std::thread::Builder::new()

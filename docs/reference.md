@@ -1962,14 +1962,32 @@ An uploaded image is staged for 24 hours until a post references it. A session
 can stage up to 64 MiB across its channels. Uploads reclaim expired stages;
 posted images are retained with their messages and don't count toward this limit.
 
+New workspaces get two ordinary, workspace-wide channels. `#desk` requests a
+wake for all eligible agents on a user post unless it mentions specific agents.
+Agent posts request no wakes; questions and reports request user attention.
+`#team` requests a wake for all eligible agents except the author on every post,
+without requesting user attention. Authorized agents who arrive later join
+workspace-wide channels automatically. The session user can change these
+settings; reopening or repairing a workspace creates only missing presets.
+If channel storage is unavailable, the workspace can still open and run panes;
+listing or creating channels retries provisioning and reports any remaining
+storage error.
+
+An agent resumes its explicit memberships only when the backend's reserved
+native recovery verifies the same saved participant in the same workspace.
+The new participant binding grants access to retained history in channels that
+still admit it. It does not grant the old launch's inbox or wake authority.
+A fresh launch does not inherit that participant identity even if it binds the
+same conversation ID. Agent-facing channel operations and native wake dispatch
+are separate from provisioning and recovery.
+
 History lives with the recoverable session. Detach and restart do not prune
 history or replay old launch wakes. A user can discover archives and read their
 channels without reopening the workspace. Follow `next_after` until it is absent,
 even when a page contains no archives. An archived subscription reports closure
 after its final page; backend failures are returned as errors. A new workspace
-with the same name does not inherit the old workspace's channels. Default channel
-provisioning, MCP and native wake dispatch, direct-message migration, and the
-chat UI are separate features.
+with the same name does not inherit archived channels. MCP and native wake
+dispatch, direct-message migration, and the chat UI are separate features.
 
 ## Notification records and subscriptions
 

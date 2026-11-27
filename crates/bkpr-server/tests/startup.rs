@@ -2038,7 +2038,8 @@ fn channel_history_reopens_on_the_same_session_only() {
     use bkpr_protocol::{
         Payload,
         channels::{
-            ChannelPost, ChannelRequest, ChannelResponse, ChannelSubscriptionStatus, MembershipMode,
+            ChannelPost, ChannelRequest, ChannelResponse, ChannelSettings,
+            ChannelSubscriptionStatus, MembershipMode, WakePolicy,
         },
     };
 
@@ -2081,6 +2082,51 @@ fn channel_history_reopens_on_the_same_session_only() {
         .ok
     );
     activate_channel_client(&endpoint, &authority);
+    let list = || ChannelRequest::List {
+        workspace_id: workspace.id.clone(),
+        after: None,
+        limit: 8,
+    };
+    let ChannelResponse::Listed {
+        channels,
+        next_after: None,
+    } = send(&endpoint.socket, &authority, list())
+    else {
+        panic!("expected the workspace presets");
+    };
+    assert_eq!(channels.len(), 2);
+    let defaults = |name| {
+        channels
+            .iter()
+            .find(|channel| channel.name == name)
+            .unwrap()
+    };
+    let desk = defaults("#desk");
+    let team = defaults("#team");
+    assert_eq!(desk.membership, MembershipMode::WorkspaceWide);
+    assert_eq!(team.membership, MembershipMode::WorkspaceWide);
+    assert_eq!(
+        desk.settings,
+        ChannelSettings {
+            user_wake: WakePolicy::AddressedOrAll,
+            agent_wake: WakePolicy::None,
+            attention_questions: true,
+            attention_reports: true,
+        }
+    );
+    assert_eq!(team.settings, ChannelSettings::default());
+    let custom = ChannelSettings {
+        user_wake: WakePolicy::AddressedOnly,
+        ..desk.settings
+    };
+    send(
+        &endpoint.socket,
+        &authority,
+        ChannelRequest::SetSettings {
+            channel_id: desk.id.clone(),
+            settings: custom,
+        },
+    );
     let ChannelResponse::Channel { channel } = send(&endpoint.socket, &authority, create) else {
         panic!("channel was not created");
     };
@@ -2188,7 +2234,24 @@ fn channel_history_reopens_on_the_same_session_only() {
     ) else {
         panic!("expected archived workspaces");
     };
+    let ChannelResponse::Listed {
+        channels: archived,
+        next_after: None,
+    } = send(&reopened.socket, &authority, list())
+    else {
+        panic!("expected the retained channels");
+    };
     assert_eq!(workspace_ids, [workspace.id]);
+    assert_eq!(archived.len(), 3);
+    assert_eq!(
+        archived
+            .iter()
+            .find(|channel| channel.id == desk.id)
+            .unwrap()
+            .settings,
+        custom
+    );
+    assert!(archived.iter().any(|channel| channel == team));
     assert_eq!(send(&reopened.socket, &authority, post), receipt);
     let ChannelResponse::Message { message } = send(&reopened.socket, &authority, read) else {
         panic!("message did not survive reopening");

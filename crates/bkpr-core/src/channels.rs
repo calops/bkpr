@@ -64,11 +64,14 @@ pub struct ChannelEngine {
     store: Mutex<StoreSlot>,
     store_ready: Condvar,
     retirement_epoch: AtomicU64,
+    launch_active: std::sync::OnceLock<Box<LaunchActive>>,
     requests: AtomicUsize,
     subscriptions: AtomicUsize,
     generation: Mutex<u64>,
     changed: Condvar,
 }
+
+type LaunchActive = dyn Fn(&str) -> bool + Send + Sync;
 
 enum StoreSlot {
     Idle(Option<store::Store>),
@@ -102,10 +105,23 @@ impl ChannelEngine {
             store: Mutex::new(StoreSlot::Idle(None)),
             store_ready: Condvar::new(),
             retirement_epoch: AtomicU64::new(0),
+            launch_active: std::sync::OnceLock::new(),
             requests: AtomicUsize::new(0),
             subscriptions: AtomicUsize::new(0),
             generation: Mutex::new(0),
             changed: Condvar::new(),
+        }
+    }
+
+    /// Provision committed workspaces without making their lifecycle depend on channel
+    /// storage. List and Create retry missed provisioning and surface storage errors.
+    pub(crate) fn provision<'a>(&self, workspaces: impl IntoIterator<Item = &'a str>) {
+        let result = self
+            .acquire_store(Instant::now() + STORE_WAIT, &|| false)
+            .map_err(StoreAdmission::into_error)
+            .and_then(|mut writer| writer.store.as_mut().unwrap().provision(workspaces));
+        if result.is_err() {
+            crate::diagnostics::record("channels.provision", None, "deferred");
         }
     }
 
@@ -183,8 +199,20 @@ impl ChannelEngine {
     /// The next store operation reconciles pending work against committed workspace presence.
     /// Opening the store retires all work from a previous runtime. This never takes the writer.
     pub fn retire_workspace(&self) {
+        self.reconcile_retired_work();
+    }
+
+    /// Mark pending work for reconciliation on the next writer turn, without taking the writer.
+    pub(crate) fn reconcile_retired_work(&self) {
         self.retirement_epoch.fetch_add(1, Ordering::Release);
         self.invalidate();
+    }
+
+    pub(crate) fn set_launch_liveness(
+        &self,
+        active: impl Fn(&str) -> bool + Send + Sync + 'static,
+    ) {
+        assert!(self.launch_active.set(Box::new(active)).is_ok());
     }
 
     fn flush_retirements(
@@ -195,6 +223,9 @@ impl ChannelEngine {
         let epoch = self.retirement_epoch.load(Ordering::Acquire);
         if store.retirement_epoch != epoch {
             store.retire_closed_workspaces(workspace_open)?;
+            if let Some(active) = self.launch_active.get() {
+                store.retire_inactive_launches(active.as_ref())?;
+            }
             store.retirement_epoch = epoch;
         }
         Ok(())
@@ -346,9 +377,11 @@ impl StoreGuard<'_> {
     ) -> Result<T> {
         let store = self.store.as_mut().unwrap();
         self.engine.flush_retirements(store, workspace_open)?;
+        let before = store.retirement_epoch;
         let result = operation(store);
-        // A close can arrive after authority admission but before its post commits.
-        // It must retire that post's work as well, without changing the committed reply.
+        // Admission can freeze recipients before retirement, and the capacity check
+        // can consume the retirement epoch before inserting that post's work.
+        store.retirement_epoch = before;
         if self
             .engine
             .flush_retirements(store, workspace_open)

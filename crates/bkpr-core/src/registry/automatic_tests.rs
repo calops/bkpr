@@ -604,6 +604,8 @@ fn native_end_keeps_explicit_receipt_but_clears_automatic_role_and_shutdown_pres
     let launch = crate::harness::Launch {
         control: Default::default(),
         binding_generation: 1,
+        channel_participant: None,
+        channel_lifetime: None,
         binding_guard: None,
         binding_context_admitted: false,
         root: process.clone(),
