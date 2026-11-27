@@ -107,6 +107,7 @@ pub(crate) struct ClientLease {
     handshake: Mutex<(bool, Option<String>)>,
     agent_socket: std::sync::OnceLock<Option<PathBuf>>,
     activation_order: std::sync::atomic::AtomicU64,
+    role_events: AtomicBool,
 }
 impl ClientLease {
     pub(crate) fn ensure_active(&self) -> Result<()> {
@@ -126,6 +127,28 @@ impl ClientLease {
             && crate::transport::lifetime_connected(stream)
             && crate::transport::lifetime_connected(&self.lifetime)
             && self.owner.is_alive()
+    }
+    pub(super) fn role_connected(&self) -> bool {
+        self.is_active()
+            && crate::transport::lifetime_connected(&self.lifetime)
+            && self.owner.is_alive()
+    }
+    pub(super) fn enable_role_events(&self) {
+        self.role_events.store(true, Ordering::Release);
+    }
+    pub(super) fn role_events(&self) -> bool {
+        self.role_events.load(Ordering::Acquire) && self.is_active()
+    }
+    pub(super) fn send_role_event(&self, frame: &[u8]) {
+        let handshake = self.handshake.lock().unwrap();
+        if handshake.0
+            && self.role_events()
+            && !crate::transport::send_lifetime_event(&self.lifetime, frame)
+        {
+            // A partial frame cannot be retried or followed by another event.
+            // Closing only this lifetime withdraws its prompt and allows reassignment.
+            let _ = self.lifetime.shutdown(std::net::Shutdown::Both);
+        }
     }
     pub(crate) fn owner(&self) -> &crate::transport::ClientOwner {
         &self.owner
@@ -282,6 +305,7 @@ impl Registry {
             handshake: Mutex::new((false, None)),
             agent_socket: std::sync::OnceLock::new(),
             activation_order: std::sync::atomic::AtomicU64::new(0),
+            role_events: AtomicBool::new(false),
         });
         let mut clients = self.inner.clients.lock().unwrap();
         {
@@ -352,6 +376,11 @@ impl Registry {
                 client.ensure_active()?;
                 client.owner.ensure_external_to_daemon()?;
                 self.request_channels(request, &|| client.channel_connected(stream))
+            }
+            Operation::Roles { request } => {
+                client.ensure_active()?;
+                client.owner.ensure_external_to_daemon()?;
+                self.request_roles(&client, request, &|| client.channel_connected(stream))
             }
             Operation::Client { .. }
             | Operation::ClientRegister { .. }
@@ -477,6 +506,7 @@ impl Registry {
         }
     }
     fn finish_client_detach(&self, client: &Arc<ClientLease>, reason: &str) {
+        self.role_client_detached(&client.id);
         client.notify(reason);
         let panes = self
             .inner
@@ -490,6 +520,28 @@ impl Registry {
         for pane in panes {
             pane.detach_client_views(client);
         }
+    }
+}
+
+#[cfg(test)]
+impl Registry {
+    pub(super) fn test_role_client(&self) -> (Arc<ClientLease>, UnixStream) {
+        let (client, server) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let session = &self.inner.session;
+        let (lease, _) = self
+            .register_client(
+                &server,
+                &session.session_id,
+                &session.daemon_id,
+                &session.session_instance_id,
+            )
+            .unwrap();
+        lease.handshake_complete();
+        self.activate_client(&lease, false, None).unwrap();
+        (lease, client)
     }
 }
 

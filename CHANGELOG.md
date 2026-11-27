@@ -16,6 +16,7 @@
 * **channels:** route questions and reports through host notifications without sending chat bodies
 * **tui:** open workspace channels with drafts, exact mentions and unread attention without replacing native panes ([#77](https://github.com/calops/bkpr/issues/77))
 * **channels:** color exact inline agent mentions in newly authored posts and in the picker using the participant's transcript color.
+* **roles:** let managed agents request the workspace Coordinator role, with exact user approval, private tenure threads and live delegation checks ([#109](https://github.com/calops/bkpr/issues/109))
 
 ### Bug Fixes
 

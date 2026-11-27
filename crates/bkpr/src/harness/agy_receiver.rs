@@ -5,10 +5,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use bkpr_protocol::channels::ChannelWake;
 use serde_json::{Value, json};
 
-use super::super::{agent, channel_wake, channel_wake_text};
+use super::super::{NativeWake, agent};
 
 const RPC_PATH: &str = "/exa.language_server_pb.LanguageServerService/SendAgentMessage";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -66,7 +65,7 @@ impl NativeContext {
         Ok(())
     }
 
-    fn wake(&self, channel: &ChannelWake) -> NativeOutcome {
+    fn wake(&self, wake: &NativeWake) -> NativeOutcome {
         let stream = match TcpStream::connect_timeout(&self.endpoint, CONNECT_TIMEOUT) {
             Ok(stream) => stream,
             Err(_) => return NativeOutcome::ConnectFailed,
@@ -75,7 +74,7 @@ impl NativeContext {
             stream,
             deadline: Instant::now() + REQUEST_TIMEOUT,
         };
-        let content = channel_wake_text(channel);
+        let content = wake.text();
         let body = serde_json::to_vec(&json!({
             "recipient":self.root,
             "content":content,
@@ -325,7 +324,7 @@ pub(super) fn run() -> Result<i32> {
         if notification["session_id"] != native.root || notification["mode"] != "active_turn" {
             bail!("native AGY notification does not match this receiver");
         }
-        let channel = channel_wake(notification)?;
+        let wake = NativeWake::parse(notification)?;
         let current = agent::request(json!({
             "method":"wake_validate", "receiver_id":receiver_id,
             "notification_id":notification_id, "generation":generation,
@@ -334,7 +333,7 @@ pub(super) fn run() -> Result<i32> {
             continue;
         }
         let mut outcome = json!({});
-        native.wake(&channel).report(&mut outcome);
+        native.wake(&wake).report(&mut outcome);
         // Never retry: the native transport may have accepted a lost response.
         agent::request(json!({
             "method":"wake_outcome", "receiver_id":receiver_id,
@@ -449,10 +448,7 @@ mod tests {
         assert!(read_response(&mut oversized.as_bytes()).is_err());
     }
 
-    fn native_http_fixture(
-        response: &'static [u8],
-        channel: &ChannelWake,
-    ) -> (NativeOutcome, Value) {
+    fn native_http_fixture(response: &'static [u8], wake: &NativeWake) -> (NativeOutcome, Value) {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let native = NativeContext::new(
             &listener.local_addr().unwrap().to_string(),
@@ -489,7 +485,7 @@ mod tests {
             stream.write_all(response).unwrap();
             body
         });
-        let outcome = native.wake(channel);
+        let outcome = native.wake(wake);
         (outcome, server.join().unwrap())
     }
 
@@ -499,7 +495,7 @@ mod tests {
             "batch_id":"batch", "channel_id":"channel", "pending_count":1,
             "addressed_message_id":"addressed",
         }});
-        let wake = channel_wake(&expected).unwrap();
+        let wake = NativeWake::parse(&expected).unwrap();
         let (outcome, request) =
             native_http_fixture(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}", &wake);
         assert_eq!(outcome, NativeOutcome::Accepted);
@@ -531,6 +527,25 @@ mod tests {
         ] {
             assert_eq!(native_http_fixture(response, &wake).0, expected);
         }
+    }
+
+    #[test]
+    fn role_wake_reaches_the_exact_native_root_without_receiver_metadata() {
+        let expected = json!({"role_wake":{
+            "workspace_id":"workspace", "role":"coordinator", "grant_id":"tenure", "change":"granted",
+        }});
+        let mut notification = expected.clone();
+        notification["notification_id"] = json!("receiver-only");
+        notification["body"] = json!("UNTRUSTED_BODY");
+        let wake = NativeWake::parse(&notification).unwrap();
+        let (outcome, request) =
+            native_http_fixture(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}", &wake);
+        assert_eq!(outcome, NativeOutcome::Accepted);
+        assert_eq!(request["recipient"], ROOT);
+        assert_eq!(
+            serde_json::from_str::<Value>(request["content"].as_str().unwrap()).unwrap(),
+            expected
+        );
     }
 
     #[test]

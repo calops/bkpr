@@ -18,6 +18,8 @@ Codex thread defaults query the existing private app server through a loopback W
 
 Channel file tools open explicit local paths in the launch-local MCP helper or authenticated Codex relay. Only typed attachment bytes and channel IDs cross the daemon transport; MCP replies carry metadata. Fetch publishes a fresh file without clobbering an existing name.
 
+Role MCP tools use the same managed launch authentication as channel tools. Native adapters accept exactly one channel or role wake pointer per notification. Preserve shared notification generations, launch-local binding validation and the harness's own consent and acknowledgement rules.
+
 ## Installation boundaries
 
 `install/` describes native files and owned slots; maintained JSONC CST and `toml_edit` preserve unrelated syntax, while Saphyr only reads native Omp YAML policy. Use `url` for native file-URI resolution, not ad hoc escaping. Profile-scoped records bind executable/version and immutable asset hashes. Persistent commands carry `--installation` explicitly because native MCP clients may filter profile/XDG environment variables.

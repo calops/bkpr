@@ -25,6 +25,8 @@ pub const CAP_CLIENT_LIFETIME: u64 = 4;
 pub const SUPPORTED_CAPABILITIES: u64 = CAP_BINARY_SCENE | CAP_TYPED_FAILURE | CAP_CLIENT_LIFETIME;
 // Per-request capabilities are not part of the connection's baseline mask.
 pub(super) const CAP_CHANNEL_POST_SOURCE: u64 = 8;
+/// Per-request requirement for typed workspace role operations.
+pub const CAP_WORKSPACE_ROLES: u64 = 16;
 
 /// Native payload category used for header admission and size limits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,7 +54,7 @@ impl Kind {
 /// Reject unknown required capabilities and lengths above either `max` or the kind's limit.
 pub fn frame_payload_len(header: &[u8], expected: Kind, max: usize) -> Result<usize> {
     let capabilities = if expected == Kind::Request {
-        SUPPORTED_CAPABILITIES | CAP_CHANNEL_POST_SOURCE
+        SUPPORTED_CAPABILITIES | CAP_CHANNEL_POST_SOURCE | CAP_WORKSPACE_ROLES
     } else {
         SUPPORTED_CAPABILITIES
     };
@@ -108,15 +110,17 @@ fn header(kind: Kind, payload: &[u8]) -> Result<[u8; HEADER_LEN]> {
     header[4..8].copy_from_slice(&PROTOCOL_VERSION.to_le_bytes());
     header[8] = kind as u8;
     header[12..16].copy_from_slice(&u32::try_from(length)?.to_le_bytes());
-    let mut capabilities = SUPPORTED_CAPABILITIES;
-    if kind == Kind::Request && request_has_channel_source(payload).unwrap_or(false) {
-        capabilities |= CAP_CHANNEL_POST_SOURCE;
-    }
+    let capabilities = SUPPORTED_CAPABILITIES
+        | if kind == Kind::Request {
+            request_capabilities(payload).unwrap_or(0)
+        } else {
+            0
+        };
     header[16..24].copy_from_slice(&capabilities.to_le_bytes());
     Ok(header)
 }
 
-fn request_has_channel_source(payload: &[u8]) -> planus::Result<bool> {
+fn request_capabilities(payload: &[u8]) -> planus::Result<u64> {
     let mut operation = g::RequestRef::read_as_root(payload)?.operation()?;
     for _ in 0..=MAX_NATIVE_DEPTH {
         let channel = match operation {
@@ -127,18 +131,25 @@ fn request_has_channel_source(payload: &[u8]) -> planus::Result<bool> {
             g::OperationRef::OperationAgent(agent) => match agent.request()? {
                 g::AgentRequestRef::AgentRequestChannels(channels) => channels.request()?,
                 g::AgentRequestRef::AgentRequestChannelDirectPost(post) => {
-                    return Ok(!matches!(post.post()?.source(), Ok(None)));
+                    return Ok(source_capability(!matches!(
+                        post.post()?.source(),
+                        Ok(None)
+                    )));
                 }
                 g::AgentRequestRef::AgentRequestControl(control) => {
                     operation = control.request()?;
                     continue;
                 }
-                _ => return Ok(false),
+                g::AgentRequestRef::AgentRequestRoleRequest(_)
+                | g::AgentRequestRef::AgentRequestRoleRelease(_)
+                | g::AgentRequestRef::AgentRequestRoleStatus(_) => return Ok(CAP_WORKSPACE_ROLES),
+                _ => return Ok(0),
             },
             g::OperationRef::OperationChannels(channels) => channels.request()?,
-            _ => return Ok(false),
+            g::OperationRef::OperationRoles(_) => return Ok(CAP_WORKSPACE_ROLES),
+            _ => return Ok(0),
         };
-        return Ok(match channel {
+        return Ok(source_capability(match channel {
             // A legacy reader skips this slot even when the source offset is malformed.
             g::ChannelRequestRef::ChannelRequestPost(post) => {
                 !matches!(post.post()?.source(), Ok(None))
@@ -147,9 +158,13 @@ fn request_has_channel_source(payload: &[u8]) -> planus::Result<bool> {
                 !matches!(post.post()?.source(), Ok(None))
             }
             _ => false,
-        });
+        }));
     }
-    Ok(false)
+    Ok(0)
+}
+
+fn source_capability(required: bool) -> u64 {
+    if required { CAP_CHANNEL_POST_SOURCE } else { 0 }
 }
 
 /// Read one owned payload after admitting its header; reject truncation or allocation failure.

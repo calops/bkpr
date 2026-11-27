@@ -14,6 +14,9 @@ use std::{
     time::Duration,
 };
 
+#[path = "role_tests.rs"]
+mod role_tests;
+
 const WORKSPACE: &str = "workspace-one";
 const OTHER_WORKSPACE: &str = "workspace-two";
 
@@ -101,6 +104,11 @@ impl Fixture {
         };
         Ok(ChannelAuthority {
             actor: actor.clone(),
+            launch_id: match actor.id.as_ref() {
+                "participant-a" => Some("launch-a".into()),
+                "participant-b" => Some("launch-b".into()),
+                _ => None,
+            },
             writable: true,
             workspace_open: true,
             participants,
@@ -182,7 +190,12 @@ impl Fixture {
             .unwrap();
     }
 
+    fn drop_role_schema(&self) {
+        self.sql("DROP TABLE role_threads; ALTER TABLE catalog_events DROP COLUMN role_archive;");
+    }
+
     fn drop_ordered_wake_schema(&self) {
+        self.drop_role_schema();
         self.sql(
             "DROP INDEX pending_launch_enqueue;
              DROP INDEX pending_channel_sequence;
@@ -580,6 +593,7 @@ fn typed_mentions_and_policy_select_only_current_agents_and_preserve_unread_atte
             launch_id: launch.into(),
             binding_generation: 1,
         }),
+        role: None,
     };
     let a = entry(&f.a, "launch-a");
     let b = entry(&f.b, "launch-b");
@@ -596,6 +610,7 @@ fn typed_mentions_and_policy_select_only_current_agents_and_preserve_unread_atte
             participants: vec![ChannelRosterEntry {
                 participant: f.user.clone(),
                 binding: None,
+                role: None,
             }],
             next_after: None,
         }
@@ -1186,6 +1201,7 @@ fn durable_history_recovery_and_atomic_commit_failure() {
             |_| {
                 Ok(ChannelAuthority {
                     actor: user.clone(),
+                    launch_id: None,
                     writable: true,
                     workspace_open: true,
                     participants: Vec::new(),
@@ -1252,6 +1268,7 @@ fn recovery_preserves_explicit_membership_and_author_snapshot_not_display_name_a
             |_| {
                 Ok(ChannelAuthority {
                     actor: actor.clone(),
+                    launch_id: None,
                     writable,
                     workspace_open: true,
                     participants: Vec::new(),
@@ -1473,6 +1490,7 @@ fn attachments_are_validated_immutable_channel_resources_in_archives() {
                 assert_eq!(workspace, WORKSPACE);
                 Ok(ChannelAuthority {
                     actor: user.clone(),
+                    launch_id: None,
                     writable: true,
                     workspace_open: false,
                     participants: Vec::new(),
@@ -1920,6 +1938,7 @@ fn archive_scan_is_bounded_and_continues_after_empty_pages_without_agent_disclos
                     examined.set(examined.get() + 1);
                     Ok(ChannelAuthority {
                         actor: actor.clone(),
+                        launch_id: None,
                         writable: false,
                         workspace_open: open(workspace),
                         participants: Vec::new(),
@@ -2480,7 +2499,7 @@ fn visibility_index_migration_preserves_member_access_and_durable_history() {
             ))
         })
         .unwrap();
-    assert_eq!((sync, version), (3, 16));
+    assert_eq!((sync, version), (3, 17));
 }
 
 #[test]
@@ -2754,6 +2773,7 @@ fn first_direct_post_accepts_descending_pair_and_replays_without_resolving_targe
     });
     assert!(committed);
     let ChannelResponse::Posted {
+        channel_id: Some(channel_id),
         message,
         wake_count: 1,
         ..
@@ -2762,6 +2782,24 @@ fn first_direct_post_accepts_descending_pair_and_replays_without_resolving_targe
         panic!("first direct post must queue one wake");
     };
     assert_eq!(message.mentions, std::slice::from_ref(&f.b.id));
+    let ChannelResponse::UserRoster { participants, .. } = f
+        .request(ChannelRequest::UserRoster {
+            workspace_id: WORKSPACE.into(),
+            channel_id: Some(channel_id.clone()),
+            after: None,
+            limit: 10,
+        })
+        .unwrap()
+    else {
+        panic!("user must be able to inspect the direct roster");
+    };
+    assert_eq!(
+        participants
+            .iter()
+            .map(|entry| &entry.participant.id)
+            .collect::<Vec<_>>(),
+        vec![&f.a.id, &f.b.id, &f.user.id]
+    );
     assert_eq!(
         send(|_| anyhow::bail!("recipient has retired")),
         (receipt, false)

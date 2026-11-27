@@ -1390,6 +1390,7 @@ mod tests {
             read_through: 0,
             unread_attention: false,
             direct: false,
+            role_thread: None,
         }
     }
 
@@ -1404,6 +1405,7 @@ mod tests {
                         display_name: "Duplicate title".into(),
                     },
                     binding: None,
+                    role: None,
                 })
                 .collect(),
             next_after: next.map(id),

@@ -7,6 +7,9 @@ use bkpr_protocol::{AgentReceiverMode, AgentWakeOutcome, LayoutNode, Window, Wor
 
 const NATIVE_ID: &str = "owned-channel-conversation";
 
+#[path = "role_tests.rs"]
+mod role_tests;
+
 #[test]
 #[ignore = "owned PTY fixture; requires its private HOME marker"]
 fn channel_peer_fixture() {

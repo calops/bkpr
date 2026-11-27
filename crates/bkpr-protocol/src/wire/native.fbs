@@ -825,7 +825,10 @@ table AgentRequestChannelAck {
   channel_id:string (required);
   message_id:string (required);
 }
-union AgentRequest { AgentRequestWhoami, AgentRequestControl, AgentRequestSetTitle, AgentRequestDiscoverAgents, AgentRequestSendMessage, AgentRequestReadInbox, AgentRequestAckMessage, AgentRequestInspectOutbox, AgentRequestReceiverRegister, AgentRequestReceiverSubscribe, AgentRequestWakeValidate, AgentRequestWakeOutcome, AgentRequestReadMessage, AgentRequestChannels, AgentRequestChannelWake, AgentRequestChannelRead, AgentRequestChannelDirectPost, AgentRequestChannelAck }
+table AgentRequestRoleRequest { role:WorkspaceRole = Coordinator; }
+table AgentRequestRoleRelease { role:WorkspaceRole = Coordinator; grant_id:string (required); }
+table AgentRequestRoleStatus { role:WorkspaceRole = Coordinator; }
+union AgentRequest { AgentRequestWhoami, AgentRequestControl, AgentRequestSetTitle, AgentRequestDiscoverAgents, AgentRequestSendMessage, AgentRequestReadInbox, AgentRequestReadMessage, AgentRequestAckMessage, AgentRequestInspectOutbox, AgentRequestReceiverRegister, AgentRequestReceiverSubscribe, AgentRequestWakeValidate, AgentRequestWakeOutcome, AgentRequestChannels, AgentRequestChannelWake, AgentRequestChannelRead, AgentRequestChannelDirectPost, AgentRequestChannelAck, AgentRequestRoleRequest, AgentRequestRoleRelease, AgentRequestRoleStatus }
 table AgentWakeOutcomeAccepted {
 
 }
@@ -907,6 +910,7 @@ table ChannelSummary {
   read_through:ulong;
   unread_attention:bool;
   direct:bool;
+  role_thread:RoleThread;
 }
 table ChannelMessageSummary {
   id:string (required);
@@ -919,6 +923,7 @@ table ChannelMessageSummary {
   attachments:[string] (required);
   mention_spans:[ChannelResolvedMentionSpan];
   source:ChannelSource;
+  role:RoleAttribution;
 }
 table ChannelChange { sequence:ulong; kind:ChannelChangeKind; }
 table AttachmentDescriptor {
@@ -931,6 +936,7 @@ table ChannelMessage {
   message:ChannelMessageSummary (required);
   text:string (required);
   attachments:[AttachmentDescriptor] (required);
+  current_delegation:string;
 }
 table ChannelResponseListed {
   channels:[ChannelSummary] (required);
@@ -997,6 +1003,7 @@ table ChannelResponseCatalogReset {}
 table ChannelRosterEntry {
   participant:ChannelParticipant (required);
   binding:ChannelMentionBinding;
+  role:RoleAttribution;
 }
 table ChannelResponseUserRoster {
   participants:[ChannelRosterEntry] (required);
@@ -1021,6 +1028,8 @@ union ChannelResponse {
   ChannelResponseUserRoster
 }
 table ChannelPayload { response:ChannelResponse (required); }
+table RoleAttribution { role:WorkspaceRole = Coordinator; grant_id:string (required); }
+table RoleThread { role:WorkspaceRole = Coordinator; archived:bool; }
 table RoleGrant {
   id:string (required);
   workspace_id:string (required);

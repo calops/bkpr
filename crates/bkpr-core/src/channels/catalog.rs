@@ -56,8 +56,9 @@ impl Store {
         actor_id: &str,
         limit: u16,
     ) -> Result<ChannelResponse> {
+        self.report_role_archives()?;
         // Read journal bounds, visibility and summaries in one SQLite snapshot.
-        let tx = self.connection.transaction()?;
+        let tx = self.connection.unchecked_transaction()?;
         let (store_id, oldest, newest): (String, u64, u64) = tx.query_row(
             "SELECT store_id, COALESCE((SELECT min(sequence) FROM catalog_events),0),
                               COALESCE((SELECT max(sequence) FROM catalog_events),0)
@@ -77,6 +78,7 @@ impl Store {
         }
         match read {
             CatalogRead::Snapshot(after) => snapshot(
+                self,
                 &tx,
                 actor_id,
                 ChannelCatalogCursor {
@@ -87,13 +89,14 @@ impl Store {
                 limit,
             ),
             CatalogRead::Changes(after) => {
-                changes(&tx, actor_id, store_id, after.sequence, newest, limit)
+                changes(self, &tx, actor_id, store_id, after.sequence, newest, limit)
             }
         }
     }
 }
 
 fn snapshot(
+    store: &Store,
     connection: &Connection,
     actor_id: &str,
     cursor: ChannelCatalogCursor,
@@ -102,13 +105,13 @@ fn snapshot(
 ) -> Result<ChannelResponse> {
     if after.is_some()
         && connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM catalog_events WHERE channel_id IS NULL AND sequence>?1)",
+            "SELECT EXISTS(SELECT 1 FROM catalog_events
+                           WHERE (channel_id IS NULL OR role_archive=1) AND sequence>?1)",
             [cursor.sequence],
             |row| row.get::<_, bool>(0),
         )?
     {
-        // A continuation cannot expose a workspace that has since left the live
-        // view, nor silently omit one from an otherwise consistent snapshot.
+        // Keep continuations consistent across workspace closures and role revocations.
         return Ok(ChannelResponse::CatalogReset {});
     }
     let (workspace, channel) = after.map_or(("", ""), |page| {
@@ -119,9 +122,10 @@ fn snapshot(
                 COALESCE(e.old_workspace_wide,c.workspace_wide), COALESCE(e.old_settings,c.settings),
                 COALESCE(e.old_last_sequence,c.last_sequence),c.change_sequence,
                 COALESCE(e.old_last_attention,c.last_attention),d.channel_id IS NOT NULL,
-                COALESCE(e.old_through,p.through,0)
+                r.channel_id IS NOT NULL,COALESCE(e.old_through,p.through,0)
          FROM catalog_workspaces w CROSS JOIN channels c ON c.workspace_id=w.id
          LEFT JOIN direct_channels d ON d.channel_id=c.id
+         LEFT JOIN role_threads r ON r.channel_id=c.id
          LEFT JOIN positions p ON p.channel_id=c.id AND p.participant_id=?1
          LEFT JOIN catalog_events e ON e.sequence=(SELECT min(sequence) FROM catalog_events
                                                    WHERE channel_id=c.id AND sequence>?4)
@@ -132,7 +136,7 @@ fn snapshot(
     let mut channels = statement
         .query_map(
             params![actor_id, workspace, channel, cursor.sequence, limit + 1],
-            |r| summary(r, 0),
+            |r| summary(store, r, 0),
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let next_after = take_extra(&mut channels, limit).then(|| {
@@ -151,6 +155,7 @@ fn snapshot(
 }
 
 fn changes(
+    store: &Store,
     connection: &Connection,
     actor_id: &str,
     store_id: String,
@@ -165,11 +170,12 @@ fn changes(
         let mut statement = connection.prepare(
             "SELECT e.sequence,e.workspace_id,c.id,c.workspace_id,COALESCE(d.display_name,c.name),
                     c.workspace_wide,c.settings,c.last_sequence,c.change_sequence,c.last_attention,
-                    d.channel_id IS NOT NULL,COALESCE(p.through,0)
+                    d.channel_id IS NOT NULL,r.channel_id IS NOT NULL,COALESCE(p.through,0)
              FROM catalog_events e
              LEFT JOIN catalog_workspaces w ON w.id=e.workspace_id
              LEFT JOIN channels c ON c.id=e.channel_id
              LEFT JOIN direct_channels d ON d.channel_id=c.id
+             LEFT JOIN role_threads r ON r.channel_id=c.id
              LEFT JOIN positions p ON p.channel_id=c.id AND p.participant_id=?1
              WHERE e.sequence>?2 AND (e.channel_id IS NULL OR w.id IS NOT NULL)
              ORDER BY e.sequence LIMIT ?3",
@@ -188,7 +194,7 @@ fn changes(
                     }
                 } else {
                     ChannelCatalogChange::Upsert {
-                        channel: summary(row, 2)?,
+                        channel: summary(store, row, 2)?,
                     }
                 },
             );
@@ -220,10 +226,12 @@ pub(super) fn record_read_position(
     Ok(())
 }
 
-fn summary(row: &Row<'_>, start: usize) -> rusqlite::Result<ChannelSummary> {
-    Ok(StoredChannel::read(row, start + 1)?.summary(
-        ChannelId(row.get(start)?),
-        row.get(start + 9)?,
-        true,
-    ))
+fn summary(store: &Store, row: &Row<'_>, start: usize) -> rusqlite::Result<ChannelSummary> {
+    let channel = StoredChannel::read(row, start + 1)?;
+    let id = ChannelId(row.get(start)?);
+    let archived = channel.role_thread
+        && store
+            .active_role_thread(&channel.workspace_id, &id)
+            .is_none();
+    Ok(channel.summary(id, row.get(start + 10)?, true, archived))
 }

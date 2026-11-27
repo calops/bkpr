@@ -98,6 +98,32 @@ pub struct ClientEvent {
     pub reason: String,
 }
 
+impl ClientEvent {
+    /// Construct a role invalidation on the registered lifetime stream.
+    pub fn roles_changed(event: crate::roles::RoleEvent) -> Self {
+        Self {
+            event: match event.kind {
+                crate::roles::RoleEventKind::Roster => "roles_changed",
+                crate::roles::RoleEventKind::Approvals => "role_approvals_changed",
+            }
+            .into(),
+            reason: event.revision.to_string(),
+        }
+    }
+
+    /// Decode a role invalidation; returns `None` for other lifetime events.
+    pub fn role_event(&self) -> Result<Option<crate::roles::RoleEvent>> {
+        let kind = match self.event.as_str() {
+            "roles_changed" => crate::roles::RoleEventKind::Roster,
+            "role_approvals_changed" => crate::roles::RoleEventKind::Approvals,
+            _ => return Ok(None),
+        };
+        let revision = self.reason.parse()?;
+        ensure!(revision != 0, "zero role event revision");
+        Ok(Some(crate::roles::RoleEvent { revision, kind }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

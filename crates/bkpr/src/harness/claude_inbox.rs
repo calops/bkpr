@@ -1,6 +1,6 @@
 //! Private, launch-local Claude asyncRewake/tool-boundary coordination.
 //! Locks are nonblocking on synchronous hooks; peer bodies never enter hooks.
-use super::{Capture, agent, channel_wake, channel_wake_text};
+use super::{Capture, NativeWake, agent};
 use anyhow::{Context, Result, bail};
 use notify::{RecursiveMode, Watcher};
 use serde_json::{Value, json};
@@ -111,7 +111,7 @@ fn pointer_text(pointer: &Value) -> Result<String> {
     if id.is_empty() || id.len() > 512 || id.chars().any(char::is_control) {
         bail!("invalid notification ID");
     }
-    Ok(channel_wake_text(&channel_wake(pointer)?))
+    Ok(NativeWake::parse(pointer)?.text())
 }
 
 pub(super) fn hook(
@@ -322,7 +322,12 @@ pub(super) fn wait(capture: &Capture, value: &Value, session: &str) -> Result<i3
                 .retain(|key, _| {
                     matches!(
                         key.as_str(),
-                        "notification_id" | "generation" | "session_id" | "mode" | "channel_wake"
+                        "notification_id"
+                            | "generation"
+                            | "session_id"
+                            | "mode"
+                            | "channel_wake"
+                            | "role_wake"
                     )
                 });
             let mut file = wait_lock(&directory.join("state"))?;
@@ -360,6 +365,31 @@ mod tests {
         let mut invalid = pointer;
         invalid["channel_wake"]["pending_count"] = json!(0);
         assert!(pointer_text(&invalid).is_err());
+    }
+
+    #[test]
+    fn role_wake_is_body_free_and_excludes_channel_wakes() {
+        let wake = json!({
+            "workspace_id":"workspace", "role":"coordinator", "grant_id":"tenure", "change":"revoked"
+        });
+        let pointer = json!({
+            "notification_id":"receiver-only", "role_wake":wake, "text":"UNTRUSTED_BODY"
+        });
+        let text: Value = serde_json::from_str(&pointer_text(&pointer).unwrap()).unwrap();
+        assert_eq!(text, json!({"role_wake":wake}));
+        for (key, invalid) in [
+            ("workspace_id", json!("")),
+            ("role", json!("unknown")),
+            ("grant_id", json!("\u{1b}tenure")),
+            ("change", json!("expired")),
+        ] {
+            let mut pointer = pointer.clone();
+            pointer["role_wake"][key] = invalid;
+            assert!(pointer_text(&pointer).is_err(), "{key}");
+        }
+        let mut both = pointer;
+        both["channel_wake"] = json!({"batch_id":"batch","channel_id":"channel","pending_count":1});
+        assert!(pointer_text(&both).is_err());
     }
     #[test]
     fn lock_release_is_explicit_even_with_duplicated_descriptor() {

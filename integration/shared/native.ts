@@ -16,13 +16,20 @@ export type ChannelWake = {
   addressed_message_id?: string;
 };
 
+/** Body-free hint to recheck a workspace role in the authenticated registry. */
+type RoleWake = {
+  workspace_id: string;
+  role: 'coordinator';
+  grant_id: string;
+  change: 'granted' | 'revoked';
+};
+
 /** Body-free, generation-specific reference to a native inbox notification. */
 export type InboxPointer = {
   notification_id: string;
   generation: number;
   session_id: string;
-  channel_wake: ChannelWake;
-};
+} & ({ channel_wake: ChannelWake } | { role_wake: RoleWake });
 
 /** Launch-private calls to the native capture executable. */
 export interface NativeCallbacks {
@@ -59,27 +66,38 @@ function object(value: unknown): Json {
   return value as Json;
 }
 
-function validChannelWakeId(value: unknown): value is string {
-  // Match the protocol bounds for opaque batch, channel and message IDs.
+function validWakeId(value: unknown): value is string {
+  // Match the protocol bounds for opaque wake IDs.
   return typeof value === 'string' && value.length > 0 && Buffer.byteLength(value) <= 256 &&
     !/[\u0000-\u001f\u007f-\u009f]/u.test(value);
 }
 
 function parseChannelWake(value: unknown): ChannelWake {
   const item = object(value);
-  if (!validChannelWakeId(item.batch_id) || !validChannelWakeId(item.channel_id) ||
+  if (!validWakeId(item.batch_id) || !validWakeId(item.channel_id) ||
       typeof item.pending_count !== 'number' || !Number.isInteger(item.pending_count) ||
       item.pending_count < 1 || item.pending_count > 0xffffffff ||
-      (item.addressed_message_id !== undefined && !validChannelWakeId(item.addressed_message_id))) {
+      (item.addressed_message_id !== undefined && !validWakeId(item.addressed_message_id))) {
     throw new Error('invalid native channel wake');
   }
   return { batch_id: item.batch_id, channel_id: item.channel_id, pending_count: item.pending_count,
     ...(item.addressed_message_id === undefined ? {} : { addressed_message_id: item.addressed_message_id }) };
 }
 
-/** Present a parsed channel wake without prose, peer text or transport metadata. */
-export function formatChannelWake(wake: ChannelWake): string {
-  return JSON.stringify({ channel_wake: wake });
+function parseRoleWake(value: unknown): RoleWake {
+  const item = object(value);
+  if (!validWakeId(item.workspace_id) || !validWakeId(item.grant_id) || item.role !== 'coordinator' ||
+      (item.change !== 'granted' && item.change !== 'revoked')) {
+    throw new Error('invalid native role wake');
+  }
+  return { workspace_id: item.workspace_id, role: item.role, grant_id: item.grant_id, change: item.change };
+}
+
+/** Present a parsed wake without prose, peer text or transport metadata. */
+export function formatInboxWake(pointer: InboxPointer): string {
+  return JSON.stringify('role_wake' in pointer
+    ? { role_wake: pointer.role_wake }
+    : { channel_wake: pointer.channel_wake });
 }
 
 /** Validate untrusted notification metadata without retaining message bodies. */
@@ -92,8 +110,13 @@ export function parseInboxPointer(value: unknown): InboxPointer {
       /[\u0000-\u001f\u007f]/u.test(item.session_id)) {
     throw new Error('invalid native inbox pointer');
   }
-  return { notification_id: item.notification_id, generation: item.generation, session_id: item.session_id,
-    channel_wake: parseChannelWake(item.channel_wake) };
+  const pointer = { notification_id: item.notification_id, generation: item.generation, session_id: item.session_id };
+  const hasChannelWake = Object.hasOwn(item, 'channel_wake');
+  const hasRoleWake = Object.hasOwn(item, 'role_wake');
+  if (hasChannelWake === hasRoleWake) throw new Error('expected exactly one native channel or role wake');
+  return hasRoleWake
+    ? { ...pointer, role_wake: parseRoleWake(item.role_wake) }
+    : { ...pointer, channel_wake: parseChannelWake(item.channel_wake) };
 }
 
 /** Read an owned 0600 launch context, rejecting symlinks, invalid grants, and files larger than 64 KiB. */

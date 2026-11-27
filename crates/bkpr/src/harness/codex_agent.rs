@@ -17,7 +17,7 @@ use bkpr_protocol::{AgentRequest, CaptureEvent, Operation, Payload};
 use parking_lot::{Condvar, Mutex};
 use serde_json::{Value, json};
 
-use super::super::{Capture, channel_wake, channel_wake_text, scrub};
+use super::super::{Capture, NativeWake, scrub};
 #[path = "codex_peer.rs"]
 mod peer;
 
@@ -427,7 +427,7 @@ fn receive(
                 program,
                 endpoint,
                 &session,
-                &channel_wake_text(&channel_wake(notification)?),
+                &NativeWake::parse(notification)?.text(),
                 selection,
                 revision,
             );
@@ -573,6 +573,9 @@ mod tests {
             json!({"method":"control","operation":"api.schema","arguments":{"operation":"pane.create"}}),
             json!({"method":"control","operation":"pane.read","arguments":{"pane_id":"exact"}}),
             json!({"method":"terminal_input","operation":"input.text","arguments":{"pane_id":"exact","text":"literal"}}),
+            json!({"method":"role_request","role":"coordinator"}),
+            json!({"method":"role_release","role":"coordinator","grant_id":"tenure"}),
+            json!({"method":"role_status","role":"coordinator"}),
         ] {
             assert!(
                 validate_envelope(&json!({"token":"secret","request":request}), "secret").is_ok()
@@ -585,6 +588,8 @@ mod tests {
             json!({"method":"control","operation":"recovery.list","arguments":{"argv":["/bin/sh"]}}),
             json!({"method":"control","operation":"input.text","arguments":{"pane_id":"pane","text":"unexpected"}}),
             json!({"method":"terminal_input","operation":"recovery.list","arguments":{}}),
+            json!({"method":"role_set","role":"coordinator","workspace_id":"workspace"}),
+            json!({"method":"role_decide","request_id":"request","approve":true}),
         ] {
             assert!(
                 validate_envelope(&json!({"token":"secret","request":request}), "secret").is_err()

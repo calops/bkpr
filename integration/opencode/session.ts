@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { formatChannelWake, parseInboxPointer, type InboxPointer, type Json, type NativeCallbacks } from '../shared/native.ts';
+import { formatInboxWake, parseInboxPointer, type InboxPointer, type Json, type NativeCallbacks } from '../shared/native.ts';
 
 export function object(value: unknown): Json {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('expected native object');
@@ -227,7 +227,7 @@ export class NativeSession {
     let outcome: Json;
     try {
       const receipt = await this.queue({ id, sessionID: session, delivery: 'queue', metadata: { 'bkpr.nativeWake': true },
-        text: formatChannelWake(pointer.channel_wake) }, signal);
+        text: formatInboxWake(pointer) }, signal);
       validateQueueReceipt(receipt, session, id);
       outcome = { state: 'accepted' };
     } catch {

@@ -180,6 +180,9 @@ pub struct ChannelRosterEntry {
     pub participant: Participant,
     /// Exact observed agent binding, never a saved membership reference.
     pub binding: Option<ChannelMentionBinding>,
+    /// Current verified role in the roster's workspace, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<crate::roles::RoleAttribution>,
 }
 
 impl ChannelRosterEntry {
@@ -191,6 +194,10 @@ impl ChannelRosterEntry {
                 "channel roster binding does not match its agent participant"
             );
         }
+        ensure!(
+            self.role.is_none() || self.binding.is_some(),
+            "role roster entry requires a live agent binding"
+        );
         Ok(())
     }
 }
@@ -401,6 +408,9 @@ pub struct ChannelSummary {
     /// users have read-only access.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub direct: bool,
+    /// Identifies an active or archived private role thread, never a membership grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_thread: Option<crate::roles::RoleThread>,
 }
 
 /// A durable position in one session's user channel catalog.
@@ -467,6 +477,9 @@ pub struct MessageSummary {
     /// Optional author-supplied context link, independent of read access to its target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<Box<ChannelSource>>,
+    /// Server-stamped historical authorship, independent of current delegation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<crate::roles::RoleAttribution>,
 }
 
 impl MessageSummary {
@@ -491,6 +504,9 @@ pub struct ChannelMessage {
     pub text: String,
     /// Metadata for the attachment references in `message`, in the same order.
     pub attachments: Vec<AttachmentDescriptor>,
+    /// Exact historical tenure still current in the viewing workspace at admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_delegation: Option<crate::roles::RoleGrantId>,
 }
 
 impl ChannelMessage {
@@ -520,6 +536,11 @@ impl ChannelMessage {
             + message.source.as_ref().map_or(0, |source| {
                 source.channel_id.as_ref().len() + source.message_id.as_ref().len()
             })
+            + message
+                .role
+                .as_ref()
+                .map_or(0, |role| role.grant_id.0.len())
+            + self.current_delegation.as_ref().map_or(0, |id| id.0.len())
             + message
                 .attachments
                 .iter()
@@ -1145,7 +1166,7 @@ pub(crate) fn valid_id(value: &str) -> Result<()> {
 pub(crate) fn valid_source_ids(channel_id: &str, message_id: &str) -> Result<()> {
     valid_id(channel_id)?;
     ensure!(
-        !matches!(channel_id, "#desk" | "#team"),
+        !matches!(channel_id, "#desk" | "#team" | "#coordinator"),
         "channel source requires an exact channel ID"
     );
     valid_id(message_id)

@@ -213,6 +213,7 @@ impl Registry {
                 }
                 if changes_binding {
                     self.inner.channels.invalidate();
+                    self.role_launches_changed();
                     let captures = self.inner.captures.lock().unwrap();
                     Ok(json!({
                         "accepted":true,
@@ -674,6 +675,7 @@ impl Registry {
             .as_ref()
             .and_then(|h| h.managed.as_ref())
             .map(|m| m.launch_id.as_str());
+        let roster_changed = old_launch != new_launch;
         let initial_child = old_launch.zip(new_launch).is_some_and(|(old_id, new_id)| {
             old_id == new_id
                 && super::notification_capture::managed_authority(
@@ -738,6 +740,9 @@ impl Registry {
         drop(captures);
         drop(state);
         drop(_transaction);
+        if roster_changed {
+            self.role_roster_changed();
+        }
         if notification_changed && let Some(service) = self.inner.notifications.get() {
             notification_capture.withdraw(service);
         }
@@ -959,6 +964,7 @@ impl Registry {
             version = captures.version;
             drop(captures);
             self.inner.channels.reconcile_retired_work();
+            self.role_launches_changed();
         }
         if !self.publish_process_sample(&panes, &valid_launches, table, version, scoped.is_some())
             && let Ok(full) = proc::fresh_snapshot()

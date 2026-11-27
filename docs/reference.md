@@ -817,6 +817,7 @@ explicit passthrough invocations remain unchanged.
 | `channel_ack` | Explicitly acknowledge an exact delivered and read message after processing it |
 | `channel_upload`, `channel_fetch` | Upload a local PNG to a channel or save an exact readable channel attachment to a new local file; both return metadata only |
 | `channel_wake` | Look up a native wake batch for this launch and optionally read one post, without acknowledging it |
+| `role_request`, `role_status`, `role_release` | Ask for Coordinator, inspect your request and current grant, or release an exact tenure |
 | `control` | Discover help/schema; inspect and manage native workspaces, windows, panes, layouts and recovery |
 | `terminal_input` | Explicit literal text, bracketed paste, key events or raw bytes against an exact pane |
 | `read_result` | Temporary, authenticated pages for an explicitly oversized result |
@@ -847,7 +848,7 @@ verify `post.source.message.author.kind == "user"` and use
 `post.source.reply_target`, not the proposal's target. A successful
 `channel_post` is the output; don't echo it in the terminal.
 
-`source` is optional and uses exact IDs, not `#desk` or `#team`. It doesn't
+`source` is optional and uses exact IDs, not channel shorthand. It doesn't
 route wakes, grant access, or replace `reply_to`, which stays in one channel.
 Source-bearing native posts require a daemon that supports source links.
 Unsupported peers reject the write before dispatch instead of dropping the link.
@@ -862,8 +863,9 @@ Omitting both options keeps the wake lookup metadata-only.
 Check all unhandled IDs in `messages`, not just the selected post. Use
 `channel_read` with `offset: 0` for unhandled IDs without a body page.
 
-`channel_members`, `channel_history`, and `channel_read` also accept `#desk`
-and `#team` in the launch's own workspace. Page sizes are 1 to 10, default 10.
+`channel_members`, `channel_history`, and `channel_read` also accept `#desk`,
+`#team`, and the holder's current `#coordinator` in the launch's own workspace.
+Page sizes are 1 to 10, default 10.
 For history, take `next_before` or `next_after` from the post page.
 `cursor.sequence` belongs to a channel change stream, not post pagination.
 
@@ -2216,6 +2218,34 @@ dispatch. Pending work is tied to the original launch and binding. Replacing
 a receiver fences its old claims; revoking membership cancels pending delivery.
 Recovery and ambiguous dispatch never replay a claimed wake. A channel body
 read can record receipt of that post without acknowledging processing.
+
+### Workspace roles
+
+`role_request` returns a pending ID. Only the session user can grant a role.
+The prompt goes to the most recently active eligible input attachment and moves
+if that attachment disconnects or becomes ineligible. A request expires after
+120 seconds, even with no eligible attachment. Repeating an outstanding
+request doesn't extend its deadline. Denial and expiry aren't native wakes.
+
+The Coordinator can relay user intent in its own workspace. It can't act as the
+user, authorize another role, bypass native consent or read a private source.
+Posts retain their backend-stamped `message.role` after revocation. Only
+`current_delegation` on a fresh authenticated read or expanded wake verifies that
+the post's exact tenure still authorizes new work. Regranting doesn't reactivate
+old posts.
+
+Each tenure has a fresh `#coordinator` thread shared only with the session user.
+The user keeps old threads as read-only archives. A replacement or recovered
+launch doesn't inherit access. A `role_wake` tells a live holder that a grant
+changed; use `role_status` to check current authority and pass its exact grant
+ID to `role_release` to relinquish it.
+
+Registered role-capable clients opt into lifetime invalidations by sending
+`RoleRequest::Activity` in `Operation::Roles`. `Snapshot` exposes only that
+attachment's current prompts. `Decide` fences the exact request, requester binding,
+attachment, and prior grant shown. The structured `Set` command skips the prompt, not target or
+user authentication. The native family and SSH handshake stay unchanged; a
+pre-role daemon rejects the per-request role capability before dispatch.
 
 ## Notification records and subscriptions
 

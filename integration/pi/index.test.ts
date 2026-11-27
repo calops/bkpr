@@ -167,6 +167,25 @@ test('body-free validated steering is deduplicated and void or throwing native A
   await item.emit('session_shutdown');
 });
 
+test('validated revocation wakes steer only the body-free role pointer and settle once', async () => {
+  const item = fixture('role-wake');
+  await item.emit('session_start');
+  item.handshake();
+  const wake = { workspace_id: 'workspace', role: 'coordinator', grant_id: 'tenure', change: 'revoked' };
+  const roleNotice = { channel_wake: undefined, role_wake: wake, mode: 'active_turn' };
+  item.notify('revoked', roleNotice);
+  item.notify('revoked', roleNotice);
+  await settle();
+  expect(item.messages).toHaveLength(1);
+  expect(item.messages[0]).toMatchObject({ message: { content: JSON.stringify({ role_wake: wake }) },
+    options: { triggerTurn: true, deliverAs: 'steer' } });
+  expect(item.requests).toMatchObject([
+    { method: 'wake_validate', notification_id: 'revoked', generation: 1 },
+    { method: 'wake_outcome', notification_id: 'revoked', generation: 1, outcome: { state: 'unknown' } },
+  ]);
+  await item.emit('session_shutdown');
+});
+
 test('retirement while validating withdraws the receiver and cannot steer a stale native session', async () => {
   const item = fixture('retirement');
   const gate = Promise.withResolvers<Json>();
