@@ -152,7 +152,8 @@ async function withFixture(run: (fixture: Fixture) => Promise<void>): Promise<vo
 function notify(child: FixtureChild, session: string, generation: number, id = 'notice'): void {
   child.stdout.write(JSON.stringify({ notification: {
     notification_id: id, generation, session_id: session,
-    message_count: 2, unread_count: 3, text: 'PRIVATE_PEER_BODY',
+    channel_wake: { batch_id: id, channel_id: 'channel', pending_count: 2 },
+    text: 'PRIVATE_PEER_BODY',
   } }) + '\n');
 }
 
@@ -175,7 +176,9 @@ test('native root prompt facts and batched wake pointers remain body-free and la
   notify(fixture.subscribers[0], 'native-one', 1);
   await settle();
   expect(messages).toHaveLength(1);
-  expect(messages[0].content).not.toContain('PRIVATE_PEER_BODY');
+  expect(messages[0].content).toBe(JSON.stringify({
+    channel_wake: { batch_id: 'notice', channel_id: 'channel', pending_count: 2 },
+  }));
   expect(requests.find(request => request.method === 'wake_outcome')).toMatchObject({
     notification_id: 'notice', outcome: { state: 'unknown' },
   });
@@ -198,15 +201,16 @@ test('native root prompt facts and batched wake pointers remain body-free and la
   expect(JSON.stringify({ commands, requests, messages })).not.toContain('PRIVATE_PROMPT');
   expect(warnings).toEqual([]);
 
-  const validPointer = { notification_id: 'notice', generation: 1, session_id: 'native-two', message_count: 2, unread_count: 3 };
+  const validPointer = { notification_id: 'notice', generation: 1, session_id: 'native-two', channel_wake: wake };
   expect(parseInboxPointer({ ...validPointer, text: 'PRIVATE_PEER_BODY' })).toEqual(validPointer);
   for (const invalid of [
     null, [], { ...validPointer, notification_id: '\x1bsecret' },
     { ...validPointer, notification_id: 'x'.repeat(513) },
     { ...validPointer, generation: Number.MAX_SAFE_INTEGER + 1 },
     { ...validPointer, session_id: '' },
-    { ...validPointer, session_id: '\n' }, { ...validPointer, message_count: 0 },
-    { ...validPointer, unread_count: 1 },
+    { ...validPointer, session_id: '\n' },
+    { ...validPointer, channel_wake: undefined },
+    { ...validPointer, channel_wake: { ...wake, pending_count: 0 } },
     { ...validPointer, channel_wake: null },
     { ...validPointer, channel_wake: { ...wake, pending_count: 0x100000000 } },
     { ...validPointer, channel_wake: { ...wake, addressed_message_id: '\x1bsecret' } },

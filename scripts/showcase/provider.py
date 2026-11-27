@@ -23,6 +23,7 @@ _PROVIDER = "showcase"
 _PROMPT = "Coordinate a Unicode token-boundary review of the search-index patch through Bkpr, then summarize the handoff."
 _MAX_BODY = 2 * 1024 * 1024
 _SENSITIVE = re.compile(r"token|authorization|api[_-]?key|secret|password|credential", re.I)
+_CHANNEL_WAKE = re.compile(r'\{\s*"channel_wake"\s*:')
 FIXTURE_API_KEY = "offline-not-a-credential"
 
 
@@ -377,6 +378,7 @@ class ScriptedProvider:
         self._helper_count = 0
         self._mcp_waited = False
         self._receipts: list[dict[str, Any]] = []
+        self._wakes: dict[tuple[str, str, str], dict[str, Any]] = {}
         self._seen: set[tuple[str, str]] = set()
         self._errors: list[str] = []
         self._closed = False
@@ -538,6 +540,7 @@ text("BKPR_RESULT:" + JSON.stringify({{name:{json.dumps(name)},result:r.structur
         return response
 
     def _observe(self, role: str, body: dict) -> None:
+        self._observe_wakes(role, body.get("messages", []))
         results = []
         if role == "claude":
             for message in body.get("messages", []):
@@ -580,6 +583,44 @@ text("BKPR_RESULT:" + JSON.stringify({{name:{json.dumps(name)},result:r.structur
                     failed or not isinstance(result, str)
                     or not re.match(r"\Aready: true\nConnected \(their tools are now available — call them directly\): bkpr(?:\n|$)", result)):
                 raise ValueError("Native WaitForMcpServers did not report ready for the requested bkpr server")
+
+    def _observe_wakes(self, role: str, messages: list[dict]) -> None:
+        decoder = json.JSONDecoder()
+        for message in messages:
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, list):
+                content = _text([part for part in content
+                                 if isinstance(part, dict) and part.get("type") == "text"])
+            if not isinstance(content, str):
+                continue
+            for match in _CHANNEL_WAKE.finditer(content):
+                try:
+                    envelope, _ = decoder.raw_decode(content, match.start())
+                except ValueError:
+                    continue
+                wake = envelope["channel_wake"]
+                if not isinstance(wake, dict):
+                    continue
+                batch_id, channel_id, message_id = (
+                    wake.get(key) for key in ("batch_id", "channel_id", "addressed_message_id"))
+                if all(isinstance(value, str) and value for value in (batch_id, channel_id, message_id)):
+                    self._wakes.setdefault((role, channel_id, message_id), wake)
+
+    def wait_wake(self, role: str, channel_id: str, message_id: str, timeout: float = 60) -> dict:
+        """Require the addressed DM pointer in genuine native provider context."""
+        _role(role)
+        key = role, channel_id, message_id
+        with self._condition:
+            if not self._condition.wait_for(
+                    lambda: self._closed or self._errors or key in self._wakes, timeout):
+                raise TimeoutError(f"No native {role} wake for the exact channel message within {timeout}s")
+            if key in self._wakes:
+                return deepcopy(self._wakes[key])
+            if self._errors:
+                raise RuntimeError("Scripted provider failed: " + "; ".join(self._errors))
+            raise RuntimeError("Scripted provider closed before the native wake")
 
     def wait_result(self, role: str, name: str, occurrence: int = 1, timeout: float = 60) -> Any:
         """Require a genuine following native request containing the exact emitted call."""

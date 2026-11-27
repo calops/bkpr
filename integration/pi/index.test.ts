@@ -62,7 +62,8 @@ function fixture(name: string, launchId = name) {
   const receiver = () => children.at(-1)!.child;
   const handshake = () => receiver().stdout.write('{"receiver_id":"native-receiver"}\n');
   const notify = (id: string, overrides: Json = {}) => receiver().stdout.write(JSON.stringify({ notification: {
-    notification_id: id, generation: 1, session_id: session, message_count: 1, unread_count: 2,
+    notification_id: id, generation: 1, session_id: session,
+    channel_wake: { batch_id: id, channel_id: 'channel', pending_count: 1 },
     body: 'PRIVATE_PEER_BODY', ...overrides,
   } }) + '\n');
   return { facts, requests, messages, warnings, emit, receiver, handshake, notify,

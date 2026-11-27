@@ -21,11 +21,8 @@ export type InboxPointer = {
   notification_id: string;
   generation: number;
   session_id: string;
-} & ({ channel_wake: ChannelWake } | {
-  channel_wake?: never;
-  message_count: number;
-  unread_count: number;
-});
+  channel_wake: ChannelWake;
+};
 
 /** Launch-private calls to the native capture executable. */
 export interface NativeCallbacks {
@@ -95,13 +92,8 @@ export function parseInboxPointer(value: unknown): InboxPointer {
       /[\u0000-\u001f\u007f]/u.test(item.session_id)) {
     throw new Error('invalid native inbox pointer');
   }
-  const pointer = { notification_id: item.notification_id, generation: item.generation, session_id: item.session_id };
-  if (item.channel_wake !== undefined) return { ...pointer, channel_wake: parseChannelWake(item.channel_wake) };
-  if (typeof item.message_count !== 'number' || !Number.isSafeInteger(item.message_count) || item.message_count < 1 ||
-      typeof item.unread_count !== 'number' || !Number.isSafeInteger(item.unread_count) || item.unread_count < item.message_count) {
-    throw new Error('invalid native inbox pointer');
-  }
-  return { ...pointer, message_count: item.message_count, unread_count: item.unread_count };
+  return { notification_id: item.notification_id, generation: item.generation, session_id: item.session_id,
+    channel_wake: parseChannelWake(item.channel_wake) };
 }
 
 /** Read an owned 0600 launch context, rejecting symlinks, invalid grants, and files larger than 64 KiB. */

@@ -1,4 +1,4 @@
-//! Durable launch inboxes. Only this service writes agent state; capture capabilities stay volatile.
+//! Volatile launch metadata and native channel wake receivers.
 use super::*;
 use crate::{
     control_lease::ProcessLifetime,
@@ -9,74 +9,17 @@ use sha2::{Digest, Sha256};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 mod channel_wakes;
-use channel_wakes::{ChannelClaimPoll, ChannelLane, is_channel_batch};
-mod messages;
+use channel_wakes::{ChannelClaimPoll, ChannelLane};
 
-const RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 const WAKE_BATCH_LEASE_MS: u64 = 30_000;
 const CHANNEL_CLAIM_RETRY: Duration = Duration::from_millis(100);
-const MAX_INBOX: usize = 1000;
-const MAX_STORE_BYTES: u64 = 128 * 1024 * 1024;
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Store {
-    version: u32,
-    agents: BTreeMap<String, Agent>,
-    messages: BTreeMap<String, Message>,
-    sequence: u64,
-}
-#[derive(Clone, Serialize, Deserialize)]
+
 struct Agent {
     pane_id: String,
     harness: HarnessKind,
     title: Option<String>,
-    exited_at: Option<u64>,
-    generation: u64,
-    notification: Option<Notification>,
 }
-#[derive(Clone, Serialize, Deserialize)]
-struct Message {
-    id: String,
-    from: String,
-    to: String,
-    text: Option<Arc<String>>,
-    key: String,
-    digest: String,
-    scope: AgentScope,
-    sequence: u64,
-    created_at: u64,
-    read_at: Option<u64>,
-    acknowledged_at: Option<u64>,
-    expired_at: Option<u64>,
-    notification_id: Option<String>,
-    generation: Option<u64>,
-    receiver_id: Option<String>,
-    wake_claimed_at: Option<u64>,
-    wake_state: String,
-    wake_reason: Option<String>,
-    wake_failure: Option<WakeFailure>,
-}
-#[derive(Clone, Serialize, Deserialize)]
-struct WakeFailure {
-    state: String,
-    reason: String,
-    notification_id: String,
-    generation: u64,
-    recorded_at: u64,
-}
-#[derive(Clone, Serialize, Deserialize)]
-struct Notification {
-    id: String,
-    generation: u64,
-    receiver_id: String,
-    state: String,
-    reason: Option<String>,
-    claimed_at: u64,
-    #[serde(default)]
-    message_count: usize,
-    #[serde(default)]
-    unread_count: usize,
-}
+
 #[derive(Clone)]
 struct Receiver {
     id: String,
@@ -88,23 +31,17 @@ struct Receiver {
     mode: AgentReceiverMode,
 }
 struct AgentState {
-    store: Store,
+    agents: BTreeMap<String, Agent>,
     receivers: BTreeMap<String, Receiver>,
     waiters: BTreeMap<String, BTreeMap<String, usize>>,
     channel_lanes: BTreeMap<String, ChannelLane>,
-    failure: Option<String>,
     closing: bool,
-    maintenance_at: Option<u64>,
     revision: u64,
 }
 pub(super) struct Agents {
-    root: PathBuf,
-    directory: File,
     state: Mutex<AgentState>,
     writer: Mutex<()>,
     changed: Condvar,
-    #[cfg(test)]
-    fail_directory_sync: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     request_barrier: Mutex<Option<(bool, Arc<SpawnBarrier>)>>,
     #[cfg(test)]
@@ -160,24 +97,8 @@ struct ContextFact {
 struct ContextSelection<'a> {
     all: bool,
     project_summary: bool,
-    recipient: Option<&'a str>,
     launch_id: Option<&'a str>,
     pane_id: Option<&'a str>,
-    successor_pane: Option<&'a str>,
-}
-#[derive(Default)]
-struct ContextSnapshot {
-    facts: BTreeMap<String, ContextFact>,
-    recipient_bindings: Vec<(Launch, bool)>,
-}
-
-fn matches_recipient(launch: &Launch, selector: &str) -> bool {
-    launch.grant.launch_id == selector
-        || launch
-            .managed
-            .conversation
-            .as_ref()
-            .is_some_and(|conversation| conversation.id == selector)
 }
 struct DiscoveryQuery<'a> {
     scope: AgentScope,
@@ -195,36 +116,7 @@ fn now() -> u64 {
         .try_into()
         .unwrap_or(u64::MAX)
 }
-fn hash(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
-}
-fn payload(to: &str, text: &str, scope: AgentScope) -> String {
-    hash(&serde_json::to_vec(&(to, text, scope)).expect("serializable message payload"))
-}
-fn pending(m: &Message) -> bool {
-    m.text.is_some() && m.acknowledged_at.is_none() && m.expired_at.is_none()
-}
-fn unread(m: &Message) -> bool {
-    pending(m) && m.read_at.is_none()
-}
-fn claimable(m: &Message) -> bool {
-    unread(m) && m.notification_id.is_none()
-}
-fn summary(m: &Message) -> Value {
-    json!({"message_id":m.id,"from":m.from,"to":m.to,"scope":m.scope,"created_at":m.created_at,"read_at":m.read_at,"acknowledged_at":m.acknowledged_at,"expired_at":m.expired_at,"wake_failure":m.wake_failure,"delivery":{"state":m.wake_state,"reason":m.wake_reason,"notification_id":m.notification_id,"generation":m.generation}})
-}
-fn receipt(m: &Message, duplicate: bool) -> Value {
-    let mut value = json!({"message_id":m.id,"durable":true,"duplicate":duplicate,"wake":{"state":m.wake_state}});
-    if let Some(reason) = &m.wake_reason {
-        value["wake"]["reason"] = json!(reason);
-    }
-    value
-}
 fn healthy_agents(state: &AgentState) -> Result<()> {
-    ensure!(
-        state.failure.is_none(),
-        "agent durable storage unavailable; delivery suspended until restart"
-    );
     ensure!(!state.closing, "agent service is shutting down");
     Ok(())
 }
@@ -271,416 +163,107 @@ impl Agents {
             let _ = barrier.resume.lock().unwrap().recv();
         }
     }
-    #[cfg(test)]
-    pub(super) fn fail_next_commit(&self) {
-        self.fail_directory_sync
-            .store(true, std::sync::atomic::Ordering::Release);
-    }
     pub(super) fn check_health(&self) -> Result<()> {
         healthy_agents(&self.state.lock().unwrap())
     }
+
     pub(super) fn callback_guard(&self) -> Result<std::sync::MutexGuard<'_, ()>> {
         let guard = self.writer.lock().unwrap();
         self.check_health()?;
         Ok(guard)
     }
-    pub(super) fn open(root: &Path) -> Result<Self> {
-        let root = root.join("agents");
-        private_directory(&root)?;
-        let mut store = Self::load(&root)?;
-        // Capabilities and OS authorities are deliberately absent on restart. Old inboxes
-        // remain diagnostics only, even if an identical native conversation is resumed.
-        let timestamp = now();
-        for agent in store.agents.values_mut() {
-            if agent.exited_at.is_none() {
-                agent.exited_at = Some(timestamp);
-            }
-            agent.notification = None;
-        }
-        for (id, receiver, notification, generation) in pending_dispatches(&store) {
-            settle_unknown(
-                &mut store,
-                &id,
-                &receiver,
-                &notification,
-                generation,
-                "daemon restarted before native confirmation",
-                timestamp,
-            );
-        }
-        expire(&mut store, timestamp);
-        let directory = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-            .open(&root)?;
-        let this = Self {
-            root,
-            directory,
+
+    pub(super) fn new() -> Self {
+        Self {
             state: Mutex::new(AgentState {
-                store,
+                agents: BTreeMap::new(),
                 receivers: BTreeMap::new(),
                 waiters: BTreeMap::new(),
                 channel_lanes: BTreeMap::new(),
-                failure: None,
                 closing: false,
-                maintenance_at: None,
                 revision: 0,
             }),
             writer: Mutex::new(()),
             changed: Condvar::new(),
             #[cfg(test)]
-            fail_directory_sync: std::sync::atomic::AtomicBool::new(false),
-            #[cfg(test)]
             request_barrier: Mutex::new(None),
             #[cfg(test)]
             channel_barrier: Mutex::new(None),
-        };
-        this.transaction(|_| Ok(()))?;
-        Ok(this)
+        }
     }
-    fn load(root: &Path) -> Result<Store> {
-        let file = match OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(root.join("state.json"))
-        {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Store {
-                    version: 1,
-                    agents: BTreeMap::new(),
-                    messages: BTreeMap::new(),
-                    sequence: 0,
-                });
-            }
-            Err(error) => return Err(error.into()),
+
+    fn register(&self, launch: &Launch) -> Result<()> {
+        let _writer = self.callback_guard()?;
+        let mut state = self.state.lock().unwrap();
+        let std::collections::btree_map::Entry::Vacant(entry) =
+            state.agents.entry(launch.grant.launch_id.clone())
+        else {
+            bail!("agent launch already exists");
         };
-        check_file(&file)?;
-        ensure!(
-            file.metadata()?.nlink() == 1,
-            "agent store must not be hard-linked"
-        );
-        ensure!(
-            file.metadata()?.len() <= MAX_STORE_BYTES,
-            "agent store exceeds size bound"
-        );
-        let store: Store = serde_json::from_reader(file)?;
-        ensure!(
-            store.version == 1,
-            "unsupported durable agent store version"
-        );
-        let mut sequences = BTreeSet::new();
-        for (id, m) in &store.messages {
-            ensure!(
-                id == &m.id
-                    && m.sequence > 0
-                    && m.sequence <= store.sequence
-                    && sequences.insert(m.sequence),
-                "invalid durable message identity"
-            );
-            ensure!(
-                store.agents.contains_key(&m.from) && store.agents.contains_key(&m.to),
-                "orphan durable message"
-            );
-            ensure!(
-                m.text.as_ref().is_none_or(|t| t.len() <= 65536),
-                "oversize durable message"
-            );
-            ensure!(
-                (m.acknowledged_at.is_none() && m.expired_at.is_none()) || m.text.is_none(),
-                "retired body retained"
-            );
-        }
-        Ok(store)
-    }
-    fn save(&self, store: &Store) -> Result<()> {
-        // No runtime/registry/capture locks are held across serialization or fsync.
-        let metadata = fs::symlink_metadata(&self.root)?;
-        let expected = self.directory.metadata()?;
-        ensure!(
-            metadata.is_dir()
-                && metadata.uid() == unsafe { libc::geteuid() }
-                && metadata.mode() & 0o077 == 0
-                && metadata.dev() == expected.dev()
-                && metadata.ino() == expected.ino(),
-            "agent store directory identity changed"
-        );
-        match fs::symlink_metadata(self.root.join("state.json")) {
-            Ok(metadata) => ensure!(
-                metadata.is_file()
-                    && metadata.uid() == unsafe { libc::geteuid() }
-                    && metadata.mode() & 0o077 == 0
-                    && metadata.nlink() == 1,
-                "unsafe agent store file"
-            ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        let mut file = tempfile::NamedTempFile::new_in(&self.root)?;
-        file.as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))?;
-        serde_json::to_writer(file.as_file_mut(), store)?;
-        ensure!(
-            file.as_file().metadata()?.len() <= MAX_STORE_BYTES,
-            "agent store capacity exhausted"
-        );
-        file.flush()?;
-        file.as_file().sync_all()?;
-        file.persist(self.root.join("state.json"))?;
-        #[cfg(test)]
-        if self
-            .fail_directory_sync
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
-        {
-            bail!("injected agent directory sync failure");
-        }
-        self.directory.sync_all()?;
+        entry.insert(Agent {
+            pane_id: launch.grant.pane_id.clone(),
+            harness: launch.grant.kind,
+            title: None,
+        });
         Ok(())
     }
-    fn transaction<T>(&self, change: impl FnOnce(&mut Store) -> Result<T>) -> Result<T> {
-        self.transaction_maybe(|store| change(store).map(|value| (value, true)))
-    }
-    fn transaction_maybe<T>(
-        &self,
-        change: impl FnOnce(&mut Store) -> Result<(T, bool)>,
-    ) -> Result<T> {
+
+    fn retire(&self, ids: &[String]) {
         let _writer = self.writer.lock().unwrap();
-        self.transaction_locked(change)
-    }
-    // Caller holds the agent writer; runtime locks are released before storage I/O.
-    fn transaction_locked<T>(
-        &self,
-        change: impl FnOnce(&mut Store) -> Result<(T, bool)>,
-    ) -> Result<T> {
-        let mut candidate = {
-            let state = self.state.lock().unwrap();
-            healthy_agents(&state)?;
-            state.store.clone()
-        };
-        let (result, mut changed) = change(&mut candidate)?;
-        {
-            let state = self.state.lock().unwrap();
-            changed |= prune_retired(&mut candidate, now(), &state);
-        }
-        if !changed {
-            return Ok(result);
-        }
-        if let Err(error) = self.save(&candidate) {
-            // Rename may have committed. Never roll back or guess acceptance. Restart
-            // reconciles only the authoritative saved file, and all callbacks stop now.
-            let mut state = self.state.lock().unwrap();
-            state.failure = Some("durable agent commit failed".into());
-            state.receivers.clear();
-            self.changed.notify_all();
-            return Err(
-                error.context("agent mutation outcome unknown: durable commit failed; delivery suspended until restart")
-            );
-        }
-        let maintenance_at = next_maintenance(&candidate);
-        {
-            let mut state = self.state.lock().unwrap();
-            state.store = candidate;
-            state.maintenance_at = maintenance_at;
-            state.revision = state.revision.wrapping_add(1);
-        }
-        self.changed.notify_all();
-        Ok(result)
-    }
-    fn register(&self, launch: &Launch) -> Result<()> {
-        self.transaction(|store| {
-            ensure!(
-                !store.agents.contains_key(&launch.grant.launch_id),
-                "agent launch already exists"
-            );
-            store.agents.insert(
-                launch.grant.launch_id.clone(),
-                Agent {
-                    pane_id: launch.grant.pane_id.clone(),
-                    harness: launch.grant.kind,
-                    title: None,
-                    exited_at: None,
-                    generation: 0,
-                    notification: None,
-                },
-            );
-            Ok(())
-        })
-    }
-    fn retire(&self, ids: &[String], timestamp: u64) -> Result<()> {
-        if ids.is_empty() {
-            return Ok(());
-        }
-        self.transaction_maybe(|store| {
-            let mut changed = false;
-            for id in ids {
-                if let Some(agent) = store.agents.get_mut(id) {
-                    if agent.exited_at.is_none() {
-                        agent.exited_at = Some(timestamp);
-                        changed = true;
-                    }
-                    changed |= agent.notification.take().is_some();
-                }
-            }
-            for (id, receiver, notification, generation) in pending_dispatches(store)
-                .into_iter()
-                .filter(|(id, ..)| ids.contains(id))
-            {
-                changed |= settle_unknown(
-                    store,
-                    &id,
-                    &receiver,
-                    &notification,
-                    generation,
-                    "recipient retired before native confirmation",
-                    timestamp,
-                );
-            }
-            changed |= expire(store, timestamp);
-            Ok(((), changed))
-        })?;
         let mut state = self.state.lock().unwrap();
+        let mut retired = false;
         for id in ids {
+            retired |= state.agents.remove(id).is_some();
             state.receivers.remove(id);
             state.channel_lanes.remove(id);
         }
-        self.changed.notify_all();
-        Ok(())
-    }
-    pub(super) fn retire_pane(&self, pane_id: &str) -> Result<()> {
-        let ids = self
-            .state
-            .lock()
-            .unwrap()
-            .store
-            .agents
-            .iter()
-            .filter(|(_, a)| a.pane_id == pane_id && a.exited_at.is_none())
-            .map(|(id, _)| id.clone())
-            .collect::<Vec<_>>();
-        self.retire(&ids, now())
-    }
-    pub(super) fn shutdown(&self) -> Result<()> {
-        if self.state.lock().unwrap().closing {
-            return Ok(());
+        if retired {
+            state.revision = state.revision.wrapping_add(1);
+            self.changed.notify_all();
         }
-        let result = self.transaction_maybe(|store| {
-            {
-                let mut state = self.state.lock().unwrap();
-                state.closing = true;
-                state.receivers.clear();
-                self.changed.notify_all();
+    }
+
+    pub(super) fn retire_pane(&self, pane_id: &str) {
+        let _writer = self.writer.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        let AgentState {
+            agents,
+            receivers,
+            channel_lanes,
+            ..
+        } = &mut *state;
+        let mut retired = false;
+        agents.retain(|id, agent| {
+            if agent.pane_id != pane_id {
+                return true;
             }
-            let timestamp = now();
-            let mut changed = false;
-            for agent in store.agents.values_mut() {
-                if agent.exited_at.is_none() {
-                    agent.exited_at = Some(timestamp);
-                    changed = true;
-                }
-                changed |= agent.notification.take().is_some();
-            }
-            for (id, receiver, notification, generation) in pending_dispatches(store) {
-                changed |= settle_unknown(
-                    store,
-                    &id,
-                    &receiver,
-                    &notification,
-                    generation,
-                    "daemon stopped before native confirmation",
-                    timestamp,
-                );
-            }
-            changed |= expire(store, timestamp);
-            Ok(((), changed))
+            receivers.remove(id);
+            channel_lanes.remove(id);
+            retired = true;
+            false
         });
+        if retired {
+            state.revision = state.revision.wrapping_add(1);
+            self.changed.notify_all();
+        }
+    }
+
+    pub(super) fn shutdown(&self) {
+        let _writer = self.writer.lock().unwrap();
         let mut state = self.state.lock().unwrap();
         state.closing = true;
+        state.agents.clear();
         state.receivers.clear();
+        state.channel_lanes.clear();
         self.changed.notify_all();
-        result
     }
-    fn require_live(store: &Store, id: &str) -> Result<()> {
-        ensure!(
-            store.agents.get(id).is_some_and(|a| a.exited_at.is_none()),
-            "agent identity is retired; an exited launch cannot resume its old inbox"
-        );
+
+    fn require_live(state: &AgentState, id: &str) -> Result<()> {
+        ensure!(state.agents.contains_key(id), "agent identity is retired");
         Ok(())
     }
-    fn maintain(&self, timestamp: u64) -> Result<()> {
-        self.transaction_maybe(|store| {
-            let mut changed = false;
-            for agent in store.agents.values_mut() {
-                changed |= expire_batch(agent, timestamp).is_some();
-            }
-            // Read/ack can release a slot before the native outcome arrives.
-            // Even detached pending receipts keep their original timeout.
-            for message in store.messages.values_mut() {
-                changed |= expire_retired_message(&store.agents, message, timestamp);
-                changed |= expire_pending_wake(message, timestamp);
-            }
-            Ok(((), changed))
-        })
-    }
 }
-fn expire(store: &mut Store, timestamp: u64) -> bool {
-    let mut changed = false;
-    for message in store.messages.values_mut() {
-        changed |= expire_retired_message(&store.agents, message, timestamp);
-    }
-    changed
-}
-
-fn expire_retired_message(
-    agents: &BTreeMap<String, Agent>,
-    message: &mut Message,
-    timestamp: u64,
-) -> bool {
-    if let Some(deadline) = retention_deadline(agents, message)
-        && deadline <= timestamp
-    {
-        message.text = None;
-        message.expired_at = Some(deadline);
-        return true;
-    }
-    false
-}
-
-fn retention_deadline(agents: &BTreeMap<String, Agent>, message: &Message) -> Option<u64> {
-    if !pending(message) {
-        return None;
-    }
-    agents
-        .get(&message.to)?
-        .exited_at
-        .map(|exit| exit.saturating_add(RETENTION_MS))
-}
-
-fn prune_retired(store: &mut Store, timestamp: u64, state: &AgentState) -> bool {
-    let referenced = store
-        .messages
-        .values()
-        .flat_map(|message| [&message.from, &message.to])
-        .collect::<BTreeSet<_>>();
-    let before = store.agents.len();
-    // Existing seven-day retention applies only to unreferenced launch bookkeeping.
-    // Message receipts and pane/recovery history have no new deletion policy.
-    store.agents.retain(|id, agent| {
-        agent
-            .exited_at
-            .is_none_or(|exit| timestamp < exit.saturating_add(RETENTION_MS))
-            || agent.notification.is_some()
-            || referenced.contains(id)
-            || state.receivers.contains_key(id)
-            || state.waiters.contains_key(id)
-    });
-    before != store.agents.len()
-}
-fn in_scope(
-    scope: AgentScope,
-    sender: &ContextFact,
-    recipient: &ContextFact,
-    _store: &Store,
-) -> bool {
+fn in_scope(scope: AgentScope, sender: &ContextFact, recipient: &ContextFact) -> bool {
     match scope {
         AgentScope::All => true,
         AgentScope::Repository => sender
@@ -787,17 +370,14 @@ fn discover(
     own: &ContextFact,
     query: DiscoveryQuery<'_>,
 ) -> Result<Value> {
-    require_scope(query.scope, own, &state.store)?;
-    let limit = messages::page_limit(query.limit)?;
+    require_scope(query.scope, own)?;
+    let limit = query.limit.unwrap_or(10);
+    ensure!((1..=10).contains(&limit), "limit must be between 1 and 10");
     let mut candidates = contexts.values().filter(|other| {
         other.launch_id != own.launch_id
             && other.active
-            && state
-                .store
-                .agents
-                .get(&other.launch_id)
-                .is_some_and(|a| a.exited_at.is_none())
-            && in_scope(query.scope, own, other, &state.store)
+            && state.agents.contains_key(&other.launch_id)
+            && in_scope(query.scope, own, other)
             && query.launch_id.is_none_or(|id| other.launch_id == id)
             && query.pane_id.is_none_or(|id| other.pane.id == id)
             && query
@@ -809,7 +389,7 @@ fn discover(
     let values = page
         .iter()
         .map(|other| {
-            let agent = &state.store.agents[&other.launch_id];
+            let agent = &state.agents[&other.launch_id];
             let ready = state.receivers.contains_key(&other.launch_id)
                 && current_subscribers(state, &other.launch_id) > 0;
             if query.detail {
@@ -847,27 +427,6 @@ fn discover(
     }
     Ok(value)
 }
-fn cursor_start(
-    messages: &[&Message],
-    store: &Store,
-    id: &str,
-    after: Option<&str>,
-    inbox: bool,
-) -> Result<usize> {
-    let Some(after) = after else {
-        return Ok(0);
-    };
-    let m = store
-        .messages
-        .get(after)
-        .context("unknown message cursor")?;
-    ensure!(
-        if inbox { m.to == id } else { m.from == id },
-        "foreign message cursor"
-    );
-    Ok(messages.partition_point(|candidate| candidate.sequence <= m.sequence))
-}
-
 fn live_channel_agent<'a>(
     state: &State,
     pane: &PaneInfo,
@@ -898,25 +457,29 @@ fn live_channel_agent<'a>(
     {
         return None;
     }
-    let agent = agents.store.agents.get(&visible.launch_id)?;
-    (agent.exited_at.is_none() && launch.channel_launch_alive()).then_some((launch, agent))
+    let agent = agents.agents.get(&visible.launch_id)?;
+    launch.channel_launch_alive().then_some((launch, agent))
+}
+
+fn channel_pane<'a>(state: &'a State, id: &str) -> Option<&'a PaneInfo> {
+    state
+        .record
+        .registry
+        .panes
+        .iter()
+        .find(|pane| pane.id == id)
 }
 
 fn channel_caller<'a>(
     state: &State,
+    pane: &PaneInfo,
     workspace: &str,
     caller: &Launch,
     agents: &'a AgentState,
     captures: &'a crate::harness::Captures,
 ) -> Result<(&'a Launch, &'a Agent)> {
     captures.authorize(caller)?;
-    let (current, agent) = state
-        .record
-        .registry
-        .panes
-        .iter()
-        .find(|pane| pane.id == caller.grant.pane_id)
-        .and_then(|pane| live_channel_agent(state, pane, workspace, agents, captures, None))
+    let (current, agent) = live_channel_agent(state, pane, workspace, agents, captures, None)
         .context("no bound participant in this workspace")?;
     ensure!(
         current.grant.launch_id == caller.grant.launch_id
@@ -928,23 +491,64 @@ fn channel_caller<'a>(
     Ok((current, agent))
 }
 
+pub(super) fn unbound_channel_participant(
+    launch_id: &str,
+    revision: u64,
+) -> channels::ParticipantId {
+    let mut digest = Sha256::new();
+    digest.update(b"bkpr unbound channel participant");
+    digest.update(launch_id.as_bytes());
+    digest.update(revision.to_le_bytes());
+    let bytes = digest.finalize()[..16].try_into().unwrap();
+    channels::ParticipantId(Uuid::from_bytes(bytes).to_string())
+}
+
 fn channel_agent(launch: &Launch, agent: &Agent) -> channels::Participant {
-    channels::Participant {
-        id: launch
+    channel_actor(
+        launch
             .channel_participant
             .clone()
             .expect("live channel identity"),
+        agent,
+    )
+}
+
+fn channel_actor(id: channels::ParticipantId, agent: &Agent) -> channels::Participant {
+    channels::Participant {
+        id,
         kind: channels::ParticipantKind::Agent,
         display_name: agent
             .title
             .as_ref()
             .filter(|title| !title.trim().is_empty())
             .cloned()
-            .unwrap_or_else(|| launch.grant.kind.display_name().to_owned()),
+            .unwrap_or_else(|| agent.harness.display_name().to_owned()),
     }
 }
 
 impl Registry {
+    fn channel_user(&self) -> channels::Participant {
+        channels::Participant {
+            id: channels::ParticipantId(self.inner.session.session_id.clone()),
+            kind: channels::ParticipantKind::User,
+            display_name: "User".into(),
+        }
+    }
+
+    fn channel_registry_admission(
+        &self,
+        state: &State,
+        connected: &dyn Fn() -> bool,
+    ) -> Result<()> {
+        ensure!(connected(), crate::channels::ChannelAccessLost);
+        healthy(state)?;
+        ensure!(
+            !state.closing && !self.session_end_requested(),
+            SessionClosing("session is shutting down")
+        );
+        Ok(())
+    }
+
     // `caller` is an OS-validated capture with a request-local binding witness.
     // Recheck that generation under the store's admission before any channel access.
     pub(super) fn channel_authority(
@@ -955,25 +559,14 @@ impl Registry {
         connected: &dyn Fn() -> bool,
     ) -> Result<crate::channels::ChannelAuthority> {
         use crate::channels::{ChannelAccessLost, ChannelAuthority, WorkspaceParticipant};
-        use channels::{Participant, ParticipantId, ParticipantKind};
 
         let state = self.inner.state.lock().unwrap();
-        ensure!(connected(), ChannelAccessLost);
-        healthy(&state)?;
-        ensure!(
-            !state.closing && !self.session_end_requested(),
-            SessionClosing("session is shutting down")
-        );
+        self.channel_registry_admission(&state, connected)?;
         let workspace_open = workspace_exists(&state, workspace);
         let writable = workspace_open && !state.closing_workspaces.contains(workspace);
-        let user = || Participant {
-            id: ParticipantId(self.inner.session.session_id.clone()),
-            kind: ParticipantKind::User,
-            display_name: "User".into(),
-        };
         if caller.is_none() && (!with_roster || !workspace_open) {
             return Ok(ChannelAuthority {
-                actor: user(),
+                actor: self.channel_user(),
                 writable,
                 workspace_open,
                 participants: Vec::new(),
@@ -987,17 +580,19 @@ impl Registry {
         let captures = self.inner.captures.lock().unwrap();
         let actor = if let Some(caller) = caller {
             ensure!(writable, ChannelAccessLost);
-            let (current, agent) = channel_caller(&state, workspace, caller, &agents, &captures)
-                .context(ChannelAccessLost)?;
+            let pane = channel_pane(&state, &caller.grant.pane_id).context(ChannelAccessLost)?;
+            let (current, agent) =
+                channel_caller(&state, pane, workspace, caller, &agents, &captures)
+                    .context(ChannelAccessLost)?;
             channel_agent(current, agent)
         } else {
-            user()
+            self.channel_user()
         };
         let mut participants = Vec::new();
         if with_roster {
             if caller.is_some() {
                 participants.push(WorkspaceParticipant {
-                    actor: user(),
+                    actor: self.channel_user(),
                     launch_id: None,
                     binding_revision: 0,
                 });
@@ -1048,7 +643,9 @@ impl Registry {
         let agents = self.inner.agents.state.lock().unwrap();
         healthy_agents(&agents)?;
         let captures = self.inner.captures.lock().unwrap();
-        channel_caller(&state, workspace, caller, &agents, &captures)?;
+        let pane = channel_pane(&state, &caller.grant.pane_id)
+            .context("no bound participant in this workspace")?;
+        channel_caller(&state, pane, workspace, caller, &agents, &captures)?;
         let mut eligible = state
             .record
             .registry
@@ -1069,47 +666,6 @@ impl Registry {
         })
     }
 
-    pub(super) fn start_agent_maintenance(&self) -> Result<()> {
-        let weak = Arc::downgrade(&self.inner.agents);
-        std::thread::Builder::new()
-            .name("bkpr-agent-retention".into())
-            .spawn(move || {
-                loop {
-                    let Some(service) = weak.upgrade() else {
-                        break;
-                    };
-                    if Arc::strong_count(&service) == 1 {
-                        break;
-                    }
-                    let state = service.state.lock().unwrap();
-                    if state.closing || state.failure.is_some() {
-                        break;
-                    }
-                    let timestamp = now();
-                    if state
-                        .maintenance_at
-                        .is_some_and(|deadline| deadline <= timestamp)
-                    {
-                        drop(state);
-                        if service.maintain(timestamp).is_err() {
-                            break;
-                        }
-                    } else {
-                        // The periodic weak-owner check performs no store/process scan.
-                        let wait = state.maintenance_at.map_or(1000, |deadline| {
-                            deadline.saturating_sub(timestamp).min(1000)
-                        });
-                        let (state, _) = service
-                            .changed
-                            .wait_timeout(state, Duration::from_millis(wait))
-                            .unwrap();
-                        drop(state);
-                    }
-                    drop(service);
-                }
-            })?;
-        Ok(())
-    }
     pub(crate) fn agent_subscription_disconnected(
         &self,
         launch_id: &str,
@@ -1117,26 +673,7 @@ impl Registry {
         notification_id: &str,
         generation: u64,
     ) -> Result<()> {
-        if is_channel_batch(notification_id) {
-            return self.channel_subscription_disconnected(
-                launch_id,
-                receiver_id,
-                notification_id,
-                generation,
-            );
-        }
-        self.inner.agents.transaction_maybe(|store| {
-            let changed = settle_unknown(
-                store,
-                launch_id,
-                receiver_id,
-                notification_id,
-                generation,
-                "subscription transport disconnected before native confirmation",
-                now(),
-            );
-            Ok(((), changed))
-        })
+        self.channel_subscription_disconnected(launch_id, receiver_id, notification_id, generation)
     }
     fn agent_contexts(
         &self,
@@ -1144,7 +681,7 @@ impl Registry {
         own_id: &str,
         selection: ContextSelection<'_>,
         detail: bool,
-    ) -> Result<ContextSnapshot> {
+    ) -> Result<BTreeMap<String, ContextFact>> {
         let launches = self
             .inner
             .captures
@@ -1154,34 +691,12 @@ impl Registry {
             .values()
             .filter(|l| {
                 l.grant.launch_id == own_id
-                    || selection
-                        .recipient
-                        .is_some_and(|selector| matches_recipient(l, selector))
-                    || Some(l.grant.pane_id.as_str()) == selection.successor_pane
                     || (selection.all
                         && selection.launch_id.is_none_or(|id| l.grant.launch_id == id)
                         && selection.pane_id.is_none_or(|id| l.grant.pane_id == id))
             })
             .cloned()
             .collect::<Vec<_>>();
-        let recipient_bindings = if let Some(selector) = selection.recipient {
-            let state = self.inner.agents.state.lock().unwrap();
-            healthy_agents(&state)?;
-            launches
-                .iter()
-                .filter(|launch| matches_recipient(launch, selector))
-                .map(|launch| {
-                    let live = state
-                        .store
-                        .agents
-                        .get(&launch.grant.launch_id)
-                        .is_some_and(|agent| agent.exited_at.is_none());
-                    (launch.clone(), live)
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
         let mut observed = Vec::with_capacity(launches.len());
         let table = proc::fresh_snapshot()?;
         for launch in launches {
@@ -1192,7 +707,7 @@ impl Registry {
         let state = self.inner.state.lock().unwrap();
         healthy(&state)?;
         ensure!(!state.closing, "daemon shutting down");
-        let facts = observed
+        Ok(observed
             .into_iter()
             .filter_map(|(launch, active, cwd)| {
                 let original =
@@ -1304,91 +819,13 @@ impl Registry {
                     },
                 ))
             })
-            .collect();
-        Ok(ContextSnapshot {
-            facts,
-            recipient_bindings,
-        })
-    }
-    // The registry transaction and agent writer fix ownership and bindings here.
-    // Foreground/process observations were collected before either lock.
-    fn admit_agent_recipient(
-        &self,
-        store: &Store,
-        snapshot: &ContextSnapshot,
-        selector: &str,
-        scope: AgentScope,
-    ) -> Result<()> {
-        const CHANGED: &str =
-            "recipient context changed before admission; rediscover; nothing was sent";
-        let captures = self.inner.captures.lock().unwrap();
-        ensure!(
-            captures
-                .launches
-                .values()
-                .filter(|launch| matches_recipient(launch, selector))
-                .count()
-                == snapshot.recipient_bindings.len(),
-            CHANGED
-        );
-        for (expected, live) in &snapshot.recipient_bindings {
-            let current = captures
-                .launches
-                .get(&expected.grant.launch_id)
-                .context(CHANGED)?;
-            ensure!(
-                current.grant.pane_id == expected.grant.pane_id
-                    && current.root.identity == expected.root.identity
-                    && current.binding_generation == expected.binding_generation
-                    && current.managed.conversation == expected.managed.conversation
-                    && current.control.same_authority(&expected.control)
-                    && current.control.is_valid()
-                    && store
-                        .agents
-                        .get(&expected.grant.launch_id)
-                        .is_some_and(|agent| agent.exited_at.is_none())
-                        == *live,
-                CHANGED
-            );
-        }
-        drop(captures);
-        let state = self.inner.state.lock().unwrap();
-        healthy(&state)?;
-        ensure!(!state.closing, "daemon shutting down");
-        for fact in snapshot.facts.values() {
-            let current = state
-                .record
-                .registry
-                .panes
-                .iter()
-                .find(|pane| pane.id == fact.pane.id)
-                .context(CHANGED)?;
-            ensure!(
-                current.status == PaneStatus::Running
-                    && current.workspace_id == fact.pane.workspace_id,
-                CHANGED
-            );
-            if scope == AgentScope::Repository {
-                let repository = current
-                    .project
-                    .as_ref()
-                    .filter(|project| {
-                        fact.active
-                            && project.state == ProjectState::Ready
-                            && fact.cwd.as_ref() == Some(&project.cwd)
-                    })
-                    .and_then(|project| project.repository.as_ref())
-                    .map(|repository| &repository.common_dir);
-                ensure!(repository == fact.repository.as_ref(), CHANGED);
-            }
-        }
-        Ok(())
+            .collect())
     }
     pub(super) fn agent_register(&self, launch: &Launch, _cwd: &Path) -> Result<()> {
         self.inner.agents.register(launch)
     }
-    pub(super) fn agent_retire(&self, ids: &[String]) -> Result<()> {
-        self.inner.agents.retire(ids, now())
+    pub(super) fn agent_retire(&self, ids: &[String]) {
+        self.inner.agents.retire(ids);
     }
     pub(super) fn agent_capture_event(
         &self,
@@ -1396,60 +833,34 @@ impl Registry {
         token: &str,
         event: CaptureEvent,
     ) -> Result<()> {
-        let result = self.inner.agents.transaction_maybe(|store| {
-            let mut captures = self.inner.captures.lock().unwrap();
-            let before = captures
-                .launches
-                .get(launch_id)
-                .map(|launch| launch.binding_generation);
-            let changes_binding = matches!(
-                &event,
-                CaptureEvent::Bind { .. } | CaptureEvent::Unbind { .. }
-            );
-            captures.event(launch_id, token, event)?;
-            let after = captures
-                .launches
-                .get(launch_id)
-                .map(|launch| launch.binding_generation);
-            drop(captures);
-            let mut changed = false;
-            if changes_binding && before != after {
-                {
-                    let mut state = self.inner.agents.state.lock().unwrap();
-                    state.receivers.remove(launch_id);
-                    if let Some(lane) = state.channel_lanes.get_mut(launch_id) {
-                        lane.pending_binding = None;
-                        lane.active = None;
-                        lane.revision = lane.revision.wrapping_add(1);
-                    }
-                    state.revision = state.revision.wrapping_add(1);
-                }
-                let timestamp = now();
-                for (id, receiver, notification, generation) in pending_dispatches(store)
-                    .into_iter()
-                    .filter(|(id, ..)| id == launch_id)
-                {
-                    changed |= settle_unknown(
-                        store,
-                        &id,
-                        &receiver,
-                        &notification,
-                        generation,
-                        "native conversation binding changed before confirmation",
-                        timestamp,
-                    );
-                }
-                if let Some(agent) = store.agents.get_mut(launch_id) {
-                    changed |= agent.notification.take().is_some();
-                }
+        let service = &self.inner.agents;
+        let _writer = service.callback_guard()?;
+        let mut captures = self.inner.captures.lock().unwrap();
+        let before = captures
+            .launches
+            .get(launch_id)
+            .map(|launch| launch.binding_generation);
+        captures.event(launch_id, token, event)?;
+        let after = captures
+            .launches
+            .get(launch_id)
+            .map(|launch| launch.binding_generation);
+        drop(captures);
+        if before != after {
+            let mut state = service.state.lock().unwrap();
+            state.receivers.remove(launch_id);
+            if let Some(lane) = state.channel_lanes.get_mut(launch_id) {
+                lane.pending_binding = None;
+                lane.active = None;
+                lane.revision = lane.revision.wrapping_add(1);
             }
-            Ok(((), changed))
-        });
-        self.inner.agents.changed.notify_all();
-        result
+            state.revision = state.revision.wrapping_add(1);
+            service.changed.notify_all();
+        }
+        Ok(())
     }
     // Caller owns the registry transaction, which also serializes authenticated
-    // End. Recheck both launch capability and durable-agent retirement at admission.
+    // End. Recheck both launch capability and launch retirement at admission.
     pub(super) fn authorize_resume_origin(&self, launch: &Launch) -> Result<()> {
         self.capture_pane(&launch.grant.pane_id)?;
         ensure!(
@@ -1459,12 +870,12 @@ impl Registry {
         self.authorize_agent_guard(launch)?;
         let state = self.inner.agents.state.lock().unwrap();
         healthy_agents(&state)?;
-        Agents::require_live(&state.store, &launch.grant.launch_id)
+        Agents::require_live(&state, &launch.grant.launch_id)
     }
     fn authorize_agent_guard(&self, launch: &Launch) -> Result<()> {
         self.inner.captures.lock().unwrap().authorize(launch)
     }
-    // The state lock fixes the durable/read snapshot; captures supplies the
+    // The state lock fixes the launch snapshot; captures supplies the
     // binding's linearization point. Capture writers never retain captures while
     // waiting on agent state, so this order cannot invert their writer path.
     fn agent_request_state(
@@ -1473,7 +884,7 @@ impl Registry {
     ) -> Result<std::sync::MutexGuard<'_, AgentState>> {
         let state = self.inner.agents.state.lock().unwrap();
         healthy_agents(&state)?;
-        Agents::require_live(&state.store, &launch.grant.launch_id)?;
+        Agents::require_live(&state, &launch.grant.launch_id)?;
         self.authorize_agent_guard(launch)?;
         Ok(state)
     }
@@ -1508,35 +919,14 @@ impl Registry {
         is_connected: &dyn Fn() -> bool,
     ) -> Result<Value> {
         let id = &launch.grant.launch_id;
-        if let AgentRequest::SendMessage {
-            to,
-            text,
-            idempotency_key,
-            scope,
-        } = &request
-        {
-            let state = self.agent_request_state(&launch)?;
-            if let Some(receipt) = messages::retry(
-                &state.store,
-                id,
-                messages::SendPayload {
-                    to,
-                    text,
-                    scope: *scope,
-                },
-                idempotency_key,
-                &launch.grant.token,
-            )? {
-                return Ok(receipt);
-            }
-        }
-        {
-            let state = self.agent_request_state(&launch)?;
-            if let Some(result) = messages::unchanged(&state.store, id, &request)? {
-                return Ok(result);
-            }
-        }
         match request {
+            AgentRequest::ChannelDirectPost { launch_id, post } => {
+                self.agent_channel_direct_post(&launch, launch_id, *post, is_connected)
+            }
+            AgentRequest::ChannelAck {
+                channel_id,
+                message_id,
+            } => self.agent_channel_ack(&launch, channel_id, message_id, is_connected),
             AgentRequest::ChannelRead {
                 channel_id,
                 message_id,
@@ -1571,16 +961,13 @@ impl Registry {
                     scope != AgentScope::Repository,
                     "repository-scoped control is not supported; explicitly select workspace or session scope"
                 );
-                let snapshot =
+                let contexts =
                     self.agent_contexts(false, id, ContextSelection::default(), false)?;
-                let own = snapshot
-                    .facts
-                    .get(id)
-                    .context("live agent context unavailable")?;
+                let own = contexts.get(id).context("live agent context unavailable")?;
                 ensure!(own.active, "live foreground agent context unavailable");
                 {
-                    let state = self.agent_request_state(&launch)?;
-                    require_scope(scope, own, &state.store)?;
+                    let _state = self.agent_request_state(&launch)?;
+                    require_scope(scope, own)?;
                 }
                 let workspace = if scope == AgentScope::Workspace {
                     Some(
@@ -1665,28 +1052,13 @@ impl Registry {
                 notification_id,
                 generation,
             } => {
-                if is_channel_batch(&notification_id) {
-                    let current = self.channel_wake_current(
-                        &launch,
-                        peer,
-                        &receiver_id,
-                        &notification_id,
-                        generation,
-                    )?;
-                    return Ok(json!({"current":current}));
-                }
-                self.agent_receiver_peer(&launch, peer, &receiver_id)?;
-                let state = self.agent_request_state(&launch)?;
-                let current = state.store.agents[id]
-                    .notification
-                    .as_ref()
-                    .is_some_and(|n| {
-                        n.receiver_id == receiver_id
-                            && n.id == notification_id
-                            && n.generation == generation
-                            && n.state == "pending"
-                            && now() < wake_deadline(n.claimed_at)
-                    });
+                let current = self.channel_wake_current(
+                    &launch,
+                    peer,
+                    &receiver_id,
+                    &notification_id,
+                    generation,
+                )?;
                 Ok(json!({"current":current}))
             }
             AgentRequest::WakeOutcome {
@@ -1694,256 +1066,78 @@ impl Registry {
                 notification_id,
                 generation,
                 outcome,
-            } => {
-                if is_channel_batch(&notification_id) {
-                    return self.channel_wake_outcome(
-                        &launch,
-                        peer,
-                        (&receiver_id, &notification_id, generation),
-                        outcome,
-                    );
-                }
-                self.agent_receiver_peer(&launch, peer, &receiver_id)?;
-                self.inner.agents.transaction(|store| {
-                    self.authorize_agent_guard(&launch)?;
-                    self.agent_receiver_peer(&launch, peer, &receiver_id)?;
-                    messages::outcome(
-                        store,
-                        id,
-                        &receiver_id,
-                        &notification_id,
-                        generation,
-                        outcome,
-                        &launch.grant.token,
-                    )
-                })
+            } => self.channel_wake_outcome(
+                &launch,
+                peer,
+                (&receiver_id, &notification_id, generation),
+                outcome,
+            ),
+            AgentRequest::Whoami { detail } => {
+                let contexts =
+                    self.agent_contexts(false, id, ContextSelection::default(), detail)?;
+                let state = self.agent_request_state(&launch)?;
+                let own = contexts.get(id).context("live agent context unavailable")?;
+                let mut identity = public(
+                    own,
+                    &state.agents[id],
+                    state.receivers.get(id),
+                    current_subscribers(&state, id),
+                    detail,
+                );
+                identity["protocol_version"] = json!(bkpr_protocol::PROTOCOL_VERSION);
+                identity["binding_revision"] = json!(own.binding_revision);
+                Ok(identity)
             }
-            request => {
-                let resolve_repository = matches!(
-                    &request,
-                    AgentRequest::DiscoverAgents {
-                        scope: AgentScope::Repository,
-                        ..
-                    } | AgentRequest::SendMessage {
-                        scope: AgentScope::Repository,
-                        ..
-                    }
-                );
-                let needs_context = matches!(
-                    &request,
-                    AgentRequest::Whoami { .. }
-                        | AgentRequest::DiscoverAgents { .. }
-                        | AgentRequest::SendMessage { .. }
-                );
-                let (selection, detail, successor_pane) = match &request {
-                    AgentRequest::DiscoverAgents {
-                        launch_id,
-                        pane_id,
+            AgentRequest::DiscoverAgents {
+                scope,
+                detail,
+                launch_id,
+                pane_id,
+                after,
+                limit,
+            } => {
+                let contexts = self.agent_contexts(
+                    scope == AgentScope::Repository,
+                    id,
+                    ContextSelection {
+                        all: true,
+                        project_summary: !detail,
+                        launch_id: launch_id.as_deref(),
+                        pane_id: pane_id.as_deref(),
+                    },
+                    detail,
+                )?;
+                let state = self.agent_request_state(&launch)?;
+                let own = contexts.get(id).context("live agent context unavailable")?;
+                discover(
+                    &state,
+                    &contexts,
+                    own,
+                    DiscoveryQuery {
+                        scope,
                         detail,
-                        ..
-                    } => (
-                        ContextSelection {
-                            all: true,
-                            project_summary: !*detail,
-                            launch_id: launch_id.as_deref(),
-                            pane_id: pane_id.as_deref(),
-                            ..Default::default()
-                        },
-                        *detail,
-                        None,
-                    ),
-                    AgentRequest::SendMessage { to, .. } => {
-                        let state = self.inner.agents.state.lock().unwrap();
-                        let pane = state
-                            .store
-                            .agents
-                            .get(to)
-                            .filter(|agent| agent.exited_at.is_some())
-                            .map(|agent| agent.pane_id.clone());
-                        (
-                            ContextSelection {
-                                recipient: Some(to),
-                                ..Default::default()
-                            },
-                            false,
-                            pane,
-                        )
-                    }
-                    AgentRequest::Whoami { detail } => (ContextSelection::default(), *detail, None),
-                    _ => (ContextSelection::default(), false, None),
-                };
-                let snapshot = if needs_context {
-                    self.agent_contexts(
-                        resolve_repository,
-                        id,
-                        ContextSelection {
-                            successor_pane: successor_pane.as_deref(),
-                            ..selection
-                        },
-                        detail,
-                    )?
-                } else {
-                    ContextSnapshot::default()
-                };
-                let contexts = &snapshot.facts;
+                        launch_id: launch_id.as_deref(),
+                        pane_id: pane_id.as_deref(),
+                        after: after.as_deref(),
+                        limit,
+                    },
+                )
+            }
+            AgentRequest::SetTitle { title } => {
+                ensure!(
+                    title.len() <= 160
+                        && !title.chars().any(char::is_control)
+                        && !title.contains(&launch.grant.token),
+                    "invalid agent title"
+                );
                 #[cfg(test)]
                 self.inner.agents.wait_request_barrier(true);
-                match request {
-                    AgentRequest::Whoami { detail } => {
-                        let state = self.agent_request_state(&launch)?;
-                        let own = contexts.get(id).context("live agent context unavailable")?;
-                        let mut identity = public(
-                            own,
-                            &state.store.agents[id],
-                            state.receivers.get(id),
-                            current_subscribers(&state, id),
-                            detail,
-                        );
-                        identity["protocol_version"] = json!(bkpr_protocol::PROTOCOL_VERSION);
-                        identity["binding_revision"] = json!(own.binding_revision);
-                        Ok(identity)
-                    }
-                    AgentRequest::DiscoverAgents {
-                        scope,
-                        detail,
-                        launch_id,
-                        pane_id,
-                        after,
-                        limit,
-                    } => {
-                        let state = self.agent_request_state(&launch)?;
-                        let own = contexts.get(id).context("live agent context unavailable")?;
-                        discover(
-                            &state,
-                            contexts,
-                            own,
-                            DiscoveryQuery {
-                                scope,
-                                detail,
-                                launch_id: launch_id.as_deref(),
-                                pane_id: pane_id.as_deref(),
-                                after: after.as_deref(),
-                                limit,
-                            },
-                        )
-                    }
-                    AgentRequest::InspectOutbox {
-                        message_id,
-                        after,
-                        limit,
-                    } => {
-                        // Diagnostics never observe process exit or advance retention.
-                        let state = self.agent_request_state(&launch)?;
-                        if let Some(message_id) = message_id {
-                            let message = state
-                                .store
-                                .messages
-                                .get(&message_id)
-                                .context("unknown message")?;
-                            ensure!(message.from == *id, "foreign sender outbox");
-                            return Ok(json!({"message":summary(message)}));
-                        }
-                        let mut messages = state
-                            .store
-                            .messages
-                            .values()
-                            .filter(|m| m.from == *id)
-                            .collect::<Vec<_>>();
-                        messages.sort_unstable_by_key(|m| m.sequence);
-                        let start =
-                            cursor_start(&messages, &state.store, id, after.as_deref(), false)?;
-                        let end = (start + messages::page_limit(limit)?).min(messages.len());
-                        Ok(
-                            json!({"messages":messages[start..end].iter().map(|m| summary(m)).collect::<Vec<_>>(),"has_more":end<messages.len(),"next_cursor":messages[start..end].last().map(|m| &m.id)}),
-                        )
-                    }
-                    AgentRequest::SetTitle { title } => {
-                        ensure!(
-                            title.len() <= 160
-                                && !title.chars().any(char::is_control)
-                                && !title.contains(&launch.grant.token),
-                            "invalid agent title"
-                        );
-                        self.inner.agents.transaction_maybe(|store| {
-                            self.authorize_agent_guard(&launch)?;
-                            Agents::require_live(store, id)?;
-                            let agent = store.agents.get_mut(id).unwrap();
-                            let changed = agent.title.as_deref() != Some(title.as_str());
-                            agent.title = Some(title);
-                            Ok((json!({"updated":true}), changed))
-                        })
-                    }
-                    AgentRequest::SendMessage {
-                        to,
-                        text,
-                        idempotency_key,
-                        scope,
-                    } => {
-                        let own = contexts.get(id).context("live agent context unavailable")?;
-                        let transaction = self.inner.transaction.lock().unwrap();
-                        self.inner.agents.transaction(|store| {
-                            self.authorize_agent_guard(&launch)?;
-                            let result = messages::send(
-                                store,
-                                own,
-                                contexts,
-                                messages::SendInput {
-                                    to,
-                                    text,
-                                    idempotency_key,
-                                    scope,
-                                    timestamp: now(),
-                                },
-                                &launch.grant.token,
-                                |store, selector| {
-                                    self.admit_agent_recipient(store, &snapshot, selector, scope)
-                                },
-                                |recipient| {
-                                    let state = self.inner.agents.state.lock().unwrap();
-                                    state.receivers.contains_key(recipient)
-                                        && current_subscribers(&state, recipient) > 0
-                                },
-                            );
-                            // Admission fixes the launch and scope. Only the agent
-                            // writer must remain held while persisting that decision.
-                            drop(transaction);
-                            result
-                        })
-                    }
-                    AgentRequest::ReadInbox {
-                        after,
-                        limit,
-                        ack_ids,
-                        include_read,
-                    } => self.inner.agents.transaction_maybe(|store| {
-                        self.authorize_agent_guard(&launch)?;
-                        messages::read(
-                            store,
-                            id,
-                            after.as_deref(),
-                            limit,
-                            &ack_ids,
-                            include_read,
-                            now(),
-                        )
-                    }),
-                    AgentRequest::ReadMessage {
-                        message_id,
-                        offset,
-                        max_bytes,
-                    } => self.inner.agents.transaction_maybe(|store| {
-                        self.authorize_agent_guard(&launch)?;
-                        messages::read_message(store, id, &message_id, offset, max_bytes, now())
-                    }),
-                    AgentRequest::AckMessage { ids } => {
-                        self.inner.agents.transaction_maybe(|store| {
-                            self.authorize_agent_guard(&launch)?;
-                            messages::ack(store, id, &ids, now())
-                        })
-                    }
-                    _ => unreachable!("receiver requests dispatched above"),
-                }
+                let _writer = self.inner.agents.callback_guard()?;
+                let mut state = self.agent_request_state(&launch)?;
+                state.agents.get_mut(id).expect("live agent").title = Some(title);
+                Ok(json!({"updated":true}))
             }
+            AgentRequest::Channels { .. } => unreachable!("channel request dispatched above"),
         }
     }
     fn agent_receiver_register(
@@ -1980,28 +1174,24 @@ impl Registry {
         };
         crate::harness::ancestry(&process, &launch.root)?;
         let lifetime = ProcessLifetime::observe(&process).ok().map(Arc::new);
-        let _writer = self.inner.agents.callback_guard()?;
-        self.authorize_agent_guard(launch)?;
-        let current = self
-            .inner
-            .captures
-            .lock()
-            .unwrap()
-            .launches
-            .get(&launch.grant.launch_id)
-            .cloned()
-            .context("launch ended during receiver registration")?;
-        ensure!(
-            current.managed.conversation.as_ref() == Some(conversation),
-            "receiver conversation changed during registration"
-        );
-        let previous = {
-            let state = self.inner.agents.state.lock().unwrap();
-            healthy_agents(&state)?;
-            Agents::require_live(&state.store, &launch.grant.launch_id)?;
-            state.receivers.get(&launch.grant.launch_id).cloned()
-        };
-        if let Some(receiver) = &previous
+        let service = &self.inner.agents;
+        let _writer = service.callback_guard()?;
+        {
+            let captures = self.inner.captures.lock().unwrap();
+            captures.authorize(launch)?;
+            let current = captures
+                .launches
+                .get(&launch.grant.launch_id)
+                .context("launch ended during receiver registration")?;
+            ensure!(
+                current.binding_generation == launch.binding_generation
+                    && current.managed.conversation.as_ref() == Some(conversation),
+                "receiver conversation changed during registration"
+            );
+        }
+        let mut state = service.state.lock().unwrap();
+        Agents::require_live(&state, &launch.grant.launch_id)?;
+        if let Some(receiver) = state.receivers.get(&launch.grant.launch_id)
             && receiver.process.identity == process.identity
             && receiver.process.pid == process.pid
             && receiver.session_id == session_id
@@ -2011,38 +1201,6 @@ impl Registry {
             return Ok(
                 json!({"receiver_id":receiver.id,"registered":true,"notification_ready":false}),
             );
-        }
-        if let Some(previous) = previous {
-            self.inner.agents.transaction_locked(|store| {
-                let mut changed = false;
-                let timestamp = now();
-                for (id, receiver, notification, generation) in pending_dispatches(store)
-                    .into_iter()
-                    .filter(|(id, receiver, ..)| {
-                        id == &launch.grant.launch_id && receiver == &previous.id
-                    })
-                {
-                    changed |= settle_unknown(
-                        store,
-                        &id,
-                        &receiver,
-                        &notification,
-                        generation,
-                        "native receiver replaced before confirmation",
-                        timestamp,
-                    );
-                }
-                if let Some(agent) = store.agents.get_mut(&launch.grant.launch_id)
-                    && agent
-                        .notification
-                        .as_ref()
-                        .is_some_and(|n| n.receiver_id == previous.id)
-                {
-                    agent.notification = None;
-                    changed = true;
-                }
-                Ok(((), changed))
-            })?;
         }
         let receiver = Receiver {
             id: Uuid::new_v4().to_string(),
@@ -2055,17 +1213,14 @@ impl Registry {
         };
         let result =
             json!({"receiver_id":receiver.id,"registered":true,"notification_ready":false});
-        {
-            let mut state = self.inner.agents.state.lock().unwrap();
-            if let Some(lane) = state.channel_lanes.get_mut(&launch.grant.launch_id) {
-                lane.active = None;
-            }
-            state
-                .receivers
-                .insert(launch.grant.launch_id.clone(), receiver);
-            state.revision = state.revision.wrapping_add(1);
+        if let Some(lane) = state.channel_lanes.get_mut(&launch.grant.launch_id) {
+            lane.active = None;
         }
-        self.inner.agents.changed.notify_all();
+        state
+            .receivers
+            .insert(launch.grant.launch_id.clone(), receiver);
+        state.revision = state.revision.wrapping_add(1);
+        service.changed.notify_all();
         Ok(result)
     }
     fn with_current_agent_receiver<T>(
@@ -2076,7 +1231,7 @@ impl Registry {
     ) -> Result<T> {
         let state = self.inner.agents.state.lock().unwrap();
         healthy_agents(&state)?;
-        Agents::require_live(&state.store, &launch.grant.launch_id)?;
+        Agents::require_live(&state, &launch.grant.launch_id)?;
         let receiver = state
             .receivers
             .get(&launch.grant.launch_id)
@@ -2142,10 +1297,8 @@ impl Registry {
         let id = &launch.grant.launch_id;
         {
             let _writer = service.callback_guard()?;
-            self.authorize_agent_guard(launch)?;
+            self.with_current_agent_receiver(launch, &receiver_id, |_| ())?;
             let mut state = service.state.lock().unwrap();
-            healthy_agents(&state)?;
-            Agents::require_live(&state.store, id)?;
             let waiters = state.waiters.entry(id.clone()).or_default();
             ensure!(
                 waiters.values().sum::<usize>() < 2,
@@ -2183,8 +1336,8 @@ impl Registry {
         let mut observed_revision = None;
         let mut channel_retry = None;
         loop {
-            // Cancellation ticks inspect socket liveness only. Process authority and
-            // inbox eligibility are refreshed on state changes, never idle 1 Hz scans.
+            // Cancellation ticks inspect socket liveness only; recheck the
+            // receiver process and channel eligibility on state changes.
             ensure!(is_connected(), "subscription transport disconnected");
             let revision = {
                 let state = service.state.lock().unwrap();
@@ -2198,77 +1351,33 @@ impl Registry {
             }
             if observed_revision != Some(revision) || (retry_ready && Instant::now() < deadline) {
                 self.agent_receiver_peer(launch, peer, &receiver_id)?;
-                let (direct, channel_first, channel) = {
+                let channel = {
                     let state = service.state.lock().unwrap();
                     healthy_agents(&state)?;
                     if (state.revision, ChannelLane::availability(&state, launch)) != revision {
                         continue;
                     }
                     observed_revision = Some(revision);
-                    let (channel, busy, _) = revision.1;
-                    let agent = &state.store.agents[id];
-                    let free = !busy && agent.notification.is_none();
-                    let direct = free
-                        && state
-                            .store
-                            .messages
-                            .values()
-                            .any(|m| m.to == *id && claimable(m));
-                    let channel = free && channel && channel_retry.is_none();
-                    let channel_first = channel
-                        && (!direct || state.channel_lanes[id].last_generation < agent.generation);
-                    (direct, channel_first, channel)
+                    let (pending, busy, _) = revision.1;
+                    pending && !busy && channel_retry.is_none()
                 };
-                let mut claim_channel = || match self.claim_channel_wake(
-                    launch,
-                    peer,
-                    &receiver,
-                    is_connected,
-                    deadline,
-                )? {
-                    ChannelClaimPoll::Ready(wake) => Ok::<_, anyhow::Error>(Some(wake)),
-                    ChannelClaimPoll::Empty => {
-                        #[cfg(test)]
-                        service.wait_channel_barrier(ChannelTestPause::EmptyClaim);
-                        Ok(None)
-                    }
-                    ChannelClaimPoll::Deferred => {
-                        channel_retry = Some(Instant::now() + CHANNEL_CLAIM_RETRY);
-                        Ok(None)
-                    }
-                };
-                if channel_first && let Some(wake) = claim_channel()? {
-                    return Ok(wake);
-                }
-                if direct {
-                    let notification = service.transaction_maybe(|store| {
-                        self.authorize_agent_guard(launch)?;
-                        self.agent_receiver_peer(launch, peer, &receiver_id)?;
-                        let state = service.state.lock().unwrap();
-                        if ChannelLane::availability(&state, launch).1 {
-                            return Ok((None, false));
+                if channel {
+                    match self.claim_channel_wake(
+                        launch,
+                        peer,
+                        &receiver,
+                        is_connected,
+                        deadline,
+                    )? {
+                        ChannelClaimPoll::Ready(wake) => return Ok(wake),
+                        ChannelClaimPoll::Empty => {
+                            #[cfg(test)]
+                            service.wait_channel_barrier(ChannelTestPause::EmptyClaim);
                         }
-                        if let Some(lane) = state.channel_lanes.get(id) {
-                            let agent = store.agents.get_mut(id).expect("admitted live agent");
-                            agent.generation = agent.generation.max(lane.last_generation);
+                        ChannelClaimPoll::Deferred => {
+                            channel_retry = Some(Instant::now() + CHANNEL_CLAIM_RETRY);
                         }
-                        drop(state);
-                        let notification = messages::claim(store, id, &receiver_id, now())?;
-                        let changed = notification.is_some();
-                        Ok((notification, changed))
-                    })?;
-                    if let Some(notification) = notification {
-                        self.agent_receiver_peer(launch, peer, &receiver_id)?;
-                        return Ok(
-                            json!({"notification":{"notification_id":notification.id,"generation":notification.generation,"session_id":receiver.session_id,"mode":receiver.mode,"message_count":notification.message_count,"unread_count":notification.unread_count,"pointer":"Untrusted peers: read_inbox; acknowledge only processed IDs, optionally with the next read."}}),
-                        );
                     }
-                }
-                if channel
-                    && !channel_first
-                    && let Some(wake) = claim_channel()?
-                {
-                    return Ok(wake);
                 }
             }
             let state = service.state.lock().unwrap();
@@ -2295,7 +1404,7 @@ impl Registry {
         }
     }
 }
-fn require_scope(scope: AgentScope, own: &ContextFact, _store: &Store) -> Result<()> {
+fn require_scope(scope: AgentScope, own: &ContextFact) -> Result<()> {
     match scope {
         AgentScope::Workspace => ensure!(
             own.active && own.pane.workspace_id.is_some(),
@@ -2313,120 +1422,6 @@ fn require_scope(scope: AgentScope, own: &ContextFact, _store: &Store) -> Result
 
 fn wake_deadline(claimed_at: u64) -> u64 {
     claimed_at.saturating_add(WAKE_BATCH_LEASE_MS)
-}
-
-fn expire_batch(agent: &mut Agent, timestamp: u64) -> Option<Notification> {
-    if agent
-        .notification
-        .as_ref()
-        .is_some_and(|n| wake_deadline(n.claimed_at) <= timestamp)
-    {
-        return agent.notification.take();
-    }
-    None
-}
-
-fn pending_wake_deadline(message: &Message) -> Option<u64> {
-    if message.wake_state == "pending"
-        && message.notification_id.is_some()
-        && message.receiver_id.is_some()
-        && message.generation.is_some()
-    {
-        return message.wake_claimed_at.map(wake_deadline);
-    }
-    None
-}
-
-fn expire_pending_wake(message: &mut Message, timestamp: u64) -> bool {
-    if pending_wake_deadline(message).is_some_and(|deadline| deadline <= timestamp)
-        && let Some(generation) = message.generation
-    {
-        record_unknown(
-            message,
-            generation,
-            "native notification acceptance timed out",
-            timestamp,
-        );
-        return true;
-    }
-    false
-}
-
-fn record_unknown(message: &mut Message, generation: u64, reason: &str, timestamp: u64) {
-    message.wake_state = "unknown".into();
-    message.wake_reason = Some(reason.into());
-    message.wake_failure = Some(WakeFailure {
-        state: "unknown".into(),
-        reason: reason.into(),
-        notification_id: message.notification_id.clone().expect("claimed message"),
-        generation,
-        recorded_at: timestamp,
-    });
-}
-
-fn settle_unknown(
-    store: &mut Store,
-    id: &str,
-    receiver_id: &str,
-    notification_id: &str,
-    generation: u64,
-    reason: &str,
-    timestamp: u64,
-) -> bool {
-    let mut changed = false;
-    if let Some(agent) = store.agents.get_mut(id)
-        && agent.notification.as_ref().is_some_and(|n| {
-            n.receiver_id == receiver_id
-                && n.id == notification_id
-                && n.generation == generation
-                && n.state == "pending"
-        })
-    {
-        // Retire only this claim. Its messages keep the historical unknown outcome
-        // and notification identity, so they cannot be ambiguously reoffered.
-        agent.notification = None;
-        changed = true;
-    }
-    for m in store.messages.values_mut().filter(|m| {
-        m.to == id
-            && m.receiver_id.as_deref() == Some(receiver_id)
-            && m.notification_id.as_deref() == Some(notification_id)
-            && m.generation == Some(generation)
-            && m.wake_state == "pending"
-    }) {
-        record_unknown(m, generation, reason, timestamp);
-        changed = true;
-    }
-    changed
-}
-fn pending_dispatches(store: &Store) -> BTreeSet<(String, String, String, u64)> {
-    store
-        .messages
-        .values()
-        .filter(|m| m.wake_state == "pending")
-        .filter_map(|m| {
-            m.wake_claimed_at?;
-            Some((
-                m.to.clone(),
-                m.receiver_id.clone()?,
-                m.notification_id.clone()?,
-                m.generation?,
-            ))
-        })
-        .collect()
-}
-fn next_maintenance(store: &Store) -> Option<u64> {
-    let batches = store
-        .agents
-        .values()
-        .filter_map(|a| a.notification.as_ref())
-        .map(|n| wake_deadline(n.claimed_at));
-    let receipts = store.messages.values().flat_map(|m| {
-        retention_deadline(&store.agents, m)
-            .into_iter()
-            .chain(pending_wake_deadline(m))
-    });
-    batches.chain(receipts).min()
 }
 
 #[cfg(all(test, target_os = "linux"))]

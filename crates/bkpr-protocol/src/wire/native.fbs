@@ -704,31 +704,33 @@ table AgentRequestDiscoverAgents {
   after:string;
   limit:OptionalUsize;
 }
+// Retired agent messaging operations. Never reuse their table slots or union tags.
 table AgentRequestSendMessage {
-  to:string (required);
-  text:string (required);
-  idempotency_key:string (required);
-  scope:AgentScope;
+  to:string (deprecated);
+  text:string (deprecated);
+  idempotency_key:string (deprecated);
+  scope:AgentScope (deprecated);
   retired_delivery:ubyte (deprecated);
 }
 table AgentRequestReadInbox {
-  after:string;
-  limit:OptionalUsize;
-  ack_ids:[string] (required);
-  include_read:bool;
+  after:string (deprecated);
+  limit:OptionalUsize (deprecated);
+  ack_ids:[string] (deprecated);
+  include_read:bool (deprecated);
+  max_body_bytes:OptionalUsize (deprecated);
 }
 table AgentRequestReadMessage {
-  message_id:string (required);
-  offset:OptionalUsize;
-  max_bytes:OptionalUsize;
+  message_id:string (deprecated);
+  offset:OptionalUsize (deprecated);
+  max_bytes:OptionalUsize (deprecated);
 }
 table AgentRequestAckMessage {
-  ids:[string] (required);
+  ids:[string] (deprecated);
 }
 table AgentRequestInspectOutbox {
-  message_id:string;
-  after:string;
-  limit:OptionalUsize;
+  message_id:string (deprecated);
+  after:string (deprecated);
+  limit:OptionalUsize (deprecated);
 }
 table AgentRequestReceiverRegister {
   session_id:string (required);
@@ -764,7 +766,15 @@ table AgentRequestChannelRead {
   offset:uint = null;
   max_bytes:uint = null;
 }
-union AgentRequest { AgentRequestWhoami, AgentRequestControl, AgentRequestSetTitle, AgentRequestDiscoverAgents, AgentRequestSendMessage, AgentRequestReadInbox, AgentRequestAckMessage, AgentRequestInspectOutbox, AgentRequestReceiverRegister, AgentRequestReceiverSubscribe, AgentRequestWakeValidate, AgentRequestWakeOutcome, AgentRequestReadMessage, AgentRequestChannels, AgentRequestChannelWake, AgentRequestChannelRead }
+table AgentRequestChannelDirectPost {
+  launch_id:string (required);
+  post:ChannelPost (required);
+}
+table AgentRequestChannelAck {
+  channel_id:string (required);
+  message_id:string (required);
+}
+union AgentRequest { AgentRequestWhoami, AgentRequestControl, AgentRequestSetTitle, AgentRequestDiscoverAgents, AgentRequestSendMessage, AgentRequestReadInbox, AgentRequestAckMessage, AgentRequestInspectOutbox, AgentRequestReceiverRegister, AgentRequestReceiverSubscribe, AgentRequestWakeValidate, AgentRequestWakeOutcome, AgentRequestReadMessage, AgentRequestChannels, AgentRequestChannelWake, AgentRequestChannelRead, AgentRequestChannelDirectPost, AgentRequestChannelAck }
 table AgentWakeOutcomeAccepted {
 
 }
@@ -845,6 +855,7 @@ table ChannelSummary {
   last_sequence:ulong;
   read_through:ulong;
   unread_attention:bool;
+  direct:bool;
 }
 table ChannelMessageSummary {
   id:string (required);
@@ -883,6 +894,7 @@ table ChannelResponsePosted {
   message:ChannelMessageSummary (required);
   wake_count:uint;
   attention:bool;
+  channel_id:string;
 }
 table ChannelResponseHistory {
   messages:[ChannelMessage] (required);

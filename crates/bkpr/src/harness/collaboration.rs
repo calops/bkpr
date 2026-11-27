@@ -2,7 +2,7 @@
 
 /// Exact Bkpr tools eligible for native default approval in a managed launch.
 pub(super) const TOOLS: &[&str] = &[
-    "ack_message",
+    "channel_ack",
     "channel_create",
     "channel_history",
     "channel_list",
@@ -11,10 +11,6 @@ pub(super) const TOOLS: &[&str] = &[
     "channel_read",
     "channel_wake",
     "discover_agents",
-    "inspect_outbox",
-    "read_inbox",
-    "read_message",
-    "send_message",
     "whoami",
 ];
 

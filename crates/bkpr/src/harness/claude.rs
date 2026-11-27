@@ -509,7 +509,7 @@ mod tests {
                 "defaultMode": "auto",
                 "allow": ["Read", "mcp__bkpr__channel_post"],
                 "ask": ["mcp__bkpr__channel_create"],
-                "deny": ["mcp__bkpr__send_message"],
+                "deny": ["mcp__bkpr__channel_ack"],
             },
         });
         let mut expected = config.clone();

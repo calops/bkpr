@@ -12,6 +12,7 @@ from provider import FIXTURE_API_KEY
 class BrokerScenario:
     def __init__(self):
         self.calls = []
+        self.wakes = []
         self.summaries = {}
 
     def tool(self, role, name, arguments=None):
@@ -23,16 +24,24 @@ class BrokerScenario:
                 return {"launch_id": role}
             case "discover_agents":
                 return {"agents": [{"launch_id": "pi"}]}
-            case "send_message":
-                return {"message_id": "request" if role == "claude" else "reply", "durable": True}
-            case "read_inbox":
-                return {"messages": [{"id": "request" if role == "pi" else "reply"}]}
-            case "ack_message":
+            case "channel_post":
+                message_id = "request" if role == "claude" else "reply"
+                return {"reply_target": {"channel_id": "direct", "reply_to": message_id}}
+            case "channel_wake":
+                message_id = "request" if role == "pi" else "reply"
+                return {"channel_id": "direct", "messages": [{"id": message_id}]}
+            case "channel_read":
+                sender = "claude" if role == "pi" else "pi"
+                text = next(args["text"] for actor, name, args in self.calls
+                            if actor == sender and name == "channel_post")
+                return {"message": {"id": self.calls[-1][2]["message_id"]}, "text": text, "next_offset": None}
+            case "channel_ack":
                 return {"acknowledged": True}
-            case "inspect_outbox":
-                return {"receipts": [{"message_id": "request" if role == "claude" else "reply",
-                                      "read_at": 1, "acknowledged_at": 2}]}
         raise AssertionError(name)
+
+    def wait_wake(self, role, channel_id, message_id, **_):
+        self.wakes.append((role, channel_id, message_id))
+        return {"batch_id": message_id + "-batch"}
 
     def stop(self, role, text):
         self.summaries[role] = text
@@ -55,10 +64,23 @@ class CaptureTests(unittest.TestCase):
     def test_broker_runs_native_tools_and_preserves_exact_processed_ids(self):
         provider = BrokerScenario()
         result = broker_conversation(provider)
-        acks = [(role, arguments) for role, name, arguments in provider.calls if name == "ack_message"]
-        self.assertEqual(acks, [("pi", {"ids": ["request"]}), ("claude", {"ids": ["reply"]})])
+        posts = [arguments for _, name, arguments in provider.calls if name == "channel_post"]
+        self.assertEqual(posts[0]["recipient"], {"launch_id": "pi"})
+        self.assertNotIn("channel_id", posts[0])
+        self.assertEqual((posts[1]["channel_id"], posts[1]["reply_to"]), ("direct", "request"))
+        self.assertNotIn("recipient", posts[1])
+        self.assertEqual(provider.wakes, [("pi", "direct", "request"), ("claude", "direct", "reply")])
+        for role, _, message in provider.wakes:
+            receiver_calls = [(name, args) for actor, name, args in provider.calls
+                              if actor == role and name in {"channel_wake", "channel_read", "channel_ack"}]
+            exact = {"channel_id": "direct", "message_id": message}
+            self.assertEqual(receiver_calls, [
+                ("channel_wake", {"batch_id": message + "-batch"}),
+                ("channel_read", exact),
+                ("channel_ack", exact),
+            ])
         self.assertEqual(set(provider.summaries), {"claude", "pi"})
-        self.assertEqual(result["send"]["message_id"], "request")
+        self.assertEqual(result["send"]["reply_target"]["reply_to"], "request")
 
     def test_broker_notifies_the_approval_controller_for_exact_planned_calls(self):
         provider = BrokerScenario()

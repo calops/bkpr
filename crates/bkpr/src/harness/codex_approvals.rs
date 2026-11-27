@@ -390,7 +390,7 @@ mod tests {
         }
         for key in [
             "mcp_servers",
-            "mcp_servers.bkpr.tools.send_message",
+            "mcp_servers.bkpr.tools.channel_ack",
             "approval_policy",
             "approvals_reviewer",
         ] {
@@ -417,9 +417,9 @@ mod tests {
         let registration = registration(Path::new("/private/bkpr"), None)?;
         let mut loaded = config(registration.clone());
         let bkpr = &mut loaded["config"]["mcp_servers"]["bkpr"];
-        bkpr["enabled_tools"] = json!(["send_message", "channel_post", "channel_read", "control"]);
+        bkpr["enabled_tools"] = json!(["channel_ack", "channel_post", "channel_read", "control"]);
         bkpr["disabled_tools"] = json!(["channel_read"]);
-        bkpr["tools"] = json!({"send_message":{"approval_mode":"prompt"}});
+        bkpr["tools"] = json!({"channel_ack":{"approval_mode":"prompt"}});
         assert_eq!(
             overrides(&loaded, &registration)?,
             Map::from_iter([approval("channel_post", "approve")])
@@ -442,10 +442,10 @@ mod tests {
         loaded["layers"] = json!([{
             "name":{"type":"project"},
             "disabledReason":"untrusted project",
-            "config":{"mcp_servers":{"bkpr":{"tools":{"send_message":{"approval_mode":"prompt"}}}}}
+            "config":{"mcp_servers":{"bkpr":{"tools":{"channel_ack":{"approval_mode":"prompt"}}}}}
         }]);
         let settings = overrides(&loaded, &registration)?;
-        assert!(!settings.contains_key("mcp_servers.bkpr.tools.send_message.approval_mode"));
+        assert!(!settings.contains_key("mcp_servers.bkpr.tools.channel_ack.approval_mode"));
         assert_eq!(settings.len() + 1, TOOLS.len());
         loaded["config"]["mcp_servers"]["bkpr"]["command"] = json!("/foreign/server");
         assert!(overrides(&loaded, &registration)?.is_empty());

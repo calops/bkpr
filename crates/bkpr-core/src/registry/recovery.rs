@@ -645,7 +645,12 @@ impl Registry {
                         .as_ref()
                         .or(saved.map(|saved| &saved.id))
                         .cloned()
-                        .unwrap_or_else(|| channels::ParticipantId(Uuid::new_v4().to_string())),
+                        .unwrap_or_else(|| {
+                            super::agents::unbound_channel_participant(
+                                &current.grant.launch_id,
+                                current.binding_generation.saturating_sub(1),
+                            )
+                        }),
                 }
             });
             if state.record.recoveries.get(pane_id) == Some(&descriptor)

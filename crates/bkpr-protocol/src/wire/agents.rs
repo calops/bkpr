@@ -59,106 +59,6 @@ pub(super) fn write_agent_request(
             );
             g::AgentRequest::create_agent_request_discover_agents(builder, offset)
         }
-        AgentRequest::SendMessage {
-            to,
-            text,
-            idempotency_key,
-            scope,
-        } => {
-            let to = {
-                budget.bytes(to.len())?;
-                builder.create_string(to.as_str())
-            };
-            let text = {
-                budget.bytes(text.len())?;
-                builder.create_string(text.as_str())
-            };
-            let idempotency_key = {
-                budget.bytes(idempotency_key.len())?;
-                builder.create_string(idempotency_key.as_str())
-            };
-            let scope = write_agent_scope(*scope);
-            let offset =
-                g::AgentRequestSendMessage::create(builder, to, text, idempotency_key, scope);
-            g::AgentRequest::create_agent_request_send_message(builder, offset)
-        }
-        AgentRequest::ReadInbox {
-            after,
-            limit,
-            ack_ids,
-            include_read,
-        } => {
-            let after = write_optional_text(builder, after.as_deref(), budget)?;
-            let limit = write_optional_usize(builder, *limit, budget, depth + 1)?;
-            budget.vector(ack_ids.len(), 8)?;
-            let mut ids = Vec::with_capacity(ack_ids.len());
-            for id in ack_ids {
-                ids.push(write_text(builder, id, budget)?);
-            }
-            let ack_ids = builder.create_vector(&ids);
-            let offset =
-                g::AgentRequestReadInbox::create(builder, after, limit, ack_ids, *include_read);
-            g::AgentRequest::create_agent_request_read_inbox(builder, offset)
-        }
-        AgentRequest::ReadMessage {
-            message_id,
-            offset,
-            max_bytes,
-        } => {
-            let message_id = write_text(builder, message_id, budget)?;
-            let offset = write_optional_usize(builder, *offset, budget, depth + 1)?;
-            let max_bytes = write_optional_usize(builder, *max_bytes, budget, depth + 1)?;
-            let offset = g::AgentRequestReadMessage::create(builder, message_id, offset, max_bytes);
-            g::AgentRequest::create_agent_request_read_message(builder, offset)
-        }
-        AgentRequest::AckMessage { ids } => {
-            let ids = {
-                budget.vector(ids.len(), 8)?;
-                let mut values = Vec::with_capacity(ids.len());
-                for value in ids.iter() {
-                    values.push({
-                        budget.bytes(value.len())?;
-                        builder.create_string(value.as_str())
-                    });
-                }
-                builder.create_vector(&values)
-            };
-            let offset = g::AgentRequestAckMessage::create(builder, ids);
-            g::AgentRequest::create_agent_request_ack_message(builder, offset)
-        }
-        AgentRequest::InspectOutbox {
-            message_id,
-            after,
-            limit,
-        } => {
-            let message_id = message_id
-                .as_ref()
-                .map(|value| -> Result<_> {
-                    Ok({
-                        budget.bytes(value.len())?;
-                        builder.create_string(value.as_str())
-                    })
-                })
-                .transpose()?;
-            let after = after
-                .as_ref()
-                .map(|value| -> Result<_> {
-                    Ok({
-                        budget.bytes(value.len())?;
-                        builder.create_string(value.as_str())
-                    })
-                })
-                .transpose()?;
-            let limit = limit
-                .as_ref()
-                .map(|value| -> Result<_> {
-                    let value = u64::try_from(*value)?;
-                    Ok(g::OptionalUsize::create(builder, value))
-                })
-                .transpose()?;
-            let offset = g::AgentRequestInspectOutbox::create(builder, message_id, after, limit);
-            g::AgentRequest::create_agent_request_inspect_outbox(builder, offset)
-        }
         AgentRequest::ReceiverRegister {
             session_id,
             mode,
@@ -271,6 +171,22 @@ pub(super) fn write_agent_request(
             );
             g::AgentRequest::create_agent_request_channel_read(builder, table)
         }
+        AgentRequest::ChannelDirectPost { launch_id, post } => {
+            post.validate()?;
+            let launch_id = write_channel_identity(builder, launch_id, budget)?;
+            let post = super::channels::write_post(builder, post, budget, depth + 1)?;
+            let table = g::AgentRequestChannelDirectPost::create(builder, launch_id, post);
+            g::AgentRequest::create_agent_request_channel_direct_post(builder, table)
+        }
+        AgentRequest::ChannelAck {
+            channel_id,
+            message_id,
+        } => {
+            let channel_id = write_channel_identity(builder, channel_id.as_ref(), budget)?;
+            let message_id = write_channel_identity(builder, message_id.as_ref(), budget)?;
+            let table = g::AgentRequestChannelAck::create(builder, channel_id, message_id);
+            g::AgentRequest::create_agent_request_channel_ack(builder, table)
+        }
     })
 }
 
@@ -307,83 +223,13 @@ pub(super) fn read_agent_request(
             after: read_optional_text(value.after()?, budget)?,
             limit: read_optional_usize(value.limit()?, budget, depth + 1)?,
         },
-        g::AgentRequestRef::AgentRequestSendMessage(value) => AgentRequest::SendMessage {
-            to: {
-                let text = value.to()?;
-                budget.bytes(text.len())?;
-                text.to_owned()
-            },
-            text: {
-                let text = value.text()?;
-                budget.bytes(text.len())?;
-                text.to_owned()
-            },
-            idempotency_key: {
-                let text = value.idempotency_key()?;
-                budget.bytes(text.len())?;
-                text.to_owned()
-            },
-            scope: read_agent_scope(value.scope()?),
-        },
-        g::AgentRequestRef::AgentRequestReadInbox(value) => AgentRequest::ReadInbox {
-            after: read_optional_text(value.after()?, budget)?,
-            limit: read_optional_usize(value.limit()?, budget, depth + 1)?,
-            ack_ids: {
-                let ids = value.ack_ids()?;
-                budget.vector(ids.len(), std::mem::size_of::<String>())?;
-                ids.iter()
-                    .map(|id| read_text(id?, budget))
-                    .collect::<Result<Vec<_>>>()?
-            },
-            include_read: value.include_read()?,
-        },
-        g::AgentRequestRef::AgentRequestReadMessage(value) => AgentRequest::ReadMessage {
-            message_id: read_text(value.message_id()?, budget)?,
-            offset: read_optional_usize(value.offset()?, budget, depth + 1)?,
-            max_bytes: read_optional_usize(value.max_bytes()?, budget, depth + 1)?,
-        },
-        g::AgentRequestRef::AgentRequestAckMessage(value) => AgentRequest::AckMessage {
-            ids: {
-                let vector = value.ids()?;
-                budget.vector(vector.len(), std::mem::size_of::<String>())?;
-                let mut values = Vec::with_capacity(vector.len());
-                for value in vector {
-                    let value = value?;
-                    values.push({
-                        let text = value;
-                        budget.bytes(text.len())?;
-                        text.to_owned()
-                    });
-                }
-                values
-            },
-        },
-        g::AgentRequestRef::AgentRequestInspectOutbox(value) => AgentRequest::InspectOutbox {
-            message_id: value
-                .message_id()?
-                .map(|value| -> Result<_> {
-                    Ok({
-                        let text = value;
-                        budget.bytes(text.len())?;
-                        text.to_owned()
-                    })
-                })
-                .transpose()?,
-            after: value
-                .after()?
-                .map(|value| -> Result<_> {
-                    Ok({
-                        let text = value;
-                        budget.bytes(text.len())?;
-                        text.to_owned()
-                    })
-                })
-                .transpose()?,
-            limit: value
-                .limit()?
-                .map(|value| -> Result<_> { Ok(usize::try_from(value.value()?)?) })
-                .transpose()?,
-        },
+        g::AgentRequestRef::AgentRequestSendMessage(_)
+        | g::AgentRequestRef::AgentRequestReadInbox(_)
+        | g::AgentRequestRef::AgentRequestReadMessage(_)
+        | g::AgentRequestRef::AgentRequestAckMessage(_)
+        | g::AgentRequestRef::AgentRequestInspectOutbox(_) => {
+            anyhow::bail!("retired agent messaging request")
+        }
         g::AgentRequestRef::AgentRequestReceiverRegister(value) => AgentRequest::ReceiverRegister {
             session_id: {
                 let text = value.session_id()?;
@@ -455,6 +301,19 @@ pub(super) fn read_agent_request(
             message_id: MessageId(read_channel_identity(value.message_id()?, budget)?),
             offset: value.offset()?,
             max_bytes: value.max_bytes()?,
+        },
+        g::AgentRequestRef::AgentRequestChannelDirectPost(value) => {
+            let launch_id = read_channel_identity(value.launch_id()?, budget)?;
+            let post = super::channels::read_post(value.post()?, budget, depth + 1)?;
+            post.validate()?;
+            AgentRequest::ChannelDirectPost {
+                launch_id,
+                post: Box::new(post),
+            }
+        }
+        g::AgentRequestRef::AgentRequestChannelAck(value) => AgentRequest::ChannelAck {
+            channel_id: ChannelId(read_channel_identity(value.channel_id()?, budget)?),
+            message_id: MessageId(read_channel_identity(value.message_id()?, budget)?),
         },
     })
 }

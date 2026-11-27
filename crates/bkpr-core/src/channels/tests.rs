@@ -195,8 +195,16 @@ impl Fixture {
         );
     }
 
+    fn drop_delivery_receipt_schema(&self) {
+        self.sql(
+            "ALTER TABLE notification_work DROP COLUMN read_at;
+             ALTER TABLE notification_work DROP COLUMN acknowledged_at;",
+        );
+    }
+
     fn drop_wake_schema(&self) {
         self.drop_ordered_wake_schema();
+        self.drop_delivery_receipt_schema();
         self.sql(
             "DROP INDEX claimed_wake_items;
              ALTER TABLE notification_work DROP COLUMN batch_id;
@@ -207,6 +215,7 @@ impl Fixture {
 
     fn restore_legacy_wake_indexes(&self) {
         self.drop_ordered_wake_schema();
+        self.drop_delivery_receipt_schema();
         self.sql(
             "CREATE UNIQUE INDEX active_batch_launch ON channel_batches(launch_id) WHERE outcome IS NULL;
              CREATE INDEX pending_launch_wakes ON notification_work(launch_id,binding_revision,channel_id)
@@ -243,6 +252,7 @@ impl Fixture {
             .with_store(|store| {
                 store.claim_wakes(
                     claim,
+                    None,
                     &|workspace| self.authority(&self.a, workspace),
                     || Ok(()),
                 )
@@ -253,8 +263,9 @@ impl Fixture {
     fn wake_current(&self, claim: &ChannelClaim<'_>) -> bool {
         self.engine
             .with_store(|store| {
-                store
-                    .channel_wake_current(claim, 1, &|workspace| self.authority(&self.a, workspace))
+                store.channel_wake_current(claim, 1, None, &|workspace| {
+                    self.authority(&self.a, workspace)
+                })
             })
             .unwrap()
     }
@@ -301,7 +312,8 @@ impl Fixture {
                 claim.recipient,
                 claim.batch_id.to_owned(),
                 maximum,
-                false,
+                None,
+                None,
                 ChannelWakeAccess {
                     admit: &|workspace| self.authority(&self.a, workspace),
                     author_mention: &|_, _| unreachable!("fixture posts are user-authored"),
@@ -701,6 +713,7 @@ fn wake_source_rechecks_read_authority_and_omits_unavailable_links() {
                         generation: 1,
                         deadline: u64::MAX / 2,
                     },
+                    None,
                     &admit,
                     || Ok(()),
                 )
@@ -708,13 +721,14 @@ fn wake_source_rechecks_read_authority_and_omits_unavailable_links() {
             .unwrap()
             .expect("linked post enqueued a wake")
     };
-    let lookup = |wake: &ChannelWake, include_source, connected: &dyn Fn() -> bool| {
+    let lookup = |wake: &ChannelWake, include_source: bool, connected: &dyn Fn() -> bool| {
         f.engine.with_store(|store| {
             store.channel_wake_lookup(
                 recipient,
                 wake.batch_id.clone(),
                 Some(16),
-                include_source,
+                None,
+                include_source.then_some(WORKSPACE),
                 super::ChannelWakeAccess {
                     admit: &admit,
                     author_mention: &|_, _| unreachable!("fixture posts are user-authored"),
@@ -737,7 +751,7 @@ fn wake_source_rechecks_read_authority_and_omits_unavailable_links() {
         let first = AtomicBool::new(true);
         move || first.swap(false, Ordering::Relaxed)
     };
-    assert!(lookup(&accessible, false, &only_destination()).is_ok());
+    assert!(lookup(&accessible, false, &|| true).is_ok());
     let error = lookup(&accessible, true, &only_destination()).unwrap_err();
     assert!(
         error
@@ -949,7 +963,12 @@ fn wake_native_outcomes_are_exact_durable_and_not_overwritten() {
         assert!(
             f.engine
                 .with_store(|store| {
-                    store.claim_wakes(&claim, &|workspace| f.authority(&f.a, workspace), reject)
+                    store.claim_wakes(
+                        &claim,
+                        None,
+                        &|workspace| f.authority(&f.a, workspace),
+                        reject,
+                    )
                 })
                 .is_err()
         );
@@ -2014,6 +2033,7 @@ fn close_retires_old_and_racing_work_before_new_capacity_is_used() {
                         exact_mentions: None,
                         publish: &|_| {},
                         binding_live: &|_, _| true,
+                        direct_peer: &|_| Ok(None),
                     },
                     |store, workspace| {
                         f.engine.flush_retirements(store, &workspace_open)?;
@@ -2130,7 +2150,8 @@ fn visibility_index_migration_preserves_member_access_and_durable_history() {
     let accepted = f.as_actor(&f.a, send(&id, original.clone())).unwrap();
     f.drop_wake_schema();
     f.sql(
-        "DROP INDEX visible_explicit_channels;
+        "DROP TABLE direct_channels;
+         DROP INDEX visible_explicit_channels;
          DROP TABLE staged_attachments;
          DROP TABLE attachment_budget;
          DROP INDEX workspace_wide_channels;
@@ -2154,7 +2175,7 @@ fn visibility_index_migration_preserves_member_access_and_durable_history() {
             ))
         })
         .unwrap();
-    assert_eq!((sync, version), (3, 9));
+    assert_eq!((sync, version), (3, 12));
 }
 
 #[test]
@@ -2171,7 +2192,7 @@ fn version_seven_migration_keeps_history_and_staged_png_but_retires_pending_work
     assert!(pending.iter().all(|work| work.3));
     // Version 7 had this same history and staging schema, without the wake tables and columns.
     f.drop_wake_schema();
-    f.sql("PRAGMA user_version=7;");
+    f.sql("DROP TABLE direct_channels; PRAGMA user_version=7;");
 
     let f = f.reopen();
     assert_eq!(f.request(send(&id, original)).unwrap(), accepted);
@@ -2232,7 +2253,7 @@ fn version_eight_migration_separates_legacy_revocation_from_native_outcomes() {
     f.request(send(&id, post("legacy-pending"))).unwrap();
 
     f.restore_legacy_wake_indexes();
-    f.sql("PRAGMA user_version=8;");
+    f.sql("DROP TABLE direct_channels; PRAGMA user_version=8;");
     let f = f.reopen();
     assert_eq!(
         f.wake_record("legacy-accepted"),
@@ -2262,6 +2283,185 @@ fn version_eight_migration_separates_legacy_revocation_from_native_outcomes() {
 }
 
 #[test]
+fn ordered_version_nine_migration_preserves_revocation_and_native_outcomes() {
+    let f = Fixture::new();
+    let channel = f.wide(waking());
+    let accepted = f.wake_claim("accepted-v9", 1);
+    let message = posted(f.request(send(&channel, post("accepted"))).unwrap());
+    f.claim(&accepted).unwrap();
+    assert!(f.settle(&accepted, "accepted", None, || Ok(())).unwrap());
+    let revoked = f.wake_claim("revoked-v9", 2);
+    f.request(send(&channel, post("revoked"))).unwrap();
+    f.claim(&revoked).unwrap();
+    f.sql("UPDATE channel_batches SET revoked=1 WHERE id='revoked-v9';");
+    f.request(send(&channel, post("pending"))).unwrap();
+    f.drop_delivery_receipt_schema();
+    f.sql("DROP TABLE direct_channels; PRAGMA user_version=9;");
+
+    let f = f.reopen();
+    assert_eq!(
+        f.wake_record("accepted-v9"),
+        (false, Some("accepted".into()), None)
+    );
+    assert_eq!(
+        f.wake_record("revoked-v9"),
+        (true, Some("unknown".into()), None)
+    );
+    let reply = f
+        .wake_lookup(&f.wake_claim("accepted-v9", 1), Some(64))
+        .unwrap();
+    assert_eq!(reply["post"]["message"]["id"], message.id.as_ref());
+    assert!(f.claim(&f.wake_claim("no-replay", 3)).is_none());
+}
+
+#[test]
+fn direct_version_nine_migration_keeps_history_and_uses_the_ordered_queue() {
+    let f = Fixture::new();
+    let post_to_a = |f: &Fixture, key: &str| {
+        let mut direct_post = post(key);
+        direct_post.text = key.into();
+        let (response, changed) = f
+            .engine
+            .with_store(|store| {
+                store.post_direct(
+                    direct_post,
+                    f.authority(&f.b, WORKSPACE)?,
+                    "launch-a",
+                    WORKSPACE,
+                    super::ChannelRoutes {
+                        workspace: Some(WORKSPACE),
+                        exact_mentions: None,
+                        publish: &|_| {},
+                        binding_live: &|_, _| true,
+                        direct_peer: &|_| Ok(None),
+                    },
+                    || {
+                        Ok(WorkspaceParticipant {
+                            actor: f.a.clone(),
+                            launch_id: Some("launch-a".into()),
+                            binding_revision: 1,
+                        })
+                    },
+                )
+            })
+            .unwrap();
+        assert!(changed);
+        response
+    };
+    let ChannelResponse::Posted {
+        channel_id: Some(direct),
+        message: old,
+        ..
+    } = post_to_a(&f, "old-direct")
+    else {
+        panic!("direct post receipt")
+    };
+    // Before the cutover, direct delivery was stored only in agent_state.
+    f.sql("DELETE FROM notification_work WHERE channel_id IN (SELECT channel_id FROM direct_channels);");
+    let shared = f.wide(waking());
+    let revoked = f.wake_claim("old-revoked", 1);
+    f.request(send(&shared, post("old-revoked"))).unwrap();
+    f.claim(&revoked).unwrap();
+    f.request(send(&shared, post("old-pending"))).unwrap();
+    f.restore_legacy_wake_indexes();
+    f.sql(
+        "UPDATE channel_batches SET outcome='revoked' WHERE id='old-revoked';
+         CREATE TABLE agent_state (singleton INTEGER PRIMARY KEY CHECK(singleton=1), snapshot BLOB NOT NULL) STRICT;
+         INSERT INTO agent_state VALUES(1,X'00');
+         PRAGMA user_version=9;",
+    );
+
+    let f = f.reopen();
+    assert!(matches!(
+        f.as_actor(&f.a, messages(&direct, None, 2)).unwrap(),
+        ChannelResponse::History { messages, .. }
+            if messages.len() == 1 && messages[0].message == old && messages[0].text == "old-direct"
+    ));
+    assert!(
+        f.engine
+            .with_store(|store| {
+                Ok(store.connection.query_row(
+                    "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='agent_state')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )?)
+            })
+            .unwrap()
+    );
+    assert_eq!(
+        f.wake_record("old-revoked"),
+        (true, Some("unknown".into()), None)
+    );
+    assert!(f.claim(&f.wake_claim("no-replay", 2)).is_none());
+    f.request(send(&shared, post("new-shared"))).unwrap();
+    let ChannelResponse::Posted {
+        channel_id: Some(reused),
+        message: next,
+        ..
+    } = post_to_a(&f, "new-direct")
+    else {
+        panic!("direct post receipt")
+    };
+    assert_eq!(reused, direct);
+    assert_eq!(next.sequence, 2);
+    let first_batch = f.claim(&f.wake_claim("new-shared", 3)).unwrap();
+    let second_batch = f.claim(&f.wake_claim("new-direct", 4)).unwrap();
+    assert_eq!(first_batch.channel_id, shared);
+    assert_eq!(second_batch.channel_id, direct);
+    assert_eq!(second_batch.addressed_message_id, Some(next.id));
+}
+
+#[test]
+fn first_direct_post_accepts_descending_pair_and_replays_without_resolving_target() {
+    let f = Fixture::new();
+    let mut original = post("descending-pair");
+    original.mentions = vec![ParticipantId(super::agent_mention_id("launch-b", 1))];
+    let send = |resolve_target: fn(&Fixture) -> Result<WorkspaceParticipant>| {
+        f.engine
+            .with_store(|store| {
+                let mut sender = f.authority(&f.b, WORKSPACE)?;
+                sender.participants.clear();
+                store.post_direct(
+                    original.clone(),
+                    sender,
+                    "launch-a",
+                    WORKSPACE,
+                    super::ChannelRoutes {
+                        workspace: Some(WORKSPACE),
+                        exact_mentions: Some(("launch-b", 1)),
+                        publish: &|_| {},
+                        binding_live: &|_, _| true,
+                        direct_peer: &|_| Ok(None),
+                    },
+                    || resolve_target(&f),
+                )
+            })
+            .unwrap()
+    };
+    let (receipt, committed) = send(|f| {
+        Ok(WorkspaceParticipant {
+            actor: f.a.clone(),
+            launch_id: Some("launch-a".into()),
+            binding_revision: 1,
+        })
+    });
+    assert!(committed);
+    let ChannelResponse::Posted {
+        message,
+        wake_count: 1,
+        ..
+    } = &receipt
+    else {
+        panic!("first direct post must queue one wake");
+    };
+    assert_eq!(message.mentions, std::slice::from_ref(&f.b.id));
+    assert_eq!(
+        send(|_| anyhow::bail!("recipient has retired")),
+        (receipt, false)
+    );
+}
+
+#[test]
 fn legacy_attachment_migration_caps_staged_bytes_and_retains_posted_history() {
     let f = Fixture::new();
     let original = f.wide(quiet());
@@ -2284,7 +2484,7 @@ fn legacy_attachment_migration_caps_staged_bytes_and_retains_posted_history() {
     f.sql(
         "DROP TABLE staged_attachments;
          DROP TABLE attachment_budget;
-         PRAGMA user_version=3;",
+         PRAGMA user_version=4;",
     );
     f.engine
         .with_store(|store| {

@@ -99,6 +99,7 @@ pub(crate) struct ChannelRoutes<'a> {
     pub(crate) exact_mentions: Option<(&'a str, u64)>,
     pub(crate) publish: &'a dyn Fn(&[WakeTarget<'_>]),
     pub(crate) binding_live: &'a dyn Fn(&str, u64) -> bool,
+    pub(crate) direct_peer: &'a dyn Fn(&ParticipantId) -> Result<Option<WorkspaceParticipant>>,
 }
 
 /// Channel storage and bounded subscription admission for one exclusively leased session.
@@ -168,6 +169,22 @@ impl ChannelEngine {
         }
     }
 
+    pub(crate) fn maintain_legacy(
+        &self,
+        now_ms: u64,
+        workspace_for_pane: impl Fn(&str) -> Option<String>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Option<u64>> {
+        let mut writer = self
+            .acquire_store(Instant::now() + STORE_WAIT, &cancelled)
+            .map_err(StoreAdmission::into_error)?;
+        writer
+            .store
+            .as_mut()
+            .unwrap()
+            .maintain_legacy(&self.root, now_ms, &workspace_for_pane)
+    }
+
     /// Execute one typed operation, checking authority against the resolved workspace.
     ///
     /// `admit` must sample live authority without blocking on I/O or returning a registry
@@ -194,6 +211,7 @@ impl ChannelEngine {
                 exact_mentions: None,
                 publish: &|_| {},
                 binding_live: &|_, _| true,
+                direct_peer: &|_| Ok(None),
             },
         )
     }
@@ -225,6 +243,7 @@ impl ChannelEngine {
                 admit,
                 workspace_open,
                 cancelled,
+                routes.workspace,
             );
         }
         let _permit = Permit::acquire(&self.requests, MAX_REQUESTS)?;
@@ -235,7 +254,7 @@ impl ChannelEngine {
         if let ChannelRequest::UploadAttachment { channel_id, upload } = &request {
             let mut writer = with_store(Instant::now() + STORE_WAIT)?;
             writer.run(&workspace_open, |store| {
-                store.authorize_upload(channel_id, &admit)
+                store.authorize_upload(channel_id, &admit, routes.workspace)
             })?;
             drop(writer);
             validate_image(upload)?;
@@ -381,6 +400,7 @@ impl ChannelEngine {
         admit: impl Fn(&str) -> Result<ChannelAuthority>,
         workspace_open: impl Fn(&str) -> bool,
         cancelled: impl Fn() -> bool,
+        caller_workspace: Option<&str>,
     ) -> Result<ChannelResponse> {
         let Subscription {
             channel_id,
@@ -397,7 +417,7 @@ impl ChannelEngine {
             let result =
                 match self.acquire_store(deadline.min(Instant::now() + STORE_WAIT), &cancelled) {
                     Ok(mut writer) => writer.run(&workspace_open, |store| {
-                        store.changes(&channel_id, after, limit, &admit)
+                        store.changes(&channel_id, after, limit, &admit, caller_workspace)
                     }),
                     Err(StoreAdmission::Cancelled) => break,
                     Err(error) => return Err(error.into_error()),

@@ -1,5 +1,9 @@
 ## Unreleased
 
+### ⚠ BREAKING CHANGES
+
+* **channels:** remove the MCP tools `send_message`, `read_inbox`, `read_message`, `ack_message` and `inspect_outbox`. Send, receive and acknowledge direct messages with `channel_post`, `channel_wake`, `channel_read` and `channel_ack` ([#76](https://github.com/calops/bkpr/issues/76)).
+
 ### Features
 
 * **channels:** expose shared agent channel tools and addressed native wakes ([#75](https://github.com/calops/bkpr/issues/75))
@@ -7,6 +11,7 @@
 * **channels:** link posts to an exact source and include one authorized source page in a wake lookup on request ([#75](https://github.com/calops/bkpr/issues/75))
 * **channels:** let managed agents upload and fetch PNG attachments without putting image bytes in tool context ([#75](https://github.com/calops/bkpr/issues/75))
 * **channels:** include a live author mention in the selected wake post so peers can address their reply without a roster lookup
+* **channels:** route private messages through the channel engine and preserve private history after acknowledgement and session restart ([#76](https://github.com/calops/bkpr/issues/76))
 
 ### Bug Fixes
 

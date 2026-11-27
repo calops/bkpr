@@ -355,12 +355,15 @@ pub(super) fn write_response(
             G::create_channel_response_channel(b, offset)
         }
         ChannelResponse::Posted {
+            channel_id,
             message,
             wake_count,
             attention,
         } => {
             let message = write_message(b, message, budget, 1)?;
-            let offset = g::ChannelResponsePosted::create(b, message, *wake_count, *attention);
+            let channel_id = write_reply_id(b, channel_id.as_ref(), budget)?;
+            let offset =
+                g::ChannelResponsePosted::create(b, message, *wake_count, *attention, channel_id);
             G::create_channel_response_posted(b, offset)
         }
         ChannelResponse::History {
@@ -465,6 +468,7 @@ pub(super) fn read_response(
             channel: read_summary(v.channel()?, budget, 1)?,
         },
         R::ChannelResponsePosted(v) => ChannelResponse::Posted {
+            channel_id: read_optional_id(v.channel_id()?, ChannelId, budget)?,
             message: read_message(v.message()?, budget, 1)?,
             wake_count: v.wake_count()?,
             attention: v.attention()?,
@@ -531,7 +535,7 @@ pub(super) fn read_response(
     })
 }
 
-fn write_post(
+pub(super) fn write_post(
     b: &mut Builder,
     value: &ChannelPost,
     budget: &mut Budget,
@@ -556,7 +560,11 @@ fn write_post(
     ))
 }
 
-fn read_post(v: g::ChannelPostRef<'_>, budget: &mut Budget, depth: usize) -> Result<ChannelPost> {
+pub(super) fn read_post(
+    v: g::ChannelPostRef<'_>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<ChannelPost> {
     budget.node(depth)?;
     Ok(ChannelPost {
         idempotency_key: read_id(v.idempotency_key()?, budget)?,
@@ -630,6 +638,7 @@ fn write_summary(
         value.last_sequence,
         value.read_through,
         value.unread_attention,
+        value.direct,
     ))
 }
 
@@ -654,6 +663,7 @@ fn read_summary(
         last_sequence,
         read_through,
         unread_attention: v.unread_attention()?,
+        direct: v.direct()?,
     })
 }
 
@@ -723,7 +733,7 @@ fn write_renderable_message(
 ) -> Result<Offset<g::ChannelMessage>> {
     budget.node(depth)?;
     value.validate_attachments()?;
-    valid_post_text(&value.text)?;
+    validate_retained_body(&value.text)?;
     let message = write_message(b, &value.message, budget, depth + 1)?;
     let text = write_text(b, &value.text, budget)?;
     let attachments = write_vector(b, &value.attachments, budget, |b, value, budget| {
@@ -738,15 +748,27 @@ fn read_renderable_message(
     depth: usize,
 ) -> Result<ChannelMessage> {
     budget.node(depth)?;
+    let text = v.text()?;
+    validate_retained_body(text)?;
     let message = ChannelMessage {
         message: read_message(v.message()?, budget, depth + 1)?,
-        text: read_body(v.text()?, budget)?,
+        text: read_text(text, budget)?,
         attachments: read_vector(v.attachments()?, MAX_ATTACHMENTS, budget, |v, b| {
             read_descriptor(v, b, depth + 1)
         })?,
     };
     message.validate_attachments()?;
     Ok(message)
+}
+
+fn validate_retained_body(text: &str) -> Result<()> {
+    // Direct send_message preserves the original UTF-8 and has a larger bound
+    // than the shared composer, whose separate request limits are unchanged.
+    ensure!(
+        text.len() <= MAX_DIRECT_MESSAGE_BYTES,
+        "retained channel message exceeds byte limit"
+    );
+    Ok(())
 }
 
 fn charge_history(remaining: &mut usize, message: &ChannelMessage) -> Result<()> {

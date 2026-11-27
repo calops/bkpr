@@ -1,5 +1,5 @@
 //! Launch-authenticated discovery, durable messaging and native wake coordination.
-use crate::channels::{ChannelId, ChannelRequest, MessageId};
+use crate::channels::{ChannelId, ChannelPost, ChannelRequest, MessageId};
 use serde::{Deserialize, Serialize};
 
 /// Reach of discovery, messaging or supported control within the current daemon.
@@ -89,61 +89,6 @@ pub enum AgentRequest {
         #[serde(default)]
         limit: Option<usize>,
     },
-    /// Resolve a scoped recipient, durably send peer text and request its native wake.
-    SendMessage {
-        /// Exact launch ID or uniquely matching live native conversation ID within scope.
-        to: String,
-        /// Nonblank UTF-8 body of at most 65536 bytes, excluding the launch token.
-        text: String,
-        /// Nonempty key of at most 256 bytes; identical retries retain the resolved launch.
-        idempotency_key: String,
-        /// Required relationship between sender and recipient.
-        #[serde(default)]
-        scope: AgentScope,
-    },
-    /// Page pending inbox summaries and mark returned messages read, not processed.
-    ReadInbox {
-        /// Message cursor returned by the preceding inbox page.
-        #[serde(default)]
-        after: Option<String>,
-        /// Requested page size, subject to service limits.
-        #[serde(default)]
-        limit: Option<usize>,
-        /// Previously read message IDs the caller has now processed.
-        #[serde(default)]
-        ack_ids: Vec<String>,
-        /// Include already-read messages that remain unacknowledged.
-        #[serde(default)]
-        include_read: bool,
-    },
-    /// Read a UTF-8 body page without acknowledging processing.
-    ReadMessage {
-        /// Exact message ID from this launch's inbox.
-        message_id: String,
-        /// UTF-8 byte boundary within the body; defaults to zero.
-        #[serde(default)]
-        offset: Option<usize>,
-        /// Requested body-page byte limit, from 4 through 4096.
-        #[serde(default)]
-        max_bytes: Option<usize>,
-    },
-    /// Acknowledge processed inbox messages and discard their retained bodies.
-    AckMessage {
-        /// Recipient-owned message IDs; repeated acknowledgements are harmless.
-        ids: Vec<String>,
-    },
-    /// Inspect sender-owned delivery receipts without returning message bodies.
-    InspectOutbox {
-        /// Select one exact message instead of paging the outbox.
-        #[serde(default)]
-        message_id: Option<String>,
-        /// Message cursor returned by the preceding outbox page.
-        #[serde(default)]
-        after: Option<String>,
-        /// Requested page size, subject to service limits.
-        #[serde(default)]
-        limit: Option<usize>,
-    },
     /// Register a native receiver; registration alone does not establish readiness.
     ReceiverRegister {
         /// Currently bound native conversation ID, not the Bkpr session ID.
@@ -208,6 +153,20 @@ pub enum AgentRequest {
         /// Requested body-page byte limit, from 4 through 4096.
         max_bytes: Option<u32>,
     },
+    /// Post to the private channel for this launch and the exact recipient launch.
+    ChannelDirectPost {
+        /// Exact opaque recipient launch ID, not a native conversation ID.
+        launch_id: String,
+        /// Post content and retry key, subject to ordinary channel post validation.
+        post: Box<ChannelPost>,
+    },
+    /// Acknowledge processing of a channel post addressed to this launch.
+    ChannelAck {
+        /// Exact owning channel.
+        channel_id: ChannelId,
+        /// Exact message within that channel.
+        message_id: MessageId,
+    },
 }
 
 #[cfg(test)]
@@ -241,33 +200,15 @@ mod tests {
     }
 
     #[test]
-    fn direct_message_json_has_no_delivery_or_wake_choice() {
-        let request =
-            json!({"method":"send_message","to":"peer","text":"context","idempotency_key":"key"});
-        let decoded: AgentRequest = serde_json::from_value(request.clone()).unwrap();
-        assert!(matches!(
-            decoded,
-            AgentRequest::SendMessage {
-                scope: AgentScope::Workspace,
-                ..
-            }
-        ));
-        assert_eq!(
-            serde_json::to_value(decoded).unwrap(),
-            json!({"method":"send_message","to":"peer","text":"context","idempotency_key":"key","scope":"workspace"})
-        );
-        for (field, value) in [
-            ("delivery", json!("quiet")),
-            ("delivery", json!("notify")),
-            ("wake", json!(false)),
-            ("notify", json!(false)),
+    fn retired_agent_methods_are_not_diagnostic_requests() {
+        for request in [
+            json!({"method":"send_message","to":"peer","text":"context","idempotency_key":"key"}),
+            json!({"method":"read_inbox"}),
+            json!({"method":"read_message","message_id":"message"}),
+            json!({"method":"ack_message","ids":["message"]}),
+            json!({"method":"inspect_outbox"}),
         ] {
-            let mut obsolete = request.clone();
-            obsolete[field] = value;
-            assert!(
-                serde_json::from_value::<AgentRequest>(obsolete).is_err(),
-                "{field}"
-            );
+            assert!(serde_json::from_value::<AgentRequest>(request).is_err());
         }
     }
 }

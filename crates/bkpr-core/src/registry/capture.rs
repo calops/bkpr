@@ -124,8 +124,8 @@ impl Registry {
                     ) {
                         let current = &captures.launches[&launch_id];
                         if !current.accepts_binding_event(&event)? {
-                            // A known CAS miss must not acquire the durable writer,
-                            // revoke authority, or publish a new pane/store revision.
+                            // A known CAS miss must not revoke authority or publish
+                            // a new pane revision.
                             return Ok(Payload::Control(json!({
                                 "accepted":false,
                                 "binding":current.binding_snapshot(),
@@ -134,8 +134,8 @@ impl Registry {
                     }
                 }
                 if matches!(&event, CaptureEvent::NativeContext { .. }) {
-                    // Trusted native attestation is volatile. Do not clone/fsync
-                    // the agent store or publish pane/status revisions per tool.
+                    // Trusted native attestation is volatile and does not publish
+                    // pane or status revisions per tool.
                     let _writer = self.inner.agents.callback_guard()?;
                     self.capture_pane(&launch.grant.pane_id)?;
                     self.inner
@@ -150,9 +150,8 @@ impl Registry {
                     CaptureEvent::Bind { .. } | CaptureEvent::Unbind { .. }
                 );
                 if matches!(event, CaptureEvent::End) {
-                    // Retire volatile authority even if the agent writer is poisoned.
                     launch.control.revoke();
-                    let retired = self.agent_retire(std::slice::from_ref(&launch_id));
+                    self.agent_retire(std::slice::from_ref(&launch_id));
                     let ended_intent = self.automatic_end(&launch);
                     self.inner
                         .captures
@@ -161,7 +160,6 @@ impl Registry {
                         .event(&launch_id, &token, event)?;
                     let published = self.publish_capture_change(&launch);
                     self.inner.channels.reconcile_retired_work();
-                    retired?;
                     ended_intent?;
                     published?;
                 } else {
@@ -188,19 +186,7 @@ impl Registry {
                             "native conversation resume is reserved"
                         );
                     }
-                    if let Err(error) = self.agent_capture_event(&launch_id, &token, event) {
-                        if self.inner.agents.check_health().is_err() {
-                            self.inner
-                                .captures
-                                .lock()
-                                .unwrap()
-                                .event(&launch_id, &token, CaptureEvent::End)
-                                .ok();
-                            let _ = self.publish_capture_change(&launch);
-                            self.inner.channels.reconcile_retired_work();
-                        }
-                        return Err(error);
-                    }
+                    self.agent_capture_event(&launch_id, &token, event)?;
                     let result = (|| -> Result<()> {
                         if let Some(descriptor) = descriptor {
                             self.recovery_bind(
@@ -219,7 +205,7 @@ impl Registry {
                             .unwrap()
                             .event(&launch_id, &token, CaptureEvent::End)
                             .ok();
-                        let _ = self.agent_retire(std::slice::from_ref(&launch_id));
+                        self.agent_retire(std::slice::from_ref(&launch_id));
                         self.inner.channels.reconcile_retired_work();
                         let _ = self.publish_capture_change(&launch);
                         return Err(error);
@@ -433,7 +419,7 @@ impl Registry {
                 .unwrap()
                 .event(&grant.launch_id, &grant.token, CaptureEvent::End)
                 .ok();
-            let _ = self.agent_retire(std::slice::from_ref(&grant.launch_id));
+            self.agent_retire(std::slice::from_ref(&grant.launch_id));
             return Err(error);
         }
         drop(transaction);
@@ -456,7 +442,7 @@ impl Registry {
                 .unwrap()
                 .event(&grant.launch_id, &grant.token, CaptureEvent::End)
                 .ok();
-            let _ = self.agent_retire(std::slice::from_ref(&grant.launch_id));
+            self.agent_retire(std::slice::from_ref(&grant.launch_id));
             return Err(error);
         }
         Ok(serde_json::to_value(grant)?)
@@ -961,10 +947,7 @@ impl Registry {
             }
         }
         if !stale.is_empty() {
-            if self.agent_retire(&stale).is_err() {
-                // The durable service is failed closed. Volatile capture authority must
-                // still disappear even when exit observation cannot be committed.
-            }
+            self.agent_retire(&stale);
             let mut captures = self.inner.captures.lock().unwrap();
             if captures.version != version {
                 return;

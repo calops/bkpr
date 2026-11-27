@@ -43,8 +43,8 @@ PALETTE = {
 }
 FIXTURE_BROKER_TOOLS = {
     "whoami": "Whoami Tool", "discover_agents": "Discover Agents Tool",
-    "send_message": "Send Message Tool", "read_inbox": "Read Inbox Tool",
-    "ack_message": "Ack Message Tool", "inspect_outbox": "Inspect Outbox Tool",
+    "channel_post": "Channel Post Tool", "channel_wake": "Channel Wake Tool",
+    "channel_read": "Channel Read Tool", "channel_ack": "Channel Ack Tool",
 }
 
 
@@ -429,34 +429,45 @@ def broker_conversation(provider: ScriptedProvider, on_tool=None) -> dict:
             on_tool(role, name, arguments or {}, occurrence)
         return ensure_success(provider.wait_result(role, name, occurrence=occurrence, timeout=90))
 
+    def receive(role, target, expected_text):
+        channel_id, message_id = target["channel_id"], target["reply_to"]
+        pointer = provider.wait_wake(role, channel_id, message_id, timeout=90)
+        wake = tool(role, "channel_wake", {"batch_id": pointer["batch_id"]})
+        if wake["channel_id"] != channel_id or not any(item["id"] == message_id for item in wake["messages"]):
+            raise RuntimeError(f"{role} wake did not identify the exact committed message")
+        exact = {"channel_id": channel_id, "message_id": message_id}
+        page = tool(role, "channel_read", exact)
+        if page["message"]["id"] != message_id or page["text"] != expected_text or page["next_offset"] is not None:
+            raise RuntimeError(f"{role} did not read the exact complete message")
+        acknowledged = tool(role, "channel_ack", exact)
+        if acknowledged["acknowledged"] is not True:
+            raise RuntimeError(f"{role} did not durably acknowledge the exact processed message")
+        return wake, page, acknowledged
+
     identities = {role: tool(role, "whoami") for role in ("claude", "pi")}
     launches = {role: field(result, "launch_id") for role, result in identities.items()}
     discovery = tool("claude", "discover_agents", {"scope": "workspace"})
     if not any(item.get("launch_id") == launches["pi"] for item in objects(discovery)):
         raise RuntimeError("Genuine native discovery did not find the other managed harness")
-    sent = tool("claude", "send_message", {
-        "to": launches["pi"],
-        "text": "Please review Unicode token boundaries in the search-index patch: café, 東京, and empty queries. Preserve matching semantics; flag normalization changes before merge.",
-        "scope": "workspace", "idempotency_key": "showcase-search-review"})
-    inbox = tool("pi", "read_inbox")
-    message = field(sent, "message_id")
-    if not any(item.get("message_id", item.get("id")) == message for item in objects(inbox)):
-        raise RuntimeError("Pi did not read the exact genuine Claude message")
-    acknowledged = tool("pi", "ack_message", {"ids": [message]})
-    reply = tool("pi", "send_message", {
-        "to": launches["claude"],
-        "text": "Review request received. I'll cover café, 東京, and whitespace-only queries, then report normalization risks before merge.",
-        "scope": "workspace", "idempotency_key": "showcase-search-review-reply"})
-    reply_id = field(reply, "message_id")
-    received = tool("claude", "read_inbox")
-    if not any(item.get("message_id", item.get("id")) == reply_id for item in objects(received)):
-        raise RuntimeError("Claude did not read the exact genuine Pi reply")
-    reply_ack = tool("claude", "ack_message", {"ids": [reply_id]})
-    outboxes = {role: tool(role, "inspect_outbox") for role in ("claude", "pi")}
-    for role, identifier in (("claude", message), ("pi", reply_id)):
-        matching = [item for item in objects(outboxes[role]) if item.get("message_id", item.get("id")) == identifier]
-        if not matching or not any(item.get("acknowledged_at") is not None for row in matching for item in objects(row)):
-            raise RuntimeError(f"No durable processed acknowledgement in {role} outbox")
+    request_text = ("Please review Unicode token boundaries in the search-index patch: café, 東京, and empty queries. "
+                    "Preserve matching semantics; flag normalization changes before merge.")
+    reply_text = ("Review request received. I'll cover café, 東京, and whitespace-only queries, "
+                  "then report normalization risks before merge.")
+    # Release the request waiting after whoami so Pi can consume native steering.
+    provider.stop("pi", "Ready for the review handoff.")
+    sent = tool("claude", "channel_post", {
+        "recipient": {"launch_id": launches["pi"]},
+        "text": request_text, "idempotency_key": "showcase-search-review"})
+    # Release Claude's post-result request before waiting for native asyncRewake.
+    provider.stop("claude", "Review request sent. Waiting for Pi's response.")
+    target = sent["reply_target"]
+    wake, page, acknowledged = receive("pi", target, request_text)
+    reply = tool("pi", "channel_post", {
+        **target, "text": reply_text, "idempotency_key": "showcase-search-review-reply"})
+    reply_target = reply["reply_target"]
+    if reply_target["channel_id"] != target["channel_id"]:
+        raise RuntimeError("Pi's reply committed to a different channel")
+    reply_wake, received, reply_ack = receive("claude", reply_target, reply_text)
     provider.stop("claude", """## Handoff complete
 
 Pi received the search-index review request
@@ -500,9 +511,9 @@ Claude read and acknowledged the reply.
 
 **Next**
 Inspect normalization in src/index.rs.""")
-    return {"identities": identities, "discovery": discovery, "send": sent, "read": inbox,
-            "processed_ack": acknowledged, "reply": reply, "reply_read": received,
-            "reply_processed_ack": reply_ack, "outboxes": outboxes}
+    return {"identities": identities, "discovery": discovery, "send": sent, "wake": wake, "read": page,
+            "processed_ack": acknowledged, "reply": reply, "reply_wake": reply_wake,
+            "reply_read": received, "reply_processed_ack": reply_ack}
 
 
 
@@ -977,7 +988,7 @@ def main() -> None:
     parser.add_argument("--fixture-project-trust", choices=("deny", "allow"), default="deny",
                         help="Explicitly authorize native trust only for the canonical owned private generated showcase repository")
     parser.add_argument("--fixture-broker-tools", choices=("deny", "allow"), default="deny",
-                        help="Authorize normal one-call Yes only for the six known Bkpr tools in this isolated fixture conversation")
+                        help="Authorize normal one-call Yes only for the named Bkpr channel and discovery tools in this isolated fixture conversation")
     parser.add_argument("--output", type=Path, default=Path("target/showcase/site/showcase.png"))
     parser.add_argument("--evidence", type=Path)
     parser.add_argument("--namespace-root", type=Path, help=argparse.SUPPRESS)

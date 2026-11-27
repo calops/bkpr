@@ -130,6 +130,7 @@ impl Store {
     pub(crate) fn claim_wakes(
         &mut self,
         claim: &ChannelClaim<'_>,
+        caller_workspace: Option<&str>,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
         recheck: impl FnOnce() -> Result<()>,
     ) -> Result<Option<ChannelWake>> {
@@ -151,7 +152,7 @@ impl Store {
         let Some(channel_id) = channel else {
             return Ok(None);
         };
-        self.access(&channel_id, admit)?;
+        self.access(&channel_id, admit, caller_workspace)?;
         let tx = self.connection.transaction()?;
         let items = {
             let mut statement = tx.prepare(
@@ -208,6 +209,7 @@ impl Store {
         &self,
         claim: &ChannelClaim<'_>,
         timestamp: u64,
+        caller_workspace: Option<&str>,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
     ) -> Result<bool> {
         let recipient = claim.recipient;
@@ -221,7 +223,7 @@ impl Store {
         let Some(id) = id else {
             return Ok(false);
         };
-        match self.access(&id, admit) {
+        match self.access(&id, admit, caller_workspace) {
             Ok(_) => Ok(true),
             Err(error) if error.is::<ChannelAccessLost>() => Ok(false),
             Err(error) => Err(error),
@@ -269,7 +271,8 @@ impl Store {
         recipient: ChannelRecipient<'_>,
         batch_id: String,
         max_body_bytes: Option<usize>,
-        include_source: bool,
+        caller_workspace: Option<&str>,
+        source_workspace: Option<&str>,
         authority: ChannelWakeAccess<'_>,
     ) -> Result<serde_json::Value> {
         let ChannelWakeAccess {
@@ -287,7 +290,7 @@ impl Store {
             params![batch_id, recipient.launch, recipient.binding, recipient.participant],
             |row| Ok((ChannelId(row.get(0)?), row.get(1)?, row.get::<_, Option<String>>(2)?.map(MessageId))),
         ).optional()?.context(ChannelAccessLost)?;
-        let (channel, _) = self.access(&channel_id, &access)?;
+        let (channel, _) = self.access(&channel_id, &access, caller_workspace)?;
         let mut statement = self.connection.prepare(
             "SELECT w.message_id,p.sequence,w.addressed FROM notification_work w JOIN posts p ON p.id=w.message_id
                WHERE w.batch_id=?1 ORDER BY p.sequence LIMIT ?2",
@@ -308,9 +311,9 @@ impl Store {
                 [only] => Some(&only.id),
                 _ => None,
             });
-        let maximum = max_body_bytes.or(include_source.then_some(2048));
+        let maximum = max_body_bytes.or(source_workspace.map(|_| 2048));
         if let (Some(maximum), Some(id)) = (maximum, selected) {
-            return self.with_message_page(&wake.channel_id, id, 0, maximum, |page| {
+            let result = self.with_message_page(&wake.channel_id, id, 0, maximum, |page| {
                 let author = &page.message.author;
                 let author_mention_id = if author.kind == ParticipantKind::Agent
                     && author.id.as_ref() != recipient.participant
@@ -333,12 +336,17 @@ impl Store {
                         }),
                     )
                 };
-                if let Some(link) = page.message.source.as_ref().filter(|_| include_source) {
-                    self.with_wake_source(link, maximum, &access, project)
+                if let Some((link, workspace)) =
+                    page.message.source.as_deref().zip(source_workspace)
+                {
+                    self.with_wake_source(link, maximum, &access, workspace, project)
                 } else {
                     project(None)
                 }
-            });
+            })?;
+            ensure!(connected(), WakeLookupDisconnected);
+            self.record_channel_read(id, recipient)?;
+            return Ok(result);
         }
         wake_reply(&wake, &messages, None)
     }
@@ -348,9 +356,10 @@ impl Store {
         link: &ChannelSource,
         maximum: usize,
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+        caller_workspace: &str,
         project: impl Fn(Option<MessagePage<'_>>) -> Result<serde_json::Value>,
     ) -> Result<serde_json::Value> {
-        match self.access(&link.channel_id, admit) {
+        match self.access(&link.channel_id, admit, Some(caller_workspace)) {
             Ok(_) => (),
             Err(error) if error.is::<WakeLookupDisconnected>() => return Err(error),
             Err(error) if error.is::<ChannelAccessLost>() => return project(None),

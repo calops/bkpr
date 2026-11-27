@@ -338,17 +338,34 @@ fn appended_notification_union_preserves_existing_operation_ordinals() {
 
 #[test]
 fn agent_channel_requests_append_ordinals_and_roundtrip() {
-    use crate::channels::{ChannelId, ChannelRequest, MessageId};
+    use crate::channels::{ChannelId, ChannelPost, ChannelRequest, ChannelSource, MessageId};
 
     let mut codec = Codec::new();
     for (request, tag) in [
         (
-            AgentRequest::ReadMessage {
-                message_id: "dm".into(),
-                offset: None,
-                max_bytes: None,
+            AgentRequest::ChannelDirectPost {
+                launch_id: "recipient".into(),
+                post: Box::new(ChannelPost {
+                    idempotency_key: "key".into(),
+                    text: "質問\n".into(),
+                    intent: crate::channels::PostIntent::Note,
+                    mentions: Vec::new(),
+                    reply_to: Some(MessageId("parent".into())),
+                    attachments: Vec::new(),
+                    source: Some(Box::new(ChannelSource {
+                        channel_id: ChannelId("source-channel".into()),
+                        message_id: MessageId("source-message".into()),
+                    })),
+                }),
             },
-            13,
+            17,
+        ),
+        (
+            AgentRequest::ChannelAck {
+                channel_id: ChannelId("channel".into()),
+                message_id: MessageId("message".into()),
+            },
+            18,
         ),
         (
             AgentRequest::Channels {
@@ -1223,46 +1240,6 @@ fn every_nested_request_variant_roundtrips() {
         launch_id: "launch".into(),
         token: "secret".into(),
         guard: None,
-        request: AgentRequest::SendMessage {
-            to: "日本語\0🦀".into(),
-            text: "日本語\0🦀".into(),
-            idempotency_key: "日本語\0🦀".into(),
-            scope: AgentScope::All,
-        },
-    });
-    assert_request(Operation::Agent {
-        launch_id: "launch".into(),
-        token: "secret".into(),
-        guard: None,
-        request: AgentRequest::ReadInbox {
-            after: Some("日本語\0🦀".into()),
-            limit: Some(usize::MAX),
-            ack_ids: vec!["日本語\0🦀".into()],
-            include_read: true,
-        },
-    });
-    assert_request(Operation::Agent {
-        launch_id: "launch".into(),
-        token: "secret".into(),
-        guard: None,
-        request: AgentRequest::AckMessage {
-            ids: vec!["日本語\0🦀".into()],
-        },
-    });
-    assert_request(Operation::Agent {
-        launch_id: "launch".into(),
-        token: "secret".into(),
-        guard: None,
-        request: AgentRequest::InspectOutbox {
-            message_id: Some("日本語\0🦀".into()),
-            after: Some("日本語\0🦀".into()),
-            limit: Some(usize::MAX),
-        },
-    });
-    assert_request(Operation::Agent {
-        launch_id: "launch".into(),
-        token: "secret".into(),
-        guard: None,
         request: AgentRequest::ReceiverRegister {
             session_id: "日本語\0🦀".into(),
             mode: AgentReceiverMode::FutureTurn,
@@ -1484,89 +1461,29 @@ fn indirect(bytes: &[u8], field: usize) -> usize {
 }
 
 #[test]
-fn sends_to_family_eleven_omit_delivery_and_preserve_the_retired_slot() {
+fn family_eleven_retired_agent_message_tags_fail_closed() {
+    use crate::channels::{ChannelId, MessageId};
+
     let request = Request::new(Operation::Agent {
         launch_id: "launch".into(),
         token: "secret".into(),
         guard: None,
-        request: AgentRequest::SendMessage {
-            to: "recipient".into(),
-            text: "body".into(),
-            idempotency_key: "key".into(),
-            scope: AgentScope::Session,
+        request: AgentRequest::ChannelAck {
+            channel_id: ChannelId("channel".into()),
+            message_id: MessageId("message".into()),
         },
     });
     let mut codec = Codec::new();
-    let encoded = codec.encode_request(&request).unwrap();
-    let framed = encode_frame(Kind::Request, encoded).unwrap();
-    assert_eq!(u32::from_le_bytes(framed[4..8].try_into().unwrap()), 11);
-    let (_, operation_field) = root_field(encoded, 2);
-    let operation = indirect(encoded, operation_field);
-    let (_, send_field) = table_field(encoded, operation, 3);
-
-    // Frozen reader slots/default from 44d3dc1^ generated.rs:55524–55595.
-    let legacy = planus::table_reader::Table::from_buffer(
-        planus::SliceWithStartOffset {
-            buffer: encoded,
-            offset_from_start: 0,
-        },
-        send_field,
-    )
-    .unwrap();
-    assert_eq!(
-        legacy
-            .access_required::<&str>(0, "SendMessage", "to")
-            .unwrap(),
-        "recipient"
-    );
-    assert_eq!(
-        legacy
-            .access_required::<&str>(1, "SendMessage", "text")
-            .unwrap(),
-        "body"
-    );
-    assert_eq!(
-        legacy
-            .access_required::<&str>(2, "SendMessage", "key")
-            .unwrap(),
-        "key"
-    );
-    assert_eq!(
-        legacy
-            .access::<u8>(3, "SendMessage", "scope")
-            .unwrap()
-            .unwrap_or(0),
-        1
-    );
-    assert_eq!(
-        legacy
-            .access::<u8>(4, "SendMessage", "delivery")
-            .unwrap()
-            .unwrap_or(0),
-        0
-    );
-
-    // Materialize the old nonzero trailing byte without restoring its public API.
-    let send = indirect(encoded, send_field);
-    let distance = i32::from_le_bytes(encoded[send..send + 4].try_into().unwrap());
-    let old_vtable = usize::try_from(send as i64 - i64::from(distance)).unwrap();
-    let old_size = usize::from(u16::from_le_bytes(
-        encoded[old_vtable..old_vtable + 2].try_into().unwrap(),
-    ));
-    let mut vtable = encoded[old_vtable..old_vtable + old_size].to_vec();
-    vtable.resize(14, 0);
-    vtable[..2].copy_from_slice(&14_u16.to_le_bytes());
-    let scope_offset = vtable[10..12].to_vec();
-    vtable[12..14].copy_from_slice(&scope_offset);
-    let mut retired = encoded.to_vec();
-    let new_distance = i32::try_from(send as i64 - retired.len() as i64).unwrap();
-    retired.extend_from_slice(&vtable);
-    retired[send..send + 4].copy_from_slice(&new_distance.to_le_bytes());
-    let decoded = decode_request(&retired).unwrap();
-    assert_eq!(
-        serde_json::to_value(decoded).unwrap(),
-        serde_json::to_value(request).unwrap()
-    );
+    let mut encoded = codec.encode_request(&request).unwrap().to_vec();
+    let (_, operation) = root_field(&encoded, 2);
+    let (_, tag) = table_field(&encoded, indirect(&encoded, operation), 2);
+    for retired in [5, 6, 7, 8, 13] {
+        encoded[tag] = retired;
+        let frame = encode_frame(Kind::Request, &encoded).unwrap();
+        assert_eq!(u32::from_le_bytes(frame[4..8].try_into().unwrap()), 11);
+        let error = decode_request(&encoded).unwrap_err();
+        assert_eq!(error.to_string(), "retired agent messaging request");
+    }
 }
 
 #[test]
@@ -2412,16 +2329,6 @@ fn compact_control_and_agent_options_preserve_absence_zero_and_expansion() {
                 expected_revision: Some(value as u64),
             },
         });
-        assert_request(Operation::Agent {
-            launch_id: "launch".into(),
-            token: "secret".into(),
-            guard: None,
-            request: AgentRequest::ReadMessage {
-                message_id: "message\0日本語".into(),
-                offset: Some(value),
-                max_bytes: Some(value),
-            },
-        });
     }
     for request in [
         AgentRequest::Control {
@@ -2438,23 +2345,6 @@ fn compact_control_and_agent_options_preserve_absence_zero_and_expansion() {
             pane_id: None,
             after: None,
             limit: None,
-        },
-        AgentRequest::SendMessage {
-            to: "recipient".into(),
-            text: "body".into(),
-            idempotency_key: "key".into(),
-            scope: AgentScope::Workspace,
-        },
-        AgentRequest::ReadInbox {
-            after: None,
-            limit: None,
-            ack_ids: vec![],
-            include_read: false,
-        },
-        AgentRequest::ReadMessage {
-            message_id: "message".into(),
-            offset: None,
-            max_bytes: None,
         },
     ] {
         assert_request(Operation::Agent {
@@ -2556,11 +2446,9 @@ fn compact_query_and_ack_required_fields_cannot_disappear() {
             launch_id: "launch".into(),
             token: "secret".into(),
             guard: None,
-            request: AgentRequest::ReadInbox {
-                after: None,
-                limit: None,
-                ack_ids: vec!["processed".into()],
-                include_read: true,
+            request: AgentRequest::ChannelAck {
+                channel_id: crate::channels::ChannelId("channel".into()),
+                message_id: crate::channels::MessageId("processed".into()),
             },
         }))
         .unwrap()
@@ -2569,7 +2457,7 @@ fn compact_query_and_ack_required_fields_cannot_disappear() {
     let operation = indirect(&bytes, field);
     let (_, field) = table_field(&bytes, operation, 3);
     let request = indirect(&bytes, field);
-    let (entry, _) = table_field(&bytes, request, 2);
+    let (entry, _) = table_field(&bytes, request, 1);
     bytes[entry..entry + 2].fill(0);
     assert!(decode_request(&bytes).is_err());
 }
@@ -2587,13 +2475,15 @@ fn compact_reply_and_agent_scope_unknown_values_fail_closed() {
             3,
         ),
         (
-            AgentRequest::SendMessage {
-                to: "to".into(),
-                text: "body".into(),
-                idempotency_key: "key".into(),
+            AgentRequest::DiscoverAgents {
                 scope: AgentScope::All,
+                detail: false,
+                launch_id: None,
+                pane_id: None,
+                after: None,
+                limit: None,
             },
-            3,
+            0,
         ),
     ] {
         let mut bytes = codec

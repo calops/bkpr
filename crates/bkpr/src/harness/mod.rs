@@ -38,10 +38,10 @@ use std::{
 
 const HARNESS_HELP: &str = "Usage: bkpr run HARNESS [--] ARGS...\nHarnesses: claude, codex, omp, agy, opencode, cursor, copilot, aider, cline, goose, pi";
 
-fn channel_wake(notification: &serde_json::Value) -> Result<Option<ChannelWake>> {
-    let Some(value) = notification.get("channel_wake") else {
-        return Ok(None);
-    };
+fn channel_wake(notification: &serde_json::Value) -> Result<ChannelWake> {
+    let value = notification
+        .get("channel_wake")
+        .context("missing native channel wake")?;
     let wake = ChannelWake::deserialize(value).context("invalid native channel wake")?;
     let valid_id =
         |id: &str| !id.is_empty() && id.len() <= MAX_ID_BYTES && !id.chars().any(char::is_control);
@@ -55,7 +55,7 @@ fn channel_wake(notification: &serde_json::Value) -> Result<Option<ChannelWake>>
                 .is_none_or(|id| valid_id(id.as_ref())),
         "invalid native channel wake"
     );
-    Ok(Some(wake))
+    Ok(wake)
 }
 
 fn channel_wake_text(wake: &ChannelWake) -> String {

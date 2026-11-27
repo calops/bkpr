@@ -114,14 +114,14 @@ Connected (their tools are now available — call them directly): bkpr
         self.assertEqual([receipt["name"] for receipt in self.provider.receipts], ["native_mcp_startup", "whoami"])
 
     def test_native_wait_failure_never_emits_the_queued_broker_mutation(self):
-        self.provider.tool("claude", "send_message", {"to": "peer", "text": "not emitted"})
+        self.provider.tool("claude", "channel_post", {"recipient": {"launch_id": "peer"}, "text": "not emitted"})
         _, chunks = request(self.provider, "claude", [], ["WaitForMcpServers"])
         identifier, _, _ = call(chunks, "claude")
         status, _ = request(self.provider, "claude", [
-            result("claude", identifier, "native_mcp_startup", "ready: false")], ["mcp__bkpr__send_message"])
+            result("claude", identifier, "native_mcp_startup", "ready: false")], ["mcp__bkpr__channel_post"])
         self.assertEqual(status, 500)
         with self.assertRaisesRegex(RuntimeError, "did not report ready"):
-            self.provider.wait_result("claude", "send_message", timeout=0)
+            self.provider.wait_result("claude", "channel_post", timeout=0)
         self.assertEqual([call["name"] for call in self.provider._calls["claude"].values()], ["native_mcp_startup"])
 
     def test_native_startup_wait_is_not_polled_or_repeated(self):
@@ -177,20 +177,20 @@ Connected (their tools are now available — call them directly): bkpr
     def test_occurrences_follow_distinct_emitted_calls_and_deduplicate_history(self):
         messages = []
         for count in (1, 2):
-            self.provider.tool("claude", "read_inbox")
-            _, chunks = request(self.provider, "claude", messages, ["mcp__bkpr__read_inbox"])
+            self.provider.tool("claude", "channel_history", {"channel_id": "#team"})
+            _, chunks = request(self.provider, "claude", messages, ["mcp__bkpr__channel_history"])
             identifier, _, _ = call(chunks, "claude")
-            messages.append(result("claude", identifier, "read_inbox", {"count": count}))
+            messages.append(result("claude", identifier, "channel_history", {"count": count}))
         self.provider.stop("claude", "Done.")
-        request(self.provider, "claude", messages, ["mcp__bkpr__read_inbox"])
-        self.assertEqual(self.provider.wait_result("claude", "read_inbox", occurrence=2, timeout=0), {"count": 2})
+        request(self.provider, "claude", messages, ["mcp__bkpr__channel_history"])
+        self.assertEqual(self.provider.wait_result("claude", "channel_history", occurrence=2, timeout=0), {"count": 2})
         self.assertEqual(len(self.provider.receipts), 2)
 
     def test_pending_call_refuses_ambiguous_unobserved_native_calls(self):
         self.provider.tool("claude", "whoami")
         request(self.provider, "claude", [], ["mcp__bkpr__whoami"])
-        self.provider.tool("claude", "read_inbox")
-        request(self.provider, "claude", [], ["mcp__bkpr__read_inbox"])
+        self.provider.tool("claude", "channel_history", {"channel_id": "#team"})
+        request(self.provider, "claude", [], ["mcp__bkpr__channel_history"])
         with self.assertRaisesRegex(RuntimeError, "Ambiguous"):
             self.provider.pending_call("claude")
 
@@ -215,7 +215,7 @@ Connected (their tools are now available — call them directly): bkpr
         _, chunks = request(self.provider, "pi", [], ["codemode"])
         identifier, _, _ = call(chunks, "pi")
         self.provider.stop("pi", "Never accepted.")
-        status, _ = request(self.provider, "pi", [result("pi", identifier, "send_message", {})], ["codemode"])
+        status, _ = request(self.provider, "pi", [result("pi", identifier, "channel_post", {})], ["codemode"])
         self.assertEqual(status, 500)
         self.assertEqual(self.provider.receipts, [])
 
@@ -226,6 +226,29 @@ Connected (their tools are now available — call them directly): bkpr
         self.provider.stop("claude", "No success claim.")
         request(self.provider, "claude", [result("claude", identifier, "whoami", "Denied", failed=True)], ["mcp__bkpr__whoami"])
         self.assertTrue(self.provider.wait_result("claude", "whoami", timeout=0)["isError"])
+
+    def test_addressed_wake_requires_exact_native_message_context(self):
+        wake = {"channel_id": "dm", "batch_id": "batch", "pending_count": 1, "addressed_message_id": "message"}
+        hint = json.dumps({"channel_wake": wake})
+        for role, tools, native_content in (
+                ("claude", ["mcp__bkpr__channel_wake"],
+                 [{"type": "text", "text": f"<system-reminder>Stop hook feedback:\n{hint}\n</system-reminder>"}]),
+                ("pi", ["codemode"], hint)):
+            with self.subTest(role=role):
+                self.provider.stop(role, "No wake yet.")
+                status, _ = request(self.provider, role, [
+                    {"role": "assistant", "content": hint},
+                    result(role, "not-issued", "channel_read", hint),
+                ], tools)
+                self.assertEqual(status, 200)
+                with self.assertRaises(TimeoutError):
+                    self.provider.wait_wake(role, "dm", "message", timeout=0)
+                self.provider.stop(role, "Wake seen.")
+                status, _ = request(self.provider, role, [{"role": "user", "content": native_content}], tools)
+                self.assertEqual(status, 200)
+                self.assertEqual(self.provider.wait_wake(role, "dm", "message", timeout=0), wake)
+                with self.assertRaises(TimeoutError):
+                    self.provider.wait_wake(role, "dm", "other", timeout=0)
 
     def test_endpoint_cannot_select_another_roles_model(self):
         status, _ = request(self.provider, "pi", [], ["codemode"], model="codex")

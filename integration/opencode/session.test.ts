@@ -112,7 +112,8 @@ test('native root binding, first prompt and queued notifications keep separate f
   }, () => {}, async () => true);
   const notice = async (id: string, generation: number, extra: Json = {}) => {
     children.at(-1)!.stdout.write(JSON.stringify({ notification: { notification_id: id, generation,
-      session_id: root, message_count: 2, unread_count: 3, text: 'PRIVATE_PEER_BODY', ...extra } }) + '\n');
+      session_id: root, channel_wake: { batch_id: id, channel_id: 'channel', pending_count: 2 },
+      text: 'PRIVATE_PEER_BODY', ...extra } }) + '\n');
     await nextTurn(); await nextTurn();
   };
   try {
@@ -128,7 +129,9 @@ test('native root binding, first prompt and queued notifications keep separate f
     expect(queued).toHaveLength(1);
     expect(queued[0].delivery).toBe('queue');
     expect(queued[0].metadata).toEqual({ 'bkpr.nativeWake': true });
-    expect(queued[0].text).toContain('Read read_inbox pages');
+    expect(queued[0].text).toBe(JSON.stringify({
+      channel_wake: { batch_id: 'accepted', channel_id: 'channel', pending_count: 2 },
+    }));
     expect(requests.find(item => item.notification_id === 'accepted' && item.method === 'wake_outcome')?.outcome).toEqual({ state: 'accepted' });
     malformed = true;
     await notice('ambiguous', 2);
@@ -161,7 +164,7 @@ test('native root binding, first prompt and queued notifications keep separate f
     malformed = false;
     await session.select(root);
     const wake = { batch_id: 'batch', channel_id: 'channel', pending_count: 1, addressed_message_id: 'addressed' };
-    await notice('long-native-root', 4, { message_count: 0, unread_count: 0, channel_wake: wake });
+    await notice('long-native-root', 4, { channel_wake: wake });
     expect(queued.at(-1)?.sessionID).toBe(root);
     expect(queued.at(-1)?.text).toBe(JSON.stringify({ channel_wake: wake }));
     expect(requests.find(item => item.notification_id === 'long-native-root' && item.method === 'wake_outcome')?.outcome).toEqual({ state: 'accepted' });
