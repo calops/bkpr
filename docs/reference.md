@@ -1415,6 +1415,9 @@ the divider beside the thread or between Channels and Members to resize.
 When the terminal is too small for the Members pane, use Alt-u and press Esc
 to return to the thread without changing the draft. Read-only attachments
 can browse members.
+In an ordinary explicit-membership channel, use **Invite member** to select a
+live workspace agent who isn't already a member. The invite adds only that
+agent; it does not replace the member list or change the membership mode.
 
 In a writable channel, type `/role coordinator @`, select an agent from the
 mention picker, then press Enter again to grant or replace Coordinator. Use

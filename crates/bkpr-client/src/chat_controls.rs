@@ -5,6 +5,7 @@ use bkpr_protocol::channels::{
     ChannelId, ChannelRequest, ChannelResponse, ChannelSettings, ChannelSummary, MAX_MEMBERS,
     MAX_NAME_BYTES, MAX_PAGE_LIMIT, MembershipMode, Participant, ParticipantId, WakePolicy,
 };
+use bkpr_protocol::channels::{ChannelMentionBinding, ParticipantKind};
 use bkpr_protocol::{
     Cursor, CursorShape, Frame, KeyAction, KeyEvent, MouseAction, MouseButton, Size,
 };
@@ -60,6 +61,7 @@ enum Write {
     Create,
     Settings,
     Membership,
+    Invite,
 }
 
 enum SubmitState {
@@ -180,6 +182,8 @@ pub(super) struct Editor {
     roster_fetch: Fetch,
     in_flight: Option<(Read, Option<ParticipantId>)>,
     roster: Vec<Participant>,
+    invite: bool,
+    invite_bindings: BTreeMap<ParticipantId, ChannelMentionBinding>,
     roster_after: Option<ParticipantId>,
     roster_next: Option<ParticipantId>,
     submit: SubmitState,
@@ -220,6 +224,23 @@ impl Editor {
         })
     }
 
+    pub(super) fn can_invite(summary: &ChannelSummary) -> bool {
+        !summary.direct
+            && summary.role_thread.is_none()
+            && summary.membership == MembershipMode::Explicit
+    }
+
+    pub(super) fn invite(summary: &ChannelSummary) -> Option<Self> {
+        if !Self::can_invite(summary) {
+            return None;
+        }
+        let mut editor = Self::manage(summary)?;
+        editor.invite = true;
+        editor.title = format!("Invite member · {}", summary.name);
+        editor.rebuild_rows();
+        Some(editor)
+    }
+
     fn new(
         workspace_id: String,
         channel_id: Option<ChannelId>,
@@ -248,6 +269,8 @@ impl Editor {
             roster_fetch: Fetch::Queued(None),
             in_flight: None,
             roster: Vec::new(),
+            invite: false,
+            invite_bindings: BTreeMap::new(),
             roster_after: None,
             roster_next: None,
             submit: SubmitState::Editable,
@@ -261,6 +284,10 @@ impl Editor {
         };
         editor.rebuild_rows();
         editor
+    }
+
+    pub(super) fn is_invite(&self) -> bool {
+        self.invite
     }
 
     /// Whether this editor creates rather than updates a channel.
@@ -333,9 +360,23 @@ impl Editor {
                     next_after.as_ref(),
                 ) =>
             {
+                let invite = self.invite;
+                let saved = &self.saved;
+                self.invite_bindings.clear();
+                let bindings = &mut self.invite_bindings;
                 self.roster = participants
                     .into_iter()
-                    .map(|entry| entry.participant)
+                    .filter_map(|entry| {
+                        if invite {
+                            if saved.contains(&entry.participant.id)
+                                || entry.participant.kind != ParticipantKind::Agent
+                            {
+                                return None;
+                            }
+                            bindings.insert(entry.participant.id.clone(), entry.binding?);
+                        }
+                        Some(entry.participant)
+                    })
                     .collect();
                 for participant in &self.roster {
                     if self.saved.contains(&participant.id)
@@ -388,7 +429,7 @@ impl Editor {
                     && self.channel_id.as_ref().is_none_or(|id| id == &summary.id) =>
             {
                 match write {
-                    Write::Create => self.submit = SubmitState::Created,
+                    Write::Create | Write::Invite => self.submit = SubmitState::Created,
                     Write::Settings => {
                         self.settings = summary.settings;
                         self.saved_settings = summary.settings;
@@ -701,6 +742,18 @@ impl Editor {
                 self.settings.attention_questions = !self.settings.attention_questions
             }
             Field::Reports => self.settings.attention_reports = !self.settings.attention_reports,
+            Field::Member(id) if self.invite => {
+                let (Some(channel), Some(binding)) =
+                    (&self.channel_id, self.invite_bindings.get(&id))
+                else {
+                    return EditorAction::None;
+                };
+                self.submit = SubmitState::Pending(Write::Invite);
+                return EditorAction::Submit(ChannelRequest::InviteUser {
+                    channel_id: channel.clone(),
+                    target: binding.clone(),
+                });
+            }
             Field::Member(id)
                 if self.membership == MembershipMode::Explicit && self.saved_ready() =>
             {
@@ -805,6 +858,40 @@ impl Editor {
         let saved_ready = self.saved_ready();
         let rows = &mut self.nav.rows;
         rows.clear();
+        if self.invite {
+            if matches!(self.saved_fetch, Fetch::Failed(..)) {
+                rows.push(Row::Control(Field::RetrySaved));
+            }
+            if saved_ready {
+                if self.roster.is_empty() && self.roster_next.is_none() {
+                    rows.push(Row::Heading("No eligible agents on this page"));
+                }
+                rows.extend(
+                    self.roster
+                        .iter()
+                        .map(|participant| Row::Control(Field::Member(participant.id.clone()))),
+                );
+                if matches!(self.roster_fetch, Fetch::Failed(..)) {
+                    rows.push(Row::Control(Field::RetryRoster));
+                }
+                if self.roster_after.is_some() {
+                    rows.push(Row::Control(Field::FirstRoster));
+                }
+                if let Some(next) = &self.roster_next {
+                    rows.push(Row::Control(Field::NextRoster(next.clone())));
+                }
+            }
+            rows.push(Row::Control(Field::Close));
+            if !rows
+                .iter()
+                .any(|row| row.target() == self.nav.cursor.as_ref() && row.target().is_some())
+            {
+                let first = rows.iter().find_map(Row::target).unwrap().clone();
+                self.nav.select(first);
+            }
+            self.nav.refresh_viewport();
+            return;
+        }
         if create {
             rows.push(Row::Control(Field::Name));
             rows.push(Row::Gap);
@@ -1455,6 +1542,65 @@ mod tests {
             editor.key(&event("ArrowDown"), true);
         }
         editor.key(&event("Enter"), true);
+    }
+
+    #[test]
+    fn invite_only_dispatches_an_exact_live_nonmember() {
+        assert!(Editor::invite(&summary(MembershipMode::WorkspaceWide)).is_none());
+        let channel = summary(MembershipMode::Explicit);
+        let mut editor = Editor::invite(&channel).unwrap();
+        assert!(matches!(
+            editor.take_observation(),
+            Some(ChannelRequest::ListExplicitMembers { .. })
+        ));
+        editor.observe(Ok(ChannelResponse::ExplicitMembers {
+            members: vec![id("member")],
+            next_after: None,
+        }));
+        assert!(matches!(
+            editor.take_observation(),
+            Some(ChannelRequest::UserRoster {
+                channel_id: None,
+                ..
+            })
+        ));
+        let ChannelResponse::UserRoster {
+            mut participants,
+            next_after,
+        } = roster(&["candidate", "member", "offline"], None)
+        else {
+            unreachable!()
+        };
+        let binding = |key: &str| ChannelMentionBinding {
+            participant_id: id(key),
+            launch_id: format!("{key}-launch"),
+            binding_generation: 12,
+        };
+        participants[0].binding = Some(binding("candidate"));
+        participants[1].binding = Some(binding("member"));
+        editor.observe(Ok(ChannelResponse::UserRoster {
+            participants,
+            next_after,
+        }));
+        let size = Size {
+            cols: 70,
+            rows: 20,
+            cell_width: 8,
+            cell_height: 16,
+        };
+        paint(&mut editor, size);
+        assert!(
+            !editor.painted_hits.iter().any(|hit| {
+                matches!(&hit.field, Field::Member(id) if id.as_ref() != "candidate")
+            })
+        );
+        let choice = hit(&editor, Field::Member(id("candidate")));
+        pointer(&mut editor, choice, MouseAction::Press);
+        assert!(matches!(
+            pointer(&mut editor, choice, MouseAction::Release),
+            EditorAction::Submit(ChannelRequest::InviteUser { channel_id, target })
+                if channel_id == channel.id && target == binding("candidate")
+        ));
     }
 
     #[test]

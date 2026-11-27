@@ -147,6 +147,7 @@ pub(super) enum Hit {
     MemberBack,
     MemberRail,
     Divider(bkpr_protocol::Axis),
+    Invite,
 }
 
 impl Paint {
@@ -155,11 +156,12 @@ impl Paint {
     }
 }
 
-const CHANNEL_BUTTONS: [(Hit, &str); 4] = [
+const CHANNEL_BUTTONS: [(Hit, &str); 5] = [
     (Hit::Create, "\u{f0415} New channel"),
     (Hit::Manage, "\u{f0493} Settings"),
     (Hit::Members, "Members"),
     (Hit::MemberBack, MEMBER_BACK),
+    (Hit::Invite, "Invite member"),
 ];
 
 const MEMBER_BACK: &str = "Back";
@@ -167,7 +169,7 @@ const MEMBER_BACK: &str = "Back";
 fn is_channel_button(hit: Hit) -> bool {
     matches!(
         hit,
-        Hit::Create | Hit::Manage | Hit::Members | Hit::MemberBack
+        Hit::Create | Hit::Manage | Hit::Members | Hit::MemberBack | Hit::Invite
     )
 }
 
@@ -1065,7 +1067,11 @@ impl Chat {
                 paint,
                 theme,
                 full,
-                (list_background, true),
+                (
+                    list_background,
+                    true,
+                    !read_only && invite_available(summary),
+                ),
                 &title,
                 active,
                 offset,
@@ -1118,7 +1124,11 @@ impl Chat {
                 paint,
                 theme,
                 rail,
-                (list_background, false),
+                (
+                    list_background,
+                    false,
+                    !read_only && invite_available(channel),
+                ),
                 &title,
                 active,
                 &mut self.rail_members_scroll,
@@ -1605,11 +1615,15 @@ impl Chat {
     }
 }
 
+fn invite_available(channel: &ChannelSummary) -> bool {
+    super::chat_controls::Editor::can_invite(channel)
+}
+
 fn paint_members(
     paint: &mut Paint,
     theme: &Theme,
     outer: Rect,
-    (background, show_back): (ColorSource, bool),
+    (background, show_back, invite): (ColorSource, bool, bool),
     title: &str,
     active: &Active,
     offset: &mut usize,
@@ -1636,7 +1650,14 @@ fn paint_members(
         false,
         background,
     );
-    let rows = usize::from(body.height - 1);
+    let invite = invite && body.height >= 3;
+    if invite {
+        paint.target(
+            row(body.x, body.y + body.height - 1, body.width),
+            Hit::Invite,
+        );
+    }
+    let rows = usize::from(body.height - 1 - u16::from(invite));
     if rows == 0 {
         return;
     }
@@ -1678,7 +1699,7 @@ fn paint_members(
     *offset = (*offset).min(paint.members_max_scroll);
     let mut y = body.y + 1;
     let mut skip = *offset;
-    let end = body.y + body.height;
+    let end = body.y + body.height - u16::from(invite);
     for (group, entries) in groups
         .into_iter()
         .filter(|(_, entries)| !entries.is_empty())
