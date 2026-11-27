@@ -29,9 +29,8 @@ mod wakes;
 
 const APPLICATION_ID: i64 = 0x424b4348;
 // Versions 1–6 predate staging. Version 7 predates wakes.
-const STORE_VERSION: i64 = 14;
+const STORE_VERSION: i64 = 15;
 const FIRST_STAGING_VERSION: i64 = 7;
-const ORDERED_WAKE_VERSION: i64 = 9;
 const STORE_NAME: &str = "channels.sqlite3";
 const MAX_PENDING: usize = 4096;
 const READ_POST: &str = "SELECT summary,body FROM posts WHERE channel_id=?1 AND id=?2";
@@ -223,10 +222,17 @@ impl Store {
             if matches!(version, 1 | 2 | FIRST_STAGING_VERSION) {
                 tx.execute_batch(include_str!("wakes.sql"))?;
             }
-            if matches!(version, 0..=4 | 7..=9 | 12) {
+            let has_schema_object = |name: &str| -> rusqlite::Result<bool> {
+                tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name=?1)",
+                    [name],
+                    |row| row.get(0),
+                )
+            };
+            if !has_schema_object("catalog_identity")? {
                 tx.execute_batch(include_str!("catalog.sql"))?;
             }
-            if matches!(version, 0..=5 | 7..=10 | 12 | 13) {
+            if !has_schema_object("pending_channel_attention")? {
                 tx.execute_batch(
                     "UPDATE notification_work SET pending=0 WHERE pending=1 AND launch_id IS NULL;
                      CREATE INDEX pending_channel_attention ON notification_work(message_id)
@@ -236,26 +242,22 @@ impl Store {
             if (1..FIRST_STAGING_VERSION).contains(&version) {
                 migrate_attachment_staging(&tx)?;
             }
-            // Version 9 was used by both the ordered wake queue and the older direct store.
-            let legacy_direct_v9 = version == ORDERED_WAKE_VERSION
-                && tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema
-                     WHERE type='table' AND name='direct_channels')",
-                    [],
-                    |row| row.get::<_, bool>(0),
-                )?;
-            if version < ORDERED_WAKE_VERSION || legacy_direct_v9 {
+            // Version 9 existed both with ordered wakes and with legacy direct channels.
+            // Previously published catalog/attention stores also predate ordered wakes.
+            let ordered_wakes: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notification_work')
+                 WHERE name='enqueue_ordinal')",
+                [],
+                |row| row.get(0),
+            )?;
+            if !ordered_wakes {
                 tx.execute_batch(WAKE_QUEUE_SCHEMA)?;
-                if matches!(version, 3 | 4 | 8) || legacy_direct_v9 {
-                    tx.execute(
-                        "UPDATE channel_batches SET revoked=1,outcome='unknown' WHERE outcome='revoked'",
-                        [],
-                    )?;
-                }
+                tx.execute(
+                    "UPDATE channel_batches SET revoked=1,outcome='unknown' WHERE outcome='revoked'",
+                    [],
+                )?;
             }
-            if matches!(version, 0..=3 | 7 | 8)
-                || (version == ORDERED_WAKE_VERSION && !legacy_direct_v9)
-            {
+            if !has_schema_object("direct_channels")? {
                 tx.execute_batch(include_str!("direct.sql"))?;
             }
             if version < 12 {

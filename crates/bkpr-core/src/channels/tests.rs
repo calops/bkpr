@@ -1,6 +1,6 @@
 use super::{
-    CatalogRead, ChannelAccessLost, ChannelAuthority, ChannelClaim, ChannelEngine, ChannelRecipient,
-    ChannelWakeAccess, MAX_SUBSCRIBERS, WorkspaceParticipant,
+    CatalogRead, ChannelAccessLost, ChannelAuthority, ChannelClaim, ChannelEngine,
+    ChannelRecipient, ChannelWakeAccess, MAX_SUBSCRIBERS, WorkspaceParticipant,
     store::{MAX_ARCHIVE_CANDIDATES, MAX_STAGED_BYTES, MAX_STAGING_RECLAIM},
 };
 use anyhow::{Result, ensure};
@@ -2181,7 +2181,7 @@ fn visibility_index_migration_preserves_member_access_and_durable_history() {
             ))
         })
         .unwrap();
-    assert_eq!((sync, version), (3, 14));
+    assert_eq!((sync, version), (3, 15));
 }
 
 #[test]
@@ -2878,7 +2878,7 @@ fn catalog_overrun_resets_without_losing_history_or_unread() {
 }
 
 #[test]
-fn pending_channel_attention_survives_channel_store_reopen() {
+fn pending_channel_attention_survives_migrating_pre_ordered_catalog() {
     let f = Fixture::new();
     let id = f.wide(ChannelSettings {
         attention_reports: true,
@@ -2897,6 +2897,8 @@ fn pending_channel_attention_survives_channel_store_reopen() {
         )
         .unwrap(),
     );
+    f.drop_ordered_wake_schema();
+    f.sql("PRAGMA user_version=14;");
     let Fixture { root, engine, .. } = f;
     drop(engine);
     let reopened = ChannelEngine::new(root.path().to_owned());
