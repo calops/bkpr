@@ -1956,7 +1956,7 @@ mod tests {
             .choices(roster, usize::MAX)
             .filter_map(|(_, entry, _)| match entry {
                 crate::app::chat_draft::Choice::Agent(entry) => Some(entry),
-                crate::app::chat_draft::Choice::Slash(_) => None,
+                _ => None,
             })
             .collect();
         assert_eq!(choices.len(), bound_pages * limit + 1);

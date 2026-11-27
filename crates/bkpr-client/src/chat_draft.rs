@@ -1,4 +1,5 @@
 use bkpr_protocol::channels::*;
+use bkpr_protocol::roles::{RoleGrantId, WorkspaceRole};
 use bkpr_tui_framework::{EditAction, TextInput, markdown, safe_text, text_width};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -6,6 +7,7 @@ use unicode_segmentation::UnicodeSegmentation;
 struct Mention {
     bytes: Range<usize>,
     binding: ChannelMentionBinding,
+    coordinator_grant: Option<RoleGrantId>,
 }
 
 pub(super) struct Completion {
@@ -17,6 +19,7 @@ pub(super) struct Completion {
 #[derive(Clone, Copy)]
 pub(super) enum Choice<'a> {
     Agent(&'a ChannelRosterEntry),
+    Coordinator(&'a ChannelRosterEntry, &'a RoleGrantId),
     Slash(&'static str),
 }
 
@@ -262,8 +265,22 @@ impl Draft {
                 .copied()
                 .filter(move |choice| choice.starts_with(&self.input.value[start..]))
         });
+        let coordinator = self
+            .query()
+            .filter(|query| {
+                !self.completing_role_target()
+                    && "coordinator".starts_with(&query.to_ascii_lowercase())
+            })
+            .and_then(|_| {
+                roster.iter().find_map(|entry| {
+                    let role = entry.role.as_ref()?;
+                    (role.role == WorkspaceRole::Coordinator && entry.binding.is_some())
+                        .then_some(Choice::Coordinator(entry, &role.grant_id))
+                })
+            });
         commands
             .map(Choice::Slash)
+            .chain(coordinator)
             .chain(self.matches(roster).map(Choice::Agent))
     }
 
@@ -313,10 +330,16 @@ impl Draft {
             self.completion = None;
             return self.insert(" ", true);
         }
-        let Choice::Agent(entry) = entry else {
-            unreachable!()
+        let (entry, coordinator_grant) = match entry {
+            Choice::Agent(entry) => (entry, None),
+            Choice::Coordinator(entry, grant) => (entry, Some(grant.clone())),
+            Choice::Slash(_) => unreachable!(),
         };
-        let value = format!("@{} ", safe_text(&entry.participant.display_name));
+        let value = if coordinator_grant.is_some() {
+            "@coordinator ".into()
+        } else {
+            format!("@{} ", safe_text(&entry.participant.display_name))
+        };
         let range = completion.start..self.input.cursor;
         let Some(inserted) = self.input.replace_range(range.clone(), &value) else {
             self.error = Some("Mention would exceed the message size limit".into());
@@ -327,6 +350,7 @@ impl Draft {
         self.mentions.push(Mention {
             bytes: inserted.start..inserted.end - 1,
             binding,
+            coordinator_grant,
         });
         self.completion = None;
         self.error = None;
@@ -363,10 +387,19 @@ impl Draft {
         }
         let mut bindings = Vec::<ChannelMentionBinding>::new();
         let mut mention_spans = Vec::with_capacity(self.mentions.len());
+        let mut coordinator_grant_id = None;
         if !self.mentions.is_empty() {
             let document = markdown::Document::parse(&self.input.value);
             let rows = document.wrap(MAX_POST_BYTES);
             for mention in &self.mentions {
+                if let Some(grant) = &mention.coordinator_grant {
+                    if coordinator_grant_id.is_some_and(|previous| previous != grant) {
+                        return Err(
+                            "Coordinator changed. Remove and reselect the @coordinator mentions.",
+                        );
+                    }
+                    coordinator_grant_id = Some(grant);
+                }
                 if !allows_in_rows(&rows, mention.bytes.start) {
                     return Err(
                         "A selected mention is now in code or a quote. Remove it before sending.",
@@ -392,22 +425,31 @@ impl Draft {
             }
         }
         mention_spans.sort_unstable_by_key(|span| span.start);
-        Ok(ChannelRequest::PostUser {
-            channel_id,
-            post: ChannelPost {
-                idempotency_key: uuid::Uuid::new_v4().to_string(),
-                text: self.input.value.clone(),
-                intent: PostIntent::Note,
-                mentions: bindings
-                    .iter()
-                    .map(|binding| binding.participant_id.clone())
-                    .collect(),
-                mention_spans,
-                reply_to: self.reply_to.clone(),
-                attachments: Vec::new(),
-                source: None,
+        let post = ChannelPost {
+            idempotency_key: uuid::Uuid::new_v4().to_string(),
+            text: self.input.value.clone(),
+            intent: PostIntent::Note,
+            mentions: bindings
+                .iter()
+                .map(|binding| binding.participant_id.clone())
+                .collect(),
+            mention_spans,
+            reply_to: self.reply_to.clone(),
+            attachments: Vec::new(),
+            source: None,
+        };
+        Ok(match coordinator_grant_id {
+            Some(grant) => ChannelRequest::PostUserWithCoordinator {
+                channel_id,
+                post,
+                bindings,
+                coordinator_grant_id: grant.clone(),
             },
-            bindings,
+            None => ChannelRequest::PostUser {
+                channel_id,
+                post,
+                bindings,
+            },
         })
     }
 
@@ -531,6 +573,32 @@ mod tests {
             panic!("expected user post");
         };
         assert!(post.mentions.is_empty() && bindings.is_empty());
+    }
+
+    #[test]
+    fn coordinator_alias_freezes_selected_tenure_and_plain_text_has_no_binding() {
+        let mut roster = twin_roster();
+        let old = RoleGrantId("old-tenure".into());
+        roster[0].role = Some(bkpr_protocol::roles::RoleAttribution {
+            role: WorkspaceRole::Coordinator,
+            grant_id: old.clone(),
+        });
+        let binding = roster[0].binding.clone().unwrap();
+        let mut draft = Draft::default();
+        draft.insert("@", true);
+        draft.select_mention(&roster, 2, None);
+        roster[0].role.as_mut().unwrap().grant_id = RoleGrantId("new-tenure".into());
+        assert!(matches!(
+            draft.post(ChannelId("desk".into())).unwrap(),
+            ChannelRequest::PostUserWithCoordinator { post, bindings, coordinator_grant_id, .. }
+                if post.text == "@coordinator " && bindings == [binding] && coordinator_grant_id == old
+        ));
+        let mut plain = Draft::default();
+        plain.paste("@coordinator");
+        assert!(matches!(
+            plain.post(ChannelId("desk".into())).unwrap(),
+            ChannelRequest::PostUser { bindings, .. } if bindings.is_empty()
+        ));
     }
 
     #[test]

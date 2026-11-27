@@ -1540,6 +1540,11 @@ impl Chat {
                         crate::app::chat_draft::Choice::Slash(command) => {
                             (command.to_owned(), String::new(), Role::Accent)
                         }
+                        crate::app::chat_draft::Choice::Coordinator(entry, _) => (
+                            "@coordinator".into(),
+                            format!(" · {}", safe_text(&entry.participant.display_name)),
+                            Role::BrightAccent,
+                        ),
                         crate::app::chat_draft::Choice::Agent(entry) => {
                             let (label, hint) = Draft::selection_label(entry, index);
                             (label, hint, sender_role(&entry.participant))
