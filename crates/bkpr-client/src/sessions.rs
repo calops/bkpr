@@ -64,6 +64,12 @@ impl Attachment {
             Self::Remote(session) => session.poll_lifecycle(),
         }
     }
+    fn take_role_events(&mut self) -> transport::client_lifetime::RoleInvalidation {
+        match self {
+            Self::Local(client) => client.take_role_events(),
+            Self::Remote(session) => session.take_role_events(),
+        }
+    }
     fn lifecycle_for_stop(&mut self, stopping: bool) -> Result<Lifecycle> {
         match self {
             Self::Remote(session) if stopping => session.poll_stopping_lifecycle(),
@@ -1263,6 +1269,7 @@ impl Coordinator {
         self.remember_origins();
         if let Some(app) = self.sessions[old].app.as_mut() {
             app.backgrounded = true;
+            app.role_activity(Some(false), false);
             let host_focused = app.host_focused;
             app.host_focused = false;
             app.retire_resize();
@@ -1444,6 +1451,7 @@ impl Coordinator {
                         transfer_terminal(&mut self.offline, &mut app);
                     } else {
                         app.host_focused = false;
+                        app.role_activity(Some(false), false);
                     }
                     app.backgrounded = index != self.selected;
                     let session = &mut self.sessions[index];
@@ -1496,6 +1504,15 @@ impl Coordinator {
             }
             let session = &mut self.sessions[index];
             if let Some(app) = &mut session.app {
+                if let Some(owner) = &mut session.owner {
+                    let events = owner.take_role_events();
+                    if events.roster {
+                        app.chat.invalidate_roster();
+                    }
+                    if let Some(revision) = events.approvals {
+                        app.roles.invalidate(revision);
+                    }
+                }
                 let maintained = (|| -> Result<()> {
                     for failure in app.input.check()? {
                         app.record_input_failure(failure);
@@ -1507,6 +1524,7 @@ impl Coordinator {
                     let selection = app.flush_selection_release();
                     app.scope_input_result(selection)?;
                     app.complete_background()?;
+                    app.schedule_roles();
                     app.expire_devices()?;
                     let keys = app.flush_key_releases();
                     app.scope_input_result(keys)?;
@@ -2575,10 +2593,7 @@ impl App {
             && self.sidebar_menu.is_none()
             && !self.picker_open()
             && !self.chat.dialog_open()
-            && self
-                .consent
-                .as_ref()
-                .is_none_or(|consent| consent.state.sent)
+            && !self.consent_prompt_open()
             && self.pointer_capture.is_none()
             && !self.resize_capturing()
     }

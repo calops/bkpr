@@ -115,11 +115,7 @@ impl App {
         if self.image_viewer.is_some() || self.diagnostic_view.is_some() {
             return Ok(());
         }
-        if self
-            .consent
-            .as_ref()
-            .is_some_and(|consent| !consent.state.allowed && !consent.state.sent)
-        {
+        if self.consent_prompt_open() {
             return Ok(());
         }
         if self.state.prefix {

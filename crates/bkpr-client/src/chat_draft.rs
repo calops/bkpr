@@ -34,6 +34,43 @@ impl Default for Draft {
 }
 
 impl Draft {
+    pub(super) fn role_target(
+        &self,
+    ) -> Option<Result<Option<&ChannelMentionBinding>, &'static str>> {
+        let target = role_argument(&self.input.value)?;
+        Some(if self.input.value.contains('\n') {
+            Err("A role command must be on one line")
+        } else if let Some((_, "none")) = target {
+            Ok(None)
+        } else if let Some((start, text)) = target.filter(|(_, text)| text.starts_with('@')) {
+            self.mentions
+                .iter()
+                .find(|mention| mention.bytes == (start..start + text.len()))
+                .map(|mention| Some(&mention.binding))
+                .ok_or("Select an exact agent from the @ mention picker")
+        } else {
+            Err("Use /role coordinator @agent or /role coordinator none")
+        })
+    }
+
+    pub(super) fn completing_role_target(&self) -> bool {
+        self.completion.as_ref().is_some_and(|completion| {
+            !self.input.value.contains('\n')
+                && role_argument(&self.input.value).flatten().is_some_and(|(start, _)| {
+                    start == completion.start
+                })
+        })
+    }
+
+    pub(super) fn invalidate_completion(&mut self) -> bool {
+        if let Some(completion) = &mut self.completion {
+            completion.selected = 0;
+            true
+        } else {
+            false
+        }
+    }
+
     pub(super) fn paste(&mut self, text: &str) {
         if text.len() <= 2 * MAX_POST_BYTES && text.contains('\r') {
             // Xterm sends CR for selection line breaks, even in bracketed paste.
@@ -224,6 +261,9 @@ impl Draft {
 
     pub(super) fn completion_wake_preview(&self, policy: WakePolicy) -> Option<&'static str> {
         self.completion.as_ref()?;
+        if self.completing_role_target() {
+            return None;
+        }
         Some(match policy {
             WakePolicy::None => "No wake",
             WakePolicy::All => "Wakes all eligible",
@@ -346,6 +386,21 @@ impl Draft {
     }
 }
 
+// Outer None means ordinary chat; inner None is a reserved command with invalid syntax.
+fn role_argument(text: &str) -> Option<Option<(usize, &str)>> {
+    let command = text.trim_start().strip_prefix("/role")?;
+    if !command.is_empty() && !command.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let argument = command
+        .trim_start()
+        .strip_prefix("coordinator")
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+        .map(str::trim_start)
+        .map(|rest| (text.len() - rest.len(), rest.trim_end()));
+    Some(argument)
+}
+
 fn allows_mention(text: &str, at: usize) -> bool {
     allows_in_rows(&markdown::Document::parse(text).wrap(MAX_POST_BYTES), at)
 }
@@ -390,6 +445,24 @@ mod tests {
             panic!("expected user post");
         };
         assert!(post.mentions.is_empty() && bindings.is_empty());
+    }
+
+    #[test]
+    fn role_target_requires_a_whole_structured_mention() {
+        let roster = twin_roster();
+        let mut draft = Draft::default();
+        draft.paste("/role coordinator @Twin");
+        assert!(matches!(draft.role_target(), Some(Err(_))));
+
+        let mut draft = Draft::default();
+        draft.insert("/role coordinator ", true);
+        assert!(draft.insert("@", true));
+        assert!(draft.completing_role_target());
+        assert_eq!(draft.completion_wake_preview(WakePolicy::All), None);
+        draft.select_mention(&roster, 2, Some(1));
+        assert_eq!(draft.role_target(), Some(Ok(roster[1].binding.as_ref())));
+        draft.insert("tail", true);
+        assert!(matches!(draft.role_target(), Some(Err(_))));
     }
 
     #[test]
