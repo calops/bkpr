@@ -1119,8 +1119,7 @@ impl Store {
             )?;
             ensure!(count < MAX_MEMBERS, "channel member limit reached");
         }
-        let _binding = fence(&channel.workspace_id, std::slice::from_ref(target))
-            .context("invite target changed or is no longer live in this workspace")?;
+        let _binding = fence(&channel.workspace_id, std::slice::from_ref(target))?;
         if changed {
             let tx = self.connection.transaction()?;
             insert_members(

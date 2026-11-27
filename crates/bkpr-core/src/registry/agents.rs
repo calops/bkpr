@@ -714,7 +714,7 @@ impl Registry {
         workspace: &str,
         bindings: &[channels::ChannelMentionBinding],
     ) -> Result<std::sync::MutexGuard<'_, ()>> {
-        use crate::channels::STALE_USER_MENTION;
+        const STALE_BINDING: &str = "selected agent binding changed or is no longer live in this workspace; refresh the roster and select it again";
 
         let transaction = self.inner.transaction.lock().unwrap();
         let writer = self.inner.agents.callback_guard()?;
@@ -726,7 +726,7 @@ impl Registry {
                     && !self.session_end_requested()
                     && workspace_exists(&state, workspace)
                     && !state.closing_workspaces.contains(workspace),
-                STALE_USER_MENTION
+                STALE_BINDING
             );
             let agents = self.inner.agents.state.lock().unwrap();
             let captures = self.inner.captures.lock().unwrap();
@@ -734,7 +734,7 @@ impl Registry {
                 let launch = captures
                     .launches
                     .get(&binding.launch_id)
-                    .context(STALE_USER_MENTION)?;
+                    .context(STALE_BINDING)?;
                 let current = state
                     .record
                     .registry
@@ -752,12 +752,12 @@ impl Registry {
                         )
                     })
                     .map(|(launch, _)| launch)
-                    .context(STALE_USER_MENTION)?;
+                    .context(STALE_BINDING)?;
                 ensure!(
                     std::ptr::eq(current, launch)
                         && current.binding_generation == binding.binding_generation
                         && current.channel_participant.as_ref() == Some(&binding.participant_id),
-                    STALE_USER_MENTION
+                    STALE_BINDING
                 );
             }
         }
