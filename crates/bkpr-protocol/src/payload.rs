@@ -22,6 +22,11 @@ pub enum Payload {
         /// Channel reply, independent of terminal and registry state.
         crate::channels::ChannelResponse,
     ),
+    /// Volatile role state from the session's registered-user endpoint.
+    Roles(
+        /// Typed result of the user role operation.
+        crate::roles::RoleResponse,
+    ),
 }
 /// Pane reply whose binary scene is kept outside its metadata object.
 #[derive(Clone, Debug)]
@@ -60,6 +65,7 @@ impl Payload {
                 Ok(pane.metadata)
             }
             Self::Channels(reply) => Ok(serde_json::to_value(reply)?),
+            Self::Roles(reply) => Ok(serde_json::to_value(reply)?),
         }
     }
 }
@@ -78,6 +84,7 @@ impl Serialize for Payload {
                 value.serialize(serializer)
             }
             Self::Channels(reply) => reply.serialize(serializer),
+            Self::Roles(reply) => reply.serialize(serializer),
         }
     }
 }

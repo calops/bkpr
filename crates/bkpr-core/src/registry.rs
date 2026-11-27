@@ -1115,6 +1115,7 @@ impl Registry {
             Operation::ClientRegister { .. }
             | Operation::Client { .. }
             | Operation::ClientActivate { .. }
+            | Operation::Roles { .. }
             | Operation::ClientDetach => {
                 bail!("client operations require authenticated attachment transport")
             }
