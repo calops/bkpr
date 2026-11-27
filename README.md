@@ -72,6 +72,9 @@ first pane of a fresh sandbox. To run another harness in an existing sandbox,
 attach and run `bkpr run HARNESS` in one of its panes. The sandbox keeps its
 matching binaries while its daemon is running. `just sandbox-stop chat` stops
 that daemon and deletes the sandbox's saved state.
+`just sandbox-clean` stops and deletes all development sandboxes in the current
+runtime directory. It leaves the normal daemon alone. Don't start a sandbox
+while cleanup is running.
 
 ### First workspace
 

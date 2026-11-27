@@ -94,6 +94,10 @@ sandbox-stop name="default":
     fi
     rm -rf "$dir"
 
+# Stop and delete all development sandboxes in the current runtime directory.
+sandbox-clean:
+    bash scripts/clean-sandboxes.sh
+
 # Print a sandbox's private directory, rejecting names that are unsafe or too long.
 [private]
 sandbox-dir name:
