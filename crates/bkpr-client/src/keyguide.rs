@@ -39,6 +39,8 @@ pub enum Context {
     ChatChannels,
     ChatMention,
     ChatControls,
+    /// Read-only member list for the selected channel.
+    ChatMembers,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +151,8 @@ pub enum HistoryAction {
 pub enum ChatAction {
     Create,
     Manage,
+    /// Switch between the selected channel's thread and member list.
+    Members,
     MarkRead,
     Retry,
     Send,
@@ -363,6 +367,8 @@ impl Action {
             Self::Chat(action) => match action {
                 ChatAction::Create => "new channel",
                 ChatAction::Manage => "channel settings",
+                ChatAction::Members if context == Context::ChatMembers => "return to thread",
+                ChatAction::Members => "channel members",
                 ChatAction::MarkRead => "mark channel read",
                 ChatAction::Retry => "retry identical post",
                 ChatAction::Send => "send message",
@@ -376,6 +382,7 @@ impl Action {
                 ChatAction::Choose => "open channel",
                 ChatAction::Back => match context {
                     Context::ChatChannels => "return to composer",
+                    Context::ChatMembers => "return to thread",
                     Context::ChatMention => "cancel mention",
                     Context::ChatControls => "close settings",
                     _ => "return to native pane",
@@ -407,6 +414,7 @@ const CHAT: u32 = 1 << 18;
 const CHAT_CHANNELS: u32 = 1 << 19;
 const CHAT_MENTION: u32 = 1 << 20;
 const CHAT_CONTROLS: u32 = 1 << 21;
+const CHAT_MEMBERS: u32 = 1 << 22;
 const CHAT_COMPOSER: u32 = CHAT | CHAT_MENTION;
 const CHAT_VIEW: u32 = CHAT_COMPOSER | CHAT_CHANNELS;
 const ALT: u16 = 4;
@@ -462,6 +470,7 @@ impl Context {
             Self::ChatChannels => CHAT_CHANNELS,
             Self::ChatMention => CHAT_MENTION,
             Self::ChatControls => CHAT_CONTROLS,
+            Self::ChatMembers => CHAT_MEMBERS,
         }
     }
 
@@ -490,6 +499,7 @@ impl Context {
             Self::ChatChannels => "Channels",
             Self::ChatMention => "Mention an agent",
             Self::ChatControls => "Channel settings",
+            Self::ChatMembers => "Channel members",
         }
     }
 }
@@ -630,7 +640,15 @@ static BINDINGS: &[Binding] = &[
     text(SESSIONS, "s", A::StopSession, 6),
     selected(text(SIDEBAR, "R", A::RefreshCi, 6)),
     physical(
-        APPLICATION | SIDEBAR | SESSIONS | HISTORY | SEARCH | RESIZE | CHAT_VIEW | CHAT_CONTROLS,
+        APPLICATION
+            | SIDEBAR
+            | SESSIONS
+            | HISTORY
+            | SEARCH
+            | RESIZE
+            | CHAT_VIEW
+            | CHAT_CONTROLS
+            | CHAT_MEMBERS,
         "KeyB",
         CTRL,
         "b",
@@ -639,7 +657,7 @@ static BINDINGS: &[Binding] = &[
         false,
     ),
     physical(
-        APPLICATION | SIDEBAR | SESSIONS | HISTORY | CHAT_VIEW | CHAT_CONTROLS,
+        APPLICATION | SIDEBAR | SESSIONS | HISTORY | CHAT_VIEW | CHAT_CONTROLS | CHAT_MEMBERS,
         "Space",
         CTRL,
         "Space",
@@ -711,7 +729,7 @@ static BINDINGS: &[Binding] = &[
         false,
     ),
     physical(
-        CHAT_VIEW | CHAT_CONTROLS,
+        CHAT_VIEW | CHAT_CONTROLS | CHAT_MEMBERS,
         "Escape",
         0,
         "Esc",
@@ -738,6 +756,15 @@ static BINDINGS: &[Binding] = &[
         false,
     ),
     physical(
+        CHAT_VIEW | CHAT_MEMBERS,
+        "KeyU",
+        ALT,
+        "u",
+        A::Chat(ChatAction::Members),
+        5,
+        false,
+    ),
+    physical(
         CHAT_VIEW,
         "KeyM",
         ALT,
@@ -756,7 +783,7 @@ static BINDINGS: &[Binding] = &[
         false,
     ),
     physical(
-        CHAT_VIEW,
+        CHAT_VIEW | CHAT_MEMBERS,
         "PageUp",
         0,
         "PgUp",
@@ -765,7 +792,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CHAT_VIEW,
+        CHAT_VIEW | CHAT_MEMBERS,
         "PageDown",
         0,
         "PgDn",
@@ -775,7 +802,7 @@ static BINDINGS: &[Binding] = &[
     ),
     physical(CHAT_VIEW, "End", CTRL, "End", A::History(H::Live), 8, false),
     physical(
-        CHAT_CHANNELS | CHAT_MENTION,
+        CHAT_CHANNELS | CHAT_MENTION | CHAT_MEMBERS,
         "ArrowUp",
         0,
         "↑",
@@ -784,7 +811,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CHAT_CHANNELS | CHAT_MENTION,
+        CHAT_CHANNELS | CHAT_MENTION | CHAT_MEMBERS,
         "ArrowDown",
         0,
         "↓",
@@ -793,7 +820,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CHAT_CHANNELS,
+        CHAT_CHANNELS | CHAT_MEMBERS,
         "Home",
         0,
         "Home",
@@ -802,7 +829,7 @@ static BINDINGS: &[Binding] = &[
         false,
     ),
     physical(
-        CHAT_CHANNELS,
+        CHAT_CHANNELS | CHAT_MEMBERS,
         "End",
         0,
         "End",

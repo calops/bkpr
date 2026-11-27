@@ -1,4 +1,4 @@
-use super::{Anchor, Chat, Draft, Send, chat_images};
+use super::{Active, Anchor, Chat, Draft, Send, chat_images};
 use bkpr_protocol::{
     ColorSource, Cursor, CursorShape, Frame, SelectionSpan, Size, Style, channels::*,
 };
@@ -141,12 +141,49 @@ pub(super) enum Hit {
     Latest,
     Create,
     Manage,
+    Members,
+    MemberBack,
 }
 
-const CHANNEL_BUTTONS: [(Hit, &str); 2] = [
+const CHANNEL_BUTTONS: [(Hit, &str); 4] = [
     (Hit::Create, "\u{f0415} New channel"),
     (Hit::Manage, "\u{f0493} Settings"),
+    (Hit::Members, "Members"),
+    (Hit::MemberBack, MEMBER_BACK),
 ];
+
+const MEMBER_BACK: &str = "Back";
+
+fn is_channel_button(hit: Hit) -> bool {
+    matches!(
+        hit,
+        Hit::Create | Hit::Manage | Hit::Members | Hit::MemberBack
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum MemberGroup {
+    Agents,
+    Users,
+}
+
+pub(super) fn member_group(entry: &ChannelRosterEntry) -> MemberGroup {
+    match entry.participant.kind {
+        ParticipantKind::Agent => MemberGroup::Agents,
+        ParticipantKind::User => MemberGroup::Users,
+    }
+}
+
+impl MemberGroup {
+    const ALL: [Self; 2] = [Self::Agents, Self::Users];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Agents => "Agents",
+            Self::Users => "Users",
+        }
+    }
+}
 
 struct Range {
     sequence: u64,
@@ -199,7 +236,7 @@ pub(super) struct Paint {
     hits: Vec<(Rect, Hit)>,
     button_pointer: Option<(u16, u16)>,
     button_press: Option<(Rect, Hit)>,
-    painted_buttons: [Option<(ButtonState, bool)>; 2],
+    painted_buttons: [Option<(ButtonState, bool)>; CHANNEL_BUTTONS.len()],
     hovered_channel: Option<ChannelId>,
     row_highlights: [Option<Rect>; 2],
     inlays: Vec<(Rect, Rect, Option<u8>)>,
@@ -208,6 +245,8 @@ pub(super) struct Paint {
     images: Frame,
     history: Rect,
     completion_capacity: usize,
+    member_page_rows: usize,
+    members_max_scroll: usize,
     composer_width: u16,
     composer: Option<ComposerPaint>,
     composer_dirty: bool,
@@ -281,7 +320,7 @@ impl Default for Paint {
             hits: Vec::new(),
             button_pointer: None,
             button_press: None,
-            painted_buttons: [None; 2],
+            painted_buttons: [None; CHANNEL_BUTTONS.len()],
             hovered_channel: None,
             row_highlights: [None; 2],
             inlays: Vec::with_capacity(2),
@@ -290,6 +329,8 @@ impl Default for Paint {
             images: graphics_frame(initial),
             history: Rect::default(),
             completion_capacity: 0,
+            member_page_rows: 0,
+            members_max_scroll: 0,
             composer_width: 1,
             composer: None,
             composer_dirty: false,
@@ -309,7 +350,7 @@ impl Default for Paint {
 impl Paint {
     fn button_at(&self, (x, y): (u16, u16)) -> Option<(Rect, Hit)> {
         self.hits.iter().rev().find_map(|&(rect, hit)| {
-            (matches!(hit, Hit::Create | Hit::Manage) && rect.contains(x, y)).then_some((rect, hit))
+            (is_channel_button(hit) && rect.contains(x, y)).then_some((rect, hit))
         })
     }
 
@@ -336,6 +377,14 @@ impl Paint {
     pub(super) fn page_rows(&self) -> u16 {
         self.history.height.saturating_sub(1)
     }
+    pub(super) fn member_page_rows(&self) -> usize {
+        self.member_page_rows
+    }
+
+    pub(super) fn members_max_scroll(&self) -> usize {
+        self.members_max_scroll
+    }
+
     pub(super) fn composer_width(&self) -> u16 {
         self.composer_width
     }
@@ -374,13 +423,15 @@ impl Paint {
         self.outer = key.outer;
         self.history = Rect::default();
         self.completion_capacity = 0;
+        self.member_page_rows = 0;
+        self.members_max_scroll = 0;
         self.composer_width = 1;
         self.composer = None;
         self.composer_dirty = false;
         self.ranges.clear();
         self.rendered.clear();
         self.hits.clear();
-        self.painted_buttons = [None; 2];
+        self.painted_buttons = [None; CHANNEL_BUTTONS.len()];
         self.row_highlights = [None; 2];
         self.inlays.clear();
         self.inlay_mask = None;
@@ -985,6 +1036,13 @@ impl Chat {
             height: size.rows,
         };
         let list_only = self.channel_chooser;
+        if let Some(offset) = &mut self.members_scroll
+            && let Some(active) = &self.active
+            && let Some(summary) = self.catalog.get(&active.id)
+        {
+            paint_members(paint, theme, full, list_background, summary, active, offset);
+            return;
+        }
         let split = (!list_only && size.cols >= LIST_MIN_WIDTH)
             .then(|| {
                 crate::tiling::partition_at(
@@ -1010,8 +1068,12 @@ impl Chat {
             paint.target(outer, Hit::List);
             let reserved = 1 + u16::from(!self.ids.is_empty());
             let has_settings = writing && body.height > reserved;
-            let has_create = can_create && body.height >= reserved + 2 + u16::from(has_settings);
-            let actions = u16::from(has_settings) + 2 * u16::from(has_create);
+            let has_members = summary.is_some_and(|summary| !summary.direct)
+                && body.height > reserved + u16::from(has_settings);
+            let has_create = can_create
+                && body.height >= reserved + 2 + u16::from(has_settings) + u16::from(has_members);
+            let actions =
+                u16::from(has_settings) + u16::from(has_members) + 2 * u16::from(has_create);
             let first_channel = 1 + u16::from(
                 !list_only && !self.ids.is_empty() && body.height > reserved + actions,
             );
@@ -1087,6 +1149,17 @@ impl Chat {
                 paint.target(
                     row(body.x, body.y + body.height - 1, body.width).inset_horizontal(1),
                     Hit::Manage,
+                );
+            }
+            if has_members {
+                paint.target(
+                    row(
+                        body.x,
+                        body.y + body.height - 1 - u16::from(has_settings),
+                        body.width,
+                    )
+                    .inset_horizontal(1),
+                    Hit::Members,
                 );
             }
         }
@@ -1448,6 +1521,114 @@ impl Chat {
                 &composer_text,
             );
         }
+    }
+}
+
+fn paint_members(
+    paint: &mut Paint,
+    theme: &Theme,
+    outer: Rect,
+    background: ColorSource,
+    summary: &ChannelSummary,
+    active: &Active,
+    offset: &mut usize,
+) {
+    let body = paint.inlay(theme, outer, background, None);
+    if body.width == 0 || body.height == 0 {
+        return;
+    }
+    let back_width = Button::new(MEMBER_BACK).width();
+    let back = if body.width >= back_width + 8 {
+        paint.target(
+            row(body.x + body.width - back_width, body.y, back_width),
+            Hit::MemberBack,
+        );
+        back_width + 1
+    } else {
+        0
+    };
+    paint.card_line(
+        theme,
+        row(body.x, body.y, body.width - back),
+        &format!("Members · {}", channel_name(summary)),
+        Role::Title,
+        false,
+        background,
+    );
+    let rows = usize::from(body.height - 1);
+    if rows == 0 {
+        return;
+    }
+    let status = if let Some(error) = &active.roster_error {
+        Some((error.as_str(), Role::Error))
+    } else if !active.roster_ready {
+        Some(("Loading members…", Role::Muted))
+    } else if active.roster.is_empty() {
+        Some(("No members", Role::Muted))
+    } else {
+        None
+    };
+    if let Some((status, role)) = status {
+        paint.card_line(
+            theme,
+            row(body.x, body.y + 1, body.width),
+            status,
+            role,
+            false,
+            background,
+        );
+        return;
+    }
+    let mut remaining = active.roster.as_slice();
+    let groups = MemberGroup::ALL.map(|group| {
+        let end = remaining.partition_point(|entry| member_group(entry) == group);
+        let (entries, rest) = remaining.split_at(end);
+        remaining = rest;
+        (group, entries)
+    });
+    let headings = groups
+        .iter()
+        .filter(|(_, entries)| !entries.is_empty())
+        .count();
+    paint.member_page_rows = rows;
+    paint.members_max_scroll = (active.roster.len() + headings).saturating_sub(rows);
+    *offset = (*offset).min(paint.members_max_scroll);
+    let mut y = body.y + 1;
+    let mut skip = *offset;
+    let end = body.y + body.height;
+    for (group, entries) in groups
+        .into_iter()
+        .filter(|(_, entries)| !entries.is_empty())
+    {
+        if skip == 0 {
+            paint.card_line(
+                theme,
+                row(body.x, y, body.width),
+                group.label(),
+                Role::Title,
+                false,
+                background,
+            );
+            y += 1;
+        } else {
+            skip -= 1;
+        }
+        for entry in entries.iter().skip(skip).take(usize::from(end - y)) {
+            let indent = u16::from(body.width > 1);
+            paint.card_line(
+                theme,
+                row(body.x + indent, y, body.width - indent),
+                &safe_text(&entry.participant.display_name),
+                sender_role(&entry.participant),
+                false,
+                background,
+            );
+            y += 1;
+        }
+        if y == end {
+            break;
+        }
+        skip = skip.saturating_sub(entries.len());
     }
 }
 

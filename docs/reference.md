@@ -1408,6 +1408,9 @@ dialog. Use **Settings** or Alt-e to edit wake policy, attention or membership.
 Tab moves between controls. Enter opens a floating dropdown; use the arrows
 and Enter to choose, or Esc to discard the choice. Close the dialog to return
 to the composer without losing your draft.
+Use **Members** or Alt-u to see the selected shared channel's agents and users.
+Use arrows, PageUp/PageDown or the mouse wheel to scroll. Esc returns to the
+thread without changing the draft. Read-only attachments can browse members.
 In the composer, Ctrl-a/e move to the start/end of the line. Ctrl-w deletes the
 previous word; Ctrl-u/k delete to the start/end of the line.
 Drag across history text to copy it using the configured clipboard policy.
