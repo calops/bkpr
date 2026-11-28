@@ -24,6 +24,10 @@ Every public entity needs a concise Rust doc comment stating its consumer-facing
 
 Prefer self-explanatory code. Comments are a last resort for unavoidable non-obvious complexity or an optimization that cannot be understood locally; don't narrate the code. DRY is paramount: extract abstractions for real duplication and a stable shared responsibility, with concrete consumers. Don't merge similar-looking code with different semantics or build unused generic frameworks.
 
+- **Reuse the existing implementation for the same responsibility.** Before adding behavior, find its current owner and extend that code rather than creating a parallel path. Share rules, lifecycle handling and presentation where their contracts match. Keep different responsibilities separate even when the code looks similar.
+- **Use the same components throughout the TUI.** A button, dropdown, consent dialog or split must use the shared component end to end, including its layout, hit testing, keyboard and mouse interaction, and fancy/plain rendering. Reusing only geometry or strings is not enough. If the component cannot represent a real use case, extend it in `bkpr-tui-framework` and migrate the relevant callers rather than building a screen-specific substitute.
+- **Keep policy, interaction and rendering in their owning layers.** The backend owns authority and durable state; the client owns application interaction and projection; the framework owns reusable UI behavior and presentation. Apply the same separation within every crate. Extract only what has a clear shared contract, and don't move product policy into infrastructure to make reuse easier.
+
 Review dependency maintenance, licensing, feature selection, transitive version duplication and compilation costs. A popular substantial crate is not unsuitable merely because its dependency tree is large; don't replace a good library with custom infrastructure to reduce a count. Justify dependency changes with actual capability, architecture and build/performance evidence.
 
 ## Architecture and crate boundaries
