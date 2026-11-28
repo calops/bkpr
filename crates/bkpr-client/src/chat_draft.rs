@@ -1,4 +1,5 @@
 use bkpr_protocol::channels::*;
+use bkpr_protocol::roles::{RoleGrantId, WorkspaceRole};
 use bkpr_tui_framework::{EditAction, TextInput, markdown, safe_text, text_width};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -6,11 +7,37 @@ use unicode_segmentation::UnicodeSegmentation;
 struct Mention {
     bytes: Range<usize>,
     binding: ChannelMentionBinding,
+    coordinator_grant: Option<RoleGrantId>,
 }
 
 pub(super) struct Completion {
     start: usize,
     selected: usize,
+    slash: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Choice<'a> {
+    Agent(&'a ChannelRosterEntry),
+    Coordinator(&'a ChannelRosterEntry, &'a RoleGrantId),
+    Slash(&'static str),
+}
+
+fn slash_options(value: &str) -> Option<(usize, &'static [&'static str])> {
+    if !value.starts_with('/') || value.contains('\n') || value == "/role coordinator none" {
+        return None;
+    }
+    let (start, options): (_, &[_]) = if value.starts_with("/role coordinator ") {
+        ("/role coordinator ".len(), &["none", "@"])
+    } else if value.starts_with("/role ") {
+        ("/role ".len(), &["coordinator"])
+    } else {
+        (0, &["/role"])
+    };
+    options
+        .iter()
+        .any(|choice| choice.starts_with(&value[start..]))
+        .then_some((start, options))
 }
 
 pub(super) struct Draft {
@@ -34,6 +61,50 @@ impl Default for Draft {
 }
 
 impl Draft {
+    pub(super) fn role_target(
+        &self,
+    ) -> Option<Result<Option<&ChannelMentionBinding>, &'static str>> {
+        let target = role_argument(&self.input.value)?;
+        Some(if self.input.value.contains('\n') {
+            Err("A role command must be on one line")
+        } else if let Some((_, "none")) = target {
+            Ok(None)
+        } else if let Some((start, text)) = target.filter(|(_, text)| text.starts_with('@')) {
+            self.mentions
+                .iter()
+                .find(|mention| mention.bytes == (start..start + text.len()))
+                .map(|mention| Some(&mention.binding))
+                .ok_or("Select an exact agent from the @ mention picker")
+        } else {
+            Err("Use /role coordinator @agent or /role coordinator none")
+        })
+    }
+
+    pub(super) fn completing_role_target(&self) -> bool {
+        self.completion.as_ref().is_some_and(|completion| {
+            !completion.slash
+                && !self.input.value.contains('\n')
+                && role_argument(&self.input.value)
+                    .flatten()
+                    .is_some_and(|(start, _)| start == completion.start)
+        })
+    }
+
+    pub(super) fn slash_completing(&self) -> bool {
+        self.completion
+            .as_ref()
+            .is_some_and(|completion| completion.slash)
+    }
+
+    pub(super) fn invalidate_completion(&mut self) -> bool {
+        if let Some(completion) = &mut self.completion {
+            completion.selected = 0;
+            true
+        } else {
+            false
+        }
+    }
+
     pub(super) fn paste(&mut self, text: &str) {
         if text.len() <= 2 * MAX_POST_BYTES && text.contains('\r') {
             // Xterm sends CR for selection line breaks, even in bracketed paste.
@@ -69,9 +140,24 @@ impl Draft {
                 self.completion = Some(Completion {
                     start: at,
                     selected: 0,
+                    slash: false,
                 });
                 return true;
             }
+        }
+        if typed
+            && self.input.cursor == self.input.value.len()
+            && (self.slash_completing()
+                || value == "/"
+                || matches!(self.input.value.as_str(), "/role " | "/role coordinator "))
+            && let Some((start, _)) = slash_options(&self.input.value)
+        {
+            self.completion = Some(Completion {
+                start,
+                selected: 0,
+                slash: true,
+            });
+            return false;
         }
         self.update_query();
         false
@@ -115,6 +201,9 @@ impl Draft {
 
     fn query(&self) -> Option<&str> {
         let start = self.completion.as_ref()?.start;
+        if self.slash_completing() {
+            return None;
+        }
         let source = self
             .input
             .value
@@ -124,7 +213,11 @@ impl Draft {
     }
 
     fn update_query(&mut self) {
-        if self.query().is_none() {
+        if !(self.slash_completing()
+            && self.input.cursor == self.input.value.len()
+            && slash_options(&self.input.value).is_some())
+            && self.query().is_none()
+        {
             self.completion = None;
         } else if let Some(completion) = &mut self.completion {
             completion.selected = 0;
@@ -151,7 +244,7 @@ impl Draft {
     }
 
     pub(super) fn move_completion(&mut self, delta: isize, roster: &[ChannelRosterEntry]) {
-        let count = self.matches(roster).count();
+        let count = self.candidates(roster).count();
         if let Some(completion) = &mut self.completion {
             completion.selected = completion
                 .selected
@@ -160,16 +253,47 @@ impl Draft {
         }
     }
 
+    fn candidates<'a>(&self, roster: &'a [ChannelRosterEntry]) -> impl Iterator<Item = Choice<'a>> {
+        let slash = if self.slash_completing() {
+            slash_options(&self.input.value)
+        } else {
+            None
+        };
+        let commands = slash.into_iter().flat_map(move |(start, options)| {
+            options
+                .iter()
+                .copied()
+                .filter(move |choice| choice.starts_with(&self.input.value[start..]))
+        });
+        let coordinator = self
+            .query()
+            .filter(|query| {
+                !self.completing_role_target()
+                    && "coordinator".starts_with(&query.to_ascii_lowercase())
+            })
+            .and_then(|_| {
+                roster.iter().find_map(|entry| {
+                    let role = entry.role.as_ref()?;
+                    (role.role == WorkspaceRole::Coordinator && entry.binding.is_some())
+                        .then_some(Choice::Coordinator(entry, &role.grant_id))
+                })
+            });
+        commands
+            .map(Choice::Slash)
+            .chain(coordinator)
+            .chain(self.matches(roster).map(Choice::Agent))
+    }
+
     pub(super) fn choices<'a>(
         &self,
         roster: &'a [ChannelRosterEntry],
         capacity: usize,
-    ) -> impl Iterator<Item = (usize, &'a ChannelRosterEntry, bool)> {
+    ) -> impl Iterator<Item = (usize, Choice<'a>, bool)> {
         let selected = self
             .completion
             .as_ref()
             .map_or(0, |completion| completion.selected);
-        self.matches(roster)
+        self.candidates(roster)
             .enumerate()
             .skip(selected.saturating_sub(capacity.saturating_sub(1)))
             .take(capacity)
@@ -181,33 +305,56 @@ impl Draft {
         roster: &[ChannelRosterEntry],
         capacity: usize,
         index: Option<usize>,
-    ) {
+    ) -> bool {
         if capacity == 0 {
-            return;
+            return false;
         }
         let Some(completion) = &self.completion else {
-            return;
+            return false;
         };
         let Some((_, entry, _)) = self
             .choices(roster, capacity)
             .find(|&(choice, _, chosen)| index.map_or(chosen, |index| choice == index))
         else {
-            return;
+            return false;
         };
-        let value = format!("@{} ", safe_text(&entry.participant.display_name));
+        if let Choice::Slash(command) = entry {
+            let range = completion.start..self.input.cursor;
+            if command == "@" {
+                return self.insert("@", true);
+            }
+            let Some(inserted) = self.input.replace_range(range.clone(), command) else {
+                return false;
+            };
+            self.splice(range, inserted.len());
+            self.completion = None;
+            return self.insert(" ", true);
+        }
+        let (entry, coordinator_grant) = match entry {
+            Choice::Agent(entry) => (entry, None),
+            Choice::Coordinator(entry, grant) => (entry, Some(grant.clone())),
+            Choice::Slash(_) => unreachable!(),
+        };
+        let value = if coordinator_grant.is_some() {
+            "@coordinator ".into()
+        } else {
+            format!("@{} ", safe_text(&entry.participant.display_name))
+        };
         let range = completion.start..self.input.cursor;
         let Some(inserted) = self.input.replace_range(range.clone(), &value) else {
             self.error = Some("Mention would exceed the message size limit".into());
-            return;
+            return false;
         };
         let binding = entry.binding.as_ref().expect("eligible selection").clone();
         self.splice(range, inserted.len());
         self.mentions.push(Mention {
             bytes: inserted.start..inserted.end - 1,
             binding,
+            coordinator_grant,
         });
         self.completion = None;
         self.error = None;
+        false
     }
 
     pub(super) fn selection_label(entry: &ChannelRosterEntry, index: usize) -> (String, String) {
@@ -224,6 +371,9 @@ impl Draft {
 
     pub(super) fn completion_wake_preview(&self, policy: WakePolicy) -> Option<&'static str> {
         self.completion.as_ref()?;
+        if self.slash_completing() || self.completing_role_target() {
+            return None;
+        }
         Some(match policy {
             WakePolicy::None => "No wake",
             WakePolicy::All => "Wakes all eligible",
@@ -237,10 +387,19 @@ impl Draft {
         }
         let mut bindings = Vec::<ChannelMentionBinding>::new();
         let mut mention_spans = Vec::with_capacity(self.mentions.len());
+        let mut coordinator_grant_id = None;
         if !self.mentions.is_empty() {
             let document = markdown::Document::parse(&self.input.value);
             let rows = document.wrap(MAX_POST_BYTES);
             for mention in &self.mentions {
+                if let Some(grant) = &mention.coordinator_grant {
+                    if coordinator_grant_id.is_some_and(|previous| previous != grant) {
+                        return Err(
+                            "Coordinator changed. Remove and reselect the @coordinator mentions.",
+                        );
+                    }
+                    coordinator_grant_id = Some(grant);
+                }
                 if !allows_in_rows(&rows, mention.bytes.start) {
                     return Err(
                         "A selected mention is now in code or a quote. Remove it before sending.",
@@ -266,22 +425,31 @@ impl Draft {
             }
         }
         mention_spans.sort_unstable_by_key(|span| span.start);
-        Ok(ChannelRequest::PostUser {
-            channel_id,
-            post: ChannelPost {
-                idempotency_key: uuid::Uuid::new_v4().to_string(),
-                text: self.input.value.clone(),
-                intent: PostIntent::Note,
-                mentions: bindings
-                    .iter()
-                    .map(|binding| binding.participant_id.clone())
-                    .collect(),
-                mention_spans,
-                reply_to: self.reply_to.clone(),
-                attachments: Vec::new(),
-                source: None,
+        let post = ChannelPost {
+            idempotency_key: uuid::Uuid::new_v4().to_string(),
+            text: self.input.value.clone(),
+            intent: PostIntent::Note,
+            mentions: bindings
+                .iter()
+                .map(|binding| binding.participant_id.clone())
+                .collect(),
+            mention_spans,
+            reply_to: self.reply_to.clone(),
+            attachments: Vec::new(),
+            source: None,
+        };
+        Ok(match coordinator_grant_id {
+            Some(grant) => ChannelRequest::PostUserWithCoordinator {
+                channel_id,
+                post,
+                bindings,
+                coordinator_grant_id: grant.clone(),
             },
-            bindings,
+            None => ChannelRequest::PostUser {
+                channel_id,
+                post,
+                bindings,
+            },
         })
     }
 
@@ -346,6 +514,21 @@ impl Draft {
     }
 }
 
+// Outer None means ordinary chat; inner None is a reserved command with invalid syntax.
+fn role_argument(text: &str) -> Option<Option<(usize, &str)>> {
+    let command = text.trim_start().strip_prefix("/role")?;
+    if !command.is_empty() && !command.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let argument = command
+        .trim_start()
+        .strip_prefix("coordinator")
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+        .map(str::trim_start)
+        .map(|rest| (text.len() - rest.len(), rest.trim_end()));
+    Some(argument)
+}
+
 fn allows_mention(text: &str, at: usize) -> bool {
     allows_in_rows(&markdown::Document::parse(text).wrap(MAX_POST_BYTES), at)
 }
@@ -390,6 +573,69 @@ mod tests {
             panic!("expected user post");
         };
         assert!(post.mentions.is_empty() && bindings.is_empty());
+    }
+
+    #[test]
+    fn coordinator_alias_freezes_selected_tenure_and_plain_text_has_no_binding() {
+        let mut roster = twin_roster();
+        let old = RoleGrantId("old-tenure".into());
+        roster[0].role = Some(bkpr_protocol::roles::RoleAttribution {
+            role: WorkspaceRole::Coordinator,
+            grant_id: old.clone(),
+        });
+        let binding = roster[0].binding.clone().unwrap();
+        let mut draft = Draft::default();
+        draft.insert("@", true);
+        draft.select_mention(&roster, 2, None);
+        roster[0].role.as_mut().unwrap().grant_id = RoleGrantId("new-tenure".into());
+        assert!(matches!(
+            draft.post(ChannelId("desk".into())).unwrap(),
+            ChannelRequest::PostUserWithCoordinator { post, bindings, coordinator_grant_id, .. }
+                if post.text == "@coordinator " && bindings == [binding] && coordinator_grant_id == old
+        ));
+        let mut plain = Draft::default();
+        plain.paste("@coordinator");
+        assert!(matches!(
+            plain.post(ChannelId("desk".into())).unwrap(),
+            ChannelRequest::PostUser { bindings, .. } if bindings.is_empty()
+        ));
+    }
+
+    #[test]
+    fn slash_completion_edits_without_creating_a_mention_binding() {
+        let mut draft = Draft::default();
+        draft.insert("/", true);
+        draft.select_mention(&[], 2, None);
+        assert_eq!(draft.input.value, "/role ");
+        draft.select_mention(&[], 2, None);
+        assert_eq!(draft.input.value, "/role coordinator ");
+        draft.move_completion(1, &[]);
+        assert!(draft.select_mention(&[], 2, None));
+        assert_eq!(draft.input.value, "/role coordinator @");
+        assert!(matches!(draft.role_target(), Some(Err(_))));
+        assert!(draft.completing_role_target());
+        let mut ordinary = Draft::default();
+        ordinary.insert("path", true);
+        ordinary.insert("/", true);
+        assert!(ordinary.completion.is_none());
+    }
+
+    #[test]
+    fn role_target_requires_a_whole_structured_mention() {
+        let roster = twin_roster();
+        let mut draft = Draft::default();
+        draft.paste("/role coordinator @Twin");
+        assert!(matches!(draft.role_target(), Some(Err(_))));
+
+        let mut draft = Draft::default();
+        draft.insert("/role coordinator ", true);
+        assert!(draft.insert("@", true));
+        assert!(draft.completing_role_target());
+        assert_eq!(draft.completion_wake_preview(WakePolicy::All), None);
+        draft.select_mention(&roster, 2, Some(1));
+        assert_eq!(draft.role_target(), Some(Ok(roster[1].binding.as_ref())));
+        draft.insert("tail", true);
+        assert!(matches!(draft.role_target(), Some(Err(_))));
     }
 
     #[test]

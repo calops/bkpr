@@ -1,4 +1,5 @@
-use super::{Anchor, Chat, Draft, Send, chat_images};
+use super::super::roles_ui;
+use super::{Active, Anchor, Chat, Draft, Send, chat_images};
 use bkpr_protocol::{
     ColorSource, Cursor, CursorShape, Frame, SelectionSpan, Size, Style, channels::*,
 };
@@ -55,6 +56,7 @@ impl Entry {
         usize::from(meta.intent != PostIntent::Note)
             + usize::from(meta.reply_to.is_some())
             + usize::from(!meta.mentions.is_empty())
+            + usize::from(meta.role.is_some())
     }
 
     fn len(&self, compact: bool, graphics: bool) -> usize {
@@ -141,12 +143,83 @@ pub(super) enum Hit {
     Latest,
     Create,
     Manage,
+    Members,
+    MemberBack,
+    MemberRail,
+    Divider(bkpr_protocol::Axis),
+    Invite,
+    Assign,
+    AssignAgent(usize),
 }
 
-const CHANNEL_BUTTONS: [(Hit, &str); 2] = [
+impl Paint {
+    pub(super) fn has_member_rail(&self) -> bool {
+        self.hits.iter().any(|(_, hit)| *hit == Hit::MemberRail)
+    }
+}
+
+const CHANNEL_BUTTONS: [(Hit, &str); 5] = [
     (Hit::Create, "\u{f0415} New channel"),
     (Hit::Manage, "\u{f0493} Settings"),
+    (Hit::Members, "Members"),
+    (Hit::MemberBack, MEMBER_BACK),
+    (Hit::Invite, "Invite member"),
 ];
+
+const MEMBER_BACK: &str = "Back";
+fn assignment_label(entry: &bkpr_protocol::channels::ChannelRosterEntry) -> String {
+    let binding = entry.binding.as_ref().expect("eligible assignment choice");
+    let suffix: String = binding.launch_id.chars().take(8).collect();
+    format!(
+        "{} · {}",
+        safe_text(&suffix),
+        safe_text(&entry.participant.display_name)
+    )
+}
+
+fn is_channel_button(hit: Hit) -> bool {
+    matches!(
+        hit,
+        Hit::Create
+            | Hit::Manage
+            | Hit::Members
+            | Hit::MemberBack
+            | Hit::Invite
+            | Hit::Assign
+            | Hit::AssignAgent(_)
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum MemberGroup {
+    Coordinator,
+    Agents,
+    Users,
+}
+
+pub(super) fn member_group(entry: &ChannelRosterEntry) -> MemberGroup {
+    if let Some(attribution) = &entry.role {
+        return match attribution.role {
+            bkpr_protocol::roles::WorkspaceRole::Coordinator => MemberGroup::Coordinator,
+        };
+    }
+    match entry.participant.kind {
+        ParticipantKind::Agent => MemberGroup::Agents,
+        ParticipantKind::User => MemberGroup::Users,
+    }
+}
+
+impl MemberGroup {
+    const ALL: [Self; 3] = [Self::Coordinator, Self::Agents, Self::Users];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Coordinator => roles_ui::label(bkpr_protocol::roles::WorkspaceRole::Coordinator),
+            Self::Agents => "Agents",
+            Self::Users => "Users",
+        }
+    }
+}
 
 struct Range {
     sequence: u64,
@@ -199,7 +272,9 @@ pub(super) struct Paint {
     hits: Vec<(Rect, Hit)>,
     button_pointer: Option<(u16, u16)>,
     button_press: Option<(Rect, Hit)>,
-    painted_buttons: [Option<(ButtonState, bool)>; 2],
+    painted_buttons: [Option<(ButtonState, bool)>; CHANNEL_BUTTONS.len()],
+    assignment_menu: Option<bkpr_tui_framework::dropdown::Layout>,
+    assignment_face: Option<(ButtonState, bool, bool)>,
     hovered_channel: Option<ChannelId>,
     row_highlights: [Option<Rect>; 2],
     inlays: Vec<(Rect, Rect, Option<u8>)>,
@@ -208,6 +283,8 @@ pub(super) struct Paint {
     images: Frame,
     history: Rect,
     completion_capacity: usize,
+    member_page_rows: usize,
+    members_max_scroll: usize,
     composer_width: u16,
     composer: Option<ComposerPaint>,
     composer_dirty: bool,
@@ -281,7 +358,9 @@ impl Default for Paint {
             hits: Vec::new(),
             button_pointer: None,
             button_press: None,
-            painted_buttons: [None; 2],
+            painted_buttons: [None; CHANNEL_BUTTONS.len()],
+            assignment_menu: None,
+            assignment_face: None,
             hovered_channel: None,
             row_highlights: [None; 2],
             inlays: Vec::with_capacity(2),
@@ -290,6 +369,8 @@ impl Default for Paint {
             images: graphics_frame(initial),
             history: Rect::default(),
             completion_capacity: 0,
+            member_page_rows: 0,
+            members_max_scroll: 0,
             composer_width: 1,
             composer: None,
             composer_dirty: false,
@@ -309,7 +390,7 @@ impl Default for Paint {
 impl Paint {
     fn button_at(&self, (x, y): (u16, u16)) -> Option<(Rect, Hit)> {
         self.hits.iter().rev().find_map(|&(rect, hit)| {
-            (matches!(hit, Hit::Create | Hit::Manage) && rect.contains(x, y)).then_some((rect, hit))
+            (is_channel_button(hit) && rect.contains(x, y)).then_some((rect, hit))
         })
     }
 
@@ -333,9 +414,33 @@ impl Paint {
             .map(|(_, hit)| *hit)
     }
 
+    pub(super) fn divider(&self, point: (u16, u16)) -> Option<(Rect, bkpr_protocol::Axis)> {
+        let x = point.0.checked_sub(self.outer.x)?;
+        let y = point.1.checked_sub(self.outer.y)?;
+        self.hits.iter().rev().find_map(|(rect, hit)| match hit {
+            Hit::Divider(axis) if rect.contains(x, y) => Some((
+                Rect {
+                    x: rect.x + self.outer.x,
+                    y: rect.y + self.outer.y,
+                    ..*rect
+                },
+                *axis,
+            )),
+            _ => None,
+        })
+    }
+
     pub(super) fn page_rows(&self) -> u16 {
         self.history.height.saturating_sub(1)
     }
+    pub(super) fn member_page_rows(&self) -> usize {
+        self.member_page_rows
+    }
+
+    pub(super) fn members_max_scroll(&self) -> usize {
+        self.members_max_scroll
+    }
+
     pub(super) fn composer_width(&self) -> u16 {
         self.composer_width
     }
@@ -374,13 +479,17 @@ impl Paint {
         self.outer = key.outer;
         self.history = Rect::default();
         self.completion_capacity = 0;
+        self.member_page_rows = 0;
+        self.members_max_scroll = 0;
         self.composer_width = 1;
         self.composer = None;
         self.composer_dirty = false;
         self.ranges.clear();
         self.rendered.clear();
         self.hits.clear();
-        self.painted_buttons = [None; 2];
+        self.painted_buttons = [None; CHANNEL_BUTTONS.len()];
+        self.assignment_menu = None;
+        self.assignment_face = None;
         self.row_highlights = [None; 2];
         self.inlays.clear();
         self.inlay_mask = None;
@@ -586,7 +695,7 @@ impl Chat {
         paint.inlay_mask = Some(mask);
         let parent = paint.key.expect("painted chat").backgrounds[2];
         let mut border_rows = Vec::new();
-        let mut plain = [Rect::default(); 3];
+        let mut plain = [Rect::default(); 4];
         let mut count = 0;
         for (index, &(outer, _, _)) in paint.inlays.iter().enumerate() {
             if mask & (1 << index) == 0 {
@@ -655,15 +764,35 @@ impl Chat {
         self.paint.button_press.is_some()
     }
 
-    pub(in crate::app) fn release_button(&mut self, read_only: bool) {
+    pub(super) fn has_assignment_hit(&self, target: Hit) -> bool {
+        self.paint.key.is_some() && self.paint.hits.iter().any(|(_, hit)| *hit == target)
+    }
+
+    pub(super) fn invalidate_roster_hits(&mut self) {
+        self.paint
+            .hits
+            .retain(|(_, hit)| !matches!(hit, Hit::Mention(_) | Hit::AssignAgent(_)));
+        self.paint.button_press = None;
+        self.paint.completion_capacity = 0;
+    }
+
+    pub(in crate::app) fn release_button(&mut self, read_only: bool) -> super::Effect {
         let pressed = self.paint.button_press.take();
         let current = self
             .paint
             .button_pointer
             .and_then(|point| self.paint.button_at(point));
         if let Some((_, hit)) = pressed.filter(|pressed| Some(*pressed) == current) {
+            if let Hit::AssignAgent(index) = hit {
+                return if read_only {
+                    super::Effect::None
+                } else {
+                    self.assign_at(index)
+                };
+            }
             self.activate_button(hit, read_only);
         }
+        super::Effect::None
     }
 
     pub(in crate::app) fn cancel_button_press(&mut self) {
@@ -675,8 +804,10 @@ impl Chat {
         &mut self,
         effects: &mut Frame,
         theme: &Theme,
-        mut place: impl FnMut(&mut Frame, Rect, ButtonState) -> bool,
+        graphics: &crate::chrome_graphics::ChromeGraphics,
     ) {
+        use crate::chrome_graphics::FormControlFace;
+        let mut place = graphics.form_control_painter();
         let paint = &mut self.paint;
         effects.size = paint.surface.frame.size;
         effects.images.clear();
@@ -691,7 +822,7 @@ impl Chat {
                 paint.button_pointer,
                 paint.button_press == Some((rect, hit)),
             );
-            let graphical = place(effects, rect, state);
+            let graphical = place(effects, rect, state, FormControlFace::Action);
             let presentation = Some((state, graphical));
             if paint.painted_buttons[index] != presentation {
                 Button::new(label).paint(
@@ -702,6 +833,63 @@ impl Chat {
                     graphical,
                 );
                 paint.painted_buttons[index] = presentation;
+            }
+        }
+        if let Some(&(trigger, _)) = paint.hits.iter().find(|(_, hit)| *hit == Hit::Assign) {
+            let open = self.assign_cursor.is_some();
+            let state = ButtonState::at(
+                trigger,
+                paint.button_pointer,
+                open || paint.button_press == Some((trigger, Hit::Assign)),
+            );
+            let graphical = place(effects, trigger, state, FormControlFace::Neutral);
+            let rim = paint.assignment_menu.is_some_and(|layout| {
+                layout.outer() != layout.bounds()
+                    && graphics.decorate_window_in_clipped(
+                        effects,
+                        layout.outer(),
+                        true,
+                        4096,
+                        &[layout.bounds()],
+                    )
+            });
+            if paint.assignment_face != Some((state, graphical, rim)) {
+                use bkpr_tui_framework::dropdown::Dropdown;
+                let background = paint.key.expect("painted assignment").backgrounds[0];
+                let (_, text, _) = Dropdown::new(&[(0, "Assign coordinator")])
+                    .trigger_with_face(trigger, 0, open, graphical);
+                paint.card_line(theme, trigger, &text, Role::Accent, false, background);
+                if let Some(layout) = paint.assignment_menu {
+                    let active = self.active.as_ref().expect("assignment roster");
+                    let labels: Vec<_> = active
+                        .roster
+                        .iter()
+                        .filter(|entry| entry.binding.is_some())
+                        .map(assignment_label)
+                        .collect();
+                    let choices: Vec<_> = labels
+                        .iter()
+                        .enumerate()
+                        .map(|(i, label)| (i, label.as_str()))
+                        .collect();
+                    let mut popup = UiSurface::new(layout.outer().size(paint.surface.frame.size));
+                    Dropdown::new(&choices).paint_popup(
+                        &mut popup,
+                        layout,
+                        usize::MAX,
+                        (self.assign_cursor.unwrap_or_default(), None),
+                        theme,
+                        rim,
+                    );
+                    let area = layout.outer();
+                    for (y, row) in popup.frame.rows.iter().enumerate() {
+                        let x = usize::from(area.x);
+                        paint.surface.frame.rows[usize::from(area.y) + y].cells
+                            [x..x + usize::from(area.width)]
+                            .clone_from_slice(&row.cells[..usize::from(area.width)]);
+                    }
+                }
+                paint.assignment_face = Some((state, graphical, rim));
             }
         }
     }
@@ -971,6 +1159,7 @@ impl Chat {
         } = key;
         self.images.start_frame();
         self.images_wanted.clear();
+        let assignment_pending = self.assignment_pending();
         let paint = &mut self.paint;
         if let Some(active) = &mut self.active {
             active.history.visible_through = 0;
@@ -985,12 +1174,37 @@ impl Chat {
             height: size.rows,
         };
         let list_only = self.channel_chooser;
+        if let Some(offset) = &mut self.members_scroll
+            && let Some(active) = &self.active
+            && let Some(summary) = self.catalog.get(&active.id)
+        {
+            let mut title = format!("Members · {}", channel_name(summary));
+            if self.roles_enabled == Some(false) {
+                title.push_str(" · Live updates unavailable");
+            }
+            paint_members(
+                paint,
+                theme,
+                full,
+                (
+                    list_background,
+                    true,
+                    !read_only && invite_available(summary),
+                ),
+                &title,
+                active,
+                offset,
+            );
+            return;
+        }
         let split = (!list_only && size.cols >= LIST_MIN_WIDTH)
             .then(|| {
                 crate::tiling::partition_at(
                     full,
                     bkpr_protocol::Axis::Horizontal,
-                    (size.cols / 4).clamp(15, 24) - 1,
+                    self.rail_width
+                        .unwrap_or_else(|| (size.cols / 4).clamp(19, 24) - 1)
+                        .clamp(12, size.cols.saturating_sub(24).max(12)),
                 )
             })
             .flatten();
@@ -1003,15 +1217,63 @@ impl Chat {
             .active
             .as_ref()
             .and_then(|active| self.catalog.get(&active.id));
-        let writing = !read_only && summary.is_some_and(|summary| !summary.direct);
+        let (list, member_rail) = match (list, summary) {
+            (Some(rail), Some(channel))
+                if !list_only
+                    && rail.height >= 12
+                    && Self::can_show_members(channel, self.roles_enabled) =>
+            {
+                let first = self
+                    .channels_height
+                    .unwrap_or(rail.height * 3 / 5)
+                    .clamp(6, rail.height - 6);
+                crate::tiling::partition_at(rail, bkpr_protocol::Axis::Vertical, first)
+                    .map_or((Some(rail), None), |(channels, _, members)| {
+                        (Some(channels), Some(members))
+                    })
+            }
+            (rail, _) => (rail, None),
+        };
+        if let (Some(rail), Some(channel), Some(active)) =
+            (member_rail, summary, self.active.as_ref())
+        {
+            let title = if self.roles_enabled == Some(false) {
+                "Members · Snapshot".into()
+            } else {
+                format!("Members · {}", channel_name(channel))
+            };
+            paint.target(rail, Hit::MemberRail);
+            paint_members(
+                paint,
+                theme,
+                rail,
+                (
+                    list_background,
+                    false,
+                    !read_only && invite_available(channel),
+                ),
+                &title,
+                active,
+                &mut self.rail_members_scroll,
+            );
+        }
+        let writing = !read_only && summary.is_some_and(Self::can_write);
         let can_create = !read_only && self.catalog_ready && self.catalog_error.is_none();
         if let Some(outer) = list {
-            let body = paint.inlay(theme, outer, list_background, None);
+            let frame_body = paint.inlay(theme, outer, list_background, None);
+            let body = rail_content(frame_body);
             paint.target(outer, Hit::List);
             let reserved = 1 + u16::from(!self.ids.is_empty());
-            let has_settings = writing && body.height > reserved;
-            let has_create = can_create && body.height >= reserved + 2 + u16::from(has_settings);
-            let actions = u16::from(has_settings) + 2 * u16::from(has_create);
+            let has_settings =
+                !read_only && summary.is_some_and(Self::can_manage) && body.height > reserved;
+            let has_members = member_rail.is_none()
+                && summary
+                    .is_some_and(|channel| Self::can_show_members(channel, self.roles_enabled))
+                && body.height > reserved + u16::from(has_settings);
+            let has_create = can_create
+                && body.height >= reserved + 2 + u16::from(has_settings) + u16::from(has_members);
+            let actions =
+                u16::from(has_settings) + u16::from(has_members) + 2 * u16::from(has_create);
             let first_channel = 1 + u16::from(
                 !list_only && !self.ids.is_empty() && body.height > reserved + actions,
             );
@@ -1045,13 +1307,21 @@ impl Chat {
                 .take(list_height.into())
                 .enumerate()
             {
-                let summary = &self.catalog[id];
-                let lead = if summary.unread_attention { "! " } else { "  " };
-                let name = channel_name(summary);
+                let summary = self.catalog.get(id);
+                let unread = summary.is_some_and(|summary| summary.unread_attention);
+                let lead = if unread { "!" } else { " " };
+                let name = match summary {
+                    Some(summary) if summary.role_thread.is_some_and(|thread| thread.archived) => {
+                        let short: String = id.as_ref().chars().take(6).collect();
+                        format!("Archive {}", safe_text(&short))
+                    }
+                    Some(summary) => channel_name(summary),
+                    None => "#coordinator".into(),
+                };
                 let full = format!("{lead}{name}");
                 let bounds = row(body.x, body.y + first_channel + line as u16, body.width);
                 let chosen = list_only && self.list_cursor == index;
-                let role = if summary.unread_attention {
+                let role = if unread {
                     Role::Warning
                 } else if selected == Some(id) {
                     Role::Accent
@@ -1069,7 +1339,10 @@ impl Chat {
                     }
                     paint.card_line(theme, bounds, &full, role, chosen, list_background);
                 }
-                paint.target(bounds, Hit::Channel(index));
+                paint.target(
+                    row(frame_body.x, bounds.y, frame_body.width),
+                    Hit::Channel(index),
+                );
             }
             if has_create {
                 let visible = (self.ids.len().saturating_sub(offset)).min(usize::from(list_height));
@@ -1078,17 +1351,35 @@ impl Chat {
                         body.x,
                         body.y + first_channel + visible as u16 + 1,
                         body.width,
-                    )
-                    .inset_horizontal(1),
+                    ),
                     Hit::Create,
                 );
             }
             if has_settings {
                 paint.target(
-                    row(body.x, body.y + body.height - 1, body.width).inset_horizontal(1),
+                    row(body.x, body.y + body.height - 1, body.width),
                     Hit::Manage,
                 );
             }
+            if has_members {
+                paint.target(
+                    row(
+                        body.x,
+                        body.y + body.height - 1 - u16::from(has_settings),
+                        body.width,
+                    ),
+                    Hit::Members,
+                );
+            }
+        }
+        if let Some((_, divider, _)) = split {
+            paint.target(divider, Hit::Divider(bkpr_protocol::Axis::Horizontal));
+        }
+        if let Some(members) = member_rail {
+            paint.target(
+                row(members.x, members.y, members.width.saturating_sub(1)),
+                Hit::Divider(bkpr_protocol::Axis::Vertical),
+            );
         }
         if list_only {
             return;
@@ -1119,6 +1410,87 @@ impl Chat {
                 );
                 reserve
             };
+            if self
+                .active
+                .as_ref()
+                .is_some_and(|active| active.id.0.is_empty())
+                && self.catalog_ready
+                && self.catalog_error.is_none()
+            {
+                let pending = assignment_pending;
+                let label = match (self.roles_enabled, pending) {
+                    (_, true) => "Assigning coordinator…",
+                    (Some(true), false) => "No coordinator assigned",
+                    (Some(false), false) => "Workspace roles unavailable",
+                    (None, false) => "Checking workspace roles…",
+                };
+                let y = thread.y + thread.height.saturating_sub(1) / 2;
+                let width = text_width(label).min(usize::from(thread.width)) as u16;
+                paint.card_line(
+                    theme,
+                    row(thread.x + (thread.width - width) / 2, y, width),
+                    label,
+                    Role::Muted,
+                    false,
+                    list_background,
+                );
+                if !read_only
+                    && !pending
+                    && self.roles_enabled == Some(true)
+                    && y + 1 < thread.y + thread.height
+                {
+                    use bkpr_tui_framework::dropdown::Dropdown;
+                    let width = 30.min(thread.width);
+                    let trigger = row(thread.x + (thread.width - width) / 2, y + 1, width);
+                    let label = [(0, "Assign coordinator")];
+                    let (_, text, _) = Dropdown::new(&label).trigger_with_face(
+                        trigger,
+                        0,
+                        self.assign_cursor.is_some(),
+                        false,
+                    );
+                    paint.card_line(theme, trigger, &text, Role::Accent, false, list_background);
+                    paint.target(trigger, Hit::Assign);
+                    if let Some(index) = self.assign_cursor {
+                        let active = self.active.as_ref().unwrap();
+                        let labels: Vec<_> = active
+                            .roster
+                            .iter()
+                            .filter(|entry| entry.binding.is_some())
+                            .map(assignment_label)
+                            .collect();
+                        let choices: Vec<_> = labels
+                            .iter()
+                            .enumerate()
+                            .map(|(i, label)| (i, label.as_str()))
+                            .collect();
+                        let menu = Dropdown::new(&choices);
+                        if active.roster_ready
+                            && let Some(layout) = menu.layout(trigger, thread, index)
+                        {
+                            paint.assignment_menu = Some(layout);
+                            for i in layout.indices() {
+                                if let Some(rect) = layout.row(i) {
+                                    paint.target(rect, Hit::AssignAgent(i));
+                                }
+                            }
+                        } else {
+                            let text =
+                                active
+                                    .roster_error
+                                    .as_deref()
+                                    .unwrap_or(if active.roster_ready {
+                                        "No eligible agents"
+                                    } else {
+                                        "Loading eligible agents…"
+                                    });
+                            let rect = row(trigger.x, trigger.y + 1, width);
+                            paint.card_line(theme, rect, text, Role::Muted, false, list_background);
+                        }
+                    }
+                }
+                return;
+            }
             let (label, role) = if let Some(error) = &self.catalog_error {
                 (error.as_str(), Role::Error)
             } else if self.catalog_ready {
@@ -1144,6 +1516,7 @@ impl Chat {
         let status = if let Some(send) = self.sends.get(&active.id) {
             let (role, label) = match send {
                 Send::Pending { .. } => (Role::Info, "Sending…"),
+                Send::SettingRole => (Role::Info, "Updating Coordinator…"),
                 Send::Unknown(_) => (
                     Role::Error,
                     "Send outcome unknown · Ctrl-r retries the same post",
@@ -1246,8 +1619,8 @@ impl Chat {
         };
         let mut choices = [None; MAX_COMPLETIONS];
         if completion_capacity != 0
-            && active.roster_ready
             && let Some(draft) = draft
+            && (active.roster_ready || draft.slash_completing())
         {
             for (slot, choice) in choices
                 .iter_mut()
@@ -1354,7 +1727,20 @@ impl Chat {
             } else {
                 for (i, (index, entry, chosen)) in choices.into_iter().flatten().enumerate() {
                     let bounds = row(thread.x, completion_at + i as u16, thread.width);
-                    let (label, mut hint) = Draft::selection_label(entry, index);
+                    let (label, mut hint, role) = match entry {
+                        crate::app::chat_draft::Choice::Slash(command) => {
+                            (command.to_owned(), String::new(), Role::Accent)
+                        }
+                        crate::app::chat_draft::Choice::Coordinator(entry, _) => (
+                            "@coordinator".into(),
+                            format!(" · {}", safe_text(&entry.participant.display_name)),
+                            Role::BrightAccent,
+                        ),
+                        crate::app::chat_draft::Choice::Agent(entry) => {
+                            let (label, hint) = Draft::selection_label(entry, index);
+                            (label, hint, sender_role(&entry.participant))
+                        }
+                    };
                     let label_width = text_width(&label).min(usize::from(bounds.width)) as u16;
                     if chosen
                         && let Some(scope) =
@@ -1373,7 +1759,7 @@ impl Chat {
                     } else {
                         list_background
                     };
-                    let mut style = card_style(theme, sender_role(&entry.participant), background);
+                    let mut style = card_style(theme, role, background);
                     style.bold |= chosen;
                     paint.styled_line(row(bounds.x, bounds.y, label_width), &label, &style, false);
                     paint.card_line(
@@ -1448,6 +1834,131 @@ impl Chat {
                 &composer_text,
             );
         }
+    }
+}
+
+fn invite_available(channel: &ChannelSummary) -> bool {
+    super::chat_controls::Editor::can_invite(channel)
+}
+
+fn rail_content(body: Rect) -> Rect {
+    body.inset_horizontal(u16::from(body.width >= 3))
+}
+
+fn paint_members(
+    paint: &mut Paint,
+    theme: &Theme,
+    outer: Rect,
+    (background, show_back, invite): (ColorSource, bool, bool),
+    title: &str,
+    active: &Active,
+    offset: &mut usize,
+) {
+    let body = rail_content(paint.inlay(theme, outer, background, None));
+    if body.width == 0 || body.height == 0 {
+        return;
+    }
+    let back_width = Button::new(MEMBER_BACK).width();
+    let back = if show_back && body.width >= back_width + 8 {
+        paint.target(
+            row(body.x + body.width - back_width, body.y, back_width),
+            Hit::MemberBack,
+        );
+        back_width + 1
+    } else {
+        0
+    };
+    paint.card_line(
+        theme,
+        row(body.x, body.y, body.width - back),
+        title,
+        Role::Title,
+        false,
+        background,
+    );
+    let invite = invite && body.height >= 3;
+    if invite {
+        paint.target(
+            row(body.x, body.y + body.height - 1, body.width),
+            Hit::Invite,
+        );
+    }
+    let rows = usize::from(body.height - 1 - u16::from(invite));
+    if rows == 0 {
+        return;
+    }
+    let status = if active.workspace_roster {
+        Some(("Loading members…", Role::Muted))
+    } else if let Some(error) = &active.roster_error {
+        Some((error.as_str(), Role::Error))
+    } else if !active.roster_ready {
+        Some(("Loading members…", Role::Muted))
+    } else if active.roster.is_empty() {
+        Some(("No members", Role::Muted))
+    } else {
+        None
+    };
+    if let Some((status, role)) = status {
+        paint.card_line(
+            theme,
+            row(body.x, body.y + 1, body.width),
+            status,
+            role,
+            false,
+            background,
+        );
+        return;
+    }
+    let mut remaining = active.roster.as_slice();
+    let groups = MemberGroup::ALL.map(|group| {
+        let end = remaining.partition_point(|entry| member_group(entry) == group);
+        let (entries, rest) = remaining.split_at(end);
+        remaining = rest;
+        (group, entries)
+    });
+    let headings = groups
+        .iter()
+        .filter(|(_, entries)| !entries.is_empty())
+        .count();
+    paint.member_page_rows = rows;
+    paint.members_max_scroll = (active.roster.len() + headings).saturating_sub(rows);
+    *offset = (*offset).min(paint.members_max_scroll);
+    let mut y = body.y + 1;
+    let mut skip = *offset;
+    let end = body.y + body.height - u16::from(invite);
+    for (group, entries) in groups
+        .into_iter()
+        .filter(|(_, entries)| !entries.is_empty())
+    {
+        if skip == 0 {
+            paint.card_line(
+                theme,
+                row(body.x, y, body.width),
+                group.label(),
+                Role::Title,
+                false,
+                background,
+            );
+            y += 1;
+        } else {
+            skip -= 1;
+        }
+        for entry in entries.iter().skip(skip).take(usize::from(end - y)) {
+            let indent = u16::from(body.width > 1);
+            paint.card_line(
+                theme,
+                row(body.x + indent, y, body.width - indent),
+                &safe_text(&entry.participant.display_name),
+                sender_role(&entry.participant),
+                false,
+                background,
+            );
+            y += 1;
+        }
+        if y == end {
+            break;
+        }
+        skip = skip.saturating_sub(entries.len());
     }
 }
 
@@ -1676,6 +2187,13 @@ fn paint_history(
         let relative =
             |line: usize| (line >= upper && line < lower).then(|| area.y + (line - start) as u16);
         let mut line = at + usize::from(compact);
+        if let Some(attribution) = &meta.role {
+            if let Some(y) = relative(line) {
+                let label = format!("Posted as {}", roles_ui::label(attribution.role));
+                paint.line(theme, row(x, y, width), &label, Role::BrightAccent, false);
+            }
+            line += 1;
+        }
         if meta.intent != PostIntent::Note {
             let (label, role) = if meta.intent == PostIntent::Question {
                 ("? Question", Role::Warning)
@@ -1860,12 +2378,14 @@ fn check_copy_size(bytes: usize, limit: usize) -> anyhow::Result<()> {
 }
 
 fn channel_name(summary: &ChannelSummary) -> String {
-    let name = safe_text(&summary.name);
-    if summary.direct || name.starts_with('#') {
-        name
-    } else {
-        format!("#{name}")
+    let mut name = safe_text(&summary.name);
+    if !summary.direct && !name.starts_with('#') {
+        name.insert(0, '#');
     }
+    if summary.role_thread.is_some_and(|thread| thread.archived) {
+        name.push_str(" (archived)");
+    }
+    name
 }
 
 fn sender_role(participant: &Participant) -> Role {
@@ -2195,6 +2715,7 @@ mod tests {
         };
         chat.paint(area(wide), wide, &theme, false, false, true, BACKGROUNDS);
         let &[
+            (members, _, None),
             (list, list_body, None),
             (thread, thread_body, None),
             (composer, composer_body, Some(6)),
@@ -2202,6 +2723,8 @@ mod tests {
         else {
             panic!("expected neutral list and thread cards plus an accented composer");
         };
+        assert_eq!(members.x, list.x);
+        assert!(members.y >= list.y + list.height - 1);
         assert_eq!(
             chat.paint.history,
             crate::controller::padded_content(thread, crate::appearance::FANCY_PANE_PADDING)
@@ -2234,7 +2757,7 @@ mod tests {
         assert_eq!((composer.x, composer.width), (thread.x, thread.width));
         assert_eq!(composer.y + 1, thread.y + thread.height);
         assert_eq!(thread.x + 1, list.x + list.width);
-        assert_eq!(composer.y + composer.height, list.y + list.height);
+        assert_eq!(composer.y + composer.height, members.y + members.height);
         chat.set_graphical_inlays(0, &theme);
         assert_eq!(
             chat.surface().frame.rows[usize::from(composer.y)].cells[usize::from(thread.x)].text,
@@ -2259,7 +2782,7 @@ mod tests {
             })
         };
         for (hit, y) in [
-            (Hit::Create, list_body.y + 4),
+            (Hit::Create, list_body.y + 5),
             (Hit::Manage, list_body.y + list_body.height - 1),
         ] {
             let button = row(list_body.x, y, list_body.width).inset_horizontal(1);
@@ -2284,7 +2807,7 @@ mod tests {
         ));
         assert!(matches!(
             chat.paint.hit(list_body.x, list_body.y + 3),
-            Some(Hit::List)
+            Some(Hit::Channel(1))
         ));
 
         chat.active.as_mut().unwrap().history.anchor = Some(Anchor {
@@ -2294,7 +2817,7 @@ mod tests {
         chat.redraw();
         chat.paint(area(wide), wide, &theme, false, false, true, BACKGROUNDS);
         assert_eq!(chat.paint.history.height + 1, thread_body.height);
-        assert_eq!(chat.inlays()[2].0, composer);
+        assert_eq!(chat.inlays().last().map(|card| card.0), Some(composer));
         assert!(matches!(
             chat.paint
                 .hit(chat.paint.history.x, thread_body.y + thread_body.height - 1),
@@ -2343,7 +2866,7 @@ mod tests {
             panic!("expected only the list card");
         };
         assert_eq!(
-            chat.surface().frame.rows[usize::from(body.y + 1)].cells[usize::from(body.x)]
+            chat.surface().frame.rows[usize::from(body.y + 1)].cells[usize::from(body.x + 1)]
                 .style
                 .background_source,
             theme.selected_style(Role::Accent).background_source

@@ -3,6 +3,7 @@ use super::{
     validate_response,
 };
 use anyhow::{Context, Result, bail, ensure};
+use bkpr_protocol::roles::{RoleEventKind, RoleRequest};
 use bkpr_protocol::{
     ClientAuthority, Operation, PaneSnapshot, Payload, Request, SessionInfo, scene_wire,
     wire::{self, Codec, Kind},
@@ -86,6 +87,9 @@ fn observational(operation: &Operation) -> bool {
                 request: bkpr_protocol::PaneRequest::Inspect
                     | bkpr_protocol::PaneRequest::Poll { .. },
                 ..
+            }
+            | Operation::Roles {
+                request: RoleRequest::Snapshot {},
             }
     )
 }
@@ -538,6 +542,15 @@ pub enum Lifecycle {
     TransportClosed,
 }
 
+/// Coalesced role observations from this attachment's lifetime stream.
+#[derive(Default)]
+pub(crate) struct RoleInvalidation {
+    /// Refresh the live roster projection.
+    pub(crate) roster: bool,
+    /// Highest pending approval revision, if any.
+    pub(crate) approvals: Option<u64>,
+}
+
 /// Owns the sole lifetime stream. Dropping this object revokes every endpoint
 /// clone and closes the stream, even when workers still retain endpoints.
 pub struct RegisteredClient {
@@ -546,6 +559,7 @@ pub struct RegisteredClient {
     lifetime: Option<UnixStream>,
     lifecycle: Lifecycle,
     pending: Vec<u8>,
+    role_events: RoleInvalidation,
     activation_attempted: bool,
     agent_socket: Option<PathBuf>,
 }
@@ -681,6 +695,7 @@ impl RegisteredClient {
             lifetime: Some(lifetime),
             lifecycle: Lifecycle::Active,
             pending: Vec::new(),
+            role_events: RoleInvalidation::default(),
             activation_attempted: false,
             agent_socket,
         })
@@ -833,6 +848,11 @@ impl RegisteredClient {
         result
     }
 
+    /// Drain the role invalidations accumulated since the previous call.
+    pub(crate) fn take_role_events(&mut self) -> RoleInvalidation {
+        std::mem::take(&mut self.role_events)
+    }
+
     fn read_lifecycle(&mut self) -> Result<Lifecycle> {
         let stream = self.lifetime.as_mut().unwrap();
         let mut bytes = [0; 1024];
@@ -852,6 +872,17 @@ impl RegisteredClient {
             if self.pending.len() == target {
                 let event = wire::decode_client_event(&self.pending[wire::HEADER_LEN..])
                     .context("decoding client lifecycle event")?;
+                if let Some(role) = event.role_event().context("decoding role invalidation")? {
+                    match role.kind {
+                        RoleEventKind::Roster => self.role_events.roster = true,
+                        RoleEventKind::Approvals => {
+                            let revision = self.role_events.approvals.unwrap_or(0);
+                            self.role_events.approvals = Some(revision.max(role.revision));
+                        }
+                    }
+                    self.pending.clear();
+                    continue;
+                }
                 ensure!(
                     event.event == "client_detached",
                     "unsupported client lifecycle event"
@@ -1088,6 +1119,7 @@ mod tests {
                 lifetime: Some(lifetime),
                 lifecycle: Lifecycle::Active,
                 pending: Vec::new(),
+                role_events: RoleInvalidation::default(),
                 activation_attempted: false,
                 agent_socket: None,
             },
@@ -1613,6 +1645,41 @@ mod tests {
         assert_eq!(client.poll_lifecycle().unwrap(), Lifecycle::TransportClosed);
         assert_eq!(client.poll_lifecycle().unwrap(), Lifecycle::TransportClosed);
         assert!(!client.endpoint().session_ended());
+    }
+
+    #[test]
+    fn role_events_do_not_revoke_the_attachment_or_hide_a_later_detach() {
+        use bkpr_protocol::roles::RoleEvent;
+
+        let (mut client, mut server) = lifecycle_pair();
+        let mut codec = Codec::new();
+        for (kind, revision) in [
+            (RoleEventKind::Approvals, 4),
+            (RoleEventKind::Roster, 5),
+            (RoleEventKind::Approvals, 6),
+        ] {
+            let event = ClientEvent::roles_changed(RoleEvent { revision, kind });
+            wire::write_frame(
+                &mut server,
+                Kind::ClientEvent,
+                codec.encode_client_event(&event).unwrap(),
+            )
+            .unwrap();
+        }
+        assert_eq!(client.poll_lifecycle().unwrap(), Lifecycle::Active);
+        let updates = client.take_role_events();
+        assert!(updates.roster);
+        assert_eq!(updates.approvals, Some(6));
+        assert!(!client.endpoint().is_revoked());
+
+        server.write_all(&detached("shutdown")).unwrap();
+        assert_eq!(
+            client.poll_lifecycle().unwrap(),
+            Lifecycle::Detached {
+                reason: "shutdown".into(),
+            }
+        );
+        assert!(client.endpoint().is_revoked());
     }
 
     #[test]

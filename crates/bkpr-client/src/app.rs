@@ -181,6 +181,8 @@ mod recovery_picker;
 mod recovery_ui;
 #[path = "resizing.rs"]
 mod resizing;
+#[path = "roles_ui.rs"]
+mod roles_ui;
 #[path = "scrollback.rs"]
 mod scrollback;
 #[path = "search.rs"]
@@ -199,6 +201,7 @@ enum Background {
     SessionStop(Result<()>),
     Recovery(Box<recovery_ui::Completion>),
     Chat(Box<Result<chat::Completion>>),
+    Role(bkpr_protocol::roles::RoleResponse),
     CiRefresh {
         owner: TreeOwner,
         target: bkpr_protocol::CiRefreshTarget,
@@ -235,6 +238,7 @@ enum PointerCapture {
     Pane(Arc<PointerOrigin>),
     Selection(Arc<PointerOrigin>),
     ChatSelection,
+    ChatDivider,
 }
 struct PressedPointer {
     origin: Arc<PointerOrigin>,
@@ -544,6 +548,7 @@ struct App {
     registry: RegistrySnapshot,
     state: Controller,
     chat: chat::Chat,
+    roles: roles_ui::State,
     views: HashMap<String, Attached>,
     retiring: Vec<RetiringView>,
     pane_feedback: HashMap<String, pane_feedback::Feedback>,
@@ -751,10 +756,7 @@ impl App {
         !self.host_focused
             || self.state.form.is_some()
             || self.picker_open()
-            || self
-                .consent
-                .as_ref()
-                .is_some_and(|consent| !consent.state.allowed && !consent.state.sent)
+            || self.consent_prompt_open()
     }
     fn sidebar_resize_handle(&self, size: Size, x: u16, y: u16) -> bool {
         let sidebar = self.screen_geometry(size).0;
@@ -1278,12 +1280,10 @@ impl App {
             Some(ModalContext::Details)
         } else if self.sidebar_menu.is_some() {
             Some(ModalContext::Menu)
-        } else if self
-            .consent
-            .as_ref()
-            .is_some_and(|consent| !consent.state.allowed && !consent.state.sent)
-        {
+        } else if self.clipboard_prompt_open() {
             Some(ModalContext::ClipboardConsent)
+        } else if self.role_prompt().is_some() {
+            Some(ModalContext::RoleConsent)
         } else if let Some(form) = &self.state.form {
             Some(match form.kind {
                 FormKind::CreateWorkspace | FormKind::CreateWindow => ModalContext::Create,
@@ -1841,6 +1841,10 @@ impl App {
                 self.complete_chat(&completion.key, result, true);
                 continue;
             }
+            if completion.key.starts_with("roles:") {
+                self.complete_roles(completion);
+                continue;
+            }
             if completion.key.starts_with("recovery:") {
                 self.complete_recovery(completion);
                 continue;
@@ -1896,6 +1900,7 @@ impl App {
                 }
                 Ok(Background::Recovery(_)) => bail!("recovery receipt escaped its owner"),
                 Ok(Background::Chat(_)) => bail!("chat receipt escaped its owner"),
+                Ok(Background::Role(_)) => bail!("role receipt escaped its owner"),
                 Ok(Background::Attached { pane, attached }) => {
                     if self.views.contains_key(&pane) || attached.retirement_requested {
                         self.retiring_candidates.push(RetiringCandidate {
@@ -2930,10 +2935,7 @@ impl App {
             && !self.state.sidebar.active
             && self.sidebar_menu.is_none()
             && !self.search_open()
-            && !self
-                .consent
-                .as_ref()
-                .is_some_and(|c| !c.state.allowed && !c.state.sent)
+            && !self.consent_prompt_open()
         {
             self.active()
         } else {
@@ -4296,11 +4298,7 @@ impl App {
             }
             return Ok(false);
         }
-        if self
-            .consent
-            .as_ref()
-            .is_some_and(|consent| !consent.state.sent && !consent.state.allowed)
-        {
+        if self.clipboard_prompt_open() {
             use crate::keyguide::{self, Action, Context};
             self.state.suppressed.insert(event.key.clone());
             match keyguide::lookup(Context::ClipboardConsent, &event) {
@@ -4309,6 +4307,20 @@ impl App {
                     self.begin_consent(out)?;
                 }
                 Some(Action::DenyClipboard) => self.finish_consent(ClipboardResponse::denied())?,
+                _ => {}
+            }
+            return Ok(false);
+        }
+        if self.role_prompt().is_some() {
+            use crate::keyguide::{self, Action, Context};
+            if !self.held.contains_key(&event.key) {
+                self.state.suppressed.insert(event.key.clone());
+            } else {
+                return Ok(false);
+            }
+            match keyguide::lookup(Context::RoleConsent, &event) {
+                Some(Action::ApproveRole) => self.decide_role(true),
+                Some(Action::DenyRole) => self.decide_role(false),
                 _ => {}
             }
             return Ok(false);
@@ -4714,9 +4726,29 @@ impl App {
             };
             (event_button, action)
         });
-        let chat_target = self.chat.visible() && hits.hit_test(mouse.x, mouse.y) == Some("ui:chat");
+        let point = (mouse.x, mouse.y);
+        let chat_target = self.chat.visible()
+            && match hits.hit_test(mouse.x, mouse.y) {
+                Some("ui:chat") => true,
+                Some("ui:resize:edges") => self.chat.divider(point).is_some(),
+                _ => false,
+            };
         if !chat_target || wheel {
             self.chat.hover_channel(None);
+        }
+        if matches!(self.pointer_capture, Some(PointerCapture::ChatDivider)) {
+            if !wheel {
+                self.last_button = button;
+                let release = action == MouseAction::Release && event_button == MouseButton::Left;
+                if release || action == MouseAction::Motion {
+                    self.chat.update_divider_drag(point, release);
+                }
+                if release {
+                    self.pointer_capture = None;
+                    self.update_resize_hover(size, chat_target.then_some(point));
+                }
+            }
+            return Ok(());
         }
         if matches!(self.pointer_capture, Some(PointerCapture::ChatSelection)) {
             if !wheel
@@ -4747,7 +4779,6 @@ impl App {
             mouse.y,
             !wheel && matches!(event_button, MouseButton::Left | MouseButton::None),
         );
-        let point = (mouse.x, mouse.y);
         self.button_pointer = None;
         self.chat.update_button_pointer(None);
         if !chat_target && action == MouseAction::Release && event_button == MouseButton::Left {
@@ -4927,13 +4958,40 @@ impl App {
             return Ok(());
         }
         if origin.is_none() {
-            let consent_open = self
-                .consent
-                .as_ref()
-                .is_some_and(|consent| !consent.state.allowed && !consent.state.sent);
+            let consent_open = self.consent_prompt_open();
             let route = self
                 .overlays
                 .route_pointer(mouse.x, mouse.y, phase, event_button);
+            if self.role_prompt().is_some()
+                && event_button == MouseButton::Left
+                && matches!(action, MouseAction::Press | MouseAction::Release)
+            {
+                let hit = self.overlays.layer("ui:modal").and_then(|layer| {
+                    if !matches!(
+                        route,
+                        PointerRoute::Target {
+                            id: "ui:modal",
+                            content: true
+                        }
+                    ) {
+                        return None;
+                    }
+                    let body = layer.placement.content;
+                    if !body.contains(mouse.x, mouse.y) {
+                        return None;
+                    }
+                    roles_ui::buttons(body.width, body.height)
+                        .into_iter()
+                        .find_map(|(rect, _, choice)| {
+                            rect.contains(mouse.x - body.x, mouse.y - body.y)
+                                .then_some(choice)
+                        })
+                });
+                if let Some(choice) = self.roles.pointer(hit, action == MouseAction::Release) {
+                    self.decide_role(choice);
+                }
+                return Ok(());
+            }
             if primary_release
                 && (consent_open
                     || !matches!(
@@ -5052,12 +5110,7 @@ impl App {
                 PointerRoute::Target {
                     id: "ui:modal",
                     content: true,
-                } if self.theme_picker.is_some()
-                    && !self
-                        .consent
-                        .as_ref()
-                        .is_some_and(|consent| !consent.state.allowed && !consent.state.sent) =>
-                {
+                } if self.theme_picker.is_some() && !consent_open => {
                     let rect = self.overlays.layer("ui:modal").unwrap().placement.content;
                     let event = MouseEvent {
                         x: f32::from(mouse.x - rect.x),
@@ -5078,12 +5131,7 @@ impl App {
                 PointerRoute::Target {
                     id: "ui:modal",
                     content: true,
-                } if self.finder.is_some()
-                    && !self
-                        .consent
-                        .as_ref()
-                        .is_some_and(|consent| !consent.state.allowed && !consent.state.sent) =>
-                {
+                } if self.finder.is_some() && !consent_open => {
                     let rect = self.overlays.layer("ui:modal").unwrap().placement.content;
                     self.button_pointer = Some(("ui:modal", point));
                     let event = MouseEvent {
@@ -5152,7 +5200,8 @@ impl App {
             if event_button == MouseButton::Left && action == MouseAction::Release {
                 self.chat
                     .update_button_pointer(chat_target.then_some(point));
-                self.chat.release_button(self.options.read_only);
+                let effect = self.chat.release_button(self.options.read_only);
+                self.chat_effect(effect);
                 if self.chat.editor_open() && self.overlays.layer("ui:modal").is_none() {
                     self.begin_modal();
                 }
@@ -5318,6 +5367,14 @@ impl App {
                 {
                     self.chat.hover_channel(None);
                     return self.open_image_viewer(image, size, button);
+                }
+                if event_button == MouseButton::Left
+                    && action == MouseAction::Press
+                    && !self.options.read_only
+                    && self.chat.begin_divider_drag(point)
+                {
+                    self.pointer_capture = Some(PointerCapture::ChatDivider);
+                    return Ok(());
                 }
                 if event_button == MouseButton::Left
                     && action == MouseAction::Press
@@ -5705,6 +5762,7 @@ impl App {
             registry,
             state,
             chat: chat::Chat::default(),
+            roles: roles_ui::State::default(),
             views: HashMap::new(),
             pane_feedback: HashMap::new(),
             retiring: Vec::new(),
@@ -5865,6 +5923,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
         let mut guide_painted = None;
         let mut form_theme = Theme::default();
         let mut menu_theme = Theme::default();
+        let mut role_paint = roles_ui::Paint::default();
         let mut search_surface = UiSurface::new(initial_size);
         let mut window_effects = graphics_frame(initial_size);
         let mut popover_effects = graphics_frame(initial_size);
@@ -5923,6 +5982,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             let (attachment, generation) = sessions.namespace();
             let active_owner = sessions.current_owner();
             let app = sessions.app_mut();
+            app.role_activity(terminal.observed_focus(), false);
+            app.sync_role_surface()?;
             graphics.drain()?;
             for frame in [
                 &mut window_effects,
@@ -6024,10 +6085,11 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     .and_then(|entry| entry.target.clone());
                 tree.hover(target.as_ref());
             }
-            let consent_open = app
-                .consent
-                .as_ref()
-                .is_some_and(|consent| !consent.state.allowed && !consent.state.sent);
+            let role_open = app.role_prompt().is_some();
+            if !role_open {
+                role_paint.clear();
+            }
+            let consent_open = app.clipboard_prompt_open() || role_open;
             let tooltip_target = crate::controller::tree_popup_target(
                 &tree,
                 consent_open
@@ -6224,7 +6286,12 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     let placement = OverlayPlacement::centered(
                         size,
                         size.cols.saturating_sub(4).clamp(1, 82),
-                        size.rows.min(6),
+                        size.rows.min(app.role_prompt().map_or(6, |prompt| {
+                            roles_ui::preferred_height(
+                                prompt,
+                                size.cols.saturating_sub(4).clamp(1, 82).saturating_sub(2),
+                            )
+                        })),
                     );
                     (placement.outer, placement.content)
                 } else {
@@ -6239,6 +6306,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             let mut form_region = None;
             let mut modal_graphical = false;
             let mut channel_choice_rect = None;
+            let mut role_presented = false;
             if let Some((outer, _)) = placement
                 && let Some(layout) = &picker_cards
             {
@@ -6340,7 +6408,9 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 let pointer = app.button_pointer.and_then(|(id, (x, y))| {
                     (id == "ui:modal" && inner.contains(x, y)).then(|| (x - inner.x, y - inner.y))
                 });
-                if consent_open {
+                if let Some(prompt) = app.role_prompt() {
+                    role_presented = role_paint.paint(&mut popup_surface, local, &theme, prompt);
+                } else if consent_open {
                     popup_surface.paint(
                         local,
                         vec![(
@@ -6433,7 +6503,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 );
                 window_surface.frame.images.clear();
                 window_surface.frame.placements.clear();
-                if let Some(finder) = &app.finder
+                if !consent_open
+                    && let Some(finder) = &app.finder
                     && picker_cards.is_none()
                 {
                     finder.decorate_fallback(&mut window_surface.frame);
@@ -6950,11 +7021,8 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     app.chat.row_highlights(),
                 );
                 app.chat.set_graphical_inlays(ready, &theme);
-                app.chat.paint_buttons(
-                    &mut chat_button_effects,
-                    &theme,
-                    graphics.button_painter(true),
-                );
+                app.chat
+                    .paint_buttons(&mut chat_button_effects, &theme, &graphics);
                 let transports = app.chat.transports();
                 if !transports.is_empty() {
                     terminal.register_prepared_transports(&transports);
@@ -7727,6 +7795,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                         app.schedule_chat();
                     }
                 }
+                app.roles.mark_presented(role_presented);
                 let ready = unsafe {
                     libc::poll(
                         fds.as_mut_ptr(),
@@ -7756,6 +7825,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                 size
             };
             if geometry_changed {
+                app.roles.mark_presented(false);
                 app.cancel_button_presses();
                 app.retire_resize();
                 app.chat.clear_history_selection();
@@ -7782,7 +7852,9 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             incoming.extend(decode_input(&mut parser, parts, available));
             while let Some(event) = incoming.pop_front() {
                 if let ClientEvent::Reply(response) = &event {
-                    terminal.observe_focus_reply(response);
+                    if let Some(focused) = terminal.observe_focus_reply(response) {
+                        sessions.app_mut().role_activity(Some(focused), false);
+                    }
                     if response.starts_with(b"notification;") {
                         if sessions.notification_reply(
                             response,
@@ -7808,12 +7880,11 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     ClientEvent::Reply(response) => {
                         if let Some(key) = response.strip_prefix(b"key;") {
                             app.key_events_report_releases = true;
-                            if app.dispatch_key(
-                                kitty_key(key)?,
-                                &mut out,
-                                input_size,
-                                input_rects,
-                            )? {
+                            let key = kitty_key(key)?;
+                            if key.action == KeyAction::Press {
+                                app.role_activity(terminal.observed_focus(), true);
+                            }
+                            if app.dispatch_key(key, &mut out, input_size, input_rects)? {
                                 return Ok(());
                             }
                         } else {
@@ -7823,13 +7894,18 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     }
                     ClientEvent::Legacy(InputEvent::Key(key)) => {
                         app.key_events_report_releases = false;
-                        if app.dispatch_key(key_event(key), &mut out, input_size, input_rects)? {
+                        let key = key_event(key);
+                        if key.action == KeyAction::Press {
+                            app.role_activity(terminal.observed_focus(), true);
+                        }
+                        if app.dispatch_key(key, &mut out, input_size, input_rects)? {
                             return Ok(());
                         }
                     }
                     ClientEvent::Legacy(InputEvent::Paste(text))
                         if !app.resize_capturing() && app.sidebar_menu.is_none() =>
                     {
+                        app.role_activity(terminal.observed_focus(), true);
                         let result = app.paste(text);
                         app.scope_input_result(result)?;
                     }
@@ -7844,6 +7920,11 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                             } => (event, Some((button, action))),
                             _ => unreachable!("matched mouse event"),
                         };
+                        if physical.is_some_and(|(_, action)| action == MouseAction::Press)
+                            || physical.is_none() && !mouse.mouse_buttons.is_empty()
+                        {
+                            app.role_activity(terminal.observed_focus(), true);
+                        }
                         if let Err(error) = app.mouse(
                             mouse,
                             physical,
@@ -7916,6 +7997,10 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
                             &mut finished,
                             finish_chat_write(&mut app.chat, completion),
                         );
+                        continue;
+                    }
+                    if completion.key.starts_with("roles:") {
+                        accumulate_cleanup(&mut finished, roles_ui::finish(completion));
                         continue;
                     }
                     accumulate_cleanup(
@@ -7995,6 +8080,10 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
                     accumulate_cleanup(&mut cleanup, finish_chat_write(&mut app.chat, completion));
                     continue;
                 }
+                if completion.key.starts_with("roles:") {
+                    accumulate_cleanup(&mut cleanup, roles_ui::finish(completion));
+                    continue;
+                }
                 match completion.result {
                     Ok(Background::Attached { pane, mut attached }) => {
                         accumulate_cleanup(
@@ -8015,6 +8104,10 @@ fn finish_app(mut app: App, client: &mut sessions::Attachment) -> Result<()> {
                     Ok(Background::Chat(_)) => accumulate_cleanup(
                         &mut cleanup,
                         Err(anyhow::anyhow!("chat receipt escaped its owner")),
+                    ),
+                    Ok(Background::Role(_)) => accumulate_cleanup(
+                        &mut cleanup,
+                        Err(anyhow::anyhow!("role receipt escaped its owner")),
                     ),
                     Ok(Background::Recovery(result)) => {
                         if let recovery_ui::Completion::Resumed {
@@ -8226,6 +8319,7 @@ pub(super) mod tests {
                 registry,
                 state,
                 chat: chat::Chat::default(),
+                roles: roles_ui::State::default(),
                 views: HashMap::new(),
                 pane_feedback: HashMap::new(),
                 retiring: Vec::new(),

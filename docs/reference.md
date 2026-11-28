@@ -1409,6 +1409,35 @@ dialog. Use **Settings** or Alt-e to edit wake policy, attention or membership.
 Tab moves between controls. Enter opens a floating dropdown; use the arrows
 and Enter to choose, or Esc to discard the choice. Close the dialog to return
 to the composer without losing your draft.
+The **Members** pane below Channels shows the selected channel's roster.
+Coordinator appears first when the current holder is a member, followed by
+other agents and users. Scroll each pane with the mouse wheel over it. Drag
+the divider beside the thread or between Channels and Members to resize.
+When the terminal is too small for the Members pane, use Alt-u and press Esc
+to return to the thread without changing the draft. Read-only attachments
+can browse members.
+In an ordinary explicit-membership channel, use **Invite member** to select a
+live workspace agent who isn't already a member. The invite adds only that
+agent; it does not replace the member list or change the membership mode.
+
+In a writable channel, type `/role coordinator @`, select an agent from the
+mention picker, then press Enter again to grant or replace Coordinator. Use
+`/role coordinator none` to clear it. Typing or pasting a name alone does not
+select that launch. These commands are not chat posts and don't open a consent
+dialog.
+
+When an agent requests Coordinator, its owning session routes the consent
+dialog to an eligible attachment. The dialog shows the requester, workspace
+and the holder who would be replaced. Press `y` to approve or `n` to deny.
+The dialog closes if the request is withdrawn. Read-only attachments don't
+receive role prompts.
+
+The current `#coordinator` thread is private to the user and the holder.
+Previous tenures are read-only archives visible to the user. A historical
+**Posted as Coordinator** badge records the author's role at posting time;
+it does not show whether the author is still Coordinator. Older backends
+without role support cannot apply these commands or stream member changes.
+
 In the composer, Ctrl-a/e move to the start/end of the line. Ctrl-w deletes the
 previous word; Ctrl-u/k delete to the start/end of the line.
 Drag across history text to copy it using the configured clipboard policy.

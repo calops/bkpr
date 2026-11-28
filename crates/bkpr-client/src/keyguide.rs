@@ -32,6 +32,8 @@ pub enum Context {
     Menu,
     Details,
     ClipboardConsent,
+    /// A backend-assigned permission prompt for a workspace role.
+    RoleConsent,
     History,
     Search,
     Resize,
@@ -39,6 +41,8 @@ pub enum Context {
     ChatChannels,
     ChatMention,
     ChatControls,
+    /// Read-only member list for the selected channel.
+    ChatMembers,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +62,8 @@ pub enum ModalContext {
     Menu,
     Details,
     ClipboardConsent,
+    /// The session user can decide the displayed role request.
+    RoleConsent,
 }
 
 /// Resolve overlapping frontend state before both dispatch and guide construction.
@@ -89,6 +95,7 @@ impl ContextState {
                 ModalContext::Menu => Context::Menu,
                 ModalContext::Details => Context::Details,
                 ModalContext::ClipboardConsent => Context::ClipboardConsent,
+                ModalContext::RoleConsent => Context::RoleConsent,
             };
         }
         if self.resizing {
@@ -149,6 +156,8 @@ pub enum HistoryAction {
 pub enum ChatAction {
     Create,
     Manage,
+    /// Switch between the selected channel's thread and member list.
+    Members,
     MarkRead,
     Retry,
     Send,
@@ -198,6 +207,10 @@ pub enum Action {
     Cancel,
     AllowClipboard,
     DenyClipboard,
+    /// Approve the exact workspace role request shown in the modal.
+    ApproveRole,
+    /// Deny the exact workspace role request shown in the modal.
+    DenyRole,
     Edit(EditAction),
     Detach,
     StartSearch,
@@ -238,17 +251,27 @@ impl Action {
             Self::RefreshCi => "refresh checks",
             Self::LeaveSidebar => "return to app",
             Self::Navigate(Navigation::Previous)
-                if matches!(context, Context::Details | Context::RecoveryDetails) =>
+                if matches!(
+                    context,
+                    Context::Details | Context::RecoveryDetails | Context::ChatMembers
+                ) =>
             {
                 "scroll up"
             }
             Self::Navigate(Navigation::Next)
-                if matches!(context, Context::Details | Context::RecoveryDetails) =>
+                if matches!(
+                    context,
+                    Context::Details | Context::RecoveryDetails | Context::ChatMembers
+                ) =>
             {
                 "scroll down"
             }
             Self::Navigate(Navigation::Previous) => "select previous",
             Self::Navigate(Navigation::Next) => "select next",
+            Self::Navigate(Navigation::First) if context == Context::ChatMembers => "scroll to top",
+            Self::Navigate(Navigation::Last) if context == Context::ChatMembers => {
+                "scroll to bottom"
+            }
             Self::Navigate(Navigation::First) => "first item",
             Self::Navigate(Navigation::Last) => "last item",
             Self::Navigate(Navigation::PagePrevious) if context == Context::Finder => {
@@ -299,6 +322,8 @@ impl Action {
             },
             Self::AllowClipboard => "allow clipboard access",
             Self::DenyClipboard => "deny clipboard access",
+            Self::ApproveRole => "approve role",
+            Self::DenyRole => "deny role",
             Self::Edit(EditAction::Left) => "cursor left",
             Self::Edit(EditAction::Right) => "cursor right",
             Self::Edit(EditAction::WordLeft) => "previous word",
@@ -363,6 +388,8 @@ impl Action {
             Self::Chat(action) => match action {
                 ChatAction::Create => "new channel",
                 ChatAction::Manage => "channel settings",
+                ChatAction::Members if context == Context::ChatMembers => "return to thread",
+                ChatAction::Members => "channel members",
                 ChatAction::MarkRead => "mark channel read",
                 ChatAction::Retry => "retry identical post",
                 ChatAction::Send => "send message",
@@ -376,6 +403,7 @@ impl Action {
                 ChatAction::Choose => "open channel",
                 ChatAction::Back => match context {
                     Context::ChatChannels => "return to composer",
+                    Context::ChatMembers => "return to thread",
                     Context::ChatMention => "cancel mention",
                     Context::ChatControls => "close settings",
                     _ => "return to native pane",
@@ -407,6 +435,8 @@ const CHAT: u32 = 1 << 18;
 const CHAT_CHANNELS: u32 = 1 << 19;
 const CHAT_MENTION: u32 = 1 << 20;
 const CHAT_CONTROLS: u32 = 1 << 21;
+const CHAT_MEMBERS: u32 = 1 << 22;
+const ROLE_CONSENT: u32 = 1 << 23;
 const CHAT_COMPOSER: u32 = CHAT | CHAT_MENTION;
 const CHAT_VIEW: u32 = CHAT_COMPOSER | CHAT_CHANNELS;
 const ALT: u16 = 4;
@@ -458,10 +488,12 @@ impl Context {
             Self::Menu => MENU,
             Self::Details => DETAILS,
             Self::ClipboardConsent => CLIPBOARD_CONSENT,
+            Self::RoleConsent => ROLE_CONSENT,
             Self::Chat => CHAT,
             Self::ChatChannels => CHAT_CHANNELS,
             Self::ChatMention => CHAT_MENTION,
             Self::ChatControls => CHAT_CONTROLS,
+            Self::ChatMembers => CHAT_MEMBERS,
         }
     }
 
@@ -486,10 +518,12 @@ impl Context {
             Self::Menu => "Context menu",
             Self::Details => "Details",
             Self::ClipboardConsent => "Clipboard permission",
+            Self::RoleConsent => "Role permission",
             Self::Chat => "Channel",
             Self::ChatChannels => "Channels",
             Self::ChatMention => "Mention an agent",
             Self::ChatControls => "Channel settings",
+            Self::ChatMembers => "Channel members",
         }
     }
 }
@@ -630,7 +664,15 @@ static BINDINGS: &[Binding] = &[
     text(SESSIONS, "s", A::StopSession, 6),
     selected(text(SIDEBAR, "R", A::RefreshCi, 6)),
     physical(
-        APPLICATION | SIDEBAR | SESSIONS | HISTORY | SEARCH | RESIZE | CHAT_VIEW | CHAT_CONTROLS,
+        APPLICATION
+            | SIDEBAR
+            | SESSIONS
+            | HISTORY
+            | SEARCH
+            | RESIZE
+            | CHAT_VIEW
+            | CHAT_CONTROLS
+            | CHAT_MEMBERS,
         "KeyB",
         CTRL,
         "b",
@@ -639,7 +681,7 @@ static BINDINGS: &[Binding] = &[
         false,
     ),
     physical(
-        APPLICATION | SIDEBAR | SESSIONS | HISTORY | CHAT_VIEW | CHAT_CONTROLS,
+        APPLICATION | SIDEBAR | SESSIONS | HISTORY | CHAT_VIEW | CHAT_CONTROLS | CHAT_MEMBERS,
         "Space",
         CTRL,
         "Space",
@@ -711,7 +753,7 @@ static BINDINGS: &[Binding] = &[
         false,
     ),
     physical(
-        CHAT_VIEW | CHAT_CONTROLS,
+        CHAT_VIEW | CHAT_CONTROLS | CHAT_MEMBERS,
         "Escape",
         0,
         "Esc",
@@ -738,6 +780,15 @@ static BINDINGS: &[Binding] = &[
         false,
     ),
     physical(
+        CHAT_VIEW | CHAT_MEMBERS,
+        "KeyU",
+        ALT,
+        "u",
+        A::Chat(ChatAction::Members),
+        5,
+        false,
+    ),
+    physical(
         CHAT_VIEW,
         "KeyM",
         ALT,
@@ -756,7 +807,7 @@ static BINDINGS: &[Binding] = &[
         false,
     ),
     physical(
-        CHAT_VIEW,
+        CHAT_VIEW | CHAT_MEMBERS,
         "PageUp",
         0,
         "PgUp",
@@ -765,7 +816,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CHAT_VIEW,
+        CHAT_VIEW | CHAT_MEMBERS,
         "PageDown",
         0,
         "PgDn",
@@ -775,7 +826,7 @@ static BINDINGS: &[Binding] = &[
     ),
     physical(CHAT_VIEW, "End", CTRL, "End", A::History(H::Live), 8, false),
     physical(
-        CHAT_CHANNELS | CHAT_MENTION,
+        CHAT_CHANNELS | CHAT_MENTION | CHAT_MEMBERS,
         "ArrowUp",
         0,
         "↑",
@@ -784,7 +835,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CHAT_CHANNELS | CHAT_MENTION,
+        CHAT_CHANNELS | CHAT_MENTION | CHAT_MEMBERS,
         "ArrowDown",
         0,
         "↓",
@@ -793,7 +844,7 @@ static BINDINGS: &[Binding] = &[
         true,
     ),
     physical(
-        CHAT_CHANNELS,
+        CHAT_CHANNELS | CHAT_MEMBERS,
         "Home",
         0,
         "Home",
@@ -802,7 +853,7 @@ static BINDINGS: &[Binding] = &[
         false,
     ),
     physical(
-        CHAT_CHANNELS,
+        CHAT_CHANNELS | CHAT_MEMBERS,
         "End",
         0,
         "End",
@@ -1044,6 +1095,10 @@ static BINDINGS: &[Binding] = &[
     text(CLIPBOARD_CONSENT, "N", A::DenyClipboard, 0),
     text(CLIPBOARD_CONSENT, "y", A::AllowClipboard, 1),
     text(CLIPBOARD_CONSENT, "Y", A::AllowClipboard, 1),
+    text(ROLE_CONSENT, "n", A::DenyRole, 0),
+    text(ROLE_CONSENT, "N", A::DenyRole, 0),
+    text(ROLE_CONSENT, "y", A::ApproveRole, 1),
+    text(ROLE_CONSENT, "Y", A::ApproveRole, 1),
     physical(
         CREATE | EDIT | FINDER | SEARCH | THEME | RECOVERY,
         "Backspace",

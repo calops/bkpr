@@ -1,6 +1,7 @@
 use super::{chat_controls, chat_draft::Draft, chat_images, transport};
 use crate::keyguide::{self, Action, ChatAction, Context, HistoryAction, Navigation};
 use anyhow::{Result, bail};
+use bkpr_protocol::roles::{RoleRequest, RoleResponse, WorkspaceRole};
 use bkpr_protocol::{KeyAction, KeyEvent, Operation, Payload, channels::*};
 use bkpr_tui_framework::{Role, UiSurface, safe_text};
 use std::collections::{HashMap, VecDeque};
@@ -52,6 +53,7 @@ struct Active {
     roster_next: Option<Option<ParticipantId>>,
     roster_error: Option<String>,
     roster_ready: bool,
+    workspace_roster: bool,
 }
 
 impl Active {
@@ -66,7 +68,16 @@ impl Active {
             roster_next: None,
             roster_error: None,
             roster_ready: false,
+            workspace_roster: false,
         }
+    }
+
+    fn refresh_roster(&mut self, workspace_roster: bool) {
+        self.workspace_roster = workspace_roster;
+        self.roster.clear();
+        self.roster_next = Some(None);
+        self.roster_error = None;
+        self.roster_ready = false;
     }
 }
 
@@ -81,6 +92,7 @@ enum Send {
         retry: bool,
     },
     Unknown(ChannelRequest),
+    SettingRole,
 }
 
 #[derive(PartialEq, Eq)]
@@ -95,6 +107,8 @@ pub(super) enum JobKind {
         through: u64,
     },
     Send(ChannelId),
+    RoleSet(ChannelId),
+    AssignRole(String),
     EditorRead(u64),
     EditorWrite(u64),
     Image {
@@ -105,15 +119,13 @@ pub(super) enum JobKind {
 
 pub(super) enum Job {
     Request(ChannelRequest),
+    Role(RoleRequest),
     Image(ChannelId, AttachmentId),
 }
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "bounded job results move the decoded response without a second allocation"
-)]
 pub(super) enum Completion {
     Response(ChannelResponse),
+    Role(RoleResponse),
     Image(chat_images::Loaded),
     History {
         entries: Vec<view::Entry>,
@@ -142,6 +154,9 @@ impl Job {
                     response => Completion::Response(response),
                 })
             }
+            Self::Role(request) => {
+                super::roles_ui::request(endpoint, request).map(Completion::Role)
+            }
             Self::Image(channel, attachment) => {
                 chat_images::load(endpoint, channel, attachment).map(Completion::Image)
             }
@@ -168,6 +183,13 @@ pub(super) struct Chat {
     selected: HashMap<String, ChannelId>,
     ids: Vec<ChannelId>,
     channel_chooser: bool,
+    members_scroll: Option<usize>,
+    rail_members_scroll: usize,
+    rail_width: Option<u16>,
+    channels_height: Option<u16>,
+    divider_drag: Option<bkpr_protocol::Axis>,
+    assign_cursor: Option<usize>,
+    roles_enabled: Option<bool>,
     list_cursor: usize,
     drafts: HashMap<ChannelId, Draft>,
     sends: HashMap<ChannelId, Send>,
@@ -197,7 +219,7 @@ impl Chat {
     }
 
     pub(super) fn is_attending(&self) -> bool {
-        self.visible() && !self.dialog_open()
+        self.visible() && !self.dialog_open() && self.members_scroll.is_none()
     }
 
     pub(super) fn channel(&self, workspace: &str, channel: &ChannelId) -> Option<&ChannelSummary> {
@@ -227,6 +249,7 @@ impl Chat {
     pub(super) fn open(&mut self, workspace: String) {
         if self.workspace.as_ref() == Some(&workspace) {
             self.set_channel_chooser(false);
+            self.set_members(false);
             self.redraw();
             return;
         }
@@ -240,8 +263,10 @@ impl Chat {
             return;
         }
         self.retain_active_history();
+        self.assign_cursor = None;
         self.workspace = None;
         self.channel_chooser = false;
+        self.members_scroll = None;
         self.editor = None;
         self.images_wanted.clear();
         self.mark = None;
@@ -343,6 +368,7 @@ impl Chat {
             old.name != summary.name
                 || old.workspace_id != summary.workspace_id
                 || old.direct != summary.direct
+                || old.role_thread != summary.role_thread
         });
         let before = old.is_some_and(|entry| entry.unread_attention);
         let mut badge_changed = false;
@@ -400,6 +426,10 @@ impl Chat {
         self.attention.keys().map(String::as_str)
     }
 
+    fn vacant_id() -> ChannelId {
+        ChannelId(String::new())
+    }
+
     fn refresh_channels(&mut self) {
         let Some(workspace) = &self.workspace else {
             return;
@@ -416,32 +446,56 @@ impl Chat {
             let right = &self.catalog[right];
             channel_order(left).cmp(&channel_order(right))
         });
+        if !self.ids.iter().any(|id| self.live_coordinator(id)) {
+            self.ids.push(Self::vacant_id());
+        }
         let selection = self
             .selected
             .get(workspace)
-            .filter(|id| self.catalog.contains_key(*id))
-            .or_else(|| self.ids.first())
+            .filter(|id| id.0.is_empty() || self.catalog.contains_key(*id))
+            .or_else(|| self.ids.iter().find(|id| !id.0.is_empty()))
             .cloned();
         if let Some(id) = selection {
+            let id = if id.0.is_empty() {
+                self.ids
+                    .iter()
+                    .find(|candidate| self.live_coordinator(candidate))
+                    .cloned()
+                    .unwrap_or_else(Self::vacant_id)
+            } else {
+                id
+            };
             self.select(id);
         } else {
             self.active = None;
+            self.members_scroll = None;
             self.epoch = self.epoch.wrapping_add(1);
             self.paint.invalidate_hits();
         }
+    }
+
+    fn live_coordinator(&self, id: &ChannelId) -> bool {
+        self.catalog
+            .get(id)
+            .is_some_and(|channel| channel.role_thread.is_some_and(|thread| !thread.archived))
     }
 
     fn select(&mut self, id: ChannelId) {
         let Some(workspace) = &self.workspace else {
             return;
         };
-        if !self.contains_channel(workspace, &id) {
+        if !id.0.is_empty() && !self.contains_channel(workspace, &id) {
             return;
         }
         if self.active.as_ref().is_some_and(|active| active.id == id) {
             return;
         }
-        self.selected.insert(workspace.clone(), id.clone());
+        let selection = if self.live_coordinator(&id) {
+            Self::vacant_id()
+        } else {
+            id.clone()
+        };
+        self.selected.insert(workspace.clone(), selection);
         self.retain_active_history();
         self.list_cursor = self
             .ids
@@ -449,6 +503,10 @@ impl Chat {
             .position(|candidate| *candidate == id)
             .unwrap_or(0);
         let mut active = Active::new(id);
+        self.assign_cursor = None;
+        if active.id.0.is_empty() {
+            active.refresh_roster(true);
+        }
         if let Some(index) = self
             .recent_history
             .iter()
@@ -456,7 +514,17 @@ impl Chat {
         {
             active.history = self.recent_history.remove(index).expect("cached history").1;
         }
+        if self.visible()
+            && self
+                .catalog
+                .get(&active.id)
+                .is_some_and(|channel| Self::can_show_members(channel, self.roles_enabled))
+        {
+            active.refresh_roster(false);
+        }
         self.active = Some(active);
+        self.rail_members_scroll = 0;
+        self.members_scroll = None;
         self.editor = None;
         self.notice = None;
         self.images_wanted.clear();
@@ -500,8 +568,107 @@ impl Chat {
         self.redraw();
     }
 
+    fn set_members(&mut self, open: bool) {
+        if self.members_scroll.is_some() == open {
+            return;
+        }
+        if open {
+            let Some(active) = &mut self.active else {
+                return;
+            };
+            active.refresh_roster(false);
+            if let Some(draft) = self.drafts.get_mut(&active.id) {
+                draft.completion = None;
+            }
+            self.set_channel_chooser(false);
+        }
+        self.members_scroll = open.then_some(0);
+        self.paint.invalidate_hits();
+        self.redraw();
+    }
+
+    pub(super) fn set_roles_enabled(&mut self, enabled: bool) {
+        if self.roles_enabled != Some(enabled) {
+            self.roles_enabled = Some(enabled);
+            self.invalidate_roster();
+        }
+    }
+
+    pub(super) fn begin_divider_drag(&mut self, point: (u16, u16)) -> bool {
+        self.divider_drag = self.divider(point).map(|(_, axis)| axis);
+        self.divider_drag.is_some()
+    }
+
+    pub(super) fn divider(
+        &self,
+        point: (u16, u16),
+    ) -> Option<(bkpr_tui_framework::Rect, bkpr_protocol::Axis)> {
+        if self.visible() {
+            self.paint.divider(point)
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn update_divider_drag(&mut self, point: (u16, u16), release: bool) {
+        let Some(axis) = self.divider_drag else {
+            return;
+        };
+        if release {
+            self.divider_drag = None;
+        }
+        let rect = self.geometry();
+        let (slot, value) = match axis {
+            bkpr_protocol::Axis::Horizontal => {
+                (&mut self.rail_width, point.0.saturating_sub(rect.x))
+            }
+            bkpr_protocol::Axis::Vertical => {
+                (&mut self.channels_height, point.1.saturating_sub(rect.y))
+            }
+        };
+        if *slot != Some(value) {
+            *slot = Some(value);
+            self.redraw();
+        }
+    }
+
+    pub(super) fn invalidate_roster(&mut self) {
+        if let Some(active) = &mut self.active {
+            if let Some(draft) = self.drafts.get_mut(&active.id) {
+                draft.invalidate_completion();
+            }
+            active.refresh_roster(active.workspace_roster);
+            self.assign_cursor = self.assign_cursor.map(|_| 0);
+            self.invalidate_roster_hits();
+            self.redraw();
+        }
+    }
+
+    fn scroll_members(&mut self, delta: isize) {
+        if let Some(scroll) = &mut self.members_scroll {
+            *scroll = scroll
+                .saturating_add_signed(delta)
+                .min(self.paint.members_max_scroll());
+            self.redraw();
+        }
+    }
+
+    fn can_show_members(channel: &ChannelSummary, roles_enabled: Option<bool>) -> bool {
+        !channel.direct || roles_enabled == Some(true)
+    }
+
+    fn can_manage(channel: &ChannelSummary) -> bool {
+        !channel.direct && channel.role_thread.is_none()
+    }
+
+    fn can_write(channel: &ChannelSummary) -> bool {
+        channel
+            .role_thread
+            .map_or(!channel.direct, |thread| !thread.archived)
+    }
+
     fn writable(&self, read_only: bool) -> bool {
-        !read_only && self.summary().is_some_and(|channel| !channel.direct)
+        !read_only && self.summary().is_some_and(Self::can_write)
     }
 
     fn draft(&mut self) -> Option<&mut Draft> {
@@ -518,6 +685,7 @@ impl Chat {
                 editor.form.paste(text);
             }
         } else if !self.channel_chooser
+            && self.members_scroll.is_none()
             && self.writable(read_only)
             && let Some(active) = &self.active
             && !self.sends.contains_key(&active.id)
@@ -585,7 +753,22 @@ impl Chat {
         }
         match hit {
             Hit::Create if self.supports(ChatAction::Create, read_only) => self.start_editor(true),
-            Hit::Manage if self.writable(read_only) => self.start_editor(false),
+            Hit::Manage if self.supports(ChatAction::Manage, read_only) => self.start_editor(false),
+            Hit::Members if self.supports(ChatAction::Members, read_only) => {
+                self.set_members(self.members_scroll.is_none());
+            }
+            Hit::MemberBack => self.set_members(false),
+            Hit::Assign if !read_only => self.toggle_assignment(),
+            Hit::Invite if !read_only => {
+                if let Some(form) = self.summary().and_then(chat_controls::Editor::invite) {
+                    self.next = self.next.wrapping_add(1);
+                    self.editor = Some(Editor {
+                        token: self.next,
+                        form,
+                    });
+                    self.redraw();
+                }
+            }
             _ => {}
         }
     }
@@ -625,6 +808,8 @@ impl Chat {
     pub(super) fn context(&self) -> Context {
         if self.editor.is_some() {
             Context::ChatControls
+        } else if self.members_scroll.is_some() {
+            Context::ChatMembers
         } else if self.channel_chooser {
             Context::ChatChannels
         } else if self.completing() {
@@ -641,7 +826,13 @@ impl Chat {
             .and_then(|active| self.sends.get(&active.id));
         match action {
             ChatAction::Create => !read_only && self.catalog_ready && self.catalog_error.is_none(),
-            ChatAction::Manage => self.writable(read_only),
+            ChatAction::Manage => !read_only && self.summary().is_some_and(Self::can_manage),
+            ChatAction::Members => {
+                !self.paint.has_member_rail()
+                    && self
+                        .summary()
+                        .is_some_and(|channel| Self::can_show_members(channel, self.roles_enabled))
+            }
             ChatAction::MarkRead => !read_only && self.active.is_some(),
             ChatAction::Retry => self.writable(read_only) && matches!(send, Some(Send::Unknown(_))),
             ChatAction::Send | ChatAction::Newline | ChatAction::Edit(_) => {
@@ -649,12 +840,12 @@ impl Chat {
             }
             ChatAction::Choose if !self.channel_chooser && self.completing() => {
                 self.active.as_ref().is_some_and(|active| {
-                    active.roster_ready
-                        && self.drafts.get(&active.id).is_some_and(|draft| {
-                            draft
+                    self.drafts.get(&active.id).is_some_and(|draft| {
+                        (active.roster_ready || draft.slash_completing())
+                            && draft
                                 .choices(&active.roster, self.paint.completion_capacity())
                                 .any(|(_, _, chosen)| chosen)
-                        })
+                    })
                 })
             }
             ChatAction::Choose => !self.ids.is_empty(),
@@ -662,7 +853,109 @@ impl Chat {
         }
     }
 
+    fn assignment_pending(&self) -> bool {
+        self.workspace.as_ref().is_some_and(|workspace| {
+            self.pending
+                .values()
+                .any(|kind| matches!(kind, JobKind::AssignRole(owner) if owner == workspace))
+        })
+    }
+
+    fn toggle_assignment(&mut self) {
+        if self.roles_enabled == Some(true)
+            && self
+                .active
+                .as_ref()
+                .is_some_and(|active| active.id.0.is_empty())
+            && !self.assignment_pending()
+        {
+            self.assign_cursor = self.assign_cursor.is_none().then_some(0);
+            self.redraw();
+        }
+    }
+
+    pub(super) fn cancel_divider_drag(&mut self) {
+        self.divider_drag = None;
+    }
+
+    fn assign_at(&mut self, index: usize) -> Effect {
+        if !self.has_assignment_hit(Hit::AssignAgent(index)) {
+            return Effect::None;
+        }
+        let Some(active) = self
+            .active
+            .as_ref()
+            .filter(|active| active.id.0.is_empty() && active.roster_ready)
+        else {
+            return Effect::None;
+        };
+        let Some(target) = active
+            .roster
+            .iter()
+            .filter_map(|entry| entry.binding.as_ref())
+            .nth(index)
+            .cloned()
+        else {
+            return Effect::None;
+        };
+        let Some(workspace_id) = self.workspace.clone() else {
+            return Effect::None;
+        };
+        if self.assign_cursor.is_none()
+            || self.roles_enabled != Some(true)
+            || self.assignment_pending()
+        {
+            return Effect::None;
+        }
+        self.assign_cursor = None;
+        self.redraw();
+        Effect::Submit(
+            JobKind::AssignRole(workspace_id.clone()),
+            Job::Role(RoleRequest::Set {
+                workspace_id,
+                role: WorkspaceRole::Coordinator,
+                target: Some(target),
+            }),
+        )
+    }
+
     pub(super) fn key(&mut self, event: &KeyEvent, read_only: bool) -> Effect {
+        if !read_only
+            && !self.channel_chooser
+            && self.editor.is_none()
+            && event.action == KeyAction::Press
+            && event.modifiers == 0
+            && self
+                .active
+                .as_ref()
+                .is_some_and(|active| active.id.0.is_empty())
+        {
+            match (event.key.as_str(), self.assign_cursor) {
+                ("Enter", None) | ("Escape", Some(_)) => {
+                    self.toggle_assignment();
+                    return Effect::None;
+                }
+                ("Enter", Some(index)) => return self.assign_at(index),
+                ("ArrowUp" | "ArrowDown", Some(index)) => {
+                    let count = self
+                        .active
+                        .as_ref()
+                        .unwrap()
+                        .roster
+                        .iter()
+                        .filter(|entry| entry.binding.is_some())
+                        .count();
+                    self.assign_cursor = Some(
+                        index
+                            .saturating_add_signed(if event.key == "ArrowDown" { 1 } else { -1 })
+                            .min(count.saturating_sub(1)),
+                    );
+                    self.redraw();
+                    return Effect::None;
+                }
+                _ => {}
+            }
+        }
         if let Some(editor) = &mut self.editor {
             let action = editor.form.key(event, !read_only);
             return self.editor_action(action);
@@ -677,6 +970,10 @@ impl Chat {
                 self.set_channel_chooser(!self.channel_chooser);
             }
             Some(Action::Chat(ChatAction::Back)) => {
+                if self.members_scroll.is_some() {
+                    self.set_members(false);
+                    return Effect::None;
+                }
                 if self.channel_chooser {
                     self.set_channel_chooser(false);
                 } else if self.completing() {
@@ -688,6 +985,9 @@ impl Chat {
             }
             Some(Action::Chat(ChatAction::Create)) => self.start_editor(true),
             Some(Action::Chat(ChatAction::Manage)) => self.start_editor(false),
+            Some(Action::Chat(ChatAction::Members)) => {
+                self.set_members(self.members_scroll.is_none())
+            }
             Some(Action::Chat(ChatAction::MarkRead)) => {
                 self.redraw();
                 self.explicit_read();
@@ -709,10 +1009,13 @@ impl Chat {
                 }
             }
             Some(Action::Chat(ChatAction::Choose)) if !self.channel_chooser => {
-                if let Some(active) = &self.active
+                if let Some(active) = &mut self.active
                     && let Some(draft) = self.drafts.get_mut(&active.id)
                 {
-                    draft.select_mention(&active.roster, self.paint.completion_capacity(), None);
+                    if draft.select_mention(&active.roster, self.paint.completion_capacity(), None)
+                    {
+                        active.refresh_roster(draft.completing_role_target());
+                    }
                     self.redraw_composer();
                 }
             }
@@ -723,10 +1026,18 @@ impl Chat {
                 self.set_channel_chooser(false);
             }
             Some(Action::History(HistoryAction::PageUp)) => {
+                if self.members_scroll.is_some() {
+                    self.scroll_members(-(self.paint.member_page_rows() as isize));
+                    return Effect::None;
+                }
                 self.redraw();
                 self.scroll(-(self.paint.page_rows().max(1) as isize));
             }
             Some(Action::History(HistoryAction::PageDown)) => {
+                if self.members_scroll.is_some() {
+                    self.scroll_members(self.paint.member_page_rows() as isize);
+                    return Effect::None;
+                }
                 self.redraw();
                 self.scroll(self.paint.page_rows().max(1) as isize);
             }
@@ -735,18 +1046,33 @@ impl Chat {
                 self.live_tail();
             }
             Some(Action::Navigate(navigation)) => self.navigate(navigation),
-            _ if !self.channel_chooser && self.writable(read_only) => self.composer_key(event),
+            _ if !self.channel_chooser
+                && self.members_scroll.is_none()
+                && self.writable(read_only) =>
+            {
+                self.composer_key(event)
+            }
             _ => {}
         }
         Effect::None
     }
 
     fn navigate(&mut self, navigation: Navigation) {
+        if self.members_scroll.is_some() {
+            self.scroll_members(match navigation {
+                Navigation::Previous => -1,
+                Navigation::Next => 1,
+                Navigation::First => isize::MIN,
+                Navigation::Last => isize::MAX,
+                _ => 0,
+            });
+            return;
+        }
         if !self.channel_chooser {
             if let Some(active) = &self.active
-                && active.roster_ready
                 && self.paint.completion_capacity() > 0
                 && let Some(draft) = self.drafts.get_mut(&active.id)
+                && (active.roster_ready || draft.slash_completing())
             {
                 let delta = if navigation == Navigation::Previous {
                     -1
@@ -791,10 +1117,7 @@ impl Chat {
             self.redraw_composer();
         } else if mods & !1 == 0 && event.text.chars().any(|ch| !ch.is_control()) {
             if draft.insert(&event.text, event.action == KeyAction::Press) {
-                active.roster.clear();
-                active.roster_next = Some(None);
-                active.roster_error = None;
-                active.roster_ready = false;
+                active.refresh_roster(draft.completing_role_target());
             }
             self.redraw_composer();
         }
@@ -808,13 +1131,40 @@ impl Chat {
             Some(Send::Unknown(request)) if retry => request.clone(),
             Some(_) => return Effect::None,
             None if retry => return Effect::None,
-            None => match self.drafts.entry(id.clone()).or_default().post(id.clone()) {
-                Ok(request) => request,
-                Err(error) => {
-                    self.drafts.get_mut(&id).unwrap().error = Some(error.into());
-                    return Effect::None;
+            None => {
+                let draft = self.drafts.entry(id.clone()).or_default();
+                if let Some(target) = draft.role_target() {
+                    let target = target.and_then(|target| match self.roles_enabled {
+                        Some(true) => Ok(target.cloned()),
+                        Some(false) => Err("Workspace roles unavailable on this session"),
+                        None => Err("Checking workspace role support; submit again when ready"),
+                    });
+                    let target = match target {
+                        Ok(target) => target,
+                        Err(error) => {
+                            draft.error = Some(error.into());
+                            return Effect::None;
+                        }
+                    };
+                    let workspace_id = self.catalog[&id].workspace_id.clone();
+                    self.sends.insert(id.clone(), Send::SettingRole);
+                    return Effect::Submit(
+                        JobKind::RoleSet(id),
+                        Job::Role(RoleRequest::Set {
+                            workspace_id,
+                            role: WorkspaceRole::Coordinator,
+                            target,
+                        }),
+                    );
                 }
-            },
+                match draft.post(id.clone()) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        draft.error = Some(error.into());
+                        return Effect::None;
+                    }
+                }
+            }
         };
         self.sends.insert(
             id.clone(),
@@ -920,6 +1270,16 @@ impl Chat {
         let hit = self.paint.hit(mouse.x, mouse.y);
         let writable = self.writable(read_only);
         match (button, action, hit) {
+            (B::WheelUp | B::WheelDown, _, Some(Hit::MemberRail)) => {
+                self.rail_members_scroll = self
+                    .rail_members_scroll
+                    .saturating_add_signed(if button == B::WheelUp { -3 } else { 3 })
+                    .min(self.paint.members_max_scroll());
+                self.redraw();
+            }
+            (B::WheelUp | B::WheelDown, _, _) if self.members_scroll.is_some() => {
+                self.scroll_members(if button == B::WheelUp { -3 } else { 3 });
+            }
             (B::WheelUp | B::WheelDown, _, Some(Hit::Channel(_) | Hit::List)) => {
                 self.list_cursor = self
                     .list_cursor
@@ -941,15 +1301,16 @@ impl Chat {
             }
             (B::Left, A::Press, Some(Hit::OpenChannels)) => self.set_channel_chooser(true),
             (B::Left, A::Press, Some(Hit::Mention(index))) if writable => {
-                if let Some(active) = &self.active
-                    && active.roster_ready
+                if let Some(active) = &mut self.active
                     && let Some(draft) = self.drafts.get_mut(&active.id)
-                {
-                    draft.select_mention(
+                    && (active.roster_ready || draft.slash_completing())
+                    && draft.select_mention(
                         &active.roster,
                         self.paint.completion_capacity(),
                         Some(index),
-                    );
+                    )
+                {
+                    active.refresh_roster(draft.completing_role_target());
                 }
             }
             (B::Left, A::Press, Some(Hit::Latest)) => self.live_tail(),
@@ -974,6 +1335,34 @@ impl Chat {
             return Some((JobKind::EditorRead(editor.token), Job::Request(request)));
         }
         let active = self.active.as_mut()?;
+        if active.id.0.is_empty() {
+            let epoch = self.epoch;
+            if self.assign_cursor.is_none()
+                || self
+                    .pending
+                    .values()
+                    .any(|kind| *kind == JobKind::Roster(epoch))
+            {
+                return None;
+            }
+            return Some((
+                JobKind::Roster(epoch),
+                Job::Request(ChannelRequest::UserRoster {
+                    workspace_id: self.workspace.clone()?,
+                    channel_id: None,
+                    after: active.roster_next.take()?,
+                    limit: MAX_PAGE_LIMIT,
+                }),
+            ));
+        }
+        if active.workspace_roster
+            && self
+                .drafts
+                .get(&active.id)
+                .is_none_or(|draft| draft.completion.is_none())
+        {
+            active.refresh_roster(false);
+        }
         let channel = &active.id;
         let summary = self.catalog.get(channel)?;
         let epoch = self.epoch;
@@ -1010,21 +1399,17 @@ impl Chat {
                 ));
             }
         }
-        if self
-            .drafts
-            .get(channel)
-            .is_some_and(|draft| draft.completion.is_some())
-            && !self
-                .pending
-                .values()
-                .any(|kind| *kind == JobKind::Roster(epoch))
+        if !self
+            .pending
+            .values()
+            .any(|kind| *kind == JobKind::Roster(epoch))
             && let Some(after) = active.roster_next.take()
         {
             return Some((
                 JobKind::Roster(epoch),
                 Job::Request(ChannelRequest::UserRoster {
                     workspace_id: summary.workspace_id.clone(),
-                    channel_id: Some(channel.clone()),
+                    channel_id: (!active.workspace_roster).then(|| channel.clone()),
                     after,
                     limit: MAX_PAGE_LIMIT,
                 }),
@@ -1074,7 +1459,13 @@ impl Chat {
     pub(super) fn is_shutdown_write(&self, key: &str) -> bool {
         matches!(
             self.pending.get(key),
-            Some(JobKind::Send(_) | JobKind::EditorWrite(_) | JobKind::Mark { .. })
+            Some(
+                JobKind::Send(_)
+                    | JobKind::RoleSet(_)
+                    | JobKind::AssignRole(_)
+                    | JobKind::EditorWrite(_)
+                    | JobKind::Mark { .. }
+            )
         )
     }
 
@@ -1110,6 +1501,25 @@ impl Chat {
             }
             return None;
         }
+        if let JobKind::RoleSet(channel) = kind {
+            return self.complete_role_set(channel, result);
+        }
+        if let JobKind::AssignRole(workspace) = kind {
+            return match result {
+                Ok(Completion::Role(RoleResponse::Updated { .. })) => None,
+                result => {
+                    let error = result.err().unwrap_or_else(|| {
+                        transport::mark_outcome_unknown(anyhow::anyhow!(
+                            "unexpected assignment receipt"
+                        ))
+                    });
+                    if self.workspace.as_ref() == Some(&workspace) {
+                        self.redraw();
+                    }
+                    Some(("Couldn't confirm the Coordinator assignment.".into(), error))
+                }
+            };
+        }
         let result = match kind {
             JobKind::Image {
                 channel,
@@ -1144,19 +1554,16 @@ impl Chat {
                         participants,
                         next_after,
                     }) => {
-                        active
-                            .roster
-                            .extend(participants.into_iter().filter(|entry| {
-                                entry.participant.kind == ParticipantKind::Agent
-                                    && entry.binding.is_some()
-                            }));
+                        active.roster.extend(participants);
                         active.roster_next = next_after.map(Some);
                         if active.roster_next.is_none() {
                             active.roster_ready = true;
                             active.roster.sort_unstable_by(|a, b| {
-                                a.participant
-                                    .display_name
-                                    .cmp(&b.participant.display_name)
+                                view::member_group(a)
+                                    .cmp(&view::member_group(b))
+                                    .then_with(|| {
+                                        a.participant.display_name.cmp(&b.participant.display_name)
+                                    })
                                     .then_with(|| a.participant.id.cmp(&b.participant.id))
                             });
                         }
@@ -1241,6 +1648,10 @@ impl Chat {
                 match result {
                     Ok(ChannelResponse::Channel { channel }) => {
                         let id = channel.id.clone();
+                        let invite = self
+                            .editor
+                            .as_ref()
+                            .is_some_and(|editor| editor.token == token && editor.form.is_invite());
                         let select = self
                             .editor
                             .as_mut()
@@ -1254,6 +1665,10 @@ impl Chat {
                             // Let the ordered catalog publish any badge transition.
                             provisional.unread_attention = false;
                             self.upsert(provisional);
+                        }
+                        if invite {
+                            self.editor = None;
+                            self.invalidate_roster();
                         }
                         if select {
                             self.editor = None;
@@ -1283,6 +1698,50 @@ impl Chat {
             _ => {}
         }
         None
+    }
+
+    fn complete_role_set(
+        &mut self,
+        channel: ChannelId,
+        result: Result<Completion>,
+    ) -> Option<(String, anyhow::Error)> {
+        if !matches!(self.sends.remove(&channel), Some(Send::SettingRole)) {
+            return None;
+        }
+        let visible = self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.id == channel);
+        let error = match result {
+            Ok(Completion::Role(RoleResponse::Updated { grant })) => {
+                self.drafts.remove(&channel);
+                if visible {
+                    let notice = grant.map_or_else(
+                        || "Coordinator cleared".into(),
+                        |grant| format!("Coordinator set to {}", safe_text(&grant.display_name)),
+                    );
+                    self.notice = Some((Role::Success, notice));
+                }
+                return None;
+            }
+            Err(error) => error,
+            _ => {
+                transport::mark_outcome_unknown(anyhow::anyhow!("unexpected role command receipt"))
+            }
+        };
+        if transport::outcome_unknown(&error) {
+            // Unlike chat posts, a role command has no idempotency key.
+            self.drafts.remove(&channel);
+            if visible {
+                self.notice = Some((
+                    Role::Warning,
+                    "Role command outcome unknown · check Members".into(),
+                ));
+            }
+        } else if let Some(draft) = self.drafts.get_mut(&channel) {
+            draft.error = Some(format!("Role command rejected: {}", error_text(&error)));
+        }
+        Some(("Couldn't confirm the workspace role command.".into(), error))
     }
 
     pub(super) fn transports(&mut self) -> Vec<bkpr_tui_framework::PreparedTransport> {
@@ -1361,11 +1820,13 @@ impl History {
 }
 
 fn channel_order(channel: &ChannelSummary) -> (u8, &str, &ChannelId) {
-    let order = match (channel.direct, channel.name.as_str()) {
-        (false, "#desk") => 0,
-        (false, "#team") => 1,
-        (false, _) => 2,
-        (true, _) => 3,
+    let order = match (channel.role_thread, channel.direct, channel.name.as_str()) {
+        (_, false, "#desk") => 0,
+        (_, false, "#team") => 1,
+        (Some(thread), _, _) if !thread.archived => 2,
+        (None, false, _) => 3,
+        (None, true, _) => 4,
+        (Some(_), _, _) => 5,
     };
     (order, channel.name.as_str(), &channel.id)
 }
@@ -1400,6 +1861,34 @@ mod tests {
         chat.replace_catalog(HashMap::from([(id.clone(), summary)]));
         chat.open("workspace".into());
         (chat, id)
+    }
+
+    #[test]
+    fn a_role_command_cannot_fall_back_to_a_post_or_retry_an_unknown_write() {
+        let (mut chat, id) = open_chat();
+        chat.drafts
+            .entry(id.clone())
+            .or_default()
+            .paste("/role coordinator none");
+        assert!(matches!(chat.send(false), Effect::None));
+        chat.set_roles_enabled(true);
+        let Effect::Submit(
+            kind,
+            Job::Role(RoleRequest::Set {
+                workspace_id,
+                role: WorkspaceRole::Coordinator,
+                target: None,
+            }),
+        ) = chat.send(false)
+        else {
+            panic!("the reserved command should be a role mutation");
+        };
+        assert_eq!(workspace_id, "workspace");
+        let key = chat.track(kind);
+        let error = transport::mark_outcome_unknown(anyhow::anyhow!("receipt lost"));
+        assert!(chat.complete(&key, Err(error), true).is_some());
+        assert!(matches!(chat.send(true), Effect::None));
+        assert!(matches!(chat.send(false), Effect::None));
     }
 
     fn posted(sequence: u64) -> MessageSummary {
@@ -1524,6 +2013,7 @@ mod tests {
     #[test]
     fn repeated_history_boundary_does_not_request_the_same_page_twice() {
         let (mut chat, _) = open_chat();
+        chat.active.as_mut().unwrap().roster_next = None;
         let boundary = Load::Older(6);
         let history = &mut chat.active.as_mut().unwrap().history;
         history.anchor = Some(Anchor {
@@ -1552,6 +2042,7 @@ mod tests {
     #[test]
     fn same_mark_read_is_not_requeued_behind_its_in_flight_request() {
         let (mut chat, _) = open_chat();
+        chat.active.as_mut().unwrap().roster_next = None;
         let history = &mut chat.active.as_mut().unwrap().history;
         history.load = None;
         history.anchor = Some(Anchor {
@@ -1580,7 +2071,7 @@ mod tests {
     #[test]
     fn mention_roster_follows_empty_and_over_membership_cap_pages() {
         let (mut chat, id) = open_chat();
-        let draft = chat.drafts.entry(id).or_default();
+        let draft = chat.drafts.entry(id.clone()).or_default();
         assert!(draft.insert("@", true));
         let active = chat.active.as_mut().unwrap();
         active.history.load = None;
@@ -1641,9 +2132,16 @@ mod tests {
             assert_eq!(chat.active.as_ref().unwrap().roster_ready, cursor.is_none());
         }
         let roster = &chat.active.as_ref().unwrap().roster;
-        assert_eq!(roster.len(), bound_pages * limit + 1);
+        let choices: Vec<_> = chat.drafts[&id]
+            .choices(roster, usize::MAX)
+            .filter_map(|(_, entry, _)| match entry {
+                crate::app::chat_draft::Choice::Agent(entry) => Some(entry),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(choices.len(), bound_pages * limit + 1);
         assert_eq!(
-            roster.last().unwrap().participant.id.0,
+            choices.last().unwrap().participant.id.0,
             format!("p-{:04}-0000", bound_pages + 1)
         );
         assert!(chat.next_job(false).is_none());
