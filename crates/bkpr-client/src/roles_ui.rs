@@ -74,6 +74,7 @@ impl State {
             self.snapshot_pending |= eligible;
         }
         if changed || eligible && interaction {
+            self.snapshot_pending |= eligible && self.approvals.is_empty();
             self.eligible = Some(eligible);
             self.activity_pending = true;
         }
@@ -104,6 +105,12 @@ impl State {
             self.activity_pending = false;
             self.clear_prompt();
         }
+    }
+
+    fn activity_failed(&mut self) {
+        self.sending_activity = None;
+        self.reported = None;
+        self.clear_prompt();
     }
 
     fn clear_prompt(&mut self) {
@@ -195,6 +202,7 @@ impl State {
         let prompt = self.prompt().filter(|_| self.presented)?;
         Some(RoleRequest::Decide {
             request_id: prompt.id.clone(),
+            decision_generation: prompt.decision_generation,
             requester: prompt.requester.clone(),
             expected_holder: prompt.prior_holder.as_ref().map(|holder| holder.id.clone()),
             approve,
@@ -251,10 +259,10 @@ impl App {
         self.clipboard_prompt_open() || self.role_prompt().is_some()
     }
 
-    pub(super) fn sync_role_surface(&mut self) {
+    pub(super) fn sync_role_surface(&mut self) -> Result<()> {
         let open = self.role_prompt().is_some();
         if self.roles.surface_open == open {
-            return;
+            return Ok(());
         }
         self.roles.surface_open = open;
         self.roles.mark_presented(false);
@@ -270,6 +278,7 @@ impl App {
                 finder.cancel_copy_press();
             }
         }
+        self.notify_focus()
     }
 
     fn submit_role_job(&mut self, key: &'static str, request: RoleRequest) -> Result<()> {
@@ -291,8 +300,7 @@ impl App {
         } else if let Some(request) = self.roles.next_activity()
             && let Err(error) = self.submit_role_job(ACTIVITY, request)
         {
-            self.roles.complete_activity(false);
-            self.chat.set_roles_enabled(false);
+            self.roles.activity_failed();
             self.report_failure("Couldn't register for workspace roles.", &error);
         }
     }
@@ -311,11 +319,20 @@ impl App {
     pub(super) fn complete_roles(&mut self, completion: jobs::Completion<Background>) {
         let result = role_receipt(completion.result);
         match completion.key.as_str() {
-            ACTIVITY => {
-                let supported = matches!(result, Ok(RoleResponse::Activity {}));
-                self.roles.complete_activity(supported);
-                self.chat.set_roles_enabled(supported);
-            }
+            ACTIVITY => match result {
+                Ok(RoleResponse::Activity {}) => {
+                    self.roles.complete_activity(true);
+                    self.chat.set_roles_enabled(true);
+                }
+                Err(error) => {
+                    self.roles.activity_failed();
+                    if self.roles.supported.is_none() {
+                        self.chat.set_roles_enabled(false);
+                    }
+                    self.report_failure("Couldn't register for workspace roles.", &error);
+                }
+                _ => self.roles.activity_failed(),
+            },
             SNAPSHOT => match result {
                 Ok(RoleResponse::Snapshot {
                     revision,
@@ -427,19 +444,27 @@ pub(super) fn buttons(width: u16, height: u16) -> [(Rect, &'static str, bool); 2
     ]
 }
 
-fn paint(surface: &mut UiSurface, size: Size, theme: &Theme, prompt: &RoleApproval) -> bool {
+fn question(prompt: &RoleApproval) -> String {
     let role = label(prompt.role);
     let requester = identity(
         &prompt.participant.display_name,
         &prompt.requester.launch_id,
     );
     let workspace = safe_text(&prompt.workspace_name);
-    let question = if let Some(holder) = &prompt.prior_holder {
+    if let Some(holder) = &prompt.prior_holder {
         let holder = identity(&holder.display_name, &holder.holder.launch_id);
         format!("Replace {holder} with {requester} as {role} for {workspace}?")
     } else {
         format!("Make {requester} the {role} for {workspace}?")
-    };
+    }
+}
+
+pub(super) fn preferred_height(prompt: &RoleApproval, width: u16) -> u16 {
+    (textwrap::wrap(&question(prompt), usize::from(width).max(1)).len() as u16 + 4).max(10)
+}
+
+fn paint(surface: &mut UiSurface, size: Size, theme: &Theme, prompt: &RoleApproval) -> bool {
+    let question = question(prompt);
     let lines = textwrap::wrap(&question, usize::from(size.cols).max(1));
     let complete = lines.len() + 1 < usize::from(size.rows) && size.cols >= 20;
     surface.paint(
@@ -501,6 +526,7 @@ mod tests {
         };
         RoleApproval {
             id: RoleRequestId("request".into()),
+            decision_generation: 1,
             workspace_id: "workspace".into(),
             role: WorkspaceRole::Coordinator,
             requester: binding("requester"),
@@ -542,8 +568,12 @@ mod tests {
             state.decision(true),
             Some(RoleRequest::Decide {
                 request_id: approval.id.clone(),
+                decision_generation: approval.decision_generation,
                 requester: approval.requester.clone(),
-                expected_holder: Some(approval.prior_holder.as_ref().unwrap().id.clone()),
+                expected_holder: approval
+                    .prior_holder
+                    .as_ref()
+                    .map(|holder| holder.id.clone()),
                 approve: true,
             }),
         );
@@ -553,6 +583,29 @@ mod tests {
         state.apply_snapshot(2, vec![approval]);
         assert!(state.prompt().is_none());
         assert!(state.decision(false).is_none());
+    }
+
+    #[test]
+    fn replacement_prompt_cannot_receive_an_old_button_release() {
+        let mut state = State::default();
+        state.observe(true, false);
+        state.next_activity().unwrap();
+        state.complete_activity(true);
+        state.next_snapshot().unwrap();
+        let mut approval = prompt();
+        state.apply_snapshot(1, vec![approval.clone()]);
+        state.mark_presented(true);
+        assert_eq!(state.pointer(Some(true), false), None);
+
+        state.invalidate(2);
+        state.next_snapshot().unwrap();
+        approval.decision_generation += 1;
+        state.apply_snapshot(2, vec![approval]);
+        state.mark_presented(true);
+        assert_eq!(state.pointer(Some(true), true), None);
+        assert_eq!(state.pointer(Some(false), false), None);
+        assert_eq!(state.pointer(Some(false), true), Some(false));
+        assert!(state.decision(false).is_some());
     }
 
     #[test]

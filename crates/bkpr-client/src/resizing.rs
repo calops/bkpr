@@ -154,9 +154,14 @@ impl App {
 
     pub(super) fn retire_resize(&mut self) {
         self.resizing.hover = None;
+        self.resizing.chat_hover = None;
+        self.chat.cancel_divider_drag();
         self.resizing.click = None;
         self.resizing.gesture = None;
-        if matches!(self.pointer_capture, Some(PointerCapture::Resize)) {
+        if matches!(
+            self.pointer_capture,
+            Some(PointerCapture::Resize | PointerCapture::ChatDivider)
+        ) {
             // Keep swallowing the physical gesture until its release, rather
             // than converting its tail into input to the pane under the mouse.
             self.pointer_capture = Some(PointerCapture::Ui);

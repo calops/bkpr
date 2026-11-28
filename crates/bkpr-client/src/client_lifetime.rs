@@ -542,9 +542,12 @@ pub enum Lifecycle {
     TransportClosed,
 }
 
+/// Coalesced role observations from this attachment's lifetime stream.
 #[derive(Default)]
 pub(crate) struct RoleInvalidation {
+    /// Refresh the live roster projection.
     pub(crate) roster: bool,
+    /// Highest pending approval revision, if any.
     pub(crate) approvals: Option<u64>,
 }
 
@@ -845,6 +848,7 @@ impl RegisteredClient {
         result
     }
 
+    /// Drain the role invalidations accumulated since the previous call.
     pub(crate) fn take_role_events(&mut self) -> RoleInvalidation {
         std::mem::take(&mut self.role_events)
     }

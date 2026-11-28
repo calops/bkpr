@@ -167,11 +167,26 @@ const CHANNEL_BUTTONS: [(Hit, &str); 5] = [
 ];
 
 const MEMBER_BACK: &str = "Back";
+fn assignment_label(entry: &bkpr_protocol::channels::ChannelRosterEntry) -> String {
+    let binding = entry.binding.as_ref().expect("eligible assignment choice");
+    let suffix: String = binding.launch_id.chars().take(8).collect();
+    format!(
+        "{} · {}",
+        safe_text(&suffix),
+        safe_text(&entry.participant.display_name)
+    )
+}
 
 fn is_channel_button(hit: Hit) -> bool {
     matches!(
         hit,
-        Hit::Create | Hit::Manage | Hit::Members | Hit::MemberBack | Hit::Invite | Hit::Assign
+        Hit::Create
+            | Hit::Manage
+            | Hit::Members
+            | Hit::MemberBack
+            | Hit::Invite
+            | Hit::Assign
+            | Hit::AssignAgent(_)
     )
 }
 
@@ -749,15 +764,35 @@ impl Chat {
         self.paint.button_press.is_some()
     }
 
-    pub(in crate::app) fn release_button(&mut self, read_only: bool) {
+    pub(super) fn has_assignment_hit(&self, target: Hit) -> bool {
+        self.paint.key.is_some() && self.paint.hits.iter().any(|(_, hit)| *hit == target)
+    }
+
+    pub(super) fn invalidate_roster_hits(&mut self) {
+        self.paint
+            .hits
+            .retain(|(_, hit)| !matches!(hit, Hit::Mention(_) | Hit::AssignAgent(_)));
+        self.paint.button_press = None;
+        self.paint.completion_capacity = 0;
+    }
+
+    pub(in crate::app) fn release_button(&mut self, read_only: bool) -> super::Effect {
         let pressed = self.paint.button_press.take();
         let current = self
             .paint
             .button_pointer
             .and_then(|point| self.paint.button_at(point));
         if let Some((_, hit)) = pressed.filter(|pressed| Some(*pressed) == current) {
+            if let Hit::AssignAgent(index) = hit {
+                return if read_only {
+                    super::Effect::None
+                } else {
+                    self.assign_at(index)
+                };
+            }
             self.activate_button(hit, read_only);
         }
+        super::Effect::None
     }
 
     pub(in crate::app) fn cancel_button_press(&mut self) {
@@ -830,7 +865,7 @@ impl Chat {
                         .roster
                         .iter()
                         .filter(|entry| entry.binding.is_some())
-                        .map(|entry| safe_text(&entry.participant.display_name))
+                        .map(assignment_label)
                         .collect();
                     let choices: Vec<_> = labels
                         .iter()
@@ -1124,6 +1159,7 @@ impl Chat {
         } = key;
         self.images.start_frame();
         self.images_wanted.clear();
+        let assignment_pending = self.assignment_pending();
         let paint = &mut self.paint;
         if let Some(active) = &mut self.active {
             active.history.visible_through = 0;
@@ -1201,7 +1237,11 @@ impl Chat {
         if let (Some(rail), Some(channel), Some(active)) =
             (member_rail, summary, self.active.as_ref())
         {
-            let title = format!("Members · {}", channel_name(channel));
+            let title = if self.roles_enabled == Some(false) {
+                "Members · Snapshot".into()
+            } else {
+                format!("Members · {}", channel_name(channel))
+            };
             paint.target(rail, Hit::MemberRail);
             paint_members(
                 paint,
@@ -1377,7 +1417,7 @@ impl Chat {
                 && self.catalog_ready
                 && self.catalog_error.is_none()
             {
-                let pending = self.sends.contains_key(&Self::vacant_id());
+                let pending = assignment_pending;
                 let label = match (self.roles_enabled, pending) {
                     (_, true) => "Assigning coordinator…",
                     (Some(true), false) => "No coordinator assigned",
@@ -1417,7 +1457,7 @@ impl Chat {
                             .roster
                             .iter()
                             .filter(|entry| entry.binding.is_some())
-                            .map(|entry| safe_text(&entry.participant.display_name))
+                            .map(assignment_label)
                             .collect();
                         let choices: Vec<_> = labels
                             .iter()

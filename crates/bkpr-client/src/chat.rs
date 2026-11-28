@@ -108,6 +108,7 @@ pub(super) enum JobKind {
     },
     Send(ChannelId),
     RoleSet(ChannelId),
+    AssignRole(String),
     EditorRead(u64),
     EditorWrite(u64),
     Image {
@@ -455,11 +456,7 @@ impl Chat {
             .or_else(|| self.ids.iter().find(|id| !id.0.is_empty()))
             .cloned();
         if let Some(id) = selection {
-            let id = if id.0.is_empty()
-                || self.active.as_ref().is_some_and(|active| active.id == id)
-                    && self.catalog.get(&id).is_some_and(|channel| {
-                        channel.role_thread.is_some_and(|thread| thread.archived)
-                    }) {
+            let id = if id.0.is_empty() {
                 self.ids
                     .iter()
                     .find(|candidate| self.live_coordinator(candidate))
@@ -641,7 +638,8 @@ impl Chat {
                 draft.invalidate_completion();
             }
             active.refresh_roster(active.workspace_roster);
-            self.paint.invalidate_hits();
+            self.assign_cursor = self.assign_cursor.map(|_| 0);
+            self.invalidate_roster_hits();
             self.redraw();
         }
     }
@@ -855,20 +853,35 @@ impl Chat {
         }
     }
 
+    fn assignment_pending(&self) -> bool {
+        self.workspace.as_ref().is_some_and(|workspace| {
+            self.pending
+                .values()
+                .any(|kind| matches!(kind, JobKind::AssignRole(owner) if owner == workspace))
+        })
+    }
+
     fn toggle_assignment(&mut self) {
         if self.roles_enabled == Some(true)
             && self
                 .active
                 .as_ref()
                 .is_some_and(|active| active.id.0.is_empty())
-            && !self.sends.contains_key(&Self::vacant_id())
+            && !self.assignment_pending()
         {
             self.assign_cursor = self.assign_cursor.is_none().then_some(0);
             self.redraw();
         }
     }
 
+    pub(super) fn cancel_divider_drag(&mut self) {
+        self.divider_drag = None;
+    }
+
     fn assign_at(&mut self, index: usize) -> Effect {
+        if !self.has_assignment_hit(Hit::AssignAgent(index)) {
+            return Effect::None;
+        }
         let Some(active) = self
             .active
             .as_ref()
@@ -890,16 +903,14 @@ impl Chat {
         };
         if self.assign_cursor.is_none()
             || self.roles_enabled != Some(true)
-            || self.sends.contains_key(&active.id)
+            || self.assignment_pending()
         {
             return Effect::None;
         }
-        let id = active.id.clone();
         self.assign_cursor = None;
         self.redraw();
-        self.sends.insert(id.clone(), Send::SettingRole);
         Effect::Submit(
-            JobKind::RoleSet(id),
+            JobKind::AssignRole(workspace_id.clone()),
             Job::Role(RoleRequest::Set {
                 workspace_id,
                 role: WorkspaceRole::Coordinator,
@@ -1289,9 +1300,6 @@ impl Chat {
                 self.set_channel_chooser(false);
             }
             (B::Left, A::Press, Some(Hit::OpenChannels)) => self.set_channel_chooser(true),
-            (B::Left, A::Press, Some(Hit::AssignAgent(index))) if !read_only => {
-                return self.assign_at(index);
-            }
             (B::Left, A::Press, Some(Hit::Mention(index))) if writable => {
                 if let Some(active) = &mut self.active
                     && let Some(draft) = self.drafts.get_mut(&active.id)
@@ -1454,6 +1462,7 @@ impl Chat {
             Some(
                 JobKind::Send(_)
                     | JobKind::RoleSet(_)
+                    | JobKind::AssignRole(_)
                     | JobKind::EditorWrite(_)
                     | JobKind::Mark { .. }
             )
@@ -1494,6 +1503,22 @@ impl Chat {
         }
         if let JobKind::RoleSet(channel) = kind {
             return self.complete_role_set(channel, result);
+        }
+        if let JobKind::AssignRole(workspace) = kind {
+            return match result {
+                Ok(Completion::Role(RoleResponse::Updated { .. })) => None,
+                result => {
+                    let error = result.err().unwrap_or_else(|| {
+                        transport::mark_outcome_unknown(anyhow::anyhow!(
+                            "unexpected assignment receipt"
+                        ))
+                    });
+                    if self.workspace.as_ref() == Some(&workspace) {
+                        self.redraw();
+                    }
+                    Some(("Couldn't confirm the Coordinator assignment.".into(), error))
+                }
+            };
         }
         let result = match kind {
             JobKind::Image {

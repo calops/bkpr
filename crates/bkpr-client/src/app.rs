@@ -2925,10 +2925,7 @@ impl App {
             && !self.state.sidebar.active
             && self.sidebar_menu.is_none()
             && !self.search_open()
-            && !self
-                .consent
-                .as_ref()
-                .is_some_and(|c| !c.state.allowed && !c.state.sent)
+            && !self.consent_prompt_open()
         {
             self.active()
         } else {
@@ -4305,7 +4302,11 @@ impl App {
         }
         if self.role_prompt().is_some() {
             use crate::keyguide::{self, Action, Context};
-            self.state.suppressed.insert(event.key.clone());
+            if !self.held.contains_key(&event.key) {
+                self.state.suppressed.insert(event.key.clone());
+            } else {
+                return Ok(false);
+            }
             match keyguide::lookup(Context::RoleConsent, &event) {
                 Some(Action::ApproveRole) => self.decide_role(true),
                 Some(Action::DenyRole) => self.decide_role(false),
@@ -4955,6 +4956,15 @@ impl App {
                 && matches!(action, MouseAction::Press | MouseAction::Release)
             {
                 let hit = self.overlays.layer("ui:modal").and_then(|layer| {
+                    if !matches!(
+                        route,
+                        PointerRoute::Target {
+                            id: "ui:modal",
+                            content: true
+                        }
+                    ) {
+                        return None;
+                    }
                     let body = layer.placement.content;
                     if !body.contains(mouse.x, mouse.y) {
                         return None;
@@ -5179,7 +5189,8 @@ impl App {
             if event_button == MouseButton::Left && action == MouseAction::Release {
                 self.chat
                     .update_button_pointer(chat_target.then_some(point));
-                self.chat.release_button(self.options.read_only);
+                let effect = self.chat.release_button(self.options.read_only);
+                self.chat_effect(effect);
                 if self.chat.editor_open() && self.overlays.layer("ui:modal").is_none() {
                     self.begin_modal();
                 }
@@ -5960,7 +5971,7 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
             let active_owner = sessions.current_owner();
             let app = sessions.app_mut();
             app.role_activity(terminal.observed_focus(), false);
-            app.sync_role_surface();
+            app.sync_role_surface()?;
             graphics.drain()?;
             for frame in [
                 &mut window_effects,
@@ -6263,7 +6274,12 @@ pub fn run_sessions(targets: Vec<crate::SessionTarget>, options: Options) -> Res
                     let placement = OverlayPlacement::centered(
                         size,
                         size.cols.saturating_sub(4).clamp(1, 82),
-                        size.rows.min(if role_open { 10 } else { 6 }),
+                        size.rows.min(app.role_prompt().map_or(6, |prompt| {
+                            roles_ui::preferred_height(
+                                prompt,
+                                size.cols.saturating_sub(4).clamp(1, 82).saturating_sub(2),
+                            )
+                        })),
                     );
                     (placement.outer, placement.content)
                 } else {
