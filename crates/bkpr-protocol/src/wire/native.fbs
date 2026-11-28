@@ -483,6 +483,16 @@ table ChannelRequestPostUser {
   post:ChannelPost (required);
   bindings:[ChannelMentionBinding] (required);
 }
+table ChannelRequestInviteUser {
+  channel_id:string (required);
+  target:ChannelMentionBinding (required);
+}
+table ChannelRequestPostUserWithCoordinator {
+  channel_id:string (required);
+  post:ChannelPost (required);
+  bindings:[ChannelMentionBinding] (required);
+  coordinator_grant_id:string (required);
+}
 union ChannelRequest {
   ChannelRequestList,
   ChannelRequestListMembers,
@@ -501,9 +511,29 @@ union ChannelRequest {
   ChannelRequestCatalogSnapshot,
   ChannelRequestCatalogSubscribe,
   ChannelRequestUserRoster,
-  ChannelRequestPostUser
+  ChannelRequestPostUser,
+  ChannelRequestInviteUser,
+  ChannelRequestPostUserWithCoordinator
 }
 table OperationChannels { request:ChannelRequest (required); }
+enum WorkspaceRole:ubyte { Coordinator = 1 }
+enum RoleOrigin:ubyte { Approval = 1, Command = 2 }
+table RoleRequestActivity { eligible:bool; }
+table RoleRequestSnapshot {}
+table RoleRequestDecide {
+  request_id:string (required);
+  requester:ChannelMentionBinding (required);
+  expected_holder:string;
+  approve:bool;
+  decision_generation:ulong;
+}
+table RoleRequestSet {
+  workspace_id:string (required);
+  role:WorkspaceRole = Coordinator;
+  target:ChannelMentionBinding;
+}
+union RoleRequest { RoleRequestActivity, RoleRequestSnapshot, RoleRequestDecide, RoleRequestSet }
+table OperationRoles { request:RoleRequest (required); }
 union Operation {
   OperationSessionInfo,
   OperationClientRegister,
@@ -540,7 +570,8 @@ union Operation {
   OperationSessionOpen,
   OperationDaemonShutdown,
   OperationNotifications,
-  OperationChannels
+  OperationChannels,
+  OperationRoles
 }
 table PaneRequestInspect {
 
@@ -807,7 +838,10 @@ table AgentRequestChannelAck {
   channel_id:string (required);
   message_id:string (required);
 }
-union AgentRequest { AgentRequestWhoami, AgentRequestControl, AgentRequestSetTitle, AgentRequestDiscoverAgents, AgentRequestSendMessage, AgentRequestReadInbox, AgentRequestAckMessage, AgentRequestInspectOutbox, AgentRequestReceiverRegister, AgentRequestReceiverSubscribe, AgentRequestWakeValidate, AgentRequestWakeOutcome, AgentRequestReadMessage, AgentRequestChannels, AgentRequestChannelWake, AgentRequestChannelRead, AgentRequestChannelDirectPost, AgentRequestChannelAck }
+table AgentRequestRoleRequest { role:WorkspaceRole = Coordinator; }
+table AgentRequestRoleRelease { role:WorkspaceRole = Coordinator; grant_id:string (required); }
+table AgentRequestRoleStatus { role:WorkspaceRole = Coordinator; }
+union AgentRequest { AgentRequestWhoami, AgentRequestControl, AgentRequestSetTitle, AgentRequestDiscoverAgents, AgentRequestSendMessage, AgentRequestReadInbox, AgentRequestAckMessage, AgentRequestInspectOutbox, AgentRequestReceiverRegister, AgentRequestReceiverSubscribe, AgentRequestWakeValidate, AgentRequestWakeOutcome, AgentRequestReadMessage, AgentRequestChannels, AgentRequestChannelWake, AgentRequestChannelRead, AgentRequestChannelDirectPost, AgentRequestChannelAck, AgentRequestRoleRequest, AgentRequestRoleRelease, AgentRequestRoleStatus }
 table AgentWakeOutcomeAccepted {
 
 }
@@ -889,6 +923,7 @@ table ChannelSummary {
   read_through:ulong;
   unread_attention:bool;
   direct:bool;
+  role_thread:RoleThread;
 }
 table ChannelMessageSummary {
   id:string (required);
@@ -901,6 +936,7 @@ table ChannelMessageSummary {
   attachments:[string] (required);
   mention_spans:[ChannelResolvedMentionSpan];
   source:ChannelSource;
+  role:RoleAttribution;
 }
 table ChannelChange { sequence:ulong; kind:ChannelChangeKind; }
 table AttachmentDescriptor {
@@ -913,6 +949,7 @@ table ChannelMessage {
   message:ChannelMessageSummary (required);
   text:string (required);
   attachments:[AttachmentDescriptor] (required);
+  current_delegation:string;
 }
 table ChannelResponseListed {
   channels:[ChannelSummary] (required);
@@ -979,6 +1016,7 @@ table ChannelResponseCatalogReset {}
 table ChannelRosterEntry {
   participant:ChannelParticipant (required);
   binding:ChannelMentionBinding;
+  role:RoleAttribution;
 }
 table ChannelResponseUserRoster {
   participants:[ChannelRosterEntry] (required);
@@ -1003,7 +1041,39 @@ union ChannelResponse {
   ChannelResponseUserRoster
 }
 table ChannelPayload { response:ChannelResponse (required); }
-union Payload { ControlPayload, PanePayload, ImageResourcePayload, ChannelPayload }
+table RoleAttribution { role:WorkspaceRole = Coordinator; grant_id:string (required); }
+table RoleThread { role:WorkspaceRole = Coordinator; archived:bool; }
+table RoleGrant {
+  id:string (required);
+  workspace_id:string (required);
+  role:WorkspaceRole = Coordinator;
+  holder:ChannelMentionBinding (required);
+  origin:RoleOrigin = Approval;
+  granted_at_ms:ulong;
+  channel_id:string (required);
+  display_name:string (required);
+}
+table RoleApproval {
+  id:string (required);
+  workspace_id:string (required);
+  role:WorkspaceRole = Coordinator;
+  requester:ChannelMentionBinding (required);
+  participant:ChannelParticipant (required);
+  prior_holder:RoleGrant;
+  expires_at_ms:ulong;
+  workspace_name:string (required);
+  decision_generation:ulong;
+}
+table RoleResponseActivity {}
+table RoleResponseSnapshot {
+  revision:ulong;
+  grants:[RoleGrant] (required);
+  approvals:[RoleApproval] (required);
+}
+table RoleResponseUpdated { grant:RoleGrant; }
+union RoleResponse { RoleResponseActivity, RoleResponseSnapshot, RoleResponseUpdated }
+table RolePayload { response:RoleResponse (required); }
+union Payload { ControlPayload, PanePayload, ImageResourcePayload, ChannelPayload, RolePayload }
 table Request { version:uint; operation:Operation (required); }
 table OptionalPayload { value:Payload (required); }
 table OptionalFailure { value:RequestFailure (required); }

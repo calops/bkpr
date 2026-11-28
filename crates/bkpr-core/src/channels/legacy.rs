@@ -406,6 +406,7 @@ fn archive_post(
         reply_to: None,
         attachments: Vec::new(),
         source: None,
+        role: None,
     };
     insert_post(tx, &channel, &message, &key, &[], text, (0, false))
 }

@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { formatChannelWake, optionalNativeCallbacks, parseInboxPointer, type InboxPointer, type Json, type NativeCallbacks } from '../shared/native.ts';
+import { formatInboxWake, optionalNativeCallbacks, parseInboxPointer, type InboxPointer, type Json, type NativeCallbacks } from '../shared/native.ts';
 
 const SOURCE = 'pi_extension';
 const MAX_FRAME = 1024 * 1024;
@@ -72,7 +72,7 @@ export function registerPiCapture(pi: ExtensionAPI, native: NativeCallbacks, cap
       // steering also works while idle and never reads or replaces the editor's unsent draft.
       pi.sendMessage({
         customType: 'bkpr-inbox',
-        content: formatChannelWake(pointer.channel_wake),
+        content: formatInboxWake(pointer),
         display: true,
       }, { triggerTurn: true, deliverAs: 'steer' });
       // ExtensionAPI.sendMessage is void; Pi catches asynchronous errors inside its runtime.

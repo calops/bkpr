@@ -146,6 +146,12 @@ pub(super) fn write_request(
             );
             G::create_channel_request_set_membership(b, offset)
         }
+        ChannelRequest::InviteUser { channel_id, target } => {
+            let channel = write_text(b, channel_id.as_ref(), budget)?;
+            let target = write_mention_binding(b, target, budget, depth)?;
+            let offset = g::ChannelRequestInviteUser::create(b, channel, target);
+            G::create_channel_request_invite_user(b, offset)
+        }
         ChannelRequest::Post { channel_id, post } => {
             let channel = write_text(b, channel_id.as_ref(), budget)?;
             let post = write_post(b, post, budget, depth)?;
@@ -156,14 +162,32 @@ pub(super) fn write_request(
             channel_id,
             post,
             bindings,
+        }
+        | ChannelRequest::PostUserWithCoordinator {
+            channel_id,
+            post,
+            bindings,
+            ..
         } => {
             let channel = write_text(b, channel_id.as_ref(), budget)?;
             let post = write_post(b, post, budget, depth)?;
             let bindings = write_vector(b, bindings, budget, |b, binding, budget| {
                 write_mention_binding(b, binding, budget, depth)
             })?;
-            let offset = g::ChannelRequestPostUser::create(b, channel, post, bindings);
-            G::create_channel_request_post_user(b, offset)
+            if let ChannelRequest::PostUserWithCoordinator {
+                coordinator_grant_id,
+                ..
+            } = request
+            {
+                let grant = write_text(b, &coordinator_grant_id.0, budget)?;
+                let offset = g::ChannelRequestPostUserWithCoordinator::create(
+                    b, channel, post, bindings, grant,
+                );
+                G::create_channel_request_post_user_with_coordinator(b, offset)
+            } else {
+                let offset = g::ChannelRequestPostUser::create(b, channel, post, bindings);
+                G::create_channel_request_post_user(b, offset)
+            }
         }
         ChannelRequest::History {
             channel_id,
@@ -301,6 +325,10 @@ pub(super) fn read_request(
             membership: v.membership()?.into(),
             members: read_ids(v.members()?, MAX_MEMBERS, ParticipantId, budget)?,
         },
+        R::ChannelRequestInviteUser(v) => ChannelRequest::InviteUser {
+            channel_id: ChannelId(read_id(v.channel_id()?, budget)?),
+            target: read_mention_binding(v.target()?, budget, depth)?,
+        },
         R::ChannelRequestPost(v) => ChannelRequest::Post {
             channel_id: ChannelId(read_id(v.channel_id()?, budget)?),
             post: read_post(v.post()?, budget, depth)?,
@@ -311,6 +339,17 @@ pub(super) fn read_request(
             bindings: read_vector(v.bindings()?, MAX_MENTIONS, budget, |value, budget| {
                 read_mention_binding(value, budget, depth)
             })?,
+        },
+        R::ChannelRequestPostUserWithCoordinator(v) => ChannelRequest::PostUserWithCoordinator {
+            channel_id: ChannelId(read_id(v.channel_id()?, budget)?),
+            post: read_post(v.post()?, budget, depth)?,
+            bindings: read_vector(v.bindings()?, MAX_MENTIONS, budget, |value, budget| {
+                read_mention_binding(value, budget, depth)
+            })?,
+            coordinator_grant_id: crate::roles::RoleGrantId(read_id(
+                v.coordinator_grant_id()?,
+                budget,
+            )?),
         },
         R::ChannelRequestHistory(v) => ChannelRequest::History {
             channel_id: ChannelId(read_id(v.channel_id()?, budget)?),
@@ -792,6 +831,17 @@ fn write_summary(
     let workspace = write_text(b, &value.workspace_id, budget)?;
     let name = write_text(b, &value.name, budget)?;
     let settings = write_settings(b, value.settings, budget, depth + 1)?;
+    let role_thread = value
+        .role_thread
+        .map(|thread| -> Result<_> {
+            budget.node(depth + 1)?;
+            Ok(g::RoleThread::create(
+                b,
+                super::roles::write_role(thread.role),
+                thread.archived,
+            ))
+        })
+        .transpose()?;
     Ok(g::ChannelSummary::create(
         b,
         id,
@@ -803,6 +853,7 @@ fn write_summary(
         value.read_through,
         value.unread_attention,
         value.direct,
+        role_thread,
     ))
 }
 
@@ -828,6 +879,16 @@ fn read_summary(
         read_through,
         unread_attention: v.unread_attention()?,
         direct: v.direct()?,
+        role_thread: v
+            .role_thread()?
+            .map(|thread| -> Result<_> {
+                budget.node(depth + 1)?;
+                Ok(crate::roles::RoleThread {
+                    role: super::roles::read_role(thread.role()?),
+                    archived: thread.archived()?,
+                })
+            })
+            .transpose()?,
     })
 }
 
@@ -866,6 +927,11 @@ fn write_message(
             })
         })
         .transpose()?;
+    let role = write_attribution(b, value.role.as_ref(), budget, depth + 1)?;
+    ensure!(
+        role.is_none() || value.author.kind == ParticipantKind::Agent,
+        "user posts cannot carry role attribution"
+    );
     Ok(g::ChannelMessageSummary::create(
         b,
         id,
@@ -878,6 +944,7 @@ fn write_message(
         attachments,
         mention_spans,
         source,
+        role,
     ))
 }
 
@@ -918,7 +985,12 @@ fn read_message(
             .transpose()?
             .unwrap_or_default(),
         source: read_source(v.source()?, budget, depth + 1)?,
+        role: read_attribution(v.role()?, budget, depth + 1)?,
     };
+    ensure!(
+        message.role.is_none() || message.author.kind == ParticipantKind::Agent,
+        "user posts cannot carry role attribution"
+    );
     message.validate_mention_spans(text)?;
     Ok(message)
 }
@@ -937,7 +1009,19 @@ fn write_renderable_message(
     let attachments = write_vector(b, &value.attachments, budget, |b, value, budget| {
         write_descriptor(b, value, budget, depth + 1)
     })?;
-    Ok(g::ChannelMessage::create(b, message, text, attachments))
+    validate_delegation(value)?;
+    let delegation = value
+        .current_delegation
+        .as_ref()
+        .map(|id| write_text(b, &id.0, budget))
+        .transpose()?;
+    Ok(g::ChannelMessage::create(
+        b,
+        message,
+        text,
+        attachments,
+        delegation,
+    ))
 }
 
 fn read_renderable_message(
@@ -954,9 +1038,62 @@ fn read_renderable_message(
         attachments: read_vector(v.attachments()?, MAX_ATTACHMENTS, budget, |v, b| {
             read_descriptor(v, b, depth + 1)
         })?,
+        current_delegation: v
+            .current_delegation()?
+            .map(|id| read_id(id, budget).map(crate::roles::RoleGrantId))
+            .transpose()?,
     };
     message.validate_attachments()?;
+    validate_delegation(&message)?;
     Ok(message)
+}
+
+fn validate_delegation(value: &ChannelMessage) -> Result<()> {
+    ensure!(
+        value.current_delegation.as_ref().is_none_or(|id| {
+            value
+                .message
+                .role
+                .as_ref()
+                .is_some_and(|role| &role.grant_id == id)
+        }),
+        "current delegation must match historical tenure"
+    );
+    Ok(())
+}
+
+fn write_attribution(
+    b: &mut Builder,
+    role: Option<&crate::roles::RoleAttribution>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Option<Offset<g::RoleAttribution>>> {
+    role.map(|role| {
+        budget.node(depth)?;
+        valid_id(&role.grant_id.0)?;
+        let id = write_text(b, &role.grant_id.0, budget)?;
+        Ok(g::RoleAttribution::create(
+            b,
+            super::roles::write_role(role.role),
+            id,
+        ))
+    })
+    .transpose()
+}
+
+fn read_attribution(
+    role: Option<g::RoleAttributionRef<'_>>,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<Option<crate::roles::RoleAttribution>> {
+    role.map(|role| {
+        budget.node(depth)?;
+        Ok(crate::roles::RoleAttribution {
+            role: super::roles::read_role(role.role()?),
+            grant_id: crate::roles::RoleGrantId(read_id(role.grant_id()?, budget)?),
+        })
+    })
+    .transpose()
 }
 
 fn validate_retained_body(text: &str) -> Result<()> {
@@ -984,7 +1121,7 @@ fn validate_history_continuations(before: Option<u64>, after: Option<u64>) -> Re
     Ok(())
 }
 
-fn write_participant(
+pub(super) fn write_participant(
     b: &mut Builder,
     value: &Participant,
     budget: &mut Budget,
@@ -1002,7 +1139,7 @@ fn write_participant(
     ))
 }
 
-fn read_participant(
+pub(super) fn read_participant(
     v: g::ChannelParticipantRef<'_>,
     budget: &mut Budget,
     depth: usize,
@@ -1015,7 +1152,7 @@ fn read_participant(
     })
 }
 
-fn write_mention_binding(
+pub(super) fn write_mention_binding(
     b: &mut Builder,
     value: &ChannelMentionBinding,
     budget: &mut Budget,
@@ -1032,7 +1169,7 @@ fn write_mention_binding(
     ))
 }
 
-fn read_mention_binding(
+pub(super) fn read_mention_binding(
     value: g::ChannelMentionBindingRef<'_>,
     budget: &mut Budget,
     depth: usize,
@@ -1067,7 +1204,8 @@ fn write_roster_entry(
             write_mention_binding(b, value, budget, depth + 1)
         })
         .transpose()?;
-    Ok(g::ChannelRosterEntry::create(b, participant, binding))
+    let role = write_attribution(b, entry.role.as_ref(), budget, depth + 1)?;
+    Ok(g::ChannelRosterEntry::create(b, participant, binding, role))
 }
 
 fn read_roster_entry(
@@ -1082,6 +1220,7 @@ fn read_roster_entry(
             .binding()?
             .map(|value| read_mention_binding(value, budget, depth + 1))
             .transpose()?,
+        role: read_attribution(value.role()?, budget, depth + 1)?,
     };
     entry.validate_binding_relationship()?;
     Ok(entry)

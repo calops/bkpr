@@ -172,6 +172,7 @@ struct Inner {
     channels: crate::channels::ChannelEngine,
     channel_expiry: legacy_channels::Expiry,
     agents: Arc<agents::Agents>,
+    roles: agents::RoleService,
     spawn_environment: Mutex<Option<crate::harness::SpawnEnvironment>>,
     ssh_agent: Mutex<Option<Arc<crate::ssh_agent::Relay>>>,
     ssh_agent_sequence: std::sync::atomic::AtomicU64,
@@ -660,6 +661,7 @@ impl Registry {
                 channels,
                 channel_expiry: legacy_channels::Expiry::default(),
                 agents,
+                roles: agents::RoleService::default(),
                 spawn_environment: Mutex::new(None),
                 ssh_agent: Mutex::new(None),
                 ssh_agent_sequence: std::sync::atomic::AtomicU64::new(0),
@@ -705,19 +707,21 @@ impl Registry {
         let owner = Arc::downgrade(&registry.inner);
         registry.inner.channels.set_launch_liveness(move |id| {
             owner.upgrade().is_some_and(|inner| {
-                inner
-                    .captures
-                    .lock()
-                    .unwrap()
-                    .launches
-                    .get(id)
-                    .is_some_and(crate::harness::Launch::channel_launch_alive)
+                inner.agents.tracks_launch(id)
+                    && inner
+                        .captures
+                        .lock()
+                        .unwrap()
+                        .launches
+                        .get(id)
+                        .is_some_and(crate::harness::Launch::channel_launch_alive)
             })
         });
         registry
             .inner
             .channel_expiry
             .start(&registry, legacy_expiry)?;
+        registry.inner.roles.start(&registry)?;
         registry.start_projects(project_events)?;
         registry.start_ci(ci_events)?;
         Ok(registry)
@@ -997,23 +1001,28 @@ impl Registry {
             ChannelRequest::ListMembers { .. }
             | ChannelRequest::UserRoster { .. }
             | ChannelRequest::Post { .. }
-            | ChannelRequest::PostUser { .. } => true,
+            | ChannelRequest::PostUser { .. }
+            | ChannelRequest::PostUserWithCoordinator { .. } => true,
             ChannelRequest::Create { members, .. }
             | ChannelRequest::SetMembership { members, .. } => !members.is_empty(),
             _ => false,
         };
-        let admit = |workspace_id: &str| {
+        let admit = |workspace_id: &str, roster: crate::channels::RosterScope<'_>| {
             ensure!(
                 workspace.as_deref().is_none_or(|own| own == workspace_id),
                 crate::channels::ChannelAccessLost
             );
-            self.channel_authority(workspace_id, caller, with_roster, connected)
+            self.channel_authority_projected(workspace_id, caller, with_roster, roster, connected)
         };
         let workspace_open = |id: &str| workspace_exists(&self.inner.state.lock().unwrap(), id);
         let cancelled = || !connected() || self.session_end_requested();
         let exact_mentions = caller
             .filter(|_| matches!(projection, ChannelProjection::Agent))
             .map(|launch| (launch.grant.launch_id.as_str(), launch.binding_generation));
+        let roster_mutation = matches!(
+            &request,
+            ChannelRequest::SetMembership { .. } | ChannelRequest::InviteUser { .. }
+        );
         if let Some(caller) = exact_mentions
             && matches!(request, ChannelRequest::ListMembers { .. })
         {
@@ -1034,35 +1043,40 @@ impl Registry {
                 .inner
                 .channels
                 .with_delivery_store(&cancelled, &workspace_open, |store| {
-                    store.compact_history(request, &admit, workspace.as_deref())
+                    store.compact_history(
+                        request,
+                        &|id| admit(id, crate::channels::RosterScope::Workspace),
+                        workspace.as_deref(),
+                    )
                 })
                 .map(Payload::Control);
         }
 
-        self.inner
-            .channels
-            .request_routed(
-                request,
-                admit,
-                workspace_open,
-                cancelled,
-                crate::channels::ChannelRoutes {
-                    workspace: workspace.as_deref(),
-                    exact_mentions,
-                    publish: &|targets| self.inner.agents.publish_channel_work(targets),
-                    binding_live: &|launch, binding| self.channel_binding_live(launch, binding),
-                    direct_peer: &|participant| match caller {
-                        Some(launch) => self.channel_direct_peer(launch, participant, connected),
-                        None => Ok(None),
-                    },
-                    fence_user_mentions: &|workspace, bindings| {
-                        let guard = self.fence_user_mentions(workspace, bindings)?;
-                        ensure!(connected(), "channel request disconnected");
-                        Ok(guard)
-                    },
+        let (response, changed) = self.inner.channels.request_routed(
+            request,
+            admit,
+            workspace_open,
+            cancelled,
+            crate::channels::ChannelRoutes {
+                workspace: workspace.as_deref(),
+                exact_mentions,
+                publish: &|targets| self.inner.agents.publish_channel_work(targets),
+                binding_live: &|launch, binding| self.channel_binding_live(launch, binding),
+                direct_peer: &|participant| match caller {
+                    Some(launch) => self.channel_direct_peer(launch, participant, connected),
+                    None => Ok(None),
                 },
-            )
-            .map(Payload::Channels)
+                fence_user_mentions: &|workspace, bindings| {
+                    let guard = self.fence_user_mentions(workspace, bindings)?;
+                    ensure!(connected(), "channel request disconnected");
+                    Ok(guard)
+                },
+            },
+        )?;
+        if changed && roster_mutation {
+            self.role_roster_changed();
+        }
+        Ok(Payload::Channels(response))
     }
 
     fn request_for_client(
@@ -1115,6 +1129,7 @@ impl Registry {
             Operation::ClientRegister { .. }
             | Operation::Client { .. }
             | Operation::ClientActivate { .. }
+            | Operation::Roles { .. }
             | Operation::ClientDetach => {
                 bail!("client operations require authenticated attachment transport")
             }
@@ -1371,6 +1386,7 @@ impl Registry {
                     }
                     Ok(())
                 })?;
+                self.role_roster_changed();
                 Ok(json!({"registry":registry}))
             }
             Operation::PaneTerminate { pane_id } => {
@@ -2066,6 +2082,7 @@ impl Registry {
             unbound || state.failed_restores.contains(id)
         };
         self.inner.agents.retire_pane(id);
+        self.role_launches_changed();
         {
             let mut published = pane.shared.published.lock().unwrap();
             published.recovery_title.end();

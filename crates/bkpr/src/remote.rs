@@ -192,6 +192,15 @@ fn parse_operation(bytes: &[u8]) -> Result<Operation> {
         ),
         "attachment and harness authority cannot be supplied through the operation console"
     );
+    ensure!(
+        !matches!(
+            operation,
+            Operation::Roles {
+                request: bkpr_protocol::roles::RoleRequest::Activity { .. }
+            }
+        ),
+        "role approval activity requires an event-capable attachment"
+    );
     if let Operation::Notifications { request } = &operation {
         request.validate()?;
         ensure!(
@@ -459,6 +468,7 @@ mod tests {
                 "{\"op\":\"client_activate\",\"detach_others\":true,\"agent_socket\":null}\n",
                 "{\"op\":\"harness_begin\",\"kind\":\"omp\"}\n",
                 "{\"op\":\"client_detach\"}\n",
+                "{\"op\":\"roles\",\"request\":{\"method\":\"activity\",\"eligible\":true}}\n",
             )
             .as_bytes(),
         );
@@ -473,7 +483,7 @@ mod tests {
         )
         .unwrap();
         let rows = records(output);
-        assert_eq!(rows.len(), 5);
+        assert_eq!(rows.len(), 6);
         assert!(
             rows[1..]
                 .iter()

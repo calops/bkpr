@@ -194,6 +194,18 @@ test('native root prompt facts and batched wake pointers remain body-free and la
     { method: 'wake_validate', notification_id: 'channel-notice', generation: 2 },
     { method: 'wake_outcome', notification_id: 'channel-notice', generation: 2, outcome: { state: 'unknown' } },
   ]);
+  const roleWake = { workspace_id: 'workspace', role: 'coordinator', grant_id: 'tenure', change: 'granted' };
+  fixture.subscribers[0].stdout.write(JSON.stringify({ notification: {
+    notification_id: 'role-notice', generation: 3, session_id: 'native-one',
+    role_wake: { ...roleWake, body: 'PRIVATE_PEER_BODY' }, recipients: ['PRIVATE_RECIPIENT'],
+  } }) + '\n');
+  await settle();
+  expect(messages).toHaveLength(3);
+  expect(messages[2].content).toBe(JSON.stringify({ role_wake: roleWake }));
+  expect(requests.slice(-2)).toMatchObject([
+    { method: 'wake_validate', notification_id: 'role-notice', generation: 3 },
+    { method: 'wake_outcome', notification_id: 'role-notice', generation: 3, outcome: { state: 'unknown' } },
+  ]);
   fixture.session = 'native-two';
   await fixture.emit('session_switch');
   await fixture.emit('before_agent_start', { reason: 'prompt', prompt: 'PRIVATE_PROMPT' });
@@ -214,6 +226,15 @@ test('native root prompt facts and batched wake pointers remain body-free and la
     { ...validPointer, channel_wake: null },
     { ...validPointer, channel_wake: { ...wake, pending_count: 0x100000000 } },
     { ...validPointer, channel_wake: { ...wake, addressed_message_id: '\x1bsecret' } },
+  ]) expect(() => parseInboxPointer(invalid)).toThrow();
+  const rolePointer = { notification_id: 'role-notice', generation: 2, session_id: 'native-two', role_wake: roleWake };
+  for (const invalid of [
+    { ...rolePointer, channel_wake: wake },
+    { ...rolePointer, role_wake: null },
+    { ...rolePointer, role_wake: { ...roleWake, workspace_id: 'é'.repeat(129) } },
+    { ...rolePointer, role_wake: { ...roleWake, role: 'unknown' } },
+    { ...rolePointer, role_wake: { ...roleWake, grant_id: '\x1btenure' } },
+    { ...rolePointer, role_wake: { ...roleWake, change: 'expired' } },
   ]) expect(() => parseInboxPointer(invalid)).toThrow();
 
   process.env.BKPR_CAPTURE_HARNESS = 'omp';

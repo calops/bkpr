@@ -378,6 +378,7 @@ mod tests {
                     launch_id: launch.into(),
                     binding_generation,
                 }),
+                role: None,
             })
             .collect()
     }

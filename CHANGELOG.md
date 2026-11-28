@@ -16,9 +16,14 @@
 * **channels:** route questions and reports through host notifications without sending chat bodies
 * **tui:** open workspace channels with drafts, exact mentions and unread attention without replacing native panes ([#77](https://github.com/calops/bkpr/issues/77))
 * **channels:** color exact inline agent mentions in newly authored posts and in the picker using the participant's transcript color.
+* **roles:** let managed agents request the workspace Coordinator role, with exact user approval, private tenure threads and live delegation checks ([#109](https://github.com/calops/bkpr/issues/109))
+* **channels:** add an exact live agent to an explicit channel without overwriting other members ([#109](https://github.com/calops/bkpr/issues/109))
+* **roles:** fence structured `@coordinator` mentions by the selected tenure and live binding ([#109](https://github.com/calops/bkpr/issues/109))
 
 ### Bug Fixes
 
+* **roles:** guide managed agents to check and request the workspace role when explicitly assigned, without opening a prompt for one-task leads ([#109](https://github.com/calops/bkpr/issues/109))
+* **roles:** keep withdrawn approval prompts stale and let a live Coordinator be mentioned again after switching native conversations ([#109](https://github.com/calops/bkpr/issues/109))
 * **channels:** guide agents to verify earlier user context for ambiguous `#desk` follow-ups without replaying completed work ([#75](https://github.com/calops/bkpr/issues/75))
 * **channels:** keep the user-chosen lead scoped to the current request and route one synthesized report to the original `#desk` post unless the user asks for individual reports ([#75](https://github.com/calops/bkpr/issues/75))
 * **channels:** default new `#team` channels to waking only mentioned agents when addressed and all eligible peers otherwise, without rewriting saved settings ([#75](https://github.com/calops/bkpr/issues/75))

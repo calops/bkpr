@@ -145,11 +145,11 @@ impl Registry {
                         .event(&launch_id, &token, event)?;
                     return Ok(Payload::Control(json!({"accepted":true})));
                 }
-                let changes_binding = matches!(
+                let reports_binding = matches!(
                     &event,
                     CaptureEvent::Bind { .. } | CaptureEvent::Unbind { .. }
                 );
-                if matches!(event, CaptureEvent::End) {
+                let binding_changed = if matches!(event, CaptureEvent::End) {
                     launch.control.revoke();
                     self.agent_retire(std::slice::from_ref(&launch_id));
                     let ended_intent = self.automatic_end(&launch);
@@ -162,6 +162,7 @@ impl Registry {
                     self.inner.channels.reconcile_retired_work();
                     ended_intent?;
                     published?;
+                    false
                 } else {
                     self.inner.agents.check_health()?;
                     self.capture_pane(&launch.grant.pane_id)?;
@@ -186,7 +187,7 @@ impl Registry {
                             "native conversation resume is reserved"
                         );
                     }
-                    self.agent_capture_event(&launch_id, &token, event)?;
+                    let binding_changed = self.agent_capture_event(&launch_id, &token, event)?;
                     let result = (|| -> Result<()> {
                         if let Some(descriptor) = descriptor {
                             self.recovery_bind(
@@ -210,9 +211,13 @@ impl Registry {
                         let _ = self.publish_capture_change(&launch);
                         return Err(error);
                     }
-                }
-                if changes_binding {
+                    binding_changed
+                };
+                if reports_binding {
                     self.inner.channels.invalidate();
+                    if binding_changed {
+                        self.role_launches_changed();
+                    }
                     let captures = self.inner.captures.lock().unwrap();
                     Ok(json!({
                         "accepted":true,
@@ -674,6 +679,7 @@ impl Registry {
             .as_ref()
             .and_then(|h| h.managed.as_ref())
             .map(|m| m.launch_id.as_str());
+        let roster_changed = old_launch != new_launch;
         let initial_child = old_launch.zip(new_launch).is_some_and(|(old_id, new_id)| {
             old_id == new_id
                 && super::notification_capture::managed_authority(
@@ -738,6 +744,9 @@ impl Registry {
         drop(captures);
         drop(state);
         drop(_transaction);
+        if roster_changed {
+            self.role_roster_changed();
+        }
         if notification_changed && let Some(service) = self.inner.notifications.get() {
             notification_capture.withdraw(service);
         }
@@ -959,6 +968,7 @@ impl Registry {
             version = captures.version;
             drop(captures);
             self.inner.channels.reconcile_retired_work();
+            self.role_launches_changed();
         }
         if !self.publish_process_sample(&panes, &valid_launches, table, version, scoped.is_some())
             && let Ok(full) = proc::fresh_snapshot()

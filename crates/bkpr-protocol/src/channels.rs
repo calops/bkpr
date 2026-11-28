@@ -180,6 +180,9 @@ pub struct ChannelRosterEntry {
     pub participant: Participant,
     /// Exact observed agent binding, never a saved membership reference.
     pub binding: Option<ChannelMentionBinding>,
+    /// Current verified role in the roster's workspace, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<crate::roles::RoleAttribution>,
 }
 
 impl ChannelRosterEntry {
@@ -191,6 +194,10 @@ impl ChannelRosterEntry {
                 "channel roster binding does not match its agent participant"
             );
         }
+        ensure!(
+            self.role.is_none() || self.binding.is_some(),
+            "role roster entry requires a live agent binding"
+        );
         Ok(())
     }
 }
@@ -401,6 +408,9 @@ pub struct ChannelSummary {
     /// users have read-only access.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub direct: bool,
+    /// Identifies an active or archived private role thread, never a membership grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_thread: Option<crate::roles::RoleThread>,
 }
 
 /// A durable position in one session's user channel catalog.
@@ -467,6 +477,9 @@ pub struct MessageSummary {
     /// Optional author-supplied context link, independent of read access to its target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<Box<ChannelSource>>,
+    /// Server-stamped historical authorship, independent of current delegation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<crate::roles::RoleAttribution>,
 }
 
 impl MessageSummary {
@@ -491,6 +504,9 @@ pub struct ChannelMessage {
     pub text: String,
     /// Metadata for the attachment references in `message`, in the same order.
     pub attachments: Vec<AttachmentDescriptor>,
+    /// Exact historical tenure still current in the viewing workspace at admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_delegation: Option<crate::roles::RoleGrantId>,
 }
 
 impl ChannelMessage {
@@ -520,6 +536,11 @@ impl ChannelMessage {
             + message.source.as_ref().map_or(0, |source| {
                 source.channel_id.as_ref().len() + source.message_id.as_ref().len()
             })
+            + message
+                .role
+                .as_ref()
+                .map_or(0, |role| role.grant_id.0.len())
+            + self.current_delegation.as_ref().map_or(0, |id| id.0.len())
             + message
                 .attachments
                 .iter()
@@ -727,6 +748,27 @@ pub enum ChannelRequest {
         post: ChannelPost,
         /// One binding per mentioned agent, none for the session user. Part of the retry fingerprint.
         bindings: Vec<ChannelMentionBinding>,
+    },
+    /// Add one live agent to an ordinary explicit-membership channel as the session user.
+    /// If the exact target is already a member, returns the channel without a change.
+    InviteUser {
+        /// Exact owning channel identity, not shorthand or a display name.
+        channel_id: ChannelId,
+        /// Agent from the owning workspace's current roster; stale bindings are rejected.
+        target: ChannelMentionBinding,
+    },
+    /// Commit a user post with a structured `@coordinator` mention. The exact
+    /// selected tenure and holder must still be current and eligible in this channel.
+    PostUserWithCoordinator {
+        /// Exact owning channel identity.
+        channel_id: ChannelId,
+        /// Body, retry key and structured references, including the holder's participant ID.
+        post: ChannelPost,
+        /// Exact bindings for mentioned agents, including the selected holder.
+        bindings: Vec<ChannelMentionBinding>,
+        /// Tenure selected from the same roster row as the holder's binding.
+        /// Part of the retry fingerprint; not a channel access grant.
+        coordinator_grant_id: crate::roles::RoleGrantId,
     },
 }
 
@@ -1004,6 +1046,10 @@ impl ChannelRequest {
                 valid_id(channel_id.as_ref())?;
                 valid_members(*membership, members)
             }
+            Self::InviteUser { channel_id, target } => {
+                valid_id(channel_id.as_ref())?;
+                target.validate()
+            }
             Self::Post { channel_id, post } => {
                 valid_id(channel_id.as_ref())?;
                 post.validate()
@@ -1012,7 +1058,24 @@ impl ChannelRequest {
                 channel_id,
                 post,
                 bindings,
+            }
+            | Self::PostUserWithCoordinator {
+                channel_id,
+                post,
+                bindings,
+                ..
             } => {
+                if let Self::PostUserWithCoordinator {
+                    coordinator_grant_id,
+                    ..
+                } = self
+                {
+                    valid_id(&coordinator_grant_id.0)?;
+                    ensure!(
+                        !bindings.is_empty(),
+                        "coordinator mention requires an exact holder binding"
+                    );
+                }
                 valid_id(channel_id.as_ref())?;
                 post.validate()?;
                 ensure!(
@@ -1145,7 +1208,7 @@ pub(crate) fn valid_id(value: &str) -> Result<()> {
 pub(crate) fn valid_source_ids(channel_id: &str, message_id: &str) -> Result<()> {
     valid_id(channel_id)?;
     ensure!(
-        !matches!(channel_id, "#desk" | "#team"),
+        !matches!(channel_id, "#desk" | "#team" | "#coordinator"),
         "channel source requires an exact channel ID"
     );
     valid_id(message_id)

@@ -187,6 +187,21 @@ pub(super) fn write_agent_request(
             let table = g::AgentRequestChannelAck::create(builder, channel_id, message_id);
             g::AgentRequest::create_agent_request_channel_ack(builder, table)
         }
+        AgentRequest::RoleRequest { role } => {
+            let table =
+                g::AgentRequestRoleRequest::create(builder, super::roles::write_role(*role));
+            g::AgentRequest::create_agent_request_role_request(builder, table)
+        }
+        AgentRequest::RoleRelease { role, grant_id } => {
+            let id = write_channel_identity(builder, &grant_id.0, budget)?;
+            let table =
+                g::AgentRequestRoleRelease::create(builder, super::roles::write_role(*role), id);
+            g::AgentRequest::create_agent_request_role_release(builder, table)
+        }
+        AgentRequest::RoleStatus { role } => {
+            let table = g::AgentRequestRoleStatus::create(builder, super::roles::write_role(*role));
+            g::AgentRequest::create_agent_request_role_status(builder, table)
+        }
     })
 }
 
@@ -314,6 +329,16 @@ pub(super) fn read_agent_request(
         g::AgentRequestRef::AgentRequestChannelAck(value) => AgentRequest::ChannelAck {
             channel_id: ChannelId(read_channel_identity(value.channel_id()?, budget)?),
             message_id: MessageId(read_channel_identity(value.message_id()?, budget)?),
+        },
+        g::AgentRequestRef::AgentRequestRoleRequest(v) => AgentRequest::RoleRequest {
+            role: super::roles::read_role(v.role()?),
+        },
+        g::AgentRequestRef::AgentRequestRoleRelease(v) => AgentRequest::RoleRelease {
+            role: super::roles::read_role(v.role()?),
+            grant_id: crate::roles::RoleGrantId(read_channel_identity(v.grant_id()?, budget)?),
+        },
+        g::AgentRequestRef::AgentRequestRoleStatus(v) => AgentRequest::RoleStatus {
+            role: super::roles::read_role(v.role()?),
         },
     })
 }

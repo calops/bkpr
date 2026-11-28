@@ -52764,10 +52764,986 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelRequestPostUserRef<'a> {
 }
 
     
+/// The table `ChannelRequestInviteUser` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ChannelRequestInviteUser` in the file `crates/bkpr-protocol/src/wire/native.fbs:486`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ChannelRequestInviteUser{
+    
+        /// The field `channel_id` in the table `ChannelRequestInviteUser`
+        pub channel_id: ::planus::alloc::string::String,
+        /// The field `target` in the table `ChannelRequestInviteUser`
+        pub target: ::planus::alloc::boxed::Box<self::ChannelMentionBinding>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ChannelRequestInviteUser {
+    fn default() -> Self {
+        Self {
+        channel_id: ::core::default::Default::default(),
+        target: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl ChannelRequestInviteUser {
+    /// Creates a [ChannelRequestInviteUserBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ChannelRequestInviteUserBuilder<()> {
+        ChannelRequestInviteUserBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_channel_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_target: impl ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_channel_id = field_channel_id.prepare(builder);let prepared_target = field_target.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<self::ChannelMentionBinding>>(1);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_channel_id);object_writer.write::<_, _, 4>(&prepared_target);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ChannelRequestInviteUser>> for ChannelRequestInviteUser {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestInviteUser> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ChannelRequestInviteUser>> for ChannelRequestInviteUser {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelRequestInviteUser>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ChannelRequestInviteUser> for ChannelRequestInviteUser {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestInviteUser> {
+        ChannelRequestInviteUser::create(
+            builder,
+        
+            
+            &self.channel_id,
+            
+        
+            
+            &self.target,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ChannelRequestInviteUser] type.
+///
+/// Can be created using the [ChannelRequestInviteUser::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ChannelRequestInviteUserBuilder<State>(State);
+
+impl<
+    
+> ChannelRequestInviteUserBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`channel_id` field](ChannelRequestInviteUser#structfield.channel_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn channel_id<T0>(self, value: T0) -> ChannelRequestInviteUserBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        ChannelRequestInviteUserBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> ChannelRequestInviteUserBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`target` field](ChannelRequestInviteUser#structfield.target).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn target<T1>(self, value: T1) -> ChannelRequestInviteUserBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;ChannelRequestInviteUserBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ChannelRequestInviteUserBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelRequestInviteUser].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestInviteUser>
+        where Self: ::planus::WriteAsOffset<ChannelRequestInviteUser>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>,
+    
+> ::planus::WriteAs<::planus::Offset<ChannelRequestInviteUser>> for ChannelRequestInviteUserBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelRequestInviteUser>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestInviteUser> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ChannelRequestInviteUser>> for ChannelRequestInviteUserBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelRequestInviteUser>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelRequestInviteUser>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>,
+    
+> ::planus::WriteAsOffset<ChannelRequestInviteUser> for ChannelRequestInviteUserBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestInviteUser> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = &self.0;ChannelRequestInviteUser::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ChannelRequestInviteUser].
+#[derive(Copy, Clone)]
+pub struct ChannelRequestInviteUserRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ChannelRequestInviteUserRef<'a> {
+    
+        /// Getter for the [`channel_id` field](ChannelRequestInviteUser#structfield.channel_id).
+        #[inline]
+        pub fn channel_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "ChannelRequestInviteUser", "channel_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`target` field](ChannelRequestInviteUser#structfield.target).
+        #[inline]
+        pub fn target(&self) -> ::planus::Result<self::ChannelMentionBindingRef<'a>> {
+            
+            
+              
+              self.0.access_required(1, "ChannelRequestInviteUser", "target")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ChannelRequestInviteUserRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ChannelRequestInviteUserRef");
+        f.field("channel_id", &self.channel_id());f.field("target", &self.target());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ChannelRequestInviteUserRef<'a>> for ChannelRequestInviteUser {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ChannelRequestInviteUserRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            channel_id: ::core::convert::Into::into(value.channel_id()?),target: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.target()?)?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ChannelRequestInviteUserRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ChannelRequestInviteUserRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelRequestInviteUserRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ChannelRequestInviteUser>> for ChannelRequestInviteUser {
+    type Value = ::planus::Offset<ChannelRequestInviteUser>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ChannelRequestInviteUser>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ChannelRequestInviteUserRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelRequestInviteUserRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `ChannelRequestPostUserWithCoordinator` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `ChannelRequestPostUserWithCoordinator` in the file `crates/bkpr-protocol/src/wire/native.fbs:490`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct ChannelRequestPostUserWithCoordinator{
+    
+        /// The field `channel_id` in the table `ChannelRequestPostUserWithCoordinator`
+        pub channel_id: ::planus::alloc::string::String,
+        /// The field `post` in the table `ChannelRequestPostUserWithCoordinator`
+        pub post: ::planus::alloc::boxed::Box<self::ChannelPost>,
+        /// The field `bindings` in the table `ChannelRequestPostUserWithCoordinator`
+        pub bindings: ::planus::alloc::vec::Vec<self::ChannelMentionBinding>,
+        /// The field `coordinator_grant_id` in the table `ChannelRequestPostUserWithCoordinator`
+        pub coordinator_grant_id: ::planus::alloc::string::String,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for ChannelRequestPostUserWithCoordinator {
+    fn default() -> Self {
+        Self {
+        channel_id: ::core::default::Default::default(),
+        post: ::core::default::Default::default(),
+        bindings: ::core::default::Default::default(),
+        coordinator_grant_id: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl ChannelRequestPostUserWithCoordinator {
+    /// Creates a [ChannelRequestPostUserWithCoordinatorBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> ChannelRequestPostUserWithCoordinatorBuilder<()> {
+        ChannelRequestPostUserWithCoordinatorBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_channel_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_post: impl ::planus::WriteAs<::planus::Offset<self::ChannelPost>>,
+        field_bindings: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::ChannelMentionBinding>]>>,
+        field_coordinator_grant_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_channel_id = field_channel_id.prepare(builder);let prepared_post = field_post.prepare(builder);let prepared_bindings = field_bindings.prepare(builder);let prepared_coordinator_grant_id = field_coordinator_grant_id.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<12> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<self::ChannelPost>>(1);table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::ChannelMentionBinding>]>>(2);table_writer.write_entry::<::planus::Offset<str>>(3);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_channel_id);object_writer.write::<_, _, 4>(&prepared_post);object_writer.write::<_, _, 4>(&prepared_bindings);object_writer.write::<_, _, 4>(&prepared_coordinator_grant_id);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<ChannelRequestPostUserWithCoordinator>> for ChannelRequestPostUserWithCoordinator {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestPostUserWithCoordinator> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<ChannelRequestPostUserWithCoordinator>> for ChannelRequestPostUserWithCoordinator {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelRequestPostUserWithCoordinator>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<ChannelRequestPostUserWithCoordinator> for ChannelRequestPostUserWithCoordinator {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestPostUserWithCoordinator> {
+        ChannelRequestPostUserWithCoordinator::create(
+            builder,
+        
+            
+            &self.channel_id,
+            
+        
+            
+            &self.post,
+            
+        
+            
+            &self.bindings,
+            
+        
+            
+            &self.coordinator_grant_id,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [ChannelRequestPostUserWithCoordinator] type.
+///
+/// Can be created using the [ChannelRequestPostUserWithCoordinator::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct ChannelRequestPostUserWithCoordinatorBuilder<State>(State);
+
+impl<
+    
+> ChannelRequestPostUserWithCoordinatorBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`channel_id` field](ChannelRequestPostUserWithCoordinator#structfield.channel_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn channel_id<T0>(self, value: T0) -> ChannelRequestPostUserWithCoordinatorBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        ChannelRequestPostUserWithCoordinatorBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> ChannelRequestPostUserWithCoordinatorBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`post` field](ChannelRequestPostUserWithCoordinator#structfield.post).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn post<T1>(self, value: T1) -> ChannelRequestPostUserWithCoordinatorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<self::ChannelPost>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;ChannelRequestPostUserWithCoordinatorBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ChannelRequestPostUserWithCoordinatorBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`bindings` field](ChannelRequestPostUserWithCoordinator#structfield.bindings).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn bindings<T2>(self, value: T2) -> ChannelRequestPostUserWithCoordinatorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::ChannelMentionBinding>]>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;ChannelRequestPostUserWithCoordinatorBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> ChannelRequestPostUserWithCoordinatorBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )
+>
+{
+    /// Setter for the [`coordinator_grant_id` field](ChannelRequestPostUserWithCoordinator#structfield.coordinator_grant_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn coordinator_grant_id<T3>(self, value: T3) -> ChannelRequestPostUserWithCoordinatorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )>
+    where T3: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = self.0;ChannelRequestPostUserWithCoordinatorBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+> ChannelRequestPostUserWithCoordinatorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelRequestPostUserWithCoordinator].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestPostUserWithCoordinator>
+        where Self: ::planus::WriteAsOffset<ChannelRequestPostUserWithCoordinator>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ChannelPost>>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::ChannelMentionBinding>]>>,
+    
+        T3: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAs<::planus::Offset<ChannelRequestPostUserWithCoordinator>> for ChannelRequestPostUserWithCoordinatorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelRequestPostUserWithCoordinator>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestPostUserWithCoordinator> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ChannelPost>>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::ChannelMentionBinding>]>>,
+    
+        T3: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<ChannelRequestPostUserWithCoordinator>> for ChannelRequestPostUserWithCoordinatorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+)> {
+    type Prepared = ::planus::Offset<ChannelRequestPostUserWithCoordinator>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<ChannelRequestPostUserWithCoordinator>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ChannelPost>>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::ChannelMentionBinding>]>>,
+    
+        T3: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOffset<ChannelRequestPostUserWithCoordinator> for ChannelRequestPostUserWithCoordinatorBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<ChannelRequestPostUserWithCoordinator> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+        ) = &self.0;ChannelRequestPostUserWithCoordinator::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [ChannelRequestPostUserWithCoordinator].
+#[derive(Copy, Clone)]
+pub struct ChannelRequestPostUserWithCoordinatorRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> ChannelRequestPostUserWithCoordinatorRef<'a> {
+    
+        /// Getter for the [`channel_id` field](ChannelRequestPostUserWithCoordinator#structfield.channel_id).
+        #[inline]
+        pub fn channel_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "ChannelRequestPostUserWithCoordinator", "channel_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`post` field](ChannelRequestPostUserWithCoordinator#structfield.post).
+        #[inline]
+        pub fn post(&self) -> ::planus::Result<self::ChannelPostRef<'a>> {
+            
+            
+              
+              self.0.access_required(1, "ChannelRequestPostUserWithCoordinator", "post")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`bindings` field](ChannelRequestPostUserWithCoordinator#structfield.bindings).
+        #[inline]
+        pub fn bindings(&self) -> ::planus::Result<::planus::Vector<'a, ::planus::Result<self::ChannelMentionBindingRef<'a>>>> {
+            
+            
+              
+              self.0.access_required(2, "ChannelRequestPostUserWithCoordinator", "bindings")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`coordinator_grant_id` field](ChannelRequestPostUserWithCoordinator#structfield.coordinator_grant_id).
+        #[inline]
+        pub fn coordinator_grant_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(3, "ChannelRequestPostUserWithCoordinator", "coordinator_grant_id")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for ChannelRequestPostUserWithCoordinatorRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("ChannelRequestPostUserWithCoordinatorRef");
+        f.field("channel_id", &self.channel_id());f.field("post", &self.post());f.field("bindings", &self.bindings());f.field("coordinator_grant_id", &self.coordinator_grant_id());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<ChannelRequestPostUserWithCoordinatorRef<'a>> for ChannelRequestPostUserWithCoordinator {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: ChannelRequestPostUserWithCoordinatorRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            channel_id: ::core::convert::Into::into(value.channel_id()?),post: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.post()?)?),bindings: value.bindings()?.to_vec_result()?,coordinator_grant_id: ::core::convert::Into::into(value.coordinator_grant_id()?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for ChannelRequestPostUserWithCoordinatorRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for ChannelRequestPostUserWithCoordinatorRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelRequestPostUserWithCoordinatorRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<ChannelRequestPostUserWithCoordinator>> for ChannelRequestPostUserWithCoordinator {
+    type Value = ::planus::Offset<ChannelRequestPostUserWithCoordinator>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<ChannelRequestPostUserWithCoordinator>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for ChannelRequestPostUserWithCoordinatorRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[ChannelRequestPostUserWithCoordinatorRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
 /// The union `ChannelRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ChannelRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:486`
+/// * Union `ChannelRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:496`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -52826,6 +53802,12 @@ pub enum ChannelRequest{
     
         /// The variant of type `ChannelRequestPostUser` in the union `ChannelRequest`
         ChannelRequestPostUser(::planus::alloc::boxed::Box<self::ChannelRequestPostUser>),
+    
+        /// The variant of type `ChannelRequestInviteUser` in the union `ChannelRequest`
+        ChannelRequestInviteUser(::planus::alloc::boxed::Box<self::ChannelRequestInviteUser>),
+    
+        /// The variant of type `ChannelRequestPostUserWithCoordinator` in the union `ChannelRequest`
+        ChannelRequestPostUserWithCoordinator(::planus::alloc::boxed::Box<self::ChannelRequestPostUserWithCoordinator>),
     
 }
 
@@ -52981,6 +53963,22 @@ impl ChannelRequest {
         ::planus::UnionOffset::new(18, value.prepare(builder).downcast())
     }
 
+    #[inline]
+    pub fn create_channel_request_invite_user(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::ChannelRequestInviteUser>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(19, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_channel_request_post_user_with_coordinator(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::ChannelRequestPostUserWithCoordinator>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(20, value.prepare(builder).downcast())
+    }
+
     
 }
 
@@ -53008,6 +54006,8 @@ impl ::planus::WriteAsUnion<ChannelRequest> for ChannelRequest {
             Self::ChannelRequestCatalogSubscribe(value) => Self::create_channel_request_catalog_subscribe(builder, value),
             Self::ChannelRequestUserRoster(value) => Self::create_channel_request_user_roster(builder, value),
             Self::ChannelRequestPostUser(value) => Self::create_channel_request_post_user(builder, value),
+            Self::ChannelRequestInviteUser(value) => Self::create_channel_request_invite_user(builder, value),
+            Self::ChannelRequestPostUserWithCoordinator(value) => Self::create_channel_request_post_user_with_coordinator(builder, value),
             
         }
     }
@@ -53206,6 +54206,26 @@ impl ChannelRequestBuilder<::planus::Uninitialized> {
         value: T,
     ) -> ChannelRequestBuilder<::planus::Initialized<18, T>>
         where T: ::planus::WriteAsOffset<self::ChannelRequestPostUser> {
+        ChannelRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`ChannelRequestInviteUser` variant](ChannelRequest#variant.ChannelRequestInviteUser).
+    #[inline]
+    pub fn channel_request_invite_user<T>(
+        self,
+        value: T,
+    ) -> ChannelRequestBuilder<::planus::Initialized<19, T>>
+        where T: ::planus::WriteAsOffset<self::ChannelRequestInviteUser> {
+        ChannelRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`ChannelRequestPostUserWithCoordinator` variant](ChannelRequest#variant.ChannelRequestPostUserWithCoordinator).
+    #[inline]
+    pub fn channel_request_post_user_with_coordinator<T>(
+        self,
+        value: T,
+    ) -> ChannelRequestBuilder<::planus::Initialized<20, T>>
+        where T: ::planus::WriteAsOffset<self::ChannelRequestPostUserWithCoordinator> {
         ChannelRequestBuilder(::planus::Initialized(value))
     }
 
@@ -53528,6 +54548,40 @@ impl<T> ::planus::WriteAsOptionalUnion<ChannelRequest> for ChannelRequestBuilder
         ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
     }
 }
+impl<T> ::planus::WriteAsUnion<ChannelRequest> for ChannelRequestBuilder<::planus::Initialized<19, T>>
+    where T: ::planus::WriteAsOffset<self::ChannelRequestInviteUser>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<ChannelRequest> {
+        ::planus::UnionOffset::new(19, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<ChannelRequest> for ChannelRequestBuilder<::planus::Initialized<19, T>>
+    where T: ::planus::WriteAsOffset<self::ChannelRequestInviteUser>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<ChannelRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<ChannelRequest> for ChannelRequestBuilder<::planus::Initialized<20, T>>
+    where T: ::planus::WriteAsOffset<self::ChannelRequestPostUserWithCoordinator>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<ChannelRequest> {
+        ::planus::UnionOffset::new(20, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<ChannelRequest> for ChannelRequestBuilder<::planus::Initialized<20, T>>
+    where T: ::planus::WriteAsOffset<self::ChannelRequestPostUserWithCoordinator>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<ChannelRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
 
 
 /// Reference to a deserialized [ChannelRequest].
@@ -53551,6 +54605,8 @@ pub enum ChannelRequestRef<'a>{
     ChannelRequestCatalogSubscribe(self::ChannelRequestCatalogSubscribeRef<'a>),
     ChannelRequestUserRoster(self::ChannelRequestUserRosterRef<'a>),
     ChannelRequestPostUser(self::ChannelRequestPostUserRef<'a>),
+    ChannelRequestInviteUser(self::ChannelRequestInviteUserRef<'a>),
+    ChannelRequestPostUserWithCoordinator(self::ChannelRequestPostUserWithCoordinatorRef<'a>),
     
 }
 
@@ -53615,6 +54671,12 @@ impl<'a> ::core::convert::TryFrom<ChannelRequestRef<'a>> for ChannelRequest {
                 ChannelRequestRef::ChannelRequestPostUser(value) => Self::ChannelRequestPostUser(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
                 
             
+                ChannelRequestRef::ChannelRequestInviteUser(value) => Self::ChannelRequestInviteUser(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                ChannelRequestRef::ChannelRequestPostUserWithCoordinator(value) => Self::ChannelRequestPostUserWithCoordinator(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
         })
     }
 }
@@ -53624,7 +54686,7 @@ impl<'a> ::core::convert::TryFrom<ChannelRequestRef<'a>> for ChannelRequest {
 impl<'a> ::planus::TableReadUnion<'a> for ChannelRequestRef<'a> {
     fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
         match tag {
-            1 => ::core::result::Result::Ok(Self::ChannelRequestList(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::ChannelRequestListMembers(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::ChannelRequestCreate(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::ChannelRequestSetSettings(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::ChannelRequestSetMembership(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::ChannelRequestPost(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::ChannelRequestHistory(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::ChannelRequestRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::ChannelRequestMarkRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::ChannelRequestSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::ChannelRequestUploadAttachment(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::ChannelRequestGetAttachment(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::ChannelRequestListArchivedWorkspaces(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::ChannelRequestListExplicitMembers(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::ChannelRequestCatalogSnapshot(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::ChannelRequestCatalogSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),17 => ::core::result::Result::Ok(Self::ChannelRequestUserRoster(::planus::TableRead::from_buffer(buffer, field_offset)?)),18 => ::core::result::Result::Ok(Self::ChannelRequestPostUser(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+            1 => ::core::result::Result::Ok(Self::ChannelRequestList(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::ChannelRequestListMembers(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::ChannelRequestCreate(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::ChannelRequestSetSettings(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::ChannelRequestSetMembership(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::ChannelRequestPost(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::ChannelRequestHistory(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::ChannelRequestRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::ChannelRequestMarkRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::ChannelRequestSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::ChannelRequestUploadAttachment(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::ChannelRequestGetAttachment(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::ChannelRequestListArchivedWorkspaces(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::ChannelRequestListExplicitMembers(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::ChannelRequestCatalogSnapshot(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::ChannelRequestCatalogSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),17 => ::core::result::Result::Ok(Self::ChannelRequestUserRoster(::planus::TableRead::from_buffer(buffer, field_offset)?)),18 => ::core::result::Result::Ok(Self::ChannelRequestPostUser(::planus::TableRead::from_buffer(buffer, field_offset)?)),19 => ::core::result::Result::Ok(Self::ChannelRequestInviteUser(::planus::TableRead::from_buffer(buffer, field_offset)?)),20 => ::core::result::Result::Ok(Self::ChannelRequestPostUserWithCoordinator(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
         }
     }
 }
@@ -53640,7 +54702,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ChannelRequestRef<'a> {
 /// The table `OperationChannels` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OperationChannels` in the file `crates/bkpr-protocol/src/wire/native.fbs:506`
+/// * Table `OperationChannels` in the file `crates/bkpr-protocol/src/wire/native.fbs:518`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -53932,10 +54994,2675 @@ impl<'a> ::planus::ReadAsRoot<'a> for OperationChannelsRef<'a> {
 }
 
     
+/// The enum `WorkspaceRole` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Enum `WorkspaceRole` in the file `crates/bkpr-protocol/src/wire/native.fbs:519`
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum WorkspaceRole {
+    
+        /// The variant `Coordinator` in the enum `WorkspaceRole`
+        Coordinator = 1,
+    
+}
+
+impl WorkspaceRole {
+    /// Array containing all valid variants of WorkspaceRole
+    pub const ENUM_VALUES: [Self; 1] = [Self::Coordinator,];
+}
+
+impl ::core::convert::TryFrom<u8> for WorkspaceRole {
+    type Error = ::planus::errors::UnknownEnumTagKind;
+    #[inline]
+    fn try_from(value: u8) -> ::core::result::Result<Self, ::planus::errors::UnknownEnumTagKind> {
+        #[allow(clippy::match_single_binding)]
+        match value {
+            1 => ::core::result::Result::Ok(WorkspaceRole::Coordinator),
+            
+
+            _ => ::core::result::Result::Err(::planus::errors::UnknownEnumTagKind { tag: value as i128 }),
+        }
+    }
+}
+
+impl ::core::convert::From<WorkspaceRole> for u8 {
+    #[inline]
+    fn from(value: WorkspaceRole) -> Self {
+        value as u8
+    }
+}
+
+/// # Safety
+/// The Planus compiler correctly calculates `ALIGNMENT` and `SIZE`.
+unsafe impl ::planus::Primitive for WorkspaceRole {
+    const ALIGNMENT: usize = 1;
+    const SIZE: usize = 1;
+}
+
+impl ::planus::WriteAsPrimitive<WorkspaceRole> for WorkspaceRole {
+    #[inline]
+    fn write<const N: usize>(&self, cursor: ::planus::Cursor<'_, N>, buffer_position: u32) {
+        (*self as u8).write(cursor, buffer_position);
+    }
+}
+
+impl ::planus::WriteAs<WorkspaceRole> for WorkspaceRole {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> WorkspaceRole {
+        *self
+    }
+}
+
+impl ::planus::WriteAsDefault<WorkspaceRole, WorkspaceRole> for WorkspaceRole {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder, default: &WorkspaceRole) -> ::core::option::Option<WorkspaceRole> {
+        if self == default {
+            ::core::option::Option::None
+        } else {
+            ::core::option::Option::Some(*self)
+        }
+    }
+}
+
+impl ::planus::WriteAsOptional<WorkspaceRole> for WorkspaceRole {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> ::core::option::Option<WorkspaceRole> {
+        ::core::option::Option::Some(*self)
+    }
+}
+
+impl<'buf> ::planus::TableRead<'buf> for WorkspaceRole {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'buf>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        let n: u8 = ::planus::TableRead::from_buffer(buffer, offset)?;
+        ::core::result::Result::Ok(::core::convert::TryInto::try_into(n)?)
+    }
+}
+
+impl<'buf> ::planus::VectorReadInner<'buf> for WorkspaceRole {
+    type Error = ::planus::errors::UnknownEnumTag;
+    const STRIDE: usize = 1;
+    #[inline]
+    unsafe fn from_buffer(
+        buffer: ::planus::SliceWithStartOffset<'buf>,
+        offset: usize,
+    ) -> ::core::result::Result<Self, ::planus::errors::UnknownEnumTag> {let value = unsafe { *buffer.buffer.get_unchecked(offset) };let value: ::core::result::Result<Self, _> = ::core::convert::TryInto::try_into(value);
+        value.map_err(|error_kind| error_kind.with_error_location(
+            "WorkspaceRole",
+            "VectorRead::from_buffer",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<WorkspaceRole> for WorkspaceRole {
+    const STRIDE: usize = 1;
+
+    type Value = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> Self {
+        *self
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[Self],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 1];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                
+                buffer_position - i as u32,
+                
+            );
+        }
+    }
+}
+
+    
+/// The enum `RoleOrigin` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Enum `RoleOrigin` in the file `crates/bkpr-protocol/src/wire/native.fbs:520`
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum RoleOrigin {
+    
+        /// The variant `Approval` in the enum `RoleOrigin`
+        Approval = 1,
+    
+        /// The variant `Command` in the enum `RoleOrigin`
+        Command = 2,
+    
+}
+
+impl RoleOrigin {
+    /// Array containing all valid variants of RoleOrigin
+    pub const ENUM_VALUES: [Self; 2] = [Self::Approval,Self::Command,];
+}
+
+impl ::core::convert::TryFrom<u8> for RoleOrigin {
+    type Error = ::planus::errors::UnknownEnumTagKind;
+    #[inline]
+    fn try_from(value: u8) -> ::core::result::Result<Self, ::planus::errors::UnknownEnumTagKind> {
+        #[allow(clippy::match_single_binding)]
+        match value {
+            1 => ::core::result::Result::Ok(RoleOrigin::Approval),
+            2 => ::core::result::Result::Ok(RoleOrigin::Command),
+            
+
+            _ => ::core::result::Result::Err(::planus::errors::UnknownEnumTagKind { tag: value as i128 }),
+        }
+    }
+}
+
+impl ::core::convert::From<RoleOrigin> for u8 {
+    #[inline]
+    fn from(value: RoleOrigin) -> Self {
+        value as u8
+    }
+}
+
+/// # Safety
+/// The Planus compiler correctly calculates `ALIGNMENT` and `SIZE`.
+unsafe impl ::planus::Primitive for RoleOrigin {
+    const ALIGNMENT: usize = 1;
+    const SIZE: usize = 1;
+}
+
+impl ::planus::WriteAsPrimitive<RoleOrigin> for RoleOrigin {
+    #[inline]
+    fn write<const N: usize>(&self, cursor: ::planus::Cursor<'_, N>, buffer_position: u32) {
+        (*self as u8).write(cursor, buffer_position);
+    }
+}
+
+impl ::planus::WriteAs<RoleOrigin> for RoleOrigin {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> RoleOrigin {
+        *self
+    }
+}
+
+impl ::planus::WriteAsDefault<RoleOrigin, RoleOrigin> for RoleOrigin {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder, default: &RoleOrigin) -> ::core::option::Option<RoleOrigin> {
+        if self == default {
+            ::core::option::Option::None
+        } else {
+            ::core::option::Option::Some(*self)
+        }
+    }
+}
+
+impl ::planus::WriteAsOptional<RoleOrigin> for RoleOrigin {
+    type Prepared = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> ::core::option::Option<RoleOrigin> {
+        ::core::option::Option::Some(*self)
+    }
+}
+
+impl<'buf> ::planus::TableRead<'buf> for RoleOrigin {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'buf>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        let n: u8 = ::planus::TableRead::from_buffer(buffer, offset)?;
+        ::core::result::Result::Ok(::core::convert::TryInto::try_into(n)?)
+    }
+}
+
+impl<'buf> ::planus::VectorReadInner<'buf> for RoleOrigin {
+    type Error = ::planus::errors::UnknownEnumTag;
+    const STRIDE: usize = 1;
+    #[inline]
+    unsafe fn from_buffer(
+        buffer: ::planus::SliceWithStartOffset<'buf>,
+        offset: usize,
+    ) -> ::core::result::Result<Self, ::planus::errors::UnknownEnumTag> {let value = unsafe { *buffer.buffer.get_unchecked(offset) };let value: ::core::result::Result<Self, _> = ::core::convert::TryInto::try_into(value);
+        value.map_err(|error_kind| error_kind.with_error_location(
+            "RoleOrigin",
+            "VectorRead::from_buffer",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<RoleOrigin> for RoleOrigin {
+    const STRIDE: usize = 1;
+
+    type Value = Self;
+
+    #[inline]
+    fn prepare(&self, _builder: &mut ::planus::Builder) -> Self {
+        *self
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[Self],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 1];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                
+                buffer_position - i as u32,
+                
+            );
+        }
+    }
+}
+
+    
+/// The table `RoleRequestActivity` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `RoleRequestActivity` in the file `crates/bkpr-protocol/src/wire/native.fbs:521`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct RoleRequestActivity{
+    
+        /// The field `eligible` in the table `RoleRequestActivity`
+        pub eligible: bool,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for RoleRequestActivity {
+    fn default() -> Self {
+        Self {
+        eligible: false,
+        
+        }
+    }
+}
+
+
+impl RoleRequestActivity {
+    /// Creates a [RoleRequestActivityBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> RoleRequestActivityBuilder<()> {
+        RoleRequestActivityBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_eligible: impl ::planus::WriteAsDefault<bool, bool>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_eligible = field_eligible.prepare(builder, &false);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<6> = ::core::default::Default::default();
+        if prepared_eligible.is_some() {table_writer.write_entry::<bool>(0);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_eligible) = prepared_eligible {object_writer.write::<_, _, 1>(&prepared_eligible);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<RoleRequestActivity>> for RoleRequestActivity {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestActivity> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<RoleRequestActivity>> for RoleRequestActivity {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleRequestActivity>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<RoleRequestActivity> for RoleRequestActivity {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestActivity> {
+        RoleRequestActivity::create(
+            builder,
+        
+            
+            self.eligible,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [RoleRequestActivity] type.
+///
+/// Can be created using the [RoleRequestActivity::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct RoleRequestActivityBuilder<State>(State);
+
+impl<
+    
+> RoleRequestActivityBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`eligible` field](RoleRequestActivity#structfield.eligible).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn eligible<T0>(self, value: T0) -> RoleRequestActivityBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsDefault<bool, bool>
+    {
+        RoleRequestActivityBuilder((
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`eligible` field](RoleRequestActivity#structfield.eligible) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn eligible_as_default(self) -> RoleRequestActivityBuilder<(
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.eligible(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> RoleRequestActivityBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [RoleRequestActivity].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestActivity>
+        where Self: ::planus::WriteAsOffset<RoleRequestActivity>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<bool, bool>,
+    
+> ::planus::WriteAs<::planus::Offset<RoleRequestActivity>> for RoleRequestActivityBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleRequestActivity>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestActivity> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<bool, bool>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<RoleRequestActivity>> for RoleRequestActivityBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleRequestActivity>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleRequestActivity>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<bool, bool>,
+    
+> ::planus::WriteAsOffset<RoleRequestActivity> for RoleRequestActivityBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestActivity> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;RoleRequestActivity::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [RoleRequestActivity].
+#[derive(Copy, Clone)]
+pub struct RoleRequestActivityRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> RoleRequestActivityRef<'a> {
+    
+        /// Getter for the [`eligible` field](RoleRequestActivity#structfield.eligible).
+        #[inline]
+        pub fn eligible(&self) -> ::planus::Result<bool> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(0, "RoleRequestActivity", "eligible")
+              
+            
+            ?.unwrap_or(false))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for RoleRequestActivityRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("RoleRequestActivityRef");
+        f.field("eligible", &self.eligible());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<RoleRequestActivityRef<'a>> for RoleRequestActivity {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: RoleRequestActivityRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            eligible: ::core::convert::TryInto::try_into(value.eligible()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for RoleRequestActivityRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for RoleRequestActivityRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleRequestActivityRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<RoleRequestActivity>> for RoleRequestActivity {
+    type Value = ::planus::Offset<RoleRequestActivity>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<RoleRequestActivity>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for RoleRequestActivityRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleRequestActivityRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `RoleRequestSnapshot` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `RoleRequestSnapshot` in the file `crates/bkpr-protocol/src/wire/native.fbs:522`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct RoleRequestSnapshot{
+    }
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for RoleRequestSnapshot {
+    fn default() -> Self {
+        Self {
+        
+        }
+    }
+}
+
+
+impl RoleRequestSnapshot {
+    /// Creates a [RoleRequestSnapshotBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> RoleRequestSnapshotBuilder<()> {
+        RoleRequestSnapshotBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        
+    ) -> ::planus::Offset<Self> {
+
+        let table_writer: ::planus::table_writer::TableWriter::<4> = ::core::default::Default::default();
+        unsafe {
+            table_writer.finish(builder, |_table_writer| {});
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<RoleRequestSnapshot>> for RoleRequestSnapshot {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestSnapshot> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<RoleRequestSnapshot>> for RoleRequestSnapshot {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleRequestSnapshot>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<RoleRequestSnapshot> for RoleRequestSnapshot {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestSnapshot> {
+        RoleRequestSnapshot::create(
+            builder,
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [RoleRequestSnapshot] type.
+///
+/// Can be created using the [RoleRequestSnapshot::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct RoleRequestSnapshotBuilder<State>(State);
+
+
+
+impl<
+    
+> RoleRequestSnapshotBuilder<(
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [RoleRequestSnapshot].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestSnapshot>
+        where Self: ::planus::WriteAsOffset<RoleRequestSnapshot>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+> ::planus::WriteAs<::planus::Offset<RoleRequestSnapshot>> for RoleRequestSnapshotBuilder<(
+    
+)> {
+    type Prepared = ::planus::Offset<RoleRequestSnapshot>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestSnapshot> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+> ::planus::WriteAsOptional<::planus::Offset<RoleRequestSnapshot>> for RoleRequestSnapshotBuilder<(
+    
+)> {
+    type Prepared = ::planus::Offset<RoleRequestSnapshot>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleRequestSnapshot>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+> ::planus::WriteAsOffset<RoleRequestSnapshot> for RoleRequestSnapshotBuilder<(
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestSnapshot> {
+        RoleRequestSnapshot::create(
+            builder,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [RoleRequestSnapshot].
+#[derive(Copy, Clone)]
+pub struct RoleRequestSnapshotRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> RoleRequestSnapshotRef<'a> {
+    
+}
+
+impl<'a> ::core::fmt::Debug for RoleRequestSnapshotRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("RoleRequestSnapshotRef");
+        
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<RoleRequestSnapshotRef<'a>> for RoleRequestSnapshot {
+    type Error = ::planus::Error;
+
+
+    fn try_from(_value: RoleRequestSnapshotRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for RoleRequestSnapshotRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for RoleRequestSnapshotRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleRequestSnapshotRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<RoleRequestSnapshot>> for RoleRequestSnapshot {
+    type Value = ::planus::Offset<RoleRequestSnapshot>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<RoleRequestSnapshot>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for RoleRequestSnapshotRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleRequestSnapshotRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `RoleRequestDecide` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `RoleRequestDecide` in the file `crates/bkpr-protocol/src/wire/native.fbs:523`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct RoleRequestDecide{
+    
+        /// The field `request_id` in the table `RoleRequestDecide`
+        pub request_id: ::planus::alloc::string::String,
+        /// The field `requester` in the table `RoleRequestDecide`
+        pub requester: ::planus::alloc::boxed::Box<self::ChannelMentionBinding>,
+        /// The field `expected_holder` in the table `RoleRequestDecide`
+        pub expected_holder: ::core::option::Option<::planus::alloc::string::String>,
+        /// The field `approve` in the table `RoleRequestDecide`
+        pub approve: bool,
+        /// The field `decision_generation` in the table `RoleRequestDecide`
+        pub decision_generation: u64,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for RoleRequestDecide {
+    fn default() -> Self {
+        Self {
+        request_id: ::core::default::Default::default(),
+        requester: ::core::default::Default::default(),
+        expected_holder: ::core::default::Default::default(),
+        approve: false,
+        decision_generation: 0,
+        
+        }
+    }
+}
+
+
+impl RoleRequestDecide {
+    /// Creates a [RoleRequestDecideBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> RoleRequestDecideBuilder<()> {
+        RoleRequestDecideBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_request_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_requester: impl ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>,
+        field_expected_holder: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+        field_approve: impl ::planus::WriteAsDefault<bool, bool>,
+        field_decision_generation: impl ::planus::WriteAsDefault<u64, u64>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_request_id = field_request_id.prepare(builder);let prepared_requester = field_requester.prepare(builder);let prepared_expected_holder = field_expected_holder.prepare(builder);let prepared_approve = field_approve.prepare(builder, &false);let prepared_decision_generation = field_decision_generation.prepare(builder, &0);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<14> = ::core::default::Default::default();
+        if prepared_decision_generation.is_some() {table_writer.write_entry::<u64>(4);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<self::ChannelMentionBinding>>(1);if prepared_expected_holder.is_some() {table_writer.write_entry::<::planus::Offset<str>>(2);}if prepared_approve.is_some() {table_writer.write_entry::<bool>(3);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_decision_generation) = prepared_decision_generation {object_writer.write::<_, _, 8>(&prepared_decision_generation);}object_writer.write::<_, _, 4>(&prepared_request_id);object_writer.write::<_, _, 4>(&prepared_requester);if let ::core::option::Option::Some(prepared_expected_holder) = prepared_expected_holder {object_writer.write::<_, _, 4>(&prepared_expected_holder);}if let ::core::option::Option::Some(prepared_approve) = prepared_approve {object_writer.write::<_, _, 1>(&prepared_approve);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<RoleRequestDecide>> for RoleRequestDecide {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestDecide> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<RoleRequestDecide>> for RoleRequestDecide {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleRequestDecide>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<RoleRequestDecide> for RoleRequestDecide {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestDecide> {
+        RoleRequestDecide::create(
+            builder,
+        
+            
+            &self.request_id,
+            
+        
+            
+            &self.requester,
+            
+        
+            
+            &self.expected_holder,
+            
+        
+            
+            self.approve,
+            
+        
+            
+            self.decision_generation,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [RoleRequestDecide] type.
+///
+/// Can be created using the [RoleRequestDecide::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct RoleRequestDecideBuilder<State>(State);
+
+impl<
+    
+> RoleRequestDecideBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`request_id` field](RoleRequestDecide#structfield.request_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn request_id<T0>(self, value: T0) -> RoleRequestDecideBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        RoleRequestDecideBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> RoleRequestDecideBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`requester` field](RoleRequestDecide#structfield.requester).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn requester<T1>(self, value: T1) -> RoleRequestDecideBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;RoleRequestDecideBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> RoleRequestDecideBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`expected_holder` field](RoleRequestDecide#structfield.expected_holder).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn expected_holder<T2>(self, value: T2) -> RoleRequestDecideBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;RoleRequestDecideBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`expected_holder` field](RoleRequestDecide#structfield.expected_holder) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn expected_holder_as_null(self) -> RoleRequestDecideBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        (),
+    )>
+    {
+        self.expected_holder(())
+    }
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> RoleRequestDecideBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )
+>
+{
+    /// Setter for the [`approve` field](RoleRequestDecide#structfield.approve).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn approve<T3>(self, value: T3) -> RoleRequestDecideBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )>
+    where T3: ::planus::WriteAsDefault<bool, bool>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = self.0;RoleRequestDecideBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`approve` field](RoleRequestDecide#structfield.approve) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn approve_as_default(self) -> RoleRequestDecideBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.approve(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+> RoleRequestDecideBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )
+>
+{
+    /// Setter for the [`decision_generation` field](RoleRequestDecide#structfield.decision_generation).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn decision_generation<T4>(self, value: T4) -> RoleRequestDecideBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+    )>
+    where T4: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+        ) = self.0;RoleRequestDecideBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`decision_generation` field](RoleRequestDecide#structfield.decision_generation) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn decision_generation_as_default(self) -> RoleRequestDecideBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.decision_generation(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+> RoleRequestDecideBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [RoleRequestDecide].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestDecide>
+        where Self: ::planus::WriteAsOffset<RoleRequestDecide>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>,
+    
+        T2: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+        T3: ::planus::WriteAsDefault<bool, bool>,
+    
+        T4: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAs<::planus::Offset<RoleRequestDecide>> for RoleRequestDecideBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleRequestDecide>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestDecide> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>,
+    
+        T2: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+        T3: ::planus::WriteAsDefault<bool, bool>,
+    
+        T4: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<RoleRequestDecide>> for RoleRequestDecideBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleRequestDecide>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleRequestDecide>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>,
+    
+        T2: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
+        T3: ::planus::WriteAsDefault<bool, bool>,
+    
+        T4: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOffset<RoleRequestDecide> for RoleRequestDecideBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestDecide> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+        ) = &self.0;RoleRequestDecide::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [RoleRequestDecide].
+#[derive(Copy, Clone)]
+pub struct RoleRequestDecideRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> RoleRequestDecideRef<'a> {
+    
+        /// Getter for the [`request_id` field](RoleRequestDecide#structfield.request_id).
+        #[inline]
+        pub fn request_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "RoleRequestDecide", "request_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`requester` field](RoleRequestDecide#structfield.requester).
+        #[inline]
+        pub fn requester(&self) -> ::planus::Result<self::ChannelMentionBindingRef<'a>> {
+            
+            
+              
+              self.0.access_required(1, "RoleRequestDecide", "requester")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`expected_holder` field](RoleRequestDecide#structfield.expected_holder).
+        #[inline]
+        pub fn expected_holder(&self) -> ::planus::Result<::core::option::Option<&'a ::core::primitive::str>> {
+            
+            
+              
+              self.0.access(2, "RoleRequestDecide", "expected_holder")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`approve` field](RoleRequestDecide#structfield.approve).
+        #[inline]
+        pub fn approve(&self) -> ::planus::Result<bool> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(3, "RoleRequestDecide", "approve")
+              
+            
+            ?.unwrap_or(false))
+            
+        }
+    
+        /// Getter for the [`decision_generation` field](RoleRequestDecide#structfield.decision_generation).
+        #[inline]
+        pub fn decision_generation(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(4, "RoleRequestDecide", "decision_generation")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for RoleRequestDecideRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("RoleRequestDecideRef");
+        f.field("request_id", &self.request_id());f.field("requester", &self.requester());if let ::core::option::Option::Some(field_expected_holder) = self.expected_holder().transpose() {
+                f.field("expected_holder", &field_expected_holder);
+            }f.field("approve", &self.approve());f.field("decision_generation", &self.decision_generation());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<RoleRequestDecideRef<'a>> for RoleRequestDecide {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: RoleRequestDecideRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            request_id: ::core::convert::Into::into(value.request_id()?),requester: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.requester()?)?),expected_holder: 
+                                value.expected_holder()?.map(::core::convert::Into::into)
+                            ,approve: ::core::convert::TryInto::try_into(value.approve()?)?,decision_generation: ::core::convert::TryInto::try_into(value.decision_generation()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for RoleRequestDecideRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for RoleRequestDecideRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleRequestDecideRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<RoleRequestDecide>> for RoleRequestDecide {
+    type Value = ::planus::Offset<RoleRequestDecide>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<RoleRequestDecide>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for RoleRequestDecideRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleRequestDecideRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `RoleRequestSet` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `RoleRequestSet` in the file `crates/bkpr-protocol/src/wire/native.fbs:530`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct RoleRequestSet{
+    
+        /// The field `workspace_id` in the table `RoleRequestSet`
+        pub workspace_id: ::planus::alloc::string::String,
+        /// The field `role` in the table `RoleRequestSet`
+        pub role: self::WorkspaceRole,
+        /// The field `target` in the table `RoleRequestSet`
+        pub target: ::core::option::Option<::planus::alloc::boxed::Box<self::ChannelMentionBinding>>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for RoleRequestSet {
+    fn default() -> Self {
+        Self {
+        workspace_id: ::core::default::Default::default(),
+        role: self::WorkspaceRole::Coordinator,
+        target: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl RoleRequestSet {
+    /// Creates a [RoleRequestSetBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> RoleRequestSetBuilder<()> {
+        RoleRequestSetBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_workspace_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_role: impl ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+        field_target: impl ::planus::WriteAsOptional<::planus::Offset<self::ChannelMentionBinding>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_workspace_id = field_workspace_id.prepare(builder);let prepared_role = field_role.prepare(builder, &self::WorkspaceRole::Coordinator);let prepared_target = field_target.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(0);if prepared_target.is_some() {table_writer.write_entry::<::planus::Offset<self::ChannelMentionBinding>>(2);}if prepared_role.is_some() {table_writer.write_entry::<self::WorkspaceRole>(1);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_workspace_id);if let ::core::option::Option::Some(prepared_target) = prepared_target {object_writer.write::<_, _, 4>(&prepared_target);}if let ::core::option::Option::Some(prepared_role) = prepared_role {object_writer.write::<_, _, 1>(&prepared_role);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<RoleRequestSet>> for RoleRequestSet {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestSet> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<RoleRequestSet>> for RoleRequestSet {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleRequestSet>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<RoleRequestSet> for RoleRequestSet {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestSet> {
+        RoleRequestSet::create(
+            builder,
+        
+            
+            &self.workspace_id,
+            
+        
+            
+            self.role,
+            
+        
+            
+            &self.target,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [RoleRequestSet] type.
+///
+/// Can be created using the [RoleRequestSet::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct RoleRequestSetBuilder<State>(State);
+
+impl<
+    
+> RoleRequestSetBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`workspace_id` field](RoleRequestSet#structfield.workspace_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn workspace_id<T0>(self, value: T0) -> RoleRequestSetBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        RoleRequestSetBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> RoleRequestSetBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`role` field](RoleRequestSet#structfield.role).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role<T1>(self, value: T1) -> RoleRequestSetBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;RoleRequestSetBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`role` field](RoleRequestSet#structfield.role) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role_as_default(self) -> RoleRequestSetBuilder<(
+        
+            T0,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.role(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> RoleRequestSetBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`target` field](RoleRequestSet#structfield.target).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn target<T2>(self, value: T2) -> RoleRequestSetBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsOptional<::planus::Offset<self::ChannelMentionBinding>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;RoleRequestSetBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`target` field](RoleRequestSet#structfield.target) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn target_as_null(self) -> RoleRequestSetBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        (),
+    )>
+    {
+        self.target(())
+    }
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> RoleRequestSetBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [RoleRequestSet].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestSet>
+        where Self: ::planus::WriteAsOffset<RoleRequestSet>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T2: ::planus::WriteAsOptional<::planus::Offset<self::ChannelMentionBinding>>,
+    
+> ::planus::WriteAs<::planus::Offset<RoleRequestSet>> for RoleRequestSetBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleRequestSet>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestSet> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T2: ::planus::WriteAsOptional<::planus::Offset<self::ChannelMentionBinding>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<RoleRequestSet>> for RoleRequestSetBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleRequestSet>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleRequestSet>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T2: ::planus::WriteAsOptional<::planus::Offset<self::ChannelMentionBinding>>,
+    
+> ::planus::WriteAsOffset<RoleRequestSet> for RoleRequestSetBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleRequestSet> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;RoleRequestSet::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [RoleRequestSet].
+#[derive(Copy, Clone)]
+pub struct RoleRequestSetRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> RoleRequestSetRef<'a> {
+    
+        /// Getter for the [`workspace_id` field](RoleRequestSet#structfield.workspace_id).
+        #[inline]
+        pub fn workspace_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "RoleRequestSet", "workspace_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`role` field](RoleRequestSet#structfield.role).
+        #[inline]
+        pub fn role(&self) -> ::planus::Result<self::WorkspaceRole> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(1, "RoleRequestSet", "role")
+              
+            
+            ?.unwrap_or(self::WorkspaceRole::Coordinator))
+            
+        }
+    
+        /// Getter for the [`target` field](RoleRequestSet#structfield.target).
+        #[inline]
+        pub fn target(&self) -> ::planus::Result<::core::option::Option<self::ChannelMentionBindingRef<'a>>> {
+            
+            
+              
+              self.0.access(2, "RoleRequestSet", "target")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for RoleRequestSetRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("RoleRequestSetRef");
+        f.field("workspace_id", &self.workspace_id());f.field("role", &self.role());if let ::core::option::Option::Some(field_target) = self.target().transpose() {
+                f.field("target", &field_target);
+            }
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<RoleRequestSetRef<'a>> for RoleRequestSet {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: RoleRequestSetRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            workspace_id: ::core::convert::Into::into(value.workspace_id()?),role: ::core::convert::TryInto::try_into(value.role()?)?,target: 
+                                if let ::core::option::Option::Some(target) = value.target()? {
+                                    ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(target)?))
+                                } else {
+                                    ::core::option::Option::None
+                                }
+                            ,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for RoleRequestSetRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for RoleRequestSetRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleRequestSetRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<RoleRequestSet>> for RoleRequestSet {
+    type Value = ::planus::Offset<RoleRequestSet>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<RoleRequestSet>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for RoleRequestSetRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleRequestSetRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The union `RoleRequest` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Union `RoleRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:535`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize)]
+pub enum RoleRequest{
+    
+        /// The variant of type `RoleRequestActivity` in the union `RoleRequest`
+        RoleRequestActivity(::planus::alloc::boxed::Box<self::RoleRequestActivity>),
+    
+        /// The variant of type `RoleRequestSnapshot` in the union `RoleRequest`
+        RoleRequestSnapshot(::planus::alloc::boxed::Box<self::RoleRequestSnapshot>),
+    
+        /// The variant of type `RoleRequestDecide` in the union `RoleRequest`
+        RoleRequestDecide(::planus::alloc::boxed::Box<self::RoleRequestDecide>),
+    
+        /// The variant of type `RoleRequestSet` in the union `RoleRequest`
+        RoleRequestSet(::planus::alloc::boxed::Box<self::RoleRequestSet>),
+    
+}
+
+
+impl RoleRequest {
+    /// Creates a [RoleRequestBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> RoleRequestBuilder<::planus::Uninitialized> {
+        RoleRequestBuilder(::planus::Uninitialized)
+    }
+
+    #[inline]
+    pub fn create_role_request_activity(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::RoleRequestActivity>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(1, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_role_request_snapshot(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::RoleRequestSnapshot>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(2, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_role_request_decide(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::RoleRequestDecide>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(3, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_role_request_set(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::RoleRequestSet>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(4, value.prepare(builder).downcast())
+    }
+
+    
+}
+
+
+
+impl ::planus::WriteAsUnion<RoleRequest> for RoleRequest {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<Self> {
+        match self {
+            Self::RoleRequestActivity(value) => Self::create_role_request_activity(builder, value),
+            Self::RoleRequestSnapshot(value) => Self::create_role_request_snapshot(builder, value),
+            Self::RoleRequestDecide(value) => Self::create_role_request_decide(builder, value),
+            Self::RoleRequestSet(value) => Self::create_role_request_set(builder, value),
+            
+        }
+    }
+}
+
+
+impl ::planus::WriteAsOptionalUnion<RoleRequest> for RoleRequest {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<Self>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+
+/// Builder for serializing an instance of the [RoleRequest] type.
+///
+/// Can be created using the [RoleRequest::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct RoleRequestBuilder<T>(T);
+
+impl RoleRequestBuilder<::planus::Uninitialized> {
+    /// Creates an instance of the [`RoleRequestActivity` variant](RoleRequest#variant.RoleRequestActivity).
+    #[inline]
+    pub fn role_request_activity<T>(
+        self,
+        value: T,
+    ) -> RoleRequestBuilder<::planus::Initialized<1, T>>
+        where T: ::planus::WriteAsOffset<self::RoleRequestActivity> {
+        RoleRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`RoleRequestSnapshot` variant](RoleRequest#variant.RoleRequestSnapshot).
+    #[inline]
+    pub fn role_request_snapshot<T>(
+        self,
+        value: T,
+    ) -> RoleRequestBuilder<::planus::Initialized<2, T>>
+        where T: ::planus::WriteAsOffset<self::RoleRequestSnapshot> {
+        RoleRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`RoleRequestDecide` variant](RoleRequest#variant.RoleRequestDecide).
+    #[inline]
+    pub fn role_request_decide<T>(
+        self,
+        value: T,
+    ) -> RoleRequestBuilder<::planus::Initialized<3, T>>
+        where T: ::planus::WriteAsOffset<self::RoleRequestDecide> {
+        RoleRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`RoleRequestSet` variant](RoleRequest#variant.RoleRequestSet).
+    #[inline]
+    pub fn role_request_set<T>(
+        self,
+        value: T,
+    ) -> RoleRequestBuilder<::planus::Initialized<4, T>>
+        where T: ::planus::WriteAsOffset<self::RoleRequestSet> {
+        RoleRequestBuilder(::planus::Initialized(value))
+    }
+
+    
+}
+
+impl<const N: u8, T> RoleRequestBuilder<::planus::Initialized<N, T>> {
+    /// Finish writing the builder to get an [UnionOffset](::planus::UnionOffset) to a serialized [RoleRequest].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<RoleRequest>
+        where Self: ::planus::WriteAsUnion<RoleRequest>
+    {
+        ::planus::WriteAsUnion::prepare(&self, builder)
+    }
+}
+
+impl<T> ::planus::WriteAsUnion<RoleRequest> for RoleRequestBuilder<::planus::Initialized<1, T>>
+    where T: ::planus::WriteAsOffset<self::RoleRequestActivity>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<RoleRequest> {
+        ::planus::UnionOffset::new(1, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<RoleRequest> for RoleRequestBuilder<::planus::Initialized<1, T>>
+    where T: ::planus::WriteAsOffset<self::RoleRequestActivity>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<RoleRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<RoleRequest> for RoleRequestBuilder<::planus::Initialized<2, T>>
+    where T: ::planus::WriteAsOffset<self::RoleRequestSnapshot>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<RoleRequest> {
+        ::planus::UnionOffset::new(2, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<RoleRequest> for RoleRequestBuilder<::planus::Initialized<2, T>>
+    where T: ::planus::WriteAsOffset<self::RoleRequestSnapshot>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<RoleRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<RoleRequest> for RoleRequestBuilder<::planus::Initialized<3, T>>
+    where T: ::planus::WriteAsOffset<self::RoleRequestDecide>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<RoleRequest> {
+        ::planus::UnionOffset::new(3, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<RoleRequest> for RoleRequestBuilder<::planus::Initialized<3, T>>
+    where T: ::planus::WriteAsOffset<self::RoleRequestDecide>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<RoleRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<RoleRequest> for RoleRequestBuilder<::planus::Initialized<4, T>>
+    where T: ::planus::WriteAsOffset<self::RoleRequestSet>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<RoleRequest> {
+        ::planus::UnionOffset::new(4, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<RoleRequest> for RoleRequestBuilder<::planus::Initialized<4, T>>
+    where T: ::planus::WriteAsOffset<self::RoleRequestSet>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<RoleRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+
+
+/// Reference to a deserialized [RoleRequest].
+#[derive(Copy, Clone, Debug)]
+pub enum RoleRequestRef<'a>{
+    RoleRequestActivity(self::RoleRequestActivityRef<'a>),
+    RoleRequestSnapshot(self::RoleRequestSnapshotRef<'a>),
+    RoleRequestDecide(self::RoleRequestDecideRef<'a>),
+    RoleRequestSet(self::RoleRequestSetRef<'a>),
+    
+}
+
+
+impl<'a> ::core::convert::TryFrom<RoleRequestRef<'a>> for RoleRequest {
+    type Error = ::planus::Error;
+
+    fn try_from(value: RoleRequestRef<'a>) -> ::planus::Result<Self> {
+        ::core::result::Result::Ok(match value {
+            
+                RoleRequestRef::RoleRequestActivity(value) => Self::RoleRequestActivity(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                RoleRequestRef::RoleRequestSnapshot(value) => Self::RoleRequestSnapshot(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                RoleRequestRef::RoleRequestDecide(value) => Self::RoleRequestDecide(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                RoleRequestRef::RoleRequestSet(value) => Self::RoleRequestSet(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+        })
+    }
+}
+
+
+
+impl<'a> ::planus::TableReadUnion<'a> for RoleRequestRef<'a> {
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        match tag {
+            1 => ::core::result::Result::Ok(Self::RoleRequestActivity(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::RoleRequestSnapshot(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::RoleRequestDecide(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::RoleRequestSet(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+        }
+    }
+}
+
+
+
+impl<'a> ::planus::VectorReadUnion<'a> for RoleRequestRef<'a> {
+    const VECTOR_NAME: &'static str = "[RoleRequestRef]";
+}
+
+
+    
+/// The table `OperationRoles` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `OperationRoles` in the file `crates/bkpr-protocol/src/wire/native.fbs:536`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct OperationRoles{
+    
+        /// The field `request` in the table `OperationRoles`
+        pub request: self::RoleRequest,}
+
+
+
+impl OperationRoles {
+    /// Creates a [OperationRolesBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> OperationRolesBuilder<()> {
+        OperationRolesBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_request: impl ::planus::WriteAsUnion<self::RoleRequest>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_request = field_request.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::RoleRequest>>(1);table_writer.write_entry::<u8>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_request.offset());object_writer.write::<_, _, 1>(&prepared_request.tag());
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<OperationRoles>> for OperationRoles {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<OperationRoles> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<OperationRoles>> for OperationRoles {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<OperationRoles>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<OperationRoles> for OperationRoles {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<OperationRoles> {
+        OperationRoles::create(
+            builder,
+        
+            
+            &self.request,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [OperationRoles] type.
+///
+/// Can be created using the [OperationRoles::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct OperationRolesBuilder<State>(State);
+
+impl<
+    
+> OperationRolesBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`request` field](OperationRoles#structfield.request).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn request<T0>(self, value: T0) -> OperationRolesBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsUnion<self::RoleRequest>
+    {
+        OperationRolesBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> OperationRolesBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [OperationRoles].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<OperationRoles>
+        where Self: ::planus::WriteAsOffset<OperationRoles>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::RoleRequest>,
+    
+> ::planus::WriteAs<::planus::Offset<OperationRoles>> for OperationRolesBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<OperationRoles>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<OperationRoles> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::RoleRequest>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<OperationRoles>> for OperationRolesBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<OperationRoles>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<OperationRoles>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::RoleRequest>,
+    
+> ::planus::WriteAsOffset<OperationRoles> for OperationRolesBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<OperationRoles> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;OperationRoles::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [OperationRoles].
+#[derive(Copy, Clone)]
+pub struct OperationRolesRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> OperationRolesRef<'a> {
+    
+        /// Getter for the [`request` field](OperationRoles#structfield.request).
+        #[inline]
+        pub fn request(&self) -> ::planus::Result<self::RoleRequestRef<'a>> {
+            
+            
+              
+              self.0.access_union_required(0, "OperationRoles", "request")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for OperationRolesRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("OperationRolesRef");
+        f.field("request", &self.request());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<OperationRolesRef<'a>> for OperationRoles {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: OperationRolesRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            request: ::core::convert::TryInto::try_into(value.request()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for OperationRolesRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for OperationRolesRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[OperationRolesRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<OperationRoles>> for OperationRoles {
+    type Value = ::planus::Offset<OperationRoles>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<OperationRoles>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for OperationRolesRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[OperationRolesRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
 /// The union `Operation` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `Operation` in the file `crates/bkpr-protocol/src/wire/native.fbs:507`
+/// * Union `Operation` in the file `crates/bkpr-protocol/src/wire/native.fbs:537`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -54048,6 +57775,9 @@ pub enum Operation{
     
         /// The variant of type `OperationChannels` in the union `Operation`
         OperationChannels(::planus::alloc::boxed::Box<self::OperationChannels>),
+    
+        /// The variant of type `OperationRoles` in the union `Operation`
+        OperationRoles(::planus::alloc::boxed::Box<self::OperationRoles>),
     
 }
 
@@ -54347,6 +58077,14 @@ impl Operation {
         ::planus::UnionOffset::new(36, value.prepare(builder).downcast())
     }
 
+    #[inline]
+    pub fn create_operation_roles(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::OperationRoles>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(37, value.prepare(builder).downcast())
+    }
+
     
 }
 
@@ -54392,6 +58130,7 @@ impl ::planus::WriteAsUnion<Operation> for Operation {
             Self::OperationDaemonShutdown(value) => Self::create_operation_daemon_shutdown(builder, value),
             Self::OperationNotifications(value) => Self::create_operation_notifications(builder, value),
             Self::OperationChannels(value) => Self::create_operation_channels(builder, value),
+            Self::OperationRoles(value) => Self::create_operation_roles(builder, value),
             
         }
     }
@@ -54770,6 +58509,16 @@ impl OperationBuilder<::planus::Uninitialized> {
         value: T,
     ) -> OperationBuilder<::planus::Initialized<36, T>>
         where T: ::planus::WriteAsOffset<self::OperationChannels> {
+        OperationBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`OperationRoles` variant](Operation#variant.OperationRoles).
+    #[inline]
+    pub fn operation_roles<T>(
+        self,
+        value: T,
+    ) -> OperationBuilder<::planus::Initialized<37, T>>
+        where T: ::planus::WriteAsOffset<self::OperationRoles> {
         OperationBuilder(::planus::Initialized(value))
     }
 
@@ -55398,6 +59147,23 @@ impl<T> ::planus::WriteAsOptionalUnion<Operation> for OperationBuilder<::planus:
         ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
     }
 }
+impl<T> ::planus::WriteAsUnion<Operation> for OperationBuilder<::planus::Initialized<37, T>>
+    where T: ::planus::WriteAsOffset<self::OperationRoles>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<Operation> {
+        ::planus::UnionOffset::new(37, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<Operation> for OperationBuilder<::planus::Initialized<37, T>>
+    where T: ::planus::WriteAsOffset<self::OperationRoles>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<Operation>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
 
 
 /// Reference to a deserialized [Operation].
@@ -55439,6 +59205,7 @@ pub enum OperationRef<'a>{
     OperationDaemonShutdown(self::OperationDaemonShutdownRef<'a>),
     OperationNotifications(self::OperationNotificationsRef<'a>),
     OperationChannels(self::OperationChannelsRef<'a>),
+    OperationRoles(self::OperationRolesRef<'a>),
     
 }
 
@@ -55557,6 +59324,9 @@ impl<'a> ::core::convert::TryFrom<OperationRef<'a>> for Operation {
                 OperationRef::OperationChannels(value) => Self::OperationChannels(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
                 
             
+                OperationRef::OperationRoles(value) => Self::OperationRoles(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
         })
     }
 }
@@ -55566,7 +59336,7 @@ impl<'a> ::core::convert::TryFrom<OperationRef<'a>> for Operation {
 impl<'a> ::planus::TableReadUnion<'a> for OperationRef<'a> {
     fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
         match tag {
-            1 => ::core::result::Result::Ok(Self::OperationSessionInfo(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::OperationClientRegister(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::OperationClient(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::OperationClientActivate(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::OperationClientDetach(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::OperationInspect(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::OperationContext(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::OperationRecoveryList(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::OperationPaneResume(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::OperationHarnessBegin(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::OperationHarnessEvent(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::OperationHarnessContext(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::OperationAgent(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::OperationWorkspaceCreate(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::OperationWorkspaceRename(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::OperationWorkspaceClose(::planus::TableRead::from_buffer(buffer, field_offset)?)),17 => ::core::result::Result::Ok(Self::OperationWindowCreate(::planus::TableRead::from_buffer(buffer, field_offset)?)),18 => ::core::result::Result::Ok(Self::OperationWindowRename(::planus::TableRead::from_buffer(buffer, field_offset)?)),19 => ::core::result::Result::Ok(Self::OperationWindowClose(::planus::TableRead::from_buffer(buffer, field_offset)?)),20 => ::core::result::Result::Ok(Self::OperationPaneSpawn(::planus::TableRead::from_buffer(buffer, field_offset)?)),21 => ::core::result::Result::Ok(Self::OperationPaneReopen(::planus::TableRead::from_buffer(buffer, field_offset)?)),22 => ::core::result::Result::Ok(Self::OperationPaneTerminate(::planus::TableRead::from_buffer(buffer, field_offset)?)),23 => ::core::result::Result::Ok(Self::OperationPaneForget(::planus::TableRead::from_buffer(buffer, field_offset)?)),24 => ::core::result::Result::Ok(Self::OperationPaneRename(::planus::TableRead::from_buffer(buffer, field_offset)?)),25 => ::core::result::Result::Ok(Self::OperationLayoutUpdate(::planus::TableRead::from_buffer(buffer, field_offset)?)),26 => ::core::result::Result::Ok(Self::OperationPane(::planus::TableRead::from_buffer(buffer, field_offset)?)),27 => ::core::result::Result::Ok(Self::OperationWait(::planus::TableRead::from_buffer(buffer, field_offset)?)),28 => ::core::result::Result::Ok(Self::OperationShutdown(::planus::TableRead::from_buffer(buffer, field_offset)?)),29 => ::core::result::Result::Ok(Self::OperationCiRefresh(::planus::TableRead::from_buffer(buffer, field_offset)?)),30 => ::core::result::Result::Ok(Self::OperationControlInspect(::planus::TableRead::from_buffer(buffer, field_offset)?)),31 => ::core::result::Result::Ok(Self::OperationControlPaneRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),32 => ::core::result::Result::Ok(Self::OperationDaemonInfo(::planus::TableRead::from_buffer(buffer, field_offset)?)),33 => ::core::result::Result::Ok(Self::OperationSessionOpen(::planus::TableRead::from_buffer(buffer, field_offset)?)),34 => ::core::result::Result::Ok(Self::OperationDaemonShutdown(::planus::TableRead::from_buffer(buffer, field_offset)?)),35 => ::core::result::Result::Ok(Self::OperationNotifications(::planus::TableRead::from_buffer(buffer, field_offset)?)),36 => ::core::result::Result::Ok(Self::OperationChannels(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+            1 => ::core::result::Result::Ok(Self::OperationSessionInfo(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::OperationClientRegister(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::OperationClient(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::OperationClientActivate(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::OperationClientDetach(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::OperationInspect(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::OperationContext(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::OperationRecoveryList(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::OperationPaneResume(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::OperationHarnessBegin(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::OperationHarnessEvent(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::OperationHarnessContext(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::OperationAgent(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::OperationWorkspaceCreate(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::OperationWorkspaceRename(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::OperationWorkspaceClose(::planus::TableRead::from_buffer(buffer, field_offset)?)),17 => ::core::result::Result::Ok(Self::OperationWindowCreate(::planus::TableRead::from_buffer(buffer, field_offset)?)),18 => ::core::result::Result::Ok(Self::OperationWindowRename(::planus::TableRead::from_buffer(buffer, field_offset)?)),19 => ::core::result::Result::Ok(Self::OperationWindowClose(::planus::TableRead::from_buffer(buffer, field_offset)?)),20 => ::core::result::Result::Ok(Self::OperationPaneSpawn(::planus::TableRead::from_buffer(buffer, field_offset)?)),21 => ::core::result::Result::Ok(Self::OperationPaneReopen(::planus::TableRead::from_buffer(buffer, field_offset)?)),22 => ::core::result::Result::Ok(Self::OperationPaneTerminate(::planus::TableRead::from_buffer(buffer, field_offset)?)),23 => ::core::result::Result::Ok(Self::OperationPaneForget(::planus::TableRead::from_buffer(buffer, field_offset)?)),24 => ::core::result::Result::Ok(Self::OperationPaneRename(::planus::TableRead::from_buffer(buffer, field_offset)?)),25 => ::core::result::Result::Ok(Self::OperationLayoutUpdate(::planus::TableRead::from_buffer(buffer, field_offset)?)),26 => ::core::result::Result::Ok(Self::OperationPane(::planus::TableRead::from_buffer(buffer, field_offset)?)),27 => ::core::result::Result::Ok(Self::OperationWait(::planus::TableRead::from_buffer(buffer, field_offset)?)),28 => ::core::result::Result::Ok(Self::OperationShutdown(::planus::TableRead::from_buffer(buffer, field_offset)?)),29 => ::core::result::Result::Ok(Self::OperationCiRefresh(::planus::TableRead::from_buffer(buffer, field_offset)?)),30 => ::core::result::Result::Ok(Self::OperationControlInspect(::planus::TableRead::from_buffer(buffer, field_offset)?)),31 => ::core::result::Result::Ok(Self::OperationControlPaneRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),32 => ::core::result::Result::Ok(Self::OperationDaemonInfo(::planus::TableRead::from_buffer(buffer, field_offset)?)),33 => ::core::result::Result::Ok(Self::OperationSessionOpen(::planus::TableRead::from_buffer(buffer, field_offset)?)),34 => ::core::result::Result::Ok(Self::OperationDaemonShutdown(::planus::TableRead::from_buffer(buffer, field_offset)?)),35 => ::core::result::Result::Ok(Self::OperationNotifications(::planus::TableRead::from_buffer(buffer, field_offset)?)),36 => ::core::result::Result::Ok(Self::OperationChannels(::planus::TableRead::from_buffer(buffer, field_offset)?)),37 => ::core::result::Result::Ok(Self::OperationRoles(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
         }
     }
 }
@@ -55582,7 +59352,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for OperationRef<'a> {
 /// The table `PaneRequestInspect` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestInspect` in the file `crates/bkpr-protocol/src/wire/native.fbs:545`
+/// * Table `PaneRequestInspect` in the file `crates/bkpr-protocol/src/wire/native.fbs:576`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -55808,7 +59578,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestInspectRef<'a> {
 /// The table `PaneRequestAttach` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestAttach` in the file `crates/bkpr-protocol/src/wire/native.fbs:548`
+/// * Table `PaneRequestAttach` in the file `crates/bkpr-protocol/src/wire/native.fbs:579`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -56113,7 +59883,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestAttachRef<'a> {
 /// The table `PaneRequestUpdate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestUpdate` in the file `crates/bkpr-protocol/src/wire/native.fbs:551`
+/// * Table `PaneRequestUpdate` in the file `crates/bkpr-protocol/src/wire/native.fbs:582`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -56502,7 +60272,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestUpdateRef<'a> {
 /// The table `PaneRequestDetach` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestDetach` in the file `crates/bkpr-protocol/src/wire/native.fbs:555`
+/// * Table `PaneRequestDetach` in the file `crates/bkpr-protocol/src/wire/native.fbs:586`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -56807,7 +60577,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestDetachRef<'a> {
 /// The table `PaneRequestPoll` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPoll` in the file `crates/bkpr-protocol/src/wire/native.fbs:558`
+/// * Table `PaneRequestPoll` in the file `crates/bkpr-protocol/src/wire/native.fbs:589`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -58030,7 +61800,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPollRef<'a> {
 /// The table `PaneRequestPin` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPin` in the file `crates/bkpr-protocol/src/wire/native.fbs:568`
+/// * Table `PaneRequestPin` in the file `crates/bkpr-protocol/src/wire/native.fbs:599`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -58440,7 +62210,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPinRef<'a> {
 /// The table `PaneRequestInput` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestInput` in the file `crates/bkpr-protocol/src/wire/native.fbs:572`
+/// * Table `PaneRequestInput` in the file `crates/bkpr-protocol/src/wire/native.fbs:603`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -58829,7 +62599,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestInputRef<'a> {
 /// The table `PaneRequestPaste` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPaste` in the file `crates/bkpr-protocol/src/wire/native.fbs:576`
+/// * Table `PaneRequestPaste` in the file `crates/bkpr-protocol/src/wire/native.fbs:607`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -59218,7 +62988,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPasteRef<'a> {
 /// The table `PaneRequestPasteContents` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestPasteContents` in the file `crates/bkpr-protocol/src/wire/native.fbs:580`
+/// * Table `PaneRequestPasteContents` in the file `crates/bkpr-protocol/src/wire/native.fbs:611`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -59837,7 +63607,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestPasteContentsRef<'a> {
 /// The table `PaneRequestKey` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestKey` in the file `crates/bkpr-protocol/src/wire/native.fbs:586`
+/// * Table `PaneRequestKey` in the file `crates/bkpr-protocol/src/wire/native.fbs:617`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -60226,7 +63996,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestKeyRef<'a> {
 /// The table `PaneRequestMouse` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestMouse` in the file `crates/bkpr-protocol/src/wire/native.fbs:590`
+/// * Table `PaneRequestMouse` in the file `crates/bkpr-protocol/src/wire/native.fbs:621`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -60615,7 +64385,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestMouseRef<'a> {
 /// The table `PaneRequestFocus` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestFocus` in the file `crates/bkpr-protocol/src/wire/native.fbs:594`
+/// * Table `PaneRequestFocus` in the file `crates/bkpr-protocol/src/wire/native.fbs:625`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -61017,7 +64787,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestFocusRef<'a> {
 /// The table `PaneRequestScroll` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestScroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:598`
+/// * Table `PaneRequestScroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:629`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -61419,7 +65189,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestScrollRef<'a> {
 /// The table `PaneRequestSelect` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestSelect` in the file `crates/bkpr-protocol/src/wire/native.fbs:602`
+/// * Table `PaneRequestSelect` in the file `crates/bkpr-protocol/src/wire/native.fbs:633`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -61808,7 +65578,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestSelectRef<'a> {
 /// The table `PaneRequestCopySelection` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestCopySelection` in the file `crates/bkpr-protocol/src/wire/native.fbs:606`
+/// * Table `PaneRequestCopySelection` in the file `crates/bkpr-protocol/src/wire/native.fbs:637`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -62113,7 +65883,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestCopySelectionRef<'a> {
 /// The table `PaneRequestSearch` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestSearch` in the file `crates/bkpr-protocol/src/wire/native.fbs:609`
+/// * Table `PaneRequestSearch` in the file `crates/bkpr-protocol/src/wire/native.fbs:640`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -62491,7 +66261,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestSearchRef<'a> {
 /// The table `PaneRequestClipboard` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestClipboard` in the file `crates/bkpr-protocol/src/wire/native.fbs:613`
+/// * Table `PaneRequestClipboard` in the file `crates/bkpr-protocol/src/wire/native.fbs:644`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -62974,7 +66744,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestClipboardRef<'a> {
 /// The table `PaneRequestColors` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestColors` in the file `crates/bkpr-protocol/src/wire/native.fbs:618`
+/// * Table `PaneRequestColors` in the file `crates/bkpr-protocol/src/wire/native.fbs:649`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -64077,7 +67847,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestColorsRef<'a> {
 /// The table `PaneRequestTerminate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestTerminate` in the file `crates/bkpr-protocol/src/wire/native.fbs:627`
+/// * Table `PaneRequestTerminate` in the file `crates/bkpr-protocol/src/wire/native.fbs:658`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -64382,7 +68152,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestTerminateRef<'a> {
 /// The table `PaneRequestShutdown` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestShutdown` in the file `crates/bkpr-protocol/src/wire/native.fbs:630`
+/// * Table `PaneRequestShutdown` in the file `crates/bkpr-protocol/src/wire/native.fbs:661`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -64608,7 +68378,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestShutdownRef<'a> {
 /// The table `PaneRequestImageResource` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PaneRequestImageResource` in the file `crates/bkpr-protocol/src/wire/native.fbs:634`
+/// * Table `PaneRequestImageResource` in the file `crates/bkpr-protocol/src/wire/native.fbs:665`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -64997,7 +68767,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PaneRequestImageResourceRef<'a> {
 /// The union `PaneRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `PaneRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:638`
+/// * Union `PaneRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:669`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -65999,7 +69769,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PaneRequestRef<'a> {
 /// The table `SearchActionQuery` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionQuery` in the file `crates/bkpr-protocol/src/wire/native.fbs:639`
+/// * Table `SearchActionQuery` in the file `crates/bkpr-protocol/src/wire/native.fbs:670`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -66304,7 +70074,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionQueryRef<'a> {
 /// The table `SearchActionNext` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionNext` in the file `crates/bkpr-protocol/src/wire/native.fbs:642`
+/// * Table `SearchActionNext` in the file `crates/bkpr-protocol/src/wire/native.fbs:673`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -66530,7 +70300,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionNextRef<'a> {
 /// The table `SearchActionPrevious` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionPrevious` in the file `crates/bkpr-protocol/src/wire/native.fbs:645`
+/// * Table `SearchActionPrevious` in the file `crates/bkpr-protocol/src/wire/native.fbs:676`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -66756,7 +70526,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionPreviousRef<'a> {
 /// The table `SearchActionClear` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SearchActionClear` in the file `crates/bkpr-protocol/src/wire/native.fbs:648`
+/// * Table `SearchActionClear` in the file `crates/bkpr-protocol/src/wire/native.fbs:679`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -66982,7 +70752,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SearchActionClearRef<'a> {
 /// The union `SearchAction` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `SearchAction` in the file `crates/bkpr-protocol/src/wire/native.fbs:651`
+/// * Union `SearchAction` in the file `crates/bkpr-protocol/src/wire/native.fbs:682`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -67253,7 +71023,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for SearchActionRef<'a> {
 /// The table `LayoutNodeLeaf` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `LayoutNodeLeaf` in the file `crates/bkpr-protocol/src/wire/native.fbs:652`
+/// * Table `LayoutNodeLeaf` in the file `crates/bkpr-protocol/src/wire/native.fbs:683`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -67558,7 +71328,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for LayoutNodeLeafRef<'a> {
 /// The table `LayoutNodeSplit` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `LayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:655`
+/// * Table `LayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:686`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -68156,7 +71926,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for LayoutNodeSplitRef<'a> {
 /// The union `LayoutNode` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `LayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:661`
+/// * Union `LayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:692`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -68341,7 +72111,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for LayoutNodeRef<'a> {
 /// The table `SpawnLayoutNodeExisting` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeExisting` in the file `crates/bkpr-protocol/src/wire/native.fbs:662`
+/// * Table `SpawnLayoutNodeExisting` in the file `crates/bkpr-protocol/src/wire/native.fbs:693`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -68646,7 +72416,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeExistingRef<'a> {
 /// The table `SpawnLayoutNodeNew` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeNew` in the file `crates/bkpr-protocol/src/wire/native.fbs:665`
+/// * Table `SpawnLayoutNodeNew` in the file `crates/bkpr-protocol/src/wire/native.fbs:696`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -68951,7 +72721,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeNewRef<'a> {
 /// The table `SpawnLayoutNodeSplit` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SpawnLayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:668`
+/// * Table `SpawnLayoutNodeSplit` in the file `crates/bkpr-protocol/src/wire/native.fbs:699`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -69549,7 +73319,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SpawnLayoutNodeSplitRef<'a> {
 /// The union `SpawnLayoutNode` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `SpawnLayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:674`
+/// * Union `SpawnLayoutNode` in the file `crates/bkpr-protocol/src/wire/native.fbs:705`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -69777,7 +73547,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for SpawnLayoutNodeRef<'a> {
 /// The table `NativeConversation` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `NativeConversation` in the file `crates/bkpr-protocol/src/wire/native.fbs:675`
+/// * Table `NativeConversation` in the file `crates/bkpr-protocol/src/wire/native.fbs:706`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -70288,7 +74058,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for NativeConversationRef<'a> {
 /// The table `AgentBindingGuard` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentBindingGuard` in the file `crates/bkpr-protocol/src/wire/native.fbs:680`
+/// * Table `AgentBindingGuard` in the file `crates/bkpr-protocol/src/wire/native.fbs:711`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -70677,7 +74447,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentBindingGuardRef<'a> {
 /// The table `CaptureEventBind` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventBind` in the file `crates/bkpr-protocol/src/wire/native.fbs:684`
+/// * Table `CaptureEventBind` in the file `crates/bkpr-protocol/src/wire/native.fbs:715`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -71309,7 +75079,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventBindRef<'a> {
 /// The table `CaptureEventError` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventError` in the file `crates/bkpr-protocol/src/wire/native.fbs:690`
+/// * Table `CaptureEventError` in the file `crates/bkpr-protocol/src/wire/native.fbs:721`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -71614,7 +75384,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventErrorRef<'a> {
 /// The table `CaptureEventEnd` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:693`
+/// * Table `CaptureEventEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:724`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -71840,7 +75610,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventEndRef<'a> {
 /// The table `CaptureEventPromptSubmitted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventPromptSubmitted` in the file `crates/bkpr-protocol/src/wire/native.fbs:696`
+/// * Table `CaptureEventPromptSubmitted` in the file `crates/bkpr-protocol/src/wire/native.fbs:727`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -72242,7 +76012,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventPromptSubmittedRef<'a> {
 /// The table `CaptureEventStatusEnroll` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventStatusEnroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:700`
+/// * Table `CaptureEventStatusEnroll` in the file `crates/bkpr-protocol/src/wire/native.fbs:731`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -72644,7 +76414,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventStatusEnrollRef<'a> {
 /// The table `CaptureEventStatusReport` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventStatusReport` in the file `crates/bkpr-protocol/src/wire/native.fbs:704`
+/// * Table `CaptureEventStatusReport` in the file `crates/bkpr-protocol/src/wire/native.fbs:735`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -73409,7 +77179,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventStatusReportRef<'a> {
 /// The table `CaptureEventUnbind` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventUnbind` in the file `crates/bkpr-protocol/src/wire/native.fbs:711`
+/// * Table `CaptureEventUnbind` in the file `crates/bkpr-protocol/src/wire/native.fbs:742`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -73939,7 +77709,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventUnbindRef<'a> {
 /// The table `CaptureEventNativeContext` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `CaptureEventNativeContext` in the file `crates/bkpr-protocol/src/wire/native.fbs:716`
+/// * Table `CaptureEventNativeContext` in the file `crates/bkpr-protocol/src/wire/native.fbs:747`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -74328,7 +78098,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for CaptureEventNativeContextRef<'a> {
 /// The union `CaptureEvent` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `CaptureEvent` in the file `crates/bkpr-protocol/src/wire/native.fbs:720`
+/// * Union `CaptureEvent` in the file `crates/bkpr-protocol/src/wire/native.fbs:751`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -74771,7 +78541,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for CaptureEventRef<'a> {
 /// The table `AgentRequestWhoami` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWhoami` in the file `crates/bkpr-protocol/src/wire/native.fbs:721`
+/// * Table `AgentRequestWhoami` in the file `crates/bkpr-protocol/src/wire/native.fbs:752`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -75087,7 +78857,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWhoamiRef<'a> {
 /// The table `AgentRequestControl` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestControl` in the file `crates/bkpr-protocol/src/wire/native.fbs:724`
+/// * Table `AgentRequestControl` in the file `crates/bkpr-protocol/src/wire/native.fbs:755`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -75586,7 +79356,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestControlRef<'a> {
 /// The table `AgentRequestSetTitle` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestSetTitle` in the file `crates/bkpr-protocol/src/wire/native.fbs:729`
+/// * Table `AgentRequestSetTitle` in the file `crates/bkpr-protocol/src/wire/native.fbs:760`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -75891,7 +79661,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestSetTitleRef<'a> {
 /// The table `AgentRequestDiscoverAgents` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestDiscoverAgents` in the file `crates/bkpr-protocol/src/wire/native.fbs:732`
+/// * Table `AgentRequestDiscoverAgents` in the file `crates/bkpr-protocol/src/wire/native.fbs:763`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -76832,7 +80602,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestDiscoverAgentsRef<'a> {
 /// The table `AgentRequestSendMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestSendMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:741`
+/// * Table `AgentRequestSendMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:772`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -77058,7 +80828,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestSendMessageRef<'a> {
 /// The table `AgentRequestReadInbox` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReadInbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:748`
+/// * Table `AgentRequestReadInbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:779`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -77284,7 +81054,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReadInboxRef<'a> {
 /// The table `AgentRequestReadMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReadMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:755`
+/// * Table `AgentRequestReadMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:786`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -77510,7 +81280,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReadMessageRef<'a> {
 /// The table `AgentRequestAckMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestAckMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:760`
+/// * Table `AgentRequestAckMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:791`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -77736,7 +81506,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestAckMessageRef<'a> {
 /// The table `AgentRequestInspectOutbox` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestInspectOutbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:763`
+/// * Table `AgentRequestInspectOutbox` in the file `crates/bkpr-protocol/src/wire/native.fbs:794`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -77962,7 +81732,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestInspectOutboxRef<'a> {
 /// The table `AgentRequestReceiverRegister` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReceiverRegister` in the file `crates/bkpr-protocol/src/wire/native.fbs:768`
+/// * Table `AgentRequestReceiverRegister` in the file `crates/bkpr-protocol/src/wire/native.fbs:799`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -78473,7 +82243,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReceiverRegisterRef<'a> {
 /// The table `AgentRequestReceiverSubscribe` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestReceiverSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:773`
+/// * Table `AgentRequestReceiverSubscribe` in the file `crates/bkpr-protocol/src/wire/native.fbs:804`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -78875,7 +82645,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestReceiverSubscribeRef<'a> {
 /// The table `AgentRequestWakeValidate` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWakeValidate` in the file `crates/bkpr-protocol/src/wire/native.fbs:777`
+/// * Table `AgentRequestWakeValidate` in the file `crates/bkpr-protocol/src/wire/native.fbs:808`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -79373,7 +83143,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeValidateRef<'a> {
 /// The table `AgentRequestWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:782`
+/// * Table `AgentRequestWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:813`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -79962,7 +83732,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestWakeOutcomeRef<'a> {
 /// The table `AgentRequestChannels` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestChannels` in the file `crates/bkpr-protocol/src/wire/native.fbs:788`
+/// * Table `AgentRequestChannels` in the file `crates/bkpr-protocol/src/wire/native.fbs:819`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -80257,7 +84027,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelsRef<'a> {
 /// The table `AgentRequestChannelWake` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestChannelWake` in the file `crates/bkpr-protocol/src/wire/native.fbs:791`
+/// * Table `AgentRequestChannelWake` in the file `crates/bkpr-protocol/src/wire/native.fbs:822`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -80776,7 +84546,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelWakeRef<'a> {
 /// The table `AgentRequestChannelRead` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestChannelRead` in the file `crates/bkpr-protocol/src/wire/native.fbs:796`
+/// * Table `AgentRequestChannelRead` in the file `crates/bkpr-protocol/src/wire/native.fbs:827`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -81411,7 +85181,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelReadRef<'a> {
 /// The table `AgentRequestChannelDirectPost` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestChannelDirectPost` in the file `crates/bkpr-protocol/src/wire/native.fbs:802`
+/// * Table `AgentRequestChannelDirectPost` in the file `crates/bkpr-protocol/src/wire/native.fbs:833`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -81800,7 +85570,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelDirectPostRef<'a> {
 /// The table `AgentRequestChannelAck` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentRequestChannelAck` in the file `crates/bkpr-protocol/src/wire/native.fbs:806`
+/// * Table `AgentRequestChannelAck` in the file `crates/bkpr-protocol/src/wire/native.fbs:837`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -82186,10 +85956,1042 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestChannelAckRef<'a> {
 }
 
     
+/// The table `AgentRequestRoleRequest` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `AgentRequestRoleRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:841`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct AgentRequestRoleRequest{
+    
+        /// The field `role` in the table `AgentRequestRoleRequest`
+        pub role: self::WorkspaceRole,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for AgentRequestRoleRequest {
+    fn default() -> Self {
+        Self {
+        role: self::WorkspaceRole::Coordinator,
+        
+        }
+    }
+}
+
+
+impl AgentRequestRoleRequest {
+    /// Creates a [AgentRequestRoleRequestBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> AgentRequestRoleRequestBuilder<()> {
+        AgentRequestRoleRequestBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_role: impl ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_role = field_role.prepare(builder, &self::WorkspaceRole::Coordinator);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<6> = ::core::default::Default::default();
+        if prepared_role.is_some() {table_writer.write_entry::<self::WorkspaceRole>(0);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_role) = prepared_role {object_writer.write::<_, _, 1>(&prepared_role);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<AgentRequestRoleRequest>> for AgentRequestRoleRequest {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestRoleRequest> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<AgentRequestRoleRequest>> for AgentRequestRoleRequest {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<AgentRequestRoleRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<AgentRequestRoleRequest> for AgentRequestRoleRequest {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestRoleRequest> {
+        AgentRequestRoleRequest::create(
+            builder,
+        
+            
+            self.role,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [AgentRequestRoleRequest] type.
+///
+/// Can be created using the [AgentRequestRoleRequest::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct AgentRequestRoleRequestBuilder<State>(State);
+
+impl<
+    
+> AgentRequestRoleRequestBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`role` field](AgentRequestRoleRequest#structfield.role).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role<T0>(self, value: T0) -> AgentRequestRoleRequestBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>
+    {
+        AgentRequestRoleRequestBuilder((
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`role` field](AgentRequestRoleRequest#structfield.role) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role_as_default(self) -> AgentRequestRoleRequestBuilder<(
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.role(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> AgentRequestRoleRequestBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [AgentRequestRoleRequest].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestRoleRequest>
+        where Self: ::planus::WriteAsOffset<AgentRequestRoleRequest>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+> ::planus::WriteAs<::planus::Offset<AgentRequestRoleRequest>> for AgentRequestRoleRequestBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<AgentRequestRoleRequest>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestRoleRequest> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<AgentRequestRoleRequest>> for AgentRequestRoleRequestBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<AgentRequestRoleRequest>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<AgentRequestRoleRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+> ::planus::WriteAsOffset<AgentRequestRoleRequest> for AgentRequestRoleRequestBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestRoleRequest> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;AgentRequestRoleRequest::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [AgentRequestRoleRequest].
+#[derive(Copy, Clone)]
+pub struct AgentRequestRoleRequestRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> AgentRequestRoleRequestRef<'a> {
+    
+        /// Getter for the [`role` field](AgentRequestRoleRequest#structfield.role).
+        #[inline]
+        pub fn role(&self) -> ::planus::Result<self::WorkspaceRole> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(0, "AgentRequestRoleRequest", "role")
+              
+            
+            ?.unwrap_or(self::WorkspaceRole::Coordinator))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for AgentRequestRoleRequestRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("AgentRequestRoleRequestRef");
+        f.field("role", &self.role());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<AgentRequestRoleRequestRef<'a>> for AgentRequestRoleRequest {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: AgentRequestRoleRequestRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            role: ::core::convert::TryInto::try_into(value.role()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for AgentRequestRoleRequestRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for AgentRequestRoleRequestRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[AgentRequestRoleRequestRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<AgentRequestRoleRequest>> for AgentRequestRoleRequest {
+    type Value = ::planus::Offset<AgentRequestRoleRequest>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<AgentRequestRoleRequest>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestRoleRequestRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[AgentRequestRoleRequestRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `AgentRequestRoleRelease` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `AgentRequestRoleRelease` in the file `crates/bkpr-protocol/src/wire/native.fbs:842`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct AgentRequestRoleRelease{
+    
+        /// The field `role` in the table `AgentRequestRoleRelease`
+        pub role: self::WorkspaceRole,
+        /// The field `grant_id` in the table `AgentRequestRoleRelease`
+        pub grant_id: ::planus::alloc::string::String,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for AgentRequestRoleRelease {
+    fn default() -> Self {
+        Self {
+        role: self::WorkspaceRole::Coordinator,
+        grant_id: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl AgentRequestRoleRelease {
+    /// Creates a [AgentRequestRoleReleaseBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> AgentRequestRoleReleaseBuilder<()> {
+        AgentRequestRoleReleaseBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_role: impl ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+        field_grant_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_role = field_role.prepare(builder, &self::WorkspaceRole::Coordinator);let prepared_grant_id = field_grant_id.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(1);if prepared_role.is_some() {table_writer.write_entry::<self::WorkspaceRole>(0);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_grant_id);if let ::core::option::Option::Some(prepared_role) = prepared_role {object_writer.write::<_, _, 1>(&prepared_role);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<AgentRequestRoleRelease>> for AgentRequestRoleRelease {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestRoleRelease> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<AgentRequestRoleRelease>> for AgentRequestRoleRelease {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<AgentRequestRoleRelease>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<AgentRequestRoleRelease> for AgentRequestRoleRelease {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestRoleRelease> {
+        AgentRequestRoleRelease::create(
+            builder,
+        
+            
+            self.role,
+            
+        
+            
+            &self.grant_id,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [AgentRequestRoleRelease] type.
+///
+/// Can be created using the [AgentRequestRoleRelease::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct AgentRequestRoleReleaseBuilder<State>(State);
+
+impl<
+    
+> AgentRequestRoleReleaseBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`role` field](AgentRequestRoleRelease#structfield.role).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role<T0>(self, value: T0) -> AgentRequestRoleReleaseBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>
+    {
+        AgentRequestRoleReleaseBuilder((
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`role` field](AgentRequestRoleRelease#structfield.role) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role_as_default(self) -> AgentRequestRoleReleaseBuilder<(
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.role(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> AgentRequestRoleReleaseBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`grant_id` field](AgentRequestRoleRelease#structfield.grant_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn grant_id<T1>(self, value: T1) -> AgentRequestRoleReleaseBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;AgentRequestRoleReleaseBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> AgentRequestRoleReleaseBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [AgentRequestRoleRelease].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestRoleRelease>
+        where Self: ::planus::WriteAsOffset<AgentRequestRoleRelease>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAs<::planus::Offset<AgentRequestRoleRelease>> for AgentRequestRoleReleaseBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<AgentRequestRoleRelease>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestRoleRelease> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<AgentRequestRoleRelease>> for AgentRequestRoleReleaseBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<AgentRequestRoleRelease>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<AgentRequestRoleRelease>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOffset<AgentRequestRoleRelease> for AgentRequestRoleReleaseBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestRoleRelease> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = &self.0;AgentRequestRoleRelease::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [AgentRequestRoleRelease].
+#[derive(Copy, Clone)]
+pub struct AgentRequestRoleReleaseRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> AgentRequestRoleReleaseRef<'a> {
+    
+        /// Getter for the [`role` field](AgentRequestRoleRelease#structfield.role).
+        #[inline]
+        pub fn role(&self) -> ::planus::Result<self::WorkspaceRole> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(0, "AgentRequestRoleRelease", "role")
+              
+            
+            ?.unwrap_or(self::WorkspaceRole::Coordinator))
+            
+        }
+    
+        /// Getter for the [`grant_id` field](AgentRequestRoleRelease#structfield.grant_id).
+        #[inline]
+        pub fn grant_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(1, "AgentRequestRoleRelease", "grant_id")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for AgentRequestRoleReleaseRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("AgentRequestRoleReleaseRef");
+        f.field("role", &self.role());f.field("grant_id", &self.grant_id());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<AgentRequestRoleReleaseRef<'a>> for AgentRequestRoleRelease {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: AgentRequestRoleReleaseRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            role: ::core::convert::TryInto::try_into(value.role()?)?,grant_id: ::core::convert::Into::into(value.grant_id()?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for AgentRequestRoleReleaseRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for AgentRequestRoleReleaseRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[AgentRequestRoleReleaseRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<AgentRequestRoleRelease>> for AgentRequestRoleRelease {
+    type Value = ::planus::Offset<AgentRequestRoleRelease>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<AgentRequestRoleRelease>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestRoleReleaseRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[AgentRequestRoleReleaseRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `AgentRequestRoleStatus` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `AgentRequestRoleStatus` in the file `crates/bkpr-protocol/src/wire/native.fbs:843`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct AgentRequestRoleStatus{
+    
+        /// The field `role` in the table `AgentRequestRoleStatus`
+        pub role: self::WorkspaceRole,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for AgentRequestRoleStatus {
+    fn default() -> Self {
+        Self {
+        role: self::WorkspaceRole::Coordinator,
+        
+        }
+    }
+}
+
+
+impl AgentRequestRoleStatus {
+    /// Creates a [AgentRequestRoleStatusBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> AgentRequestRoleStatusBuilder<()> {
+        AgentRequestRoleStatusBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_role: impl ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_role = field_role.prepare(builder, &self::WorkspaceRole::Coordinator);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<6> = ::core::default::Default::default();
+        if prepared_role.is_some() {table_writer.write_entry::<self::WorkspaceRole>(0);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_role) = prepared_role {object_writer.write::<_, _, 1>(&prepared_role);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<AgentRequestRoleStatus>> for AgentRequestRoleStatus {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestRoleStatus> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<AgentRequestRoleStatus>> for AgentRequestRoleStatus {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<AgentRequestRoleStatus>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<AgentRequestRoleStatus> for AgentRequestRoleStatus {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestRoleStatus> {
+        AgentRequestRoleStatus::create(
+            builder,
+        
+            
+            self.role,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [AgentRequestRoleStatus] type.
+///
+/// Can be created using the [AgentRequestRoleStatus::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct AgentRequestRoleStatusBuilder<State>(State);
+
+impl<
+    
+> AgentRequestRoleStatusBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`role` field](AgentRequestRoleStatus#structfield.role).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role<T0>(self, value: T0) -> AgentRequestRoleStatusBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>
+    {
+        AgentRequestRoleStatusBuilder((
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`role` field](AgentRequestRoleStatus#structfield.role) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role_as_default(self) -> AgentRequestRoleStatusBuilder<(
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.role(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> AgentRequestRoleStatusBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [AgentRequestRoleStatus].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestRoleStatus>
+        where Self: ::planus::WriteAsOffset<AgentRequestRoleStatus>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+> ::planus::WriteAs<::planus::Offset<AgentRequestRoleStatus>> for AgentRequestRoleStatusBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<AgentRequestRoleStatus>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestRoleStatus> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<AgentRequestRoleStatus>> for AgentRequestRoleStatusBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<AgentRequestRoleStatus>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<AgentRequestRoleStatus>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+> ::planus::WriteAsOffset<AgentRequestRoleStatus> for AgentRequestRoleStatusBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<AgentRequestRoleStatus> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;AgentRequestRoleStatus::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [AgentRequestRoleStatus].
+#[derive(Copy, Clone)]
+pub struct AgentRequestRoleStatusRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> AgentRequestRoleStatusRef<'a> {
+    
+        /// Getter for the [`role` field](AgentRequestRoleStatus#structfield.role).
+        #[inline]
+        pub fn role(&self) -> ::planus::Result<self::WorkspaceRole> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(0, "AgentRequestRoleStatus", "role")
+              
+            
+            ?.unwrap_or(self::WorkspaceRole::Coordinator))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for AgentRequestRoleStatusRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("AgentRequestRoleStatusRef");
+        f.field("role", &self.role());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<AgentRequestRoleStatusRef<'a>> for AgentRequestRoleStatus {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: AgentRequestRoleStatusRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            role: ::core::convert::TryInto::try_into(value.role()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for AgentRequestRoleStatusRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for AgentRequestRoleStatusRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[AgentRequestRoleStatusRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<AgentRequestRoleStatus>> for AgentRequestRoleStatus {
+    type Value = ::planus::Offset<AgentRequestRoleStatus>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<AgentRequestRoleStatus>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for AgentRequestRoleStatusRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[AgentRequestRoleStatusRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
 /// The union `AgentRequest` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:810`
+/// * Union `AgentRequest` in the file `crates/bkpr-protocol/src/wire/native.fbs:844`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -82248,6 +87050,15 @@ pub enum AgentRequest{
     
         /// The variant of type `AgentRequestChannelAck` in the union `AgentRequest`
         AgentRequestChannelAck(::planus::alloc::boxed::Box<self::AgentRequestChannelAck>),
+    
+        /// The variant of type `AgentRequestRoleRequest` in the union `AgentRequest`
+        AgentRequestRoleRequest(::planus::alloc::boxed::Box<self::AgentRequestRoleRequest>),
+    
+        /// The variant of type `AgentRequestRoleRelease` in the union `AgentRequest`
+        AgentRequestRoleRelease(::planus::alloc::boxed::Box<self::AgentRequestRoleRelease>),
+    
+        /// The variant of type `AgentRequestRoleStatus` in the union `AgentRequest`
+        AgentRequestRoleStatus(::planus::alloc::boxed::Box<self::AgentRequestRoleStatus>),
     
 }
 
@@ -82403,6 +87214,30 @@ impl AgentRequest {
         ::planus::UnionOffset::new(18, value.prepare(builder).downcast())
     }
 
+    #[inline]
+    pub fn create_agent_request_role_request(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::AgentRequestRoleRequest>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(19, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_agent_request_role_release(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::AgentRequestRoleRelease>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(20, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_agent_request_role_status(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::AgentRequestRoleStatus>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(21, value.prepare(builder).downcast())
+    }
+
     
 }
 
@@ -82430,6 +87265,9 @@ impl ::planus::WriteAsUnion<AgentRequest> for AgentRequest {
             Self::AgentRequestChannelRead(value) => Self::create_agent_request_channel_read(builder, value),
             Self::AgentRequestChannelDirectPost(value) => Self::create_agent_request_channel_direct_post(builder, value),
             Self::AgentRequestChannelAck(value) => Self::create_agent_request_channel_ack(builder, value),
+            Self::AgentRequestRoleRequest(value) => Self::create_agent_request_role_request(builder, value),
+            Self::AgentRequestRoleRelease(value) => Self::create_agent_request_role_release(builder, value),
+            Self::AgentRequestRoleStatus(value) => Self::create_agent_request_role_status(builder, value),
             
         }
     }
@@ -82628,6 +87466,36 @@ impl AgentRequestBuilder<::planus::Uninitialized> {
         value: T,
     ) -> AgentRequestBuilder<::planus::Initialized<18, T>>
         where T: ::planus::WriteAsOffset<self::AgentRequestChannelAck> {
+        AgentRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`AgentRequestRoleRequest` variant](AgentRequest#variant.AgentRequestRoleRequest).
+    #[inline]
+    pub fn agent_request_role_request<T>(
+        self,
+        value: T,
+    ) -> AgentRequestBuilder<::planus::Initialized<19, T>>
+        where T: ::planus::WriteAsOffset<self::AgentRequestRoleRequest> {
+        AgentRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`AgentRequestRoleRelease` variant](AgentRequest#variant.AgentRequestRoleRelease).
+    #[inline]
+    pub fn agent_request_role_release<T>(
+        self,
+        value: T,
+    ) -> AgentRequestBuilder<::planus::Initialized<20, T>>
+        where T: ::planus::WriteAsOffset<self::AgentRequestRoleRelease> {
+        AgentRequestBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`AgentRequestRoleStatus` variant](AgentRequest#variant.AgentRequestRoleStatus).
+    #[inline]
+    pub fn agent_request_role_status<T>(
+        self,
+        value: T,
+    ) -> AgentRequestBuilder<::planus::Initialized<21, T>>
+        where T: ::planus::WriteAsOffset<self::AgentRequestRoleStatus> {
         AgentRequestBuilder(::planus::Initialized(value))
     }
 
@@ -82950,6 +87818,57 @@ impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::p
         ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
     }
 }
+impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<19, T>>
+    where T: ::planus::WriteAsOffset<self::AgentRequestRoleRequest>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<AgentRequest> {
+        ::planus::UnionOffset::new(19, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<19, T>>
+    where T: ::planus::WriteAsOffset<self::AgentRequestRoleRequest>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<AgentRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<20, T>>
+    where T: ::planus::WriteAsOffset<self::AgentRequestRoleRelease>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<AgentRequest> {
+        ::planus::UnionOffset::new(20, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<20, T>>
+    where T: ::planus::WriteAsOffset<self::AgentRequestRoleRelease>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<AgentRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<21, T>>
+    where T: ::planus::WriteAsOffset<self::AgentRequestRoleStatus>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<AgentRequest> {
+        ::planus::UnionOffset::new(21, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<AgentRequest> for AgentRequestBuilder<::planus::Initialized<21, T>>
+    where T: ::planus::WriteAsOffset<self::AgentRequestRoleStatus>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<AgentRequest>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
 
 
 /// Reference to a deserialized [AgentRequest].
@@ -82973,6 +87892,9 @@ pub enum AgentRequestRef<'a>{
     AgentRequestChannelRead(self::AgentRequestChannelReadRef<'a>),
     AgentRequestChannelDirectPost(self::AgentRequestChannelDirectPostRef<'a>),
     AgentRequestChannelAck(self::AgentRequestChannelAckRef<'a>),
+    AgentRequestRoleRequest(self::AgentRequestRoleRequestRef<'a>),
+    AgentRequestRoleRelease(self::AgentRequestRoleReleaseRef<'a>),
+    AgentRequestRoleStatus(self::AgentRequestRoleStatusRef<'a>),
     
 }
 
@@ -83037,6 +87959,15 @@ impl<'a> ::core::convert::TryFrom<AgentRequestRef<'a>> for AgentRequest {
                 AgentRequestRef::AgentRequestChannelAck(value) => Self::AgentRequestChannelAck(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
                 
             
+                AgentRequestRef::AgentRequestRoleRequest(value) => Self::AgentRequestRoleRequest(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                AgentRequestRef::AgentRequestRoleRelease(value) => Self::AgentRequestRoleRelease(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                AgentRequestRef::AgentRequestRoleStatus(value) => Self::AgentRequestRoleStatus(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
         })
     }
 }
@@ -83046,7 +87977,7 @@ impl<'a> ::core::convert::TryFrom<AgentRequestRef<'a>> for AgentRequest {
 impl<'a> ::planus::TableReadUnion<'a> for AgentRequestRef<'a> {
     fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
         match tag {
-            1 => ::core::result::Result::Ok(Self::AgentRequestWhoami(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::AgentRequestControl(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::AgentRequestSetTitle(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::AgentRequestDiscoverAgents(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::AgentRequestSendMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::AgentRequestReadInbox(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::AgentRequestAckMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::AgentRequestInspectOutbox(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::AgentRequestReceiverRegister(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::AgentRequestReceiverSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::AgentRequestWakeValidate(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::AgentRequestWakeOutcome(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::AgentRequestReadMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::AgentRequestChannels(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::AgentRequestChannelWake(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::AgentRequestChannelRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),17 => ::core::result::Result::Ok(Self::AgentRequestChannelDirectPost(::planus::TableRead::from_buffer(buffer, field_offset)?)),18 => ::core::result::Result::Ok(Self::AgentRequestChannelAck(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+            1 => ::core::result::Result::Ok(Self::AgentRequestWhoami(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::AgentRequestControl(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::AgentRequestSetTitle(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::AgentRequestDiscoverAgents(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::AgentRequestSendMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),6 => ::core::result::Result::Ok(Self::AgentRequestReadInbox(::planus::TableRead::from_buffer(buffer, field_offset)?)),7 => ::core::result::Result::Ok(Self::AgentRequestAckMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),8 => ::core::result::Result::Ok(Self::AgentRequestInspectOutbox(::planus::TableRead::from_buffer(buffer, field_offset)?)),9 => ::core::result::Result::Ok(Self::AgentRequestReceiverRegister(::planus::TableRead::from_buffer(buffer, field_offset)?)),10 => ::core::result::Result::Ok(Self::AgentRequestReceiverSubscribe(::planus::TableRead::from_buffer(buffer, field_offset)?)),11 => ::core::result::Result::Ok(Self::AgentRequestWakeValidate(::planus::TableRead::from_buffer(buffer, field_offset)?)),12 => ::core::result::Result::Ok(Self::AgentRequestWakeOutcome(::planus::TableRead::from_buffer(buffer, field_offset)?)),13 => ::core::result::Result::Ok(Self::AgentRequestReadMessage(::planus::TableRead::from_buffer(buffer, field_offset)?)),14 => ::core::result::Result::Ok(Self::AgentRequestChannels(::planus::TableRead::from_buffer(buffer, field_offset)?)),15 => ::core::result::Result::Ok(Self::AgentRequestChannelWake(::planus::TableRead::from_buffer(buffer, field_offset)?)),16 => ::core::result::Result::Ok(Self::AgentRequestChannelRead(::planus::TableRead::from_buffer(buffer, field_offset)?)),17 => ::core::result::Result::Ok(Self::AgentRequestChannelDirectPost(::planus::TableRead::from_buffer(buffer, field_offset)?)),18 => ::core::result::Result::Ok(Self::AgentRequestChannelAck(::planus::TableRead::from_buffer(buffer, field_offset)?)),19 => ::core::result::Result::Ok(Self::AgentRequestRoleRequest(::planus::TableRead::from_buffer(buffer, field_offset)?)),20 => ::core::result::Result::Ok(Self::AgentRequestRoleRelease(::planus::TableRead::from_buffer(buffer, field_offset)?)),21 => ::core::result::Result::Ok(Self::AgentRequestRoleStatus(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
         }
     }
 }
@@ -83062,7 +87993,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentRequestRef<'a> {
 /// The table `AgentWakeOutcomeAccepted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:811`
+/// * Table `AgentWakeOutcomeAccepted` in the file `crates/bkpr-protocol/src/wire/native.fbs:845`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -83288,7 +88219,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeAcceptedRef<'a> {
 /// The table `AgentWakeOutcomeFailed` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:814`
+/// * Table `AgentWakeOutcomeFailed` in the file `crates/bkpr-protocol/src/wire/native.fbs:848`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -83593,7 +88524,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeFailedRef<'a> {
 /// The table `AgentWakeOutcomeUnknown` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:817`
+/// * Table `AgentWakeOutcomeUnknown` in the file `crates/bkpr-protocol/src/wire/native.fbs:851`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -83898,7 +88829,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AgentWakeOutcomeUnknownRef<'a> {
 /// The union `AgentWakeOutcome` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:820`
+/// * Union `AgentWakeOutcome` in the file `crates/bkpr-protocol/src/wire/native.fbs:854`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -84126,7 +89057,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for AgentWakeOutcomeRef<'a> {
 /// The table `RequestFailureSessionClosing` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:821`
+/// * Table `RequestFailureSessionClosing` in the file `crates/bkpr-protocol/src/wire/native.fbs:855`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -84442,7 +89373,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureSessionClosingRef<'a> {
 /// The table `RequestFailureBusy` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `RequestFailureBusy` in the file `crates/bkpr-protocol/src/wire/native.fbs:824`
+/// * Table `RequestFailureBusy` in the file `crates/bkpr-protocol/src/wire/native.fbs:858`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -84747,7 +89678,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestFailureBusyRef<'a> {
 /// The union `RequestFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:827`
+/// * Union `RequestFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:861`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -84932,7 +89863,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for RequestFailureRef<'a> {
 /// The table `OptionalU32` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalU32` in the file `crates/bkpr-protocol/src/wire/native.fbs:828`
+/// * Table `OptionalU32` in the file `crates/bkpr-protocol/src/wire/native.fbs:862`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -85248,7 +90179,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalU32Ref<'a> {
 /// The table `OptionalU64` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:831`
+/// * Table `OptionalU64` in the file `crates/bkpr-protocol/src/wire/native.fbs:865`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -85564,7 +90495,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalU64Ref<'a> {
 /// The table `OptionalPalette` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:834`
+/// * Table `OptionalPalette` in the file `crates/bkpr-protocol/src/wire/native.fbs:868`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -85869,7 +90800,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPaletteRef<'a> {
 /// The table `OptionalUsize` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:837`
+/// * Table `OptionalUsize` in the file `crates/bkpr-protocol/src/wire/native.fbs:871`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -86185,7 +91116,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalUsizeRef<'a> {
 /// The table `NullValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:842`
+/// * Table `NullValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:876`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -86411,7 +91342,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for NullValueRef<'a> {
 /// The table `BoolValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:843`
+/// * Table `BoolValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:877`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -86727,7 +91658,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for BoolValueRef<'a> {
 /// The table `SignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:844`
+/// * Table `SignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:878`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -87043,7 +91974,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for SignedValueRef<'a> {
 /// The table `UnsignedValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:845`
+/// * Table `UnsignedValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:879`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -87359,7 +92290,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for UnsignedValueRef<'a> {
 /// The table `FloatValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:846`
+/// * Table `FloatValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:880`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -87675,7 +92606,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for FloatValueRef<'a> {
 /// The table `StringValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:847`
+/// * Table `StringValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:881`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -87980,7 +92911,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for StringValueRef<'a> {
 /// The table `ArrayValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:848`
+/// * Table `ArrayValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:882`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -88285,7 +93216,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ArrayValueRef<'a> {
 /// The table `Entry` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:849`
+/// * Table `Entry` in the file `crates/bkpr-protocol/src/wire/native.fbs:883`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -88663,7 +93594,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for EntryRef<'a> {
 /// The table `ObjectValue` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:850`
+/// * Table `ObjectValue` in the file `crates/bkpr-protocol/src/wire/native.fbs:884`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -88968,7 +93899,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ObjectValueRef<'a> {
 /// The union `ValueBody` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:851`
+/// * Union `ValueBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:885`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -89411,7 +94342,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ValueBodyRef<'a> {
 /// The table `Value` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:852`
+/// * Table `Value` in the file `crates/bkpr-protocol/src/wire/native.fbs:886`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -89706,7 +94637,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ValueRef<'a> {
 /// The table `ControlPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:853`
+/// * Table `ControlPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:887`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -90001,7 +94932,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ControlPayloadRef<'a> {
 /// The table `PanePayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:854`
+/// * Table `PanePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:888`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -90394,7 +95325,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for PanePayloadRef<'a> {
 /// The enum `ImagePixelFormat` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Enum `ImagePixelFormat` in the file `crates/bkpr-protocol/src/wire/native.fbs:858`
+/// * Enum `ImagePixelFormat` in the file `crates/bkpr-protocol/src/wire/native.fbs:892`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum ImagePixelFormat {
     
         /// The variant `Rgb` in the enum `ImagePixelFormat`
@@ -90545,7 +95476,7 @@ unsafe impl ::planus::VectorWrite<ImagePixelFormat> for ImagePixelFormat {
 /// The enum `ImageEncoding` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Enum `ImageEncoding` in the file `crates/bkpr-protocol/src/wire/native.fbs:859`
+/// * Enum `ImageEncoding` in the file `crates/bkpr-protocol/src/wire/native.fbs:893`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, ::serde::Serialize, ::serde::Deserialize)]#[repr(u8)]pub enum ImageEncoding {
     
         /// The variant `Raw` in the enum `ImageEncoding`
@@ -90688,7 +95619,7 @@ unsafe impl ::planus::VectorWrite<ImageEncoding> for ImageEncoding {
 /// The table `ImageDescriptor` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:860`
+/// * Table `ImageDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:894`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -91453,7 +96384,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageDescriptorRef<'a> {
 /// The table `ImagePreparing` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImagePreparing` in the file `crates/bkpr-protocol/src/wire/native.fbs:867`
+/// * Table `ImagePreparing` in the file `crates/bkpr-protocol/src/wire/native.fbs:901`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -91758,7 +96689,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImagePreparingRef<'a> {
 /// The table `ImageStart` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageStart` in the file `crates/bkpr-protocol/src/wire/native.fbs:868`
+/// * Table `ImageStart` in the file `crates/bkpr-protocol/src/wire/native.fbs:902`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -92269,7 +97200,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageStartRef<'a> {
 /// The table `ImageData` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageData` in the file `crates/bkpr-protocol/src/wire/native.fbs:873`
+/// * Table `ImageData` in the file `crates/bkpr-protocol/src/wire/native.fbs:907`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -92765,7 +97696,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageDataRef<'a> {
 /// The table `ImageEnd` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:874`
+/// * Table `ImageEnd` in the file `crates/bkpr-protocol/src/wire/native.fbs:908`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -93167,7 +98098,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageEndRef<'a> {
 /// The union `ImageResource` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ImageResource` in the file `crates/bkpr-protocol/src/wire/native.fbs:875`
+/// * Union `ImageResource` in the file `crates/bkpr-protocol/src/wire/native.fbs:909`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -93438,7 +98369,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ImageResourceRef<'a> {
 /// The table `ImageResourcePayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ImageResourcePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:876`
+/// * Table `ImageResourcePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:910`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -93733,7 +98664,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ImageResourcePayloadRef<'a> {
 /// The table `ChannelParticipant` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelParticipant` in the file `crates/bkpr-protocol/src/wire/native.fbs:877`
+/// * Table `ChannelParticipant` in the file `crates/bkpr-protocol/src/wire/native.fbs:911`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -94229,7 +99160,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelParticipantRef<'a> {
 /// The table `ChannelSummary` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelSummary` in the file `crates/bkpr-protocol/src/wire/native.fbs:882`
+/// * Table `ChannelSummary` in the file `crates/bkpr-protocol/src/wire/native.fbs:916`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -94253,7 +99184,9 @@ pub struct ChannelSummary{
         /// The field `unread_attention` in the table `ChannelSummary`
         pub unread_attention: bool,
         /// The field `direct` in the table `ChannelSummary`
-        pub direct: bool,}
+        pub direct: bool,
+        /// The field `role_thread` in the table `ChannelSummary`
+        pub role_thread: ::core::option::Option<::planus::alloc::boxed::Box<self::RoleThread>>,}
 
 
 #[allow(clippy::derivable_impls)]
@@ -94269,6 +99202,7 @@ impl ::core::default::Default for ChannelSummary {
         read_through: 0,
         unread_attention: false,
         direct: false,
+        role_thread: ::core::default::Default::default(),
         
         }
     }
@@ -94294,14 +99228,15 @@ impl ChannelSummary {
         field_read_through: impl ::planus::WriteAsDefault<u64, u64>,
         field_unread_attention: impl ::planus::WriteAsDefault<bool, bool>,
         field_direct: impl ::planus::WriteAsDefault<bool, bool>,
+        field_role_thread: impl ::planus::WriteAsOptional<::planus::Offset<self::RoleThread>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_id = field_id.prepare(builder);let prepared_workspace_id = field_workspace_id.prepare(builder);let prepared_name = field_name.prepare(builder);let prepared_membership = field_membership.prepare(builder, &self::MembershipMode::Explicit);let prepared_settings = field_settings.prepare(builder);let prepared_last_sequence = field_last_sequence.prepare(builder, &0);let prepared_read_through = field_read_through.prepare(builder, &0);let prepared_unread_attention = field_unread_attention.prepare(builder, &false);let prepared_direct = field_direct.prepare(builder, &false);
+    ) -> ::planus::Offset<Self> {let prepared_id = field_id.prepare(builder);let prepared_workspace_id = field_workspace_id.prepare(builder);let prepared_name = field_name.prepare(builder);let prepared_membership = field_membership.prepare(builder, &self::MembershipMode::Explicit);let prepared_settings = field_settings.prepare(builder);let prepared_last_sequence = field_last_sequence.prepare(builder, &0);let prepared_read_through = field_read_through.prepare(builder, &0);let prepared_unread_attention = field_unread_attention.prepare(builder, &false);let prepared_direct = field_direct.prepare(builder, &false);let prepared_role_thread = field_role_thread.prepare(builder);
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<22> = ::core::default::Default::default();
-        if prepared_last_sequence.is_some() {table_writer.write_entry::<u64>(5);}if prepared_read_through.is_some() {table_writer.write_entry::<u64>(6);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<str>>(2);table_writer.write_entry::<::planus::Offset<self::ChannelSettings>>(4);if prepared_membership.is_some() {table_writer.write_entry::<self::MembershipMode>(3);}if prepared_unread_attention.is_some() {table_writer.write_entry::<bool>(7);}if prepared_direct.is_some() {table_writer.write_entry::<bool>(8);}
+        let mut table_writer: ::planus::table_writer::TableWriter::<24> = ::core::default::Default::default();
+        if prepared_last_sequence.is_some() {table_writer.write_entry::<u64>(5);}if prepared_read_through.is_some() {table_writer.write_entry::<u64>(6);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<str>>(2);table_writer.write_entry::<::planus::Offset<self::ChannelSettings>>(4);if prepared_role_thread.is_some() {table_writer.write_entry::<::planus::Offset<self::RoleThread>>(9);}if prepared_membership.is_some() {table_writer.write_entry::<self::MembershipMode>(3);}if prepared_unread_attention.is_some() {table_writer.write_entry::<bool>(7);}if prepared_direct.is_some() {table_writer.write_entry::<bool>(8);}
 
         unsafe {
-            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_last_sequence) = prepared_last_sequence {object_writer.write::<_, _, 8>(&prepared_last_sequence);}if let ::core::option::Option::Some(prepared_read_through) = prepared_read_through {object_writer.write::<_, _, 8>(&prepared_read_through);}object_writer.write::<_, _, 4>(&prepared_id);object_writer.write::<_, _, 4>(&prepared_workspace_id);object_writer.write::<_, _, 4>(&prepared_name);object_writer.write::<_, _, 4>(&prepared_settings);if let ::core::option::Option::Some(prepared_membership) = prepared_membership {object_writer.write::<_, _, 1>(&prepared_membership);}if let ::core::option::Option::Some(prepared_unread_attention) = prepared_unread_attention {object_writer.write::<_, _, 1>(&prepared_unread_attention);}if let ::core::option::Option::Some(prepared_direct) = prepared_direct {object_writer.write::<_, _, 1>(&prepared_direct);}
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_last_sequence) = prepared_last_sequence {object_writer.write::<_, _, 8>(&prepared_last_sequence);}if let ::core::option::Option::Some(prepared_read_through) = prepared_read_through {object_writer.write::<_, _, 8>(&prepared_read_through);}object_writer.write::<_, _, 4>(&prepared_id);object_writer.write::<_, _, 4>(&prepared_workspace_id);object_writer.write::<_, _, 4>(&prepared_name);object_writer.write::<_, _, 4>(&prepared_settings);if let ::core::option::Option::Some(prepared_role_thread) = prepared_role_thread {object_writer.write::<_, _, 4>(&prepared_role_thread);}if let ::core::option::Option::Some(prepared_membership) = prepared_membership {object_writer.write::<_, _, 1>(&prepared_membership);}if let ::core::option::Option::Some(prepared_unread_attention) = prepared_unread_attention {object_writer.write::<_, _, 1>(&prepared_unread_attention);}if let ::core::option::Option::Some(prepared_direct) = prepared_direct {object_writer.write::<_, _, 1>(&prepared_direct);}
                 
             });
         }builder.current_offset()
@@ -94366,6 +99301,10 @@ impl ::planus::WriteAsOffset<ChannelSummary> for ChannelSummary {
         
             
             self.direct,
+            
+        
+            
+            &self.role_thread,
             
         
         )
@@ -95146,6 +100085,158 @@ impl<
     
 }
 
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+> ChannelSummaryBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+    )
+>
+{
+    /// Setter for the [`role_thread` field](ChannelSummary#structfield.role_thread).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role_thread<T9>(self, value: T9) -> ChannelSummaryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+        T9,
+    
+    )>
+    where T9: ::planus::WriteAsOptional<::planus::Offset<self::RoleThread>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+                v8,
+            
+        ) = self.0;ChannelSummaryBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+                v8,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`role_thread` field](ChannelSummary#structfield.role_thread) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role_thread_as_null(self) -> ChannelSummaryBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+            T5,
+        
+            T6,
+        
+            T7,
+        
+            T8,
+        
+        (),
+    )>
+    {
+        self.role_thread(())
+    }
+    
+}
+
 
 
 impl<
@@ -95168,6 +100259,8 @@ impl<
     
         T8,
     
+        T9,
+    
 > ChannelSummaryBuilder<(
     
         T0,
@@ -95187,6 +100280,8 @@ impl<
         T7,
     
         T8,
+    
+        T9,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelSummary].
@@ -95218,6 +100313,8 @@ impl<
     
         T8: ::planus::WriteAsDefault<bool, bool>,
     
+        T9: ::planus::WriteAsOptional<::planus::Offset<self::RoleThread>>,
+    
 > ::planus::WriteAs<::planus::Offset<ChannelSummary>> for ChannelSummaryBuilder<(
     
         T0,
@@ -95237,6 +100334,8 @@ impl<
         T7,
     
         T8,
+    
+        T9,
     
 )> {
     type Prepared = ::planus::Offset<ChannelSummary>;
@@ -95267,6 +100366,8 @@ impl<
     
         T8: ::planus::WriteAsDefault<bool, bool>,
     
+        T9: ::planus::WriteAsOptional<::planus::Offset<self::RoleThread>>,
+    
 > ::planus::WriteAsOptional<::planus::Offset<ChannelSummary>> for ChannelSummaryBuilder<(
     
         T0,
@@ -95286,6 +100387,8 @@ impl<
         T7,
     
         T8,
+    
+        T9,
     
 )> {
     type Prepared = ::planus::Offset<ChannelSummary>;
@@ -95316,6 +100419,8 @@ impl<
     
         T8: ::planus::WriteAsDefault<bool, bool>,
     
+        T9: ::planus::WriteAsOptional<::planus::Offset<self::RoleThread>>,
+    
 > ::planus::WriteAsOffset<ChannelSummary> for ChannelSummaryBuilder<(
     
         T0,
@@ -95335,6 +100440,8 @@ impl<
         T7,
     
         T8,
+    
+        T9,
     
 )> {
     #[inline]
@@ -95360,6 +100467,8 @@ impl<
             
                 v8,
             
+                v9,
+            
         ) = &self.0;ChannelSummary::create(
             builder,
             
@@ -95380,6 +100489,8 @@ impl<
                 v7,
             
                 v8,
+            
+                v9,
             
         )
     }
@@ -95511,12 +100622,27 @@ impl<'a> ChannelSummaryRef<'a> {
             
         }
     
+        /// Getter for the [`role_thread` field](ChannelSummary#structfield.role_thread).
+        #[inline]
+        pub fn role_thread(&self) -> ::planus::Result<::core::option::Option<self::RoleThreadRef<'a>>> {
+            
+            
+              
+              self.0.access(9, "ChannelSummary", "role_thread")
+              
+            
+            
+            
+        }
+    
 }
 
 impl<'a> ::core::fmt::Debug for ChannelSummaryRef<'a> {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         let mut f = f.debug_struct("ChannelSummaryRef");
-        f.field("id", &self.id());f.field("workspace_id", &self.workspace_id());f.field("name", &self.name());f.field("membership", &self.membership());f.field("settings", &self.settings());f.field("last_sequence", &self.last_sequence());f.field("read_through", &self.read_through());f.field("unread_attention", &self.unread_attention());f.field("direct", &self.direct());
+        f.field("id", &self.id());f.field("workspace_id", &self.workspace_id());f.field("name", &self.name());f.field("membership", &self.membership());f.field("settings", &self.settings());f.field("last_sequence", &self.last_sequence());f.field("read_through", &self.read_through());f.field("unread_attention", &self.unread_attention());f.field("direct", &self.direct());if let ::core::option::Option::Some(field_role_thread) = self.role_thread().transpose() {
+                f.field("role_thread", &field_role_thread);
+            }
         f.finish()
     }
 }
@@ -95529,7 +100655,13 @@ impl<'a> ::core::convert::TryFrom<ChannelSummaryRef<'a>> for ChannelSummary {
     fn try_from(value: ChannelSummaryRef<'a>) -> ::planus::Result<Self> {
 
         ::core::result::Result::Ok(Self {
-            id: ::core::convert::Into::into(value.id()?),workspace_id: ::core::convert::Into::into(value.workspace_id()?),name: ::core::convert::Into::into(value.name()?),membership: ::core::convert::TryInto::try_into(value.membership()?)?,settings: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.settings()?)?),last_sequence: ::core::convert::TryInto::try_into(value.last_sequence()?)?,read_through: ::core::convert::TryInto::try_into(value.read_through()?)?,unread_attention: ::core::convert::TryInto::try_into(value.unread_attention()?)?,direct: ::core::convert::TryInto::try_into(value.direct()?)?,
+            id: ::core::convert::Into::into(value.id()?),workspace_id: ::core::convert::Into::into(value.workspace_id()?),name: ::core::convert::Into::into(value.name()?),membership: ::core::convert::TryInto::try_into(value.membership()?)?,settings: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.settings()?)?),last_sequence: ::core::convert::TryInto::try_into(value.last_sequence()?)?,read_through: ::core::convert::TryInto::try_into(value.read_through()?)?,unread_attention: ::core::convert::TryInto::try_into(value.unread_attention()?)?,direct: ::core::convert::TryInto::try_into(value.direct()?)?,role_thread: 
+                                if let ::core::option::Option::Some(role_thread) = value.role_thread()? {
+                                    ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(role_thread)?))
+                                } else {
+                                    ::core::option::Option::None
+                                }
+                            ,
         })
     }
 }
@@ -95599,7 +100731,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelSummaryRef<'a> {
 /// The table `ChannelMessageSummary` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelMessageSummary` in the file `crates/bkpr-protocol/src/wire/native.fbs:893`
+/// * Table `ChannelMessageSummary` in the file `crates/bkpr-protocol/src/wire/native.fbs:928`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -95625,7 +100757,9 @@ pub struct ChannelMessageSummary{
         /// The field `mention_spans` in the table `ChannelMessageSummary`
         pub mention_spans: ::core::option::Option<::planus::alloc::vec::Vec<self::ChannelResolvedMentionSpan>>,
         /// The field `source` in the table `ChannelMessageSummary`
-        pub source: ::core::option::Option<::planus::alloc::boxed::Box<self::ChannelSource>>,}
+        pub source: ::core::option::Option<::planus::alloc::boxed::Box<self::ChannelSource>>,
+        /// The field `role` in the table `ChannelMessageSummary`
+        pub role: ::core::option::Option<::planus::alloc::boxed::Box<self::RoleAttribution>>,}
 
 
 #[allow(clippy::derivable_impls)]
@@ -95642,6 +100776,7 @@ impl ::core::default::Default for ChannelMessageSummary {
         attachments: ::core::default::Default::default(),
         mention_spans: ::core::default::Default::default(),
         source: ::core::default::Default::default(),
+        role: ::core::default::Default::default(),
         
         }
     }
@@ -95668,14 +100803,15 @@ impl ChannelMessageSummary {
         field_attachments: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<str>]>>,
         field_mention_spans: impl ::planus::WriteAsOptional<::planus::Offset<[::planus::Offset<self::ChannelResolvedMentionSpan>]>>,
         field_source: impl ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
+        field_role: impl ::planus::WriteAsOptional<::planus::Offset<self::RoleAttribution>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_id = field_id.prepare(builder);let prepared_sequence = field_sequence.prepare(builder, &0);let prepared_author = field_author.prepare(builder);let prepared_posted_at_ms = field_posted_at_ms.prepare(builder, &0);let prepared_intent = field_intent.prepare(builder, &self::PostIntent::Note);let prepared_mentions = field_mentions.prepare(builder);let prepared_reply_to = field_reply_to.prepare(builder);let prepared_attachments = field_attachments.prepare(builder);let prepared_mention_spans = field_mention_spans.prepare(builder);let prepared_source = field_source.prepare(builder);
+    ) -> ::planus::Offset<Self> {let prepared_id = field_id.prepare(builder);let prepared_sequence = field_sequence.prepare(builder, &0);let prepared_author = field_author.prepare(builder);let prepared_posted_at_ms = field_posted_at_ms.prepare(builder, &0);let prepared_intent = field_intent.prepare(builder, &self::PostIntent::Note);let prepared_mentions = field_mentions.prepare(builder);let prepared_reply_to = field_reply_to.prepare(builder);let prepared_attachments = field_attachments.prepare(builder);let prepared_mention_spans = field_mention_spans.prepare(builder);let prepared_source = field_source.prepare(builder);let prepared_role = field_role.prepare(builder);
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<24> = ::core::default::Default::default();
-        if prepared_sequence.is_some() {table_writer.write_entry::<u64>(1);}if prepared_posted_at_ms.is_some() {table_writer.write_entry::<u64>(3);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<self::ChannelParticipant>>(2);table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(5);if prepared_reply_to.is_some() {table_writer.write_entry::<::planus::Offset<str>>(6);}table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(7);if prepared_mention_spans.is_some() {table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::ChannelResolvedMentionSpan>]>>(8);}if prepared_source.is_some() {table_writer.write_entry::<::planus::Offset<self::ChannelSource>>(9);}if prepared_intent.is_some() {table_writer.write_entry::<self::PostIntent>(4);}
+        let mut table_writer: ::planus::table_writer::TableWriter::<26> = ::core::default::Default::default();
+        if prepared_sequence.is_some() {table_writer.write_entry::<u64>(1);}if prepared_posted_at_ms.is_some() {table_writer.write_entry::<u64>(3);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<self::ChannelParticipant>>(2);table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(5);if prepared_reply_to.is_some() {table_writer.write_entry::<::planus::Offset<str>>(6);}table_writer.write_entry::<::planus::Offset<[::planus::Offset<str>]>>(7);if prepared_mention_spans.is_some() {table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::ChannelResolvedMentionSpan>]>>(8);}if prepared_source.is_some() {table_writer.write_entry::<::planus::Offset<self::ChannelSource>>(9);}if prepared_role.is_some() {table_writer.write_entry::<::planus::Offset<self::RoleAttribution>>(10);}if prepared_intent.is_some() {table_writer.write_entry::<self::PostIntent>(4);}
 
         unsafe {
-            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_sequence) = prepared_sequence {object_writer.write::<_, _, 8>(&prepared_sequence);}if let ::core::option::Option::Some(prepared_posted_at_ms) = prepared_posted_at_ms {object_writer.write::<_, _, 8>(&prepared_posted_at_ms);}object_writer.write::<_, _, 4>(&prepared_id);object_writer.write::<_, _, 4>(&prepared_author);object_writer.write::<_, _, 4>(&prepared_mentions);if let ::core::option::Option::Some(prepared_reply_to) = prepared_reply_to {object_writer.write::<_, _, 4>(&prepared_reply_to);}object_writer.write::<_, _, 4>(&prepared_attachments);if let ::core::option::Option::Some(prepared_mention_spans) = prepared_mention_spans {object_writer.write::<_, _, 4>(&prepared_mention_spans);}if let ::core::option::Option::Some(prepared_source) = prepared_source {object_writer.write::<_, _, 4>(&prepared_source);}if let ::core::option::Option::Some(prepared_intent) = prepared_intent {object_writer.write::<_, _, 1>(&prepared_intent);}
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_sequence) = prepared_sequence {object_writer.write::<_, _, 8>(&prepared_sequence);}if let ::core::option::Option::Some(prepared_posted_at_ms) = prepared_posted_at_ms {object_writer.write::<_, _, 8>(&prepared_posted_at_ms);}object_writer.write::<_, _, 4>(&prepared_id);object_writer.write::<_, _, 4>(&prepared_author);object_writer.write::<_, _, 4>(&prepared_mentions);if let ::core::option::Option::Some(prepared_reply_to) = prepared_reply_to {object_writer.write::<_, _, 4>(&prepared_reply_to);}object_writer.write::<_, _, 4>(&prepared_attachments);if let ::core::option::Option::Some(prepared_mention_spans) = prepared_mention_spans {object_writer.write::<_, _, 4>(&prepared_mention_spans);}if let ::core::option::Option::Some(prepared_source) = prepared_source {object_writer.write::<_, _, 4>(&prepared_source);}if let ::core::option::Option::Some(prepared_role) = prepared_role {object_writer.write::<_, _, 4>(&prepared_role);}if let ::core::option::Option::Some(prepared_intent) = prepared_intent {object_writer.write::<_, _, 1>(&prepared_intent);}
                 
             });
         }builder.current_offset()
@@ -95744,6 +100880,10 @@ impl ::planus::WriteAsOffset<ChannelMessageSummary> for ChannelMessageSummary {
         
             
             &self.source,
+            
+        
+            
+            &self.role,
             
         
         )
@@ -96662,6 +101802,170 @@ impl<
     
 }
 
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+        T9,
+    
+> ChannelMessageSummaryBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+        T9,
+    
+    )
+>
+{
+    /// Setter for the [`role` field](ChannelMessageSummary#structfield.role).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role<T10>(self, value: T10) -> ChannelMessageSummaryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+        T9,
+    
+        T10,
+    
+    )>
+    where T10: ::planus::WriteAsOptional<::planus::Offset<self::RoleAttribution>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+                v8,
+            
+                v9,
+            
+        ) = self.0;ChannelMessageSummaryBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+                v8,
+            
+                v9,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`role` field](ChannelMessageSummary#structfield.role) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role_as_null(self) -> ChannelMessageSummaryBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+            T5,
+        
+            T6,
+        
+            T7,
+        
+            T8,
+        
+            T9,
+        
+        (),
+    )>
+    {
+        self.role(())
+    }
+    
+}
+
 
 
 impl<
@@ -96686,6 +101990,8 @@ impl<
     
         T9,
     
+        T10,
+    
 > ChannelMessageSummaryBuilder<(
     
         T0,
@@ -96707,6 +102013,8 @@ impl<
         T8,
     
         T9,
+    
+        T10,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelMessageSummary].
@@ -96740,6 +102048,8 @@ impl<
     
         T9: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
     
+        T10: ::planus::WriteAsOptional<::planus::Offset<self::RoleAttribution>>,
+    
 > ::planus::WriteAs<::planus::Offset<ChannelMessageSummary>> for ChannelMessageSummaryBuilder<(
     
         T0,
@@ -96761,6 +102071,8 @@ impl<
         T8,
     
         T9,
+    
+        T10,
     
 )> {
     type Prepared = ::planus::Offset<ChannelMessageSummary>;
@@ -96793,6 +102105,8 @@ impl<
     
         T9: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
     
+        T10: ::planus::WriteAsOptional<::planus::Offset<self::RoleAttribution>>,
+    
 > ::planus::WriteAsOptional<::planus::Offset<ChannelMessageSummary>> for ChannelMessageSummaryBuilder<(
     
         T0,
@@ -96814,6 +102128,8 @@ impl<
         T8,
     
         T9,
+    
+        T10,
     
 )> {
     type Prepared = ::planus::Offset<ChannelMessageSummary>;
@@ -96846,6 +102162,8 @@ impl<
     
         T9: ::planus::WriteAsOptional<::planus::Offset<self::ChannelSource>>,
     
+        T10: ::planus::WriteAsOptional<::planus::Offset<self::RoleAttribution>>,
+    
 > ::planus::WriteAsOffset<ChannelMessageSummary> for ChannelMessageSummaryBuilder<(
     
         T0,
@@ -96867,6 +102185,8 @@ impl<
         T8,
     
         T9,
+    
+        T10,
     
 )> {
     #[inline]
@@ -96894,6 +102214,8 @@ impl<
             
                 v9,
             
+                v10,
+            
         ) = &self.0;ChannelMessageSummary::create(
             builder,
             
@@ -96916,6 +102238,8 @@ impl<
                 v8,
             
                 v9,
+            
+                v10,
             
         )
     }
@@ -97060,6 +102384,19 @@ impl<'a> ChannelMessageSummaryRef<'a> {
             
         }
     
+        /// Getter for the [`role` field](ChannelMessageSummary#structfield.role).
+        #[inline]
+        pub fn role(&self) -> ::planus::Result<::core::option::Option<self::RoleAttributionRef<'a>>> {
+            
+            
+              
+              self.0.access(10, "ChannelMessageSummary", "role")
+              
+            
+            
+            
+        }
+    
 }
 
 impl<'a> ::core::fmt::Debug for ChannelMessageSummaryRef<'a> {
@@ -97071,6 +102408,8 @@ impl<'a> ::core::fmt::Debug for ChannelMessageSummaryRef<'a> {
                 f.field("mention_spans", &field_mention_spans);
             }if let ::core::option::Option::Some(field_source) = self.source().transpose() {
                 f.field("source", &field_source);
+            }if let ::core::option::Option::Some(field_role) = self.role().transpose() {
+                f.field("role", &field_role);
             }
         f.finish()
     }
@@ -97095,6 +102434,12 @@ impl<'a> ::core::convert::TryFrom<ChannelMessageSummaryRef<'a>> for ChannelMessa
                         ,source: 
                                 if let ::core::option::Option::Some(source) = value.source()? {
                                     ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(source)?))
+                                } else {
+                                    ::core::option::Option::None
+                                }
+                            ,role: 
+                                if let ::core::option::Option::Some(role) = value.role()? {
+                                    ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(role)?))
                                 } else {
                                     ::core::option::Option::None
                                 }
@@ -97168,7 +102513,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelMessageSummaryRef<'a> {
 /// The table `ChannelChange` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelChange` in the file `crates/bkpr-protocol/src/wire/native.fbs:905`
+/// * Table `ChannelChange` in the file `crates/bkpr-protocol/src/wire/native.fbs:941`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -97581,7 +102926,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelChangeRef<'a> {
 /// The table `AttachmentDescriptor` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `AttachmentDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:906`
+/// * Table `AttachmentDescriptor` in the file `crates/bkpr-protocol/src/wire/native.fbs:942`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -98217,7 +103562,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for AttachmentDescriptorRef<'a> {
 /// The table `ChannelMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:912`
+/// * Table `ChannelMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:948`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -98229,7 +103574,9 @@ pub struct ChannelMessage{
         /// The field `text` in the table `ChannelMessage`
         pub text: ::planus::alloc::string::String,
         /// The field `attachments` in the table `ChannelMessage`
-        pub attachments: ::planus::alloc::vec::Vec<self::AttachmentDescriptor>,}
+        pub attachments: ::planus::alloc::vec::Vec<self::AttachmentDescriptor>,
+        /// The field `current_delegation` in the table `ChannelMessage`
+        pub current_delegation: ::core::option::Option<::planus::alloc::string::String>,}
 
 
 #[allow(clippy::derivable_impls)]
@@ -98239,6 +103586,7 @@ impl ::core::default::Default for ChannelMessage {
         message: ::core::default::Default::default(),
         text: ::core::default::Default::default(),
         attachments: ::core::default::Default::default(),
+        current_delegation: ::core::default::Default::default(),
         
         }
     }
@@ -98258,14 +103606,15 @@ impl ChannelMessage {
         field_message: impl ::planus::WriteAs<::planus::Offset<self::ChannelMessageSummary>>,
         field_text: impl ::planus::WriteAs<::planus::Offset<str>>,
         field_attachments: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::AttachmentDescriptor>]>>,
+        field_current_delegation: impl ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_message = field_message.prepare(builder);let prepared_text = field_text.prepare(builder);let prepared_attachments = field_attachments.prepare(builder);
+    ) -> ::planus::Offset<Self> {let prepared_message = field_message.prepare(builder);let prepared_text = field_text.prepare(builder);let prepared_attachments = field_attachments.prepare(builder);let prepared_current_delegation = field_current_delegation.prepare(builder);
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
-        table_writer.write_entry::<::planus::Offset<self::ChannelMessageSummary>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::AttachmentDescriptor>]>>(2);
+        let mut table_writer: ::planus::table_writer::TableWriter::<12> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::ChannelMessageSummary>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::AttachmentDescriptor>]>>(2);if prepared_current_delegation.is_some() {table_writer.write_entry::<::planus::Offset<str>>(3);}
 
         unsafe {
-            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_message);object_writer.write::<_, _, 4>(&prepared_text);object_writer.write::<_, _, 4>(&prepared_attachments);
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_message);object_writer.write::<_, _, 4>(&prepared_text);object_writer.write::<_, _, 4>(&prepared_attachments);if let ::core::option::Option::Some(prepared_current_delegation) = prepared_current_delegation {object_writer.write::<_, _, 4>(&prepared_current_delegation);}
                 
             });
         }builder.current_offset()
@@ -98306,6 +103655,10 @@ impl ::planus::WriteAsOffset<ChannelMessage> for ChannelMessage {
         
             
             &self.attachments,
+            
+        
+            
+            &self.current_delegation,
             
         
         )
@@ -98445,6 +103798,86 @@ impl<
     
 }
 
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> ChannelMessageBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )
+>
+{
+    /// Setter for the [`current_delegation` field](ChannelMessage#structfield.current_delegation).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn current_delegation<T3>(self, value: T3) -> ChannelMessageBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )>
+    where T3: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = self.0;ChannelMessageBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`current_delegation` field](ChannelMessage#structfield.current_delegation) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn current_delegation_as_null(self) -> ChannelMessageBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+        (),
+    )>
+    {
+        self.current_delegation(())
+    }
+    
+}
+
 
 
 impl<
@@ -98455,6 +103888,8 @@ impl<
     
         T2,
     
+        T3,
+    
 > ChannelMessageBuilder<(
     
         T0,
@@ -98462,6 +103897,8 @@ impl<
         T1,
     
         T2,
+    
+        T3,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelMessage].
@@ -98481,6 +103918,8 @@ impl<
     
         T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::AttachmentDescriptor>]>>,
     
+        T3: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
 > ::planus::WriteAs<::planus::Offset<ChannelMessage>> for ChannelMessageBuilder<(
     
         T0,
@@ -98488,6 +103927,8 @@ impl<
         T1,
     
         T2,
+    
+        T3,
     
 )> {
     type Prepared = ::planus::Offset<ChannelMessage>;
@@ -98506,6 +103947,8 @@ impl<
     
         T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::AttachmentDescriptor>]>>,
     
+        T3: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
 > ::planus::WriteAsOptional<::planus::Offset<ChannelMessage>> for ChannelMessageBuilder<(
     
         T0,
@@ -98513,6 +103956,8 @@ impl<
         T1,
     
         T2,
+    
+        T3,
     
 )> {
     type Prepared = ::planus::Offset<ChannelMessage>;
@@ -98531,6 +103976,8 @@ impl<
     
         T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::AttachmentDescriptor>]>>,
     
+        T3: ::planus::WriteAsOptional<::planus::Offset<::core::primitive::str>>,
+    
 > ::planus::WriteAsOffset<ChannelMessage> for ChannelMessageBuilder<(
     
         T0,
@@ -98538,6 +103985,8 @@ impl<
         T1,
     
         T2,
+    
+        T3,
     
 )> {
     #[inline]
@@ -98551,6 +104000,8 @@ impl<
             
                 v2,
             
+                v3,
+            
         ) = &self.0;ChannelMessage::create(
             builder,
             
@@ -98559,6 +104010,8 @@ impl<
                 v1,
             
                 v2,
+            
+                v3,
             
         )
     }
@@ -98612,12 +104065,27 @@ impl<'a> ChannelMessageRef<'a> {
             
         }
     
+        /// Getter for the [`current_delegation` field](ChannelMessage#structfield.current_delegation).
+        #[inline]
+        pub fn current_delegation(&self) -> ::planus::Result<::core::option::Option<&'a ::core::primitive::str>> {
+            
+            
+              
+              self.0.access(3, "ChannelMessage", "current_delegation")
+              
+            
+            
+            
+        }
+    
 }
 
 impl<'a> ::core::fmt::Debug for ChannelMessageRef<'a> {
     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
         let mut f = f.debug_struct("ChannelMessageRef");
-        f.field("message", &self.message());f.field("text", &self.text());f.field("attachments", &self.attachments());
+        f.field("message", &self.message());f.field("text", &self.text());f.field("attachments", &self.attachments());if let ::core::option::Option::Some(field_current_delegation) = self.current_delegation().transpose() {
+                f.field("current_delegation", &field_current_delegation);
+            }
         f.finish()
     }
 }
@@ -98630,7 +104098,9 @@ impl<'a> ::core::convert::TryFrom<ChannelMessageRef<'a>> for ChannelMessage {
     fn try_from(value: ChannelMessageRef<'a>) -> ::planus::Result<Self> {
 
         ::core::result::Result::Ok(Self {
-            message: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.message()?)?),text: ::core::convert::Into::into(value.text()?),attachments: value.attachments()?.to_vec_result()?,
+            message: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.message()?)?),text: ::core::convert::Into::into(value.text()?),attachments: value.attachments()?.to_vec_result()?,current_delegation: 
+                                value.current_delegation()?.map(::core::convert::Into::into)
+                            ,
         })
     }
 }
@@ -98700,7 +104170,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelMessageRef<'a> {
 /// The table `ChannelResponseListed` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseListed` in the file `crates/bkpr-protocol/src/wire/native.fbs:917`
+/// * Table `ChannelResponseListed` in the file `crates/bkpr-protocol/src/wire/native.fbs:954`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -99106,7 +104576,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseListedRef<'a> {
 /// The table `ChannelResponseMembers` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseMembers` in the file `crates/bkpr-protocol/src/wire/native.fbs:921`
+/// * Table `ChannelResponseMembers` in the file `crates/bkpr-protocol/src/wire/native.fbs:958`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -99512,7 +104982,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseMembersRef<'a> {
 /// The table `ChannelResponseChannel` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseChannel` in the file `crates/bkpr-protocol/src/wire/native.fbs:925`
+/// * Table `ChannelResponseChannel` in the file `crates/bkpr-protocol/src/wire/native.fbs:962`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -99817,7 +105287,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseChannelRef<'a> {
 /// The table `ChannelResponsePosted` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponsePosted` in the file `crates/bkpr-protocol/src/wire/native.fbs:926`
+/// * Table `ChannelResponsePosted` in the file `crates/bkpr-protocol/src/wire/native.fbs:963`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -100453,7 +105923,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponsePostedRef<'a> {
 /// The table `ChannelResponseHistory` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseHistory` in the file `crates/bkpr-protocol/src/wire/native.fbs:932`
+/// * Table `ChannelResponseHistory` in the file `crates/bkpr-protocol/src/wire/native.fbs:969`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -101084,7 +106554,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseHistoryRef<'a> {
 /// The table `ChannelResponseMessage` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:938`
+/// * Table `ChannelResponseMessage` in the file `crates/bkpr-protocol/src/wire/native.fbs:975`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -101389,7 +106859,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseMessageRef<'a> {
 /// The table `ChannelResponseReadPosition` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseReadPosition` in the file `crates/bkpr-protocol/src/wire/native.fbs:941`
+/// * Table `ChannelResponseReadPosition` in the file `crates/bkpr-protocol/src/wire/native.fbs:978`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -101705,7 +107175,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseReadPositionRef<'a> {
 /// The table `ChannelResponseChanges` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseChanges` in the file `crates/bkpr-protocol/src/wire/native.fbs:942`
+/// * Table `ChannelResponseChanges` in the file `crates/bkpr-protocol/src/wire/native.fbs:979`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -102324,7 +107794,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseChangesRef<'a> {
 /// The table `ChannelResponseAttachmentUploaded` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseAttachmentUploaded` in the file `crates/bkpr-protocol/src/wire/native.fbs:948`
+/// * Table `ChannelResponseAttachmentUploaded` in the file `crates/bkpr-protocol/src/wire/native.fbs:985`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -102629,7 +108099,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseAttachmentUploadedRef<'a> {
 /// The table `ChannelResponseAttachment` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseAttachment` in the file `crates/bkpr-protocol/src/wire/native.fbs:949`
+/// * Table `ChannelResponseAttachment` in the file `crates/bkpr-protocol/src/wire/native.fbs:986`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -103018,7 +108488,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseAttachmentRef<'a> {
 /// The table `ChannelResponseArchivedWorkspaces` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseArchivedWorkspaces` in the file `crates/bkpr-protocol/src/wire/native.fbs:953`
+/// * Table `ChannelResponseArchivedWorkspaces` in the file `crates/bkpr-protocol/src/wire/native.fbs:990`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -103424,7 +108894,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseArchivedWorkspacesRef<'a> {
 /// The table `ChannelResponseExplicitMembers` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseExplicitMembers` in the file `crates/bkpr-protocol/src/wire/native.fbs:957`
+/// * Table `ChannelResponseExplicitMembers` in the file `crates/bkpr-protocol/src/wire/native.fbs:994`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -103830,7 +109300,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseExplicitMembersRef<'a> {
 /// The table `ChannelCatalogUpsert` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelCatalogUpsert` in the file `crates/bkpr-protocol/src/wire/native.fbs:961`
+/// * Table `ChannelCatalogUpsert` in the file `crates/bkpr-protocol/src/wire/native.fbs:998`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -104135,7 +109605,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelCatalogUpsertRef<'a> {
 /// The table `ChannelCatalogWorkspaceClosed` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelCatalogWorkspaceClosed` in the file `crates/bkpr-protocol/src/wire/native.fbs:965`
+/// * Table `ChannelCatalogWorkspaceClosed` in the file `crates/bkpr-protocol/src/wire/native.fbs:1002`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -104440,7 +109910,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelCatalogWorkspaceClosedRef<'a> {
 /// The union `ChannelCatalogChangeBody` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ChannelCatalogChangeBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:966`
+/// * Union `ChannelCatalogChangeBody` in the file `crates/bkpr-protocol/src/wire/native.fbs:1003`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -104625,7 +110095,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ChannelCatalogChangeBodyRef<'a> {
 /// The table `ChannelCatalogChange` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelCatalogChange` in the file `crates/bkpr-protocol/src/wire/native.fbs:967`
+/// * Table `ChannelCatalogChange` in the file `crates/bkpr-protocol/src/wire/native.fbs:1004`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -104920,7 +110390,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelCatalogChangeRef<'a> {
 /// The table `ChannelResponseCatalogSnapshot` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseCatalogSnapshot` in the file `crates/bkpr-protocol/src/wire/native.fbs:968`
+/// * Table `ChannelResponseCatalogSnapshot` in the file `crates/bkpr-protocol/src/wire/native.fbs:1005`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -105426,7 +110896,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseCatalogSnapshotRef<'a> {
 /// The table `ChannelResponseCatalogChanges` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseCatalogChanges` in the file `crates/bkpr-protocol/src/wire/native.fbs:973`
+/// * Table `ChannelResponseCatalogChanges` in the file `crates/bkpr-protocol/src/wire/native.fbs:1010`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -105924,7 +111394,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseCatalogChangesRef<'a> {
 /// The table `ChannelResponseCatalogReset` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseCatalogReset` in the file `crates/bkpr-protocol/src/wire/native.fbs:978`
+/// * Table `ChannelResponseCatalogReset` in the file `crates/bkpr-protocol/src/wire/native.fbs:1015`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -106150,7 +111620,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseCatalogResetRef<'a> {
 /// The table `ChannelRosterEntry` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelRosterEntry` in the file `crates/bkpr-protocol/src/wire/native.fbs:979`
+/// * Table `ChannelRosterEntry` in the file `crates/bkpr-protocol/src/wire/native.fbs:1016`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -106160,7 +111630,9 @@ pub struct ChannelRosterEntry{
         /// The field `participant` in the table `ChannelRosterEntry`
         pub participant: ::planus::alloc::boxed::Box<self::ChannelParticipant>,
         /// The field `binding` in the table `ChannelRosterEntry`
-        pub binding: ::core::option::Option<::planus::alloc::boxed::Box<self::ChannelMentionBinding>>,}
+        pub binding: ::core::option::Option<::planus::alloc::boxed::Box<self::ChannelMentionBinding>>,
+        /// The field `role` in the table `ChannelRosterEntry`
+        pub role: ::core::option::Option<::planus::alloc::boxed::Box<self::RoleAttribution>>,}
 
 
 #[allow(clippy::derivable_impls)]
@@ -106169,6 +111641,7 @@ impl ::core::default::Default for ChannelRosterEntry {
         Self {
         participant: ::core::default::Default::default(),
         binding: ::core::default::Default::default(),
+        role: ::core::default::Default::default(),
         
         }
     }
@@ -106187,14 +111660,15 @@ impl ChannelRosterEntry {
         builder: &mut ::planus::Builder,
         field_participant: impl ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
         field_binding: impl ::planus::WriteAsOptional<::planus::Offset<self::ChannelMentionBinding>>,
+        field_role: impl ::planus::WriteAsOptional<::planus::Offset<self::RoleAttribution>>,
         
-    ) -> ::planus::Offset<Self> {let prepared_participant = field_participant.prepare(builder);let prepared_binding = field_binding.prepare(builder);
+    ) -> ::planus::Offset<Self> {let prepared_participant = field_participant.prepare(builder);let prepared_binding = field_binding.prepare(builder);let prepared_role = field_role.prepare(builder);
 
-        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
-        table_writer.write_entry::<::planus::Offset<self::ChannelParticipant>>(0);if prepared_binding.is_some() {table_writer.write_entry::<::planus::Offset<self::ChannelMentionBinding>>(1);}
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::ChannelParticipant>>(0);if prepared_binding.is_some() {table_writer.write_entry::<::planus::Offset<self::ChannelMentionBinding>>(1);}if prepared_role.is_some() {table_writer.write_entry::<::planus::Offset<self::RoleAttribution>>(2);}
 
         unsafe {
-            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_participant);if let ::core::option::Option::Some(prepared_binding) = prepared_binding {object_writer.write::<_, _, 4>(&prepared_binding);}
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_participant);if let ::core::option::Option::Some(prepared_binding) = prepared_binding {object_writer.write::<_, _, 4>(&prepared_binding);}if let ::core::option::Option::Some(prepared_role) = prepared_role {object_writer.write::<_, _, 4>(&prepared_role);}
                 
             });
         }builder.current_offset()
@@ -106231,6 +111705,10 @@ impl ::planus::WriteAsOffset<ChannelRosterEntry> for ChannelRosterEntry {
         
             
             &self.binding,
+            
+        
+            
+            &self.role,
             
         
         )
@@ -106330,6 +111808,74 @@ impl<
     
 }
 
+impl<
+    
+        T0,
+    
+        T1,
+    
+> ChannelRosterEntryBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`role` field](ChannelRosterEntry#structfield.role).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role<T2>(self, value: T2) -> ChannelRosterEntryBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsOptional<::planus::Offset<self::RoleAttribution>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;ChannelRosterEntryBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`role` field](ChannelRosterEntry#structfield.role) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role_as_null(self) -> ChannelRosterEntryBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        (),
+    )>
+    {
+        self.role(())
+    }
+    
+}
+
 
 
 impl<
@@ -106338,11 +111884,15 @@ impl<
     
         T1,
     
+        T2,
+    
 > ChannelRosterEntryBuilder<(
     
         T0,
     
         T1,
+    
+        T2,
     
 )> {
     /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [ChannelRosterEntry].
@@ -106360,11 +111910,15 @@ impl<
     
         T1: ::planus::WriteAsOptional<::planus::Offset<self::ChannelMentionBinding>>,
     
+        T2: ::planus::WriteAsOptional<::planus::Offset<self::RoleAttribution>>,
+    
 > ::planus::WriteAs<::planus::Offset<ChannelRosterEntry>> for ChannelRosterEntryBuilder<(
     
         T0,
     
         T1,
+    
+        T2,
     
 )> {
     type Prepared = ::planus::Offset<ChannelRosterEntry>;
@@ -106381,11 +111935,15 @@ impl<
     
         T1: ::planus::WriteAsOptional<::planus::Offset<self::ChannelMentionBinding>>,
     
+        T2: ::planus::WriteAsOptional<::planus::Offset<self::RoleAttribution>>,
+    
 > ::planus::WriteAsOptional<::planus::Offset<ChannelRosterEntry>> for ChannelRosterEntryBuilder<(
     
         T0,
     
         T1,
+    
+        T2,
     
 )> {
     type Prepared = ::planus::Offset<ChannelRosterEntry>;
@@ -106402,11 +111960,15 @@ impl<
     
         T1: ::planus::WriteAsOptional<::planus::Offset<self::ChannelMentionBinding>>,
     
+        T2: ::planus::WriteAsOptional<::planus::Offset<self::RoleAttribution>>,
+    
 > ::planus::WriteAsOffset<ChannelRosterEntry> for ChannelRosterEntryBuilder<(
     
         T0,
     
         T1,
+    
+        T2,
     
 )> {
     #[inline]
@@ -106418,12 +111980,16 @@ impl<
             
                 v1,
             
+                v2,
+            
         ) = &self.0;ChannelRosterEntry::create(
             builder,
             
                 v0,
             
                 v1,
+            
+                v2,
             
         )
     }
@@ -106464,6 +112030,19 @@ impl<'a> ChannelRosterEntryRef<'a> {
             
         }
     
+        /// Getter for the [`role` field](ChannelRosterEntry#structfield.role).
+        #[inline]
+        pub fn role(&self) -> ::planus::Result<::core::option::Option<self::RoleAttributionRef<'a>>> {
+            
+            
+              
+              self.0.access(2, "ChannelRosterEntry", "role")
+              
+            
+            
+            
+        }
+    
 }
 
 impl<'a> ::core::fmt::Debug for ChannelRosterEntryRef<'a> {
@@ -106471,6 +112050,8 @@ impl<'a> ::core::fmt::Debug for ChannelRosterEntryRef<'a> {
         let mut f = f.debug_struct("ChannelRosterEntryRef");
         f.field("participant", &self.participant());if let ::core::option::Option::Some(field_binding) = self.binding().transpose() {
                 f.field("binding", &field_binding);
+            }if let ::core::option::Option::Some(field_role) = self.role().transpose() {
+                f.field("role", &field_role);
             }
         f.finish()
     }
@@ -106487,6 +112068,12 @@ impl<'a> ::core::convert::TryFrom<ChannelRosterEntryRef<'a>> for ChannelRosterEn
             participant: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.participant()?)?),binding: 
                                 if let ::core::option::Option::Some(binding) = value.binding()? {
                                     ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(binding)?))
+                                } else {
+                                    ::core::option::Option::None
+                                }
+                            ,role: 
+                                if let ::core::option::Option::Some(role) = value.role()? {
+                                    ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(role)?))
                                 } else {
                                     ::core::option::Option::None
                                 }
@@ -106560,7 +112147,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelRosterEntryRef<'a> {
 /// The table `ChannelResponseUserRoster` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResponseUserRoster` in the file `crates/bkpr-protocol/src/wire/native.fbs:983`
+/// * Table `ChannelResponseUserRoster` in the file `crates/bkpr-protocol/src/wire/native.fbs:1021`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -106966,7 +112553,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelResponseUserRosterRef<'a> {
 /// The union `ChannelResponse` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `ChannelResponse` in the file `crates/bkpr-protocol/src/wire/native.fbs:987`
+/// * Union `ChannelResponse` in the file `crates/bkpr-protocol/src/wire/native.fbs:1025`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize)]
@@ -107753,7 +113340,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for ChannelResponseRef<'a> {
 /// The table `ChannelPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:1005`
+/// * Table `ChannelPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:1043`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -108045,10 +113632,4899 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelPayloadRef<'a> {
 }
 
     
+/// The table `RoleAttribution` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `RoleAttribution` in the file `crates/bkpr-protocol/src/wire/native.fbs:1044`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct RoleAttribution{
+    
+        /// The field `role` in the table `RoleAttribution`
+        pub role: self::WorkspaceRole,
+        /// The field `grant_id` in the table `RoleAttribution`
+        pub grant_id: ::planus::alloc::string::String,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for RoleAttribution {
+    fn default() -> Self {
+        Self {
+        role: self::WorkspaceRole::Coordinator,
+        grant_id: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl RoleAttribution {
+    /// Creates a [RoleAttributionBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> RoleAttributionBuilder<()> {
+        RoleAttributionBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_role: impl ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+        field_grant_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_role = field_role.prepare(builder, &self::WorkspaceRole::Coordinator);let prepared_grant_id = field_grant_id.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<str>>(1);if prepared_role.is_some() {table_writer.write_entry::<self::WorkspaceRole>(0);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_grant_id);if let ::core::option::Option::Some(prepared_role) = prepared_role {object_writer.write::<_, _, 1>(&prepared_role);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<RoleAttribution>> for RoleAttribution {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleAttribution> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<RoleAttribution>> for RoleAttribution {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleAttribution>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<RoleAttribution> for RoleAttribution {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleAttribution> {
+        RoleAttribution::create(
+            builder,
+        
+            
+            self.role,
+            
+        
+            
+            &self.grant_id,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [RoleAttribution] type.
+///
+/// Can be created using the [RoleAttribution::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct RoleAttributionBuilder<State>(State);
+
+impl<
+    
+> RoleAttributionBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`role` field](RoleAttribution#structfield.role).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role<T0>(self, value: T0) -> RoleAttributionBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>
+    {
+        RoleAttributionBuilder((
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`role` field](RoleAttribution#structfield.role) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role_as_default(self) -> RoleAttributionBuilder<(
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.role(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> RoleAttributionBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`grant_id` field](RoleAttribution#structfield.grant_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn grant_id<T1>(self, value: T1) -> RoleAttributionBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;RoleAttributionBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> RoleAttributionBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [RoleAttribution].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleAttribution>
+        where Self: ::planus::WriteAsOffset<RoleAttribution>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAs<::planus::Offset<RoleAttribution>> for RoleAttributionBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleAttribution>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleAttribution> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<RoleAttribution>> for RoleAttributionBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleAttribution>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleAttribution>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOffset<RoleAttribution> for RoleAttributionBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleAttribution> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = &self.0;RoleAttribution::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [RoleAttribution].
+#[derive(Copy, Clone)]
+pub struct RoleAttributionRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> RoleAttributionRef<'a> {
+    
+        /// Getter for the [`role` field](RoleAttribution#structfield.role).
+        #[inline]
+        pub fn role(&self) -> ::planus::Result<self::WorkspaceRole> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(0, "RoleAttribution", "role")
+              
+            
+            ?.unwrap_or(self::WorkspaceRole::Coordinator))
+            
+        }
+    
+        /// Getter for the [`grant_id` field](RoleAttribution#structfield.grant_id).
+        #[inline]
+        pub fn grant_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(1, "RoleAttribution", "grant_id")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for RoleAttributionRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("RoleAttributionRef");
+        f.field("role", &self.role());f.field("grant_id", &self.grant_id());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<RoleAttributionRef<'a>> for RoleAttribution {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: RoleAttributionRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            role: ::core::convert::TryInto::try_into(value.role()?)?,grant_id: ::core::convert::Into::into(value.grant_id()?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for RoleAttributionRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for RoleAttributionRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleAttributionRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<RoleAttribution>> for RoleAttribution {
+    type Value = ::planus::Offset<RoleAttribution>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<RoleAttribution>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for RoleAttributionRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleAttributionRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `RoleThread` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `RoleThread` in the file `crates/bkpr-protocol/src/wire/native.fbs:1045`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct RoleThread{
+    
+        /// The field `role` in the table `RoleThread`
+        pub role: self::WorkspaceRole,
+        /// The field `archived` in the table `RoleThread`
+        pub archived: bool,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for RoleThread {
+    fn default() -> Self {
+        Self {
+        role: self::WorkspaceRole::Coordinator,
+        archived: false,
+        
+        }
+    }
+}
+
+
+impl RoleThread {
+    /// Creates a [RoleThreadBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> RoleThreadBuilder<()> {
+        RoleThreadBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_role: impl ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+        field_archived: impl ::planus::WriteAsDefault<bool, bool>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_role = field_role.prepare(builder, &self::WorkspaceRole::Coordinator);let prepared_archived = field_archived.prepare(builder, &false);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        if prepared_role.is_some() {table_writer.write_entry::<self::WorkspaceRole>(0);}if prepared_archived.is_some() {table_writer.write_entry::<bool>(1);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_role) = prepared_role {object_writer.write::<_, _, 1>(&prepared_role);}if let ::core::option::Option::Some(prepared_archived) = prepared_archived {object_writer.write::<_, _, 1>(&prepared_archived);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<RoleThread>> for RoleThread {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleThread> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<RoleThread>> for RoleThread {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleThread>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<RoleThread> for RoleThread {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleThread> {
+        RoleThread::create(
+            builder,
+        
+            
+            self.role,
+            
+        
+            
+            self.archived,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [RoleThread] type.
+///
+/// Can be created using the [RoleThread::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct RoleThreadBuilder<State>(State);
+
+impl<
+    
+> RoleThreadBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`role` field](RoleThread#structfield.role).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role<T0>(self, value: T0) -> RoleThreadBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>
+    {
+        RoleThreadBuilder((
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`role` field](RoleThread#structfield.role) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role_as_default(self) -> RoleThreadBuilder<(
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.role(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> RoleThreadBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`archived` field](RoleThread#structfield.archived).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn archived<T1>(self, value: T1) -> RoleThreadBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAsDefault<bool, bool>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;RoleThreadBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`archived` field](RoleThread#structfield.archived) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn archived_as_default(self) -> RoleThreadBuilder<(
+        
+            T0,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.archived(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> RoleThreadBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [RoleThread].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleThread>
+        where Self: ::planus::WriteAsOffset<RoleThread>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T1: ::planus::WriteAsDefault<bool, bool>,
+    
+> ::planus::WriteAs<::planus::Offset<RoleThread>> for RoleThreadBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleThread>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleThread> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T1: ::planus::WriteAsDefault<bool, bool>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<RoleThread>> for RoleThreadBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleThread>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleThread>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T1: ::planus::WriteAsDefault<bool, bool>,
+    
+> ::planus::WriteAsOffset<RoleThread> for RoleThreadBuilder<(
+    
+        T0,
+    
+        T1,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleThread> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = &self.0;RoleThread::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [RoleThread].
+#[derive(Copy, Clone)]
+pub struct RoleThreadRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> RoleThreadRef<'a> {
+    
+        /// Getter for the [`role` field](RoleThread#structfield.role).
+        #[inline]
+        pub fn role(&self) -> ::planus::Result<self::WorkspaceRole> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(0, "RoleThread", "role")
+              
+            
+            ?.unwrap_or(self::WorkspaceRole::Coordinator))
+            
+        }
+    
+        /// Getter for the [`archived` field](RoleThread#structfield.archived).
+        #[inline]
+        pub fn archived(&self) -> ::planus::Result<bool> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(1, "RoleThread", "archived")
+              
+            
+            ?.unwrap_or(false))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for RoleThreadRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("RoleThreadRef");
+        f.field("role", &self.role());f.field("archived", &self.archived());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<RoleThreadRef<'a>> for RoleThread {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: RoleThreadRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            role: ::core::convert::TryInto::try_into(value.role()?)?,archived: ::core::convert::TryInto::try_into(value.archived()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for RoleThreadRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for RoleThreadRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleThreadRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<RoleThread>> for RoleThread {
+    type Value = ::planus::Offset<RoleThread>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<RoleThread>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for RoleThreadRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleThreadRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `RoleGrant` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `RoleGrant` in the file `crates/bkpr-protocol/src/wire/native.fbs:1046`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct RoleGrant{
+    
+        /// The field `id` in the table `RoleGrant`
+        pub id: ::planus::alloc::string::String,
+        /// The field `workspace_id` in the table `RoleGrant`
+        pub workspace_id: ::planus::alloc::string::String,
+        /// The field `role` in the table `RoleGrant`
+        pub role: self::WorkspaceRole,
+        /// The field `holder` in the table `RoleGrant`
+        pub holder: ::planus::alloc::boxed::Box<self::ChannelMentionBinding>,
+        /// The field `origin` in the table `RoleGrant`
+        pub origin: self::RoleOrigin,
+        /// The field `granted_at_ms` in the table `RoleGrant`
+        pub granted_at_ms: u64,
+        /// The field `channel_id` in the table `RoleGrant`
+        pub channel_id: ::planus::alloc::string::String,
+        /// The field `display_name` in the table `RoleGrant`
+        pub display_name: ::planus::alloc::string::String,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for RoleGrant {
+    fn default() -> Self {
+        Self {
+        id: ::core::default::Default::default(),
+        workspace_id: ::core::default::Default::default(),
+        role: self::WorkspaceRole::Coordinator,
+        holder: ::core::default::Default::default(),
+        origin: self::RoleOrigin::Approval,
+        granted_at_ms: 0,
+        channel_id: ::core::default::Default::default(),
+        display_name: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl RoleGrant {
+    /// Creates a [RoleGrantBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> RoleGrantBuilder<()> {
+        RoleGrantBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_workspace_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_role: impl ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+        field_holder: impl ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>,
+        field_origin: impl ::planus::WriteAsDefault<self::RoleOrigin, self::RoleOrigin>,
+        field_granted_at_ms: impl ::planus::WriteAsDefault<u64, u64>,
+        field_channel_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_display_name: impl ::planus::WriteAs<::planus::Offset<str>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_id = field_id.prepare(builder);let prepared_workspace_id = field_workspace_id.prepare(builder);let prepared_role = field_role.prepare(builder, &self::WorkspaceRole::Coordinator);let prepared_holder = field_holder.prepare(builder);let prepared_origin = field_origin.prepare(builder, &self::RoleOrigin::Approval);let prepared_granted_at_ms = field_granted_at_ms.prepare(builder, &0);let prepared_channel_id = field_channel_id.prepare(builder);let prepared_display_name = field_display_name.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<20> = ::core::default::Default::default();
+        if prepared_granted_at_ms.is_some() {table_writer.write_entry::<u64>(5);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<self::ChannelMentionBinding>>(3);table_writer.write_entry::<::planus::Offset<str>>(6);table_writer.write_entry::<::planus::Offset<str>>(7);if prepared_role.is_some() {table_writer.write_entry::<self::WorkspaceRole>(2);}if prepared_origin.is_some() {table_writer.write_entry::<self::RoleOrigin>(4);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_granted_at_ms) = prepared_granted_at_ms {object_writer.write::<_, _, 8>(&prepared_granted_at_ms);}object_writer.write::<_, _, 4>(&prepared_id);object_writer.write::<_, _, 4>(&prepared_workspace_id);object_writer.write::<_, _, 4>(&prepared_holder);object_writer.write::<_, _, 4>(&prepared_channel_id);object_writer.write::<_, _, 4>(&prepared_display_name);if let ::core::option::Option::Some(prepared_role) = prepared_role {object_writer.write::<_, _, 1>(&prepared_role);}if let ::core::option::Option::Some(prepared_origin) = prepared_origin {object_writer.write::<_, _, 1>(&prepared_origin);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<RoleGrant>> for RoleGrant {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleGrant> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<RoleGrant>> for RoleGrant {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleGrant>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<RoleGrant> for RoleGrant {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleGrant> {
+        RoleGrant::create(
+            builder,
+        
+            
+            &self.id,
+            
+        
+            
+            &self.workspace_id,
+            
+        
+            
+            self.role,
+            
+        
+            
+            &self.holder,
+            
+        
+            
+            self.origin,
+            
+        
+            
+            self.granted_at_ms,
+            
+        
+            
+            &self.channel_id,
+            
+        
+            
+            &self.display_name,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [RoleGrant] type.
+///
+/// Can be created using the [RoleGrant::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct RoleGrantBuilder<State>(State);
+
+impl<
+    
+> RoleGrantBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`id` field](RoleGrant#structfield.id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn id<T0>(self, value: T0) -> RoleGrantBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        RoleGrantBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> RoleGrantBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`workspace_id` field](RoleGrant#structfield.workspace_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn workspace_id<T1>(self, value: T1) -> RoleGrantBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;RoleGrantBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> RoleGrantBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`role` field](RoleGrant#structfield.role).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role<T2>(self, value: T2) -> RoleGrantBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;RoleGrantBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`role` field](RoleGrant#structfield.role) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role_as_default(self) -> RoleGrantBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.role(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> RoleGrantBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )
+>
+{
+    /// Setter for the [`holder` field](RoleGrant#structfield.holder).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn holder<T3>(self, value: T3) -> RoleGrantBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )>
+    where T3: ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = self.0;RoleGrantBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+> RoleGrantBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )
+>
+{
+    /// Setter for the [`origin` field](RoleGrant#structfield.origin).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn origin<T4>(self, value: T4) -> RoleGrantBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+    )>
+    where T4: ::planus::WriteAsDefault<self::RoleOrigin, self::RoleOrigin>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+        ) = self.0;RoleGrantBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`origin` field](RoleGrant#structfield.origin) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn origin_as_default(self) -> RoleGrantBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.origin(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+> RoleGrantBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+    )
+>
+{
+    /// Setter for the [`granted_at_ms` field](RoleGrant#structfield.granted_at_ms).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn granted_at_ms<T5>(self, value: T5) -> RoleGrantBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+    )>
+    where T5: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+        ) = self.0;RoleGrantBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`granted_at_ms` field](RoleGrant#structfield.granted_at_ms) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn granted_at_ms_as_default(self) -> RoleGrantBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.granted_at_ms(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+> RoleGrantBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+    )
+>
+{
+    /// Setter for the [`channel_id` field](RoleGrant#structfield.channel_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn channel_id<T6>(self, value: T6) -> RoleGrantBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+    )>
+    where T6: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+        ) = self.0;RoleGrantBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+> RoleGrantBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+    )
+>
+{
+    /// Setter for the [`display_name` field](RoleGrant#structfield.display_name).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn display_name<T7>(self, value: T7) -> RoleGrantBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+    )>
+    where T7: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+        ) = self.0;RoleGrantBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+> RoleGrantBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [RoleGrant].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleGrant>
+        where Self: ::planus::WriteAsOffset<RoleGrant>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T3: ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>,
+    
+        T4: ::planus::WriteAsDefault<self::RoleOrigin, self::RoleOrigin>,
+    
+        T5: ::planus::WriteAsDefault<u64, u64>,
+    
+        T6: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T7: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAs<::planus::Offset<RoleGrant>> for RoleGrantBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleGrant>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleGrant> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T3: ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>,
+    
+        T4: ::planus::WriteAsDefault<self::RoleOrigin, self::RoleOrigin>,
+    
+        T5: ::planus::WriteAsDefault<u64, u64>,
+    
+        T6: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T7: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<RoleGrant>> for RoleGrantBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleGrant>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleGrant>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T3: ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>,
+    
+        T4: ::planus::WriteAsDefault<self::RoleOrigin, self::RoleOrigin>,
+    
+        T5: ::planus::WriteAsDefault<u64, u64>,
+    
+        T6: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T7: ::planus::WriteAs<::planus::Offset<str>>,
+    
+> ::planus::WriteAsOffset<RoleGrant> for RoleGrantBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleGrant> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+        ) = &self.0;RoleGrant::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [RoleGrant].
+#[derive(Copy, Clone)]
+pub struct RoleGrantRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> RoleGrantRef<'a> {
+    
+        /// Getter for the [`id` field](RoleGrant#structfield.id).
+        #[inline]
+        pub fn id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "RoleGrant", "id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`workspace_id` field](RoleGrant#structfield.workspace_id).
+        #[inline]
+        pub fn workspace_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(1, "RoleGrant", "workspace_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`role` field](RoleGrant#structfield.role).
+        #[inline]
+        pub fn role(&self) -> ::planus::Result<self::WorkspaceRole> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(2, "RoleGrant", "role")
+              
+            
+            ?.unwrap_or(self::WorkspaceRole::Coordinator))
+            
+        }
+    
+        /// Getter for the [`holder` field](RoleGrant#structfield.holder).
+        #[inline]
+        pub fn holder(&self) -> ::planus::Result<self::ChannelMentionBindingRef<'a>> {
+            
+            
+              
+              self.0.access_required(3, "RoleGrant", "holder")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`origin` field](RoleGrant#structfield.origin).
+        #[inline]
+        pub fn origin(&self) -> ::planus::Result<self::RoleOrigin> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(4, "RoleGrant", "origin")
+              
+            
+            ?.unwrap_or(self::RoleOrigin::Approval))
+            
+        }
+    
+        /// Getter for the [`granted_at_ms` field](RoleGrant#structfield.granted_at_ms).
+        #[inline]
+        pub fn granted_at_ms(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(5, "RoleGrant", "granted_at_ms")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`channel_id` field](RoleGrant#structfield.channel_id).
+        #[inline]
+        pub fn channel_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(6, "RoleGrant", "channel_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`display_name` field](RoleGrant#structfield.display_name).
+        #[inline]
+        pub fn display_name(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(7, "RoleGrant", "display_name")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for RoleGrantRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("RoleGrantRef");
+        f.field("id", &self.id());f.field("workspace_id", &self.workspace_id());f.field("role", &self.role());f.field("holder", &self.holder());f.field("origin", &self.origin());f.field("granted_at_ms", &self.granted_at_ms());f.field("channel_id", &self.channel_id());f.field("display_name", &self.display_name());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<RoleGrantRef<'a>> for RoleGrant {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: RoleGrantRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            id: ::core::convert::Into::into(value.id()?),workspace_id: ::core::convert::Into::into(value.workspace_id()?),role: ::core::convert::TryInto::try_into(value.role()?)?,holder: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.holder()?)?),origin: ::core::convert::TryInto::try_into(value.origin()?)?,granted_at_ms: ::core::convert::TryInto::try_into(value.granted_at_ms()?)?,channel_id: ::core::convert::Into::into(value.channel_id()?),display_name: ::core::convert::Into::into(value.display_name()?),
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for RoleGrantRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for RoleGrantRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleGrantRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<RoleGrant>> for RoleGrant {
+    type Value = ::planus::Offset<RoleGrant>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<RoleGrant>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for RoleGrantRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleGrantRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `RoleApproval` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `RoleApproval` in the file `crates/bkpr-protocol/src/wire/native.fbs:1056`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct RoleApproval{
+    
+        /// The field `id` in the table `RoleApproval`
+        pub id: ::planus::alloc::string::String,
+        /// The field `workspace_id` in the table `RoleApproval`
+        pub workspace_id: ::planus::alloc::string::String,
+        /// The field `role` in the table `RoleApproval`
+        pub role: self::WorkspaceRole,
+        /// The field `requester` in the table `RoleApproval`
+        pub requester: ::planus::alloc::boxed::Box<self::ChannelMentionBinding>,
+        /// The field `participant` in the table `RoleApproval`
+        pub participant: ::planus::alloc::boxed::Box<self::ChannelParticipant>,
+        /// The field `prior_holder` in the table `RoleApproval`
+        pub prior_holder: ::core::option::Option<::planus::alloc::boxed::Box<self::RoleGrant>>,
+        /// The field `expires_at_ms` in the table `RoleApproval`
+        pub expires_at_ms: u64,
+        /// The field `workspace_name` in the table `RoleApproval`
+        pub workspace_name: ::planus::alloc::string::String,
+        /// The field `decision_generation` in the table `RoleApproval`
+        pub decision_generation: u64,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for RoleApproval {
+    fn default() -> Self {
+        Self {
+        id: ::core::default::Default::default(),
+        workspace_id: ::core::default::Default::default(),
+        role: self::WorkspaceRole::Coordinator,
+        requester: ::core::default::Default::default(),
+        participant: ::core::default::Default::default(),
+        prior_holder: ::core::default::Default::default(),
+        expires_at_ms: 0,
+        workspace_name: ::core::default::Default::default(),
+        decision_generation: 0,
+        
+        }
+    }
+}
+
+
+impl RoleApproval {
+    /// Creates a [RoleApprovalBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> RoleApprovalBuilder<()> {
+        RoleApprovalBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_workspace_id: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_role: impl ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+        field_requester: impl ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>,
+        field_participant: impl ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
+        field_prior_holder: impl ::planus::WriteAsOptional<::planus::Offset<self::RoleGrant>>,
+        field_expires_at_ms: impl ::planus::WriteAsDefault<u64, u64>,
+        field_workspace_name: impl ::planus::WriteAs<::planus::Offset<str>>,
+        field_decision_generation: impl ::planus::WriteAsDefault<u64, u64>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_id = field_id.prepare(builder);let prepared_workspace_id = field_workspace_id.prepare(builder);let prepared_role = field_role.prepare(builder, &self::WorkspaceRole::Coordinator);let prepared_requester = field_requester.prepare(builder);let prepared_participant = field_participant.prepare(builder);let prepared_prior_holder = field_prior_holder.prepare(builder);let prepared_expires_at_ms = field_expires_at_ms.prepare(builder, &0);let prepared_workspace_name = field_workspace_name.prepare(builder);let prepared_decision_generation = field_decision_generation.prepare(builder, &0);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<22> = ::core::default::Default::default();
+        if prepared_expires_at_ms.is_some() {table_writer.write_entry::<u64>(6);}if prepared_decision_generation.is_some() {table_writer.write_entry::<u64>(8);}table_writer.write_entry::<::planus::Offset<str>>(0);table_writer.write_entry::<::planus::Offset<str>>(1);table_writer.write_entry::<::planus::Offset<self::ChannelMentionBinding>>(3);table_writer.write_entry::<::planus::Offset<self::ChannelParticipant>>(4);if prepared_prior_holder.is_some() {table_writer.write_entry::<::planus::Offset<self::RoleGrant>>(5);}table_writer.write_entry::<::planus::Offset<str>>(7);if prepared_role.is_some() {table_writer.write_entry::<self::WorkspaceRole>(2);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_expires_at_ms) = prepared_expires_at_ms {object_writer.write::<_, _, 8>(&prepared_expires_at_ms);}if let ::core::option::Option::Some(prepared_decision_generation) = prepared_decision_generation {object_writer.write::<_, _, 8>(&prepared_decision_generation);}object_writer.write::<_, _, 4>(&prepared_id);object_writer.write::<_, _, 4>(&prepared_workspace_id);object_writer.write::<_, _, 4>(&prepared_requester);object_writer.write::<_, _, 4>(&prepared_participant);if let ::core::option::Option::Some(prepared_prior_holder) = prepared_prior_holder {object_writer.write::<_, _, 4>(&prepared_prior_holder);}object_writer.write::<_, _, 4>(&prepared_workspace_name);if let ::core::option::Option::Some(prepared_role) = prepared_role {object_writer.write::<_, _, 1>(&prepared_role);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<RoleApproval>> for RoleApproval {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleApproval> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<RoleApproval>> for RoleApproval {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleApproval>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<RoleApproval> for RoleApproval {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleApproval> {
+        RoleApproval::create(
+            builder,
+        
+            
+            &self.id,
+            
+        
+            
+            &self.workspace_id,
+            
+        
+            
+            self.role,
+            
+        
+            
+            &self.requester,
+            
+        
+            
+            &self.participant,
+            
+        
+            
+            &self.prior_holder,
+            
+        
+            
+            self.expires_at_ms,
+            
+        
+            
+            &self.workspace_name,
+            
+        
+            
+            self.decision_generation,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [RoleApproval] type.
+///
+/// Can be created using the [RoleApproval::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct RoleApprovalBuilder<State>(State);
+
+impl<
+    
+> RoleApprovalBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`id` field](RoleApproval#structfield.id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn id<T0>(self, value: T0) -> RoleApprovalBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        RoleApprovalBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> RoleApprovalBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`workspace_id` field](RoleApproval#structfield.workspace_id).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn workspace_id<T1>(self, value: T1) -> RoleApprovalBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;RoleApprovalBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> RoleApprovalBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`role` field](RoleApproval#structfield.role).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role<T2>(self, value: T2) -> RoleApprovalBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;RoleApprovalBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`role` field](RoleApproval#structfield.role) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn role_as_default(self) -> RoleApprovalBuilder<(
+        
+            T0,
+        
+            T1,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.role(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> RoleApprovalBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )
+>
+{
+    /// Setter for the [`requester` field](RoleApproval#structfield.requester).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn requester<T3>(self, value: T3) -> RoleApprovalBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )>
+    where T3: ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = self.0;RoleApprovalBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+> RoleApprovalBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+    )
+>
+{
+    /// Setter for the [`participant` field](RoleApproval#structfield.participant).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn participant<T4>(self, value: T4) -> RoleApprovalBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+    )>
+    where T4: ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+        ) = self.0;RoleApprovalBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+> RoleApprovalBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+    )
+>
+{
+    /// Setter for the [`prior_holder` field](RoleApproval#structfield.prior_holder).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn prior_holder<T5>(self, value: T5) -> RoleApprovalBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+    )>
+    where T5: ::planus::WriteAsOptional<::planus::Offset<self::RoleGrant>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+        ) = self.0;RoleApprovalBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`prior_holder` field](RoleApproval#structfield.prior_holder) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn prior_holder_as_null(self) -> RoleApprovalBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+        (),
+    )>
+    {
+        self.prior_holder(())
+    }
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+> RoleApprovalBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+    )
+>
+{
+    /// Setter for the [`expires_at_ms` field](RoleApproval#structfield.expires_at_ms).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn expires_at_ms<T6>(self, value: T6) -> RoleApprovalBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+    )>
+    where T6: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+        ) = self.0;RoleApprovalBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`expires_at_ms` field](RoleApproval#structfield.expires_at_ms) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn expires_at_ms_as_default(self) -> RoleApprovalBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+            T5,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.expires_at_ms(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+> RoleApprovalBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+    )
+>
+{
+    /// Setter for the [`workspace_name` field](RoleApproval#structfield.workspace_name).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn workspace_name<T7>(self, value: T7) -> RoleApprovalBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+    )>
+    where T7: ::planus::WriteAs<::planus::Offset<str>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+        ) = self.0;RoleApprovalBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+> RoleApprovalBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+    )
+>
+{
+    /// Setter for the [`decision_generation` field](RoleApproval#structfield.decision_generation).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn decision_generation<T8>(self, value: T8) -> RoleApprovalBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+    )>
+    where T8: ::planus::WriteAsDefault<u64, u64>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+        ) = self.0;RoleApprovalBuilder((
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`decision_generation` field](RoleApproval#structfield.decision_generation) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn decision_generation_as_default(self) -> RoleApprovalBuilder<(
+        
+            T0,
+        
+            T1,
+        
+            T2,
+        
+            T3,
+        
+            T4,
+        
+            T5,
+        
+            T6,
+        
+            T7,
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.decision_generation(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+> RoleApprovalBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [RoleApproval].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleApproval>
+        where Self: ::planus::WriteAsOffset<RoleApproval>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T3: ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>,
+    
+        T4: ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
+    
+        T5: ::planus::WriteAsOptional<::planus::Offset<self::RoleGrant>>,
+    
+        T6: ::planus::WriteAsDefault<u64, u64>,
+    
+        T7: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T8: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAs<::planus::Offset<RoleApproval>> for RoleApprovalBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleApproval>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleApproval> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T3: ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>,
+    
+        T4: ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
+    
+        T5: ::planus::WriteAsOptional<::planus::Offset<self::RoleGrant>>,
+    
+        T6: ::planus::WriteAsDefault<u64, u64>,
+    
+        T7: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T8: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<RoleApproval>> for RoleApprovalBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleApproval>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleApproval>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T2: ::planus::WriteAsDefault<self::WorkspaceRole, self::WorkspaceRole>,
+    
+        T3: ::planus::WriteAs<::planus::Offset<self::ChannelMentionBinding>>,
+    
+        T4: ::planus::WriteAs<::planus::Offset<self::ChannelParticipant>>,
+    
+        T5: ::planus::WriteAsOptional<::planus::Offset<self::RoleGrant>>,
+    
+        T6: ::planus::WriteAsDefault<u64, u64>,
+    
+        T7: ::planus::WriteAs<::planus::Offset<str>>,
+    
+        T8: ::planus::WriteAsDefault<u64, u64>,
+    
+> ::planus::WriteAsOffset<RoleApproval> for RoleApprovalBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+        T3,
+    
+        T4,
+    
+        T5,
+    
+        T6,
+    
+        T7,
+    
+        T8,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleApproval> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+                v8,
+            
+        ) = &self.0;RoleApproval::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+                v3,
+            
+                v4,
+            
+                v5,
+            
+                v6,
+            
+                v7,
+            
+                v8,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [RoleApproval].
+#[derive(Copy, Clone)]
+pub struct RoleApprovalRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> RoleApprovalRef<'a> {
+    
+        /// Getter for the [`id` field](RoleApproval#structfield.id).
+        #[inline]
+        pub fn id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(0, "RoleApproval", "id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`workspace_id` field](RoleApproval#structfield.workspace_id).
+        #[inline]
+        pub fn workspace_id(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(1, "RoleApproval", "workspace_id")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`role` field](RoleApproval#structfield.role).
+        #[inline]
+        pub fn role(&self) -> ::planus::Result<self::WorkspaceRole> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(2, "RoleApproval", "role")
+              
+            
+            ?.unwrap_or(self::WorkspaceRole::Coordinator))
+            
+        }
+    
+        /// Getter for the [`requester` field](RoleApproval#structfield.requester).
+        #[inline]
+        pub fn requester(&self) -> ::planus::Result<self::ChannelMentionBindingRef<'a>> {
+            
+            
+              
+              self.0.access_required(3, "RoleApproval", "requester")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`participant` field](RoleApproval#structfield.participant).
+        #[inline]
+        pub fn participant(&self) -> ::planus::Result<self::ChannelParticipantRef<'a>> {
+            
+            
+              
+              self.0.access_required(4, "RoleApproval", "participant")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`prior_holder` field](RoleApproval#structfield.prior_holder).
+        #[inline]
+        pub fn prior_holder(&self) -> ::planus::Result<::core::option::Option<self::RoleGrantRef<'a>>> {
+            
+            
+              
+              self.0.access(5, "RoleApproval", "prior_holder")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`expires_at_ms` field](RoleApproval#structfield.expires_at_ms).
+        #[inline]
+        pub fn expires_at_ms(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(6, "RoleApproval", "expires_at_ms")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`workspace_name` field](RoleApproval#structfield.workspace_name).
+        #[inline]
+        pub fn workspace_name(&self) -> ::planus::Result<&'a ::core::primitive::str> {
+            
+            
+              
+              self.0.access_required(7, "RoleApproval", "workspace_name")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`decision_generation` field](RoleApproval#structfield.decision_generation).
+        #[inline]
+        pub fn decision_generation(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(8, "RoleApproval", "decision_generation")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for RoleApprovalRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("RoleApprovalRef");
+        f.field("id", &self.id());f.field("workspace_id", &self.workspace_id());f.field("role", &self.role());f.field("requester", &self.requester());f.field("participant", &self.participant());if let ::core::option::Option::Some(field_prior_holder) = self.prior_holder().transpose() {
+                f.field("prior_holder", &field_prior_holder);
+            }f.field("expires_at_ms", &self.expires_at_ms());f.field("workspace_name", &self.workspace_name());f.field("decision_generation", &self.decision_generation());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<RoleApprovalRef<'a>> for RoleApproval {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: RoleApprovalRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            id: ::core::convert::Into::into(value.id()?),workspace_id: ::core::convert::Into::into(value.workspace_id()?),role: ::core::convert::TryInto::try_into(value.role()?)?,requester: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.requester()?)?),participant: ::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(value.participant()?)?),prior_holder: 
+                                if let ::core::option::Option::Some(prior_holder) = value.prior_holder()? {
+                                    ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(prior_holder)?))
+                                } else {
+                                    ::core::option::Option::None
+                                }
+                            ,expires_at_ms: ::core::convert::TryInto::try_into(value.expires_at_ms()?)?,workspace_name: ::core::convert::Into::into(value.workspace_name()?),decision_generation: ::core::convert::TryInto::try_into(value.decision_generation()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for RoleApprovalRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for RoleApprovalRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleApprovalRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<RoleApproval>> for RoleApproval {
+    type Value = ::planus::Offset<RoleApproval>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<RoleApproval>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for RoleApprovalRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleApprovalRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `RoleResponseActivity` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `RoleResponseActivity` in the file `crates/bkpr-protocol/src/wire/native.fbs:1067`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct RoleResponseActivity{
+    }
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for RoleResponseActivity {
+    fn default() -> Self {
+        Self {
+        
+        }
+    }
+}
+
+
+impl RoleResponseActivity {
+    /// Creates a [RoleResponseActivityBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> RoleResponseActivityBuilder<()> {
+        RoleResponseActivityBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        
+    ) -> ::planus::Offset<Self> {
+
+        let table_writer: ::planus::table_writer::TableWriter::<4> = ::core::default::Default::default();
+        unsafe {
+            table_writer.finish(builder, |_table_writer| {});
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<RoleResponseActivity>> for RoleResponseActivity {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleResponseActivity> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<RoleResponseActivity>> for RoleResponseActivity {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleResponseActivity>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<RoleResponseActivity> for RoleResponseActivity {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleResponseActivity> {
+        RoleResponseActivity::create(
+            builder,
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [RoleResponseActivity] type.
+///
+/// Can be created using the [RoleResponseActivity::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct RoleResponseActivityBuilder<State>(State);
+
+
+
+impl<
+    
+> RoleResponseActivityBuilder<(
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [RoleResponseActivity].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleResponseActivity>
+        where Self: ::planus::WriteAsOffset<RoleResponseActivity>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+> ::planus::WriteAs<::planus::Offset<RoleResponseActivity>> for RoleResponseActivityBuilder<(
+    
+)> {
+    type Prepared = ::planus::Offset<RoleResponseActivity>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleResponseActivity> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+> ::planus::WriteAsOptional<::planus::Offset<RoleResponseActivity>> for RoleResponseActivityBuilder<(
+    
+)> {
+    type Prepared = ::planus::Offset<RoleResponseActivity>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleResponseActivity>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+> ::planus::WriteAsOffset<RoleResponseActivity> for RoleResponseActivityBuilder<(
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleResponseActivity> {
+        RoleResponseActivity::create(
+            builder,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [RoleResponseActivity].
+#[derive(Copy, Clone)]
+pub struct RoleResponseActivityRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> RoleResponseActivityRef<'a> {
+    
+}
+
+impl<'a> ::core::fmt::Debug for RoleResponseActivityRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("RoleResponseActivityRef");
+        
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<RoleResponseActivityRef<'a>> for RoleResponseActivity {
+    type Error = ::planus::Error;
+
+
+    fn try_from(_value: RoleResponseActivityRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for RoleResponseActivityRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for RoleResponseActivityRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleResponseActivityRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<RoleResponseActivity>> for RoleResponseActivity {
+    type Value = ::planus::Offset<RoleResponseActivity>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<RoleResponseActivity>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for RoleResponseActivityRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleResponseActivityRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `RoleResponseSnapshot` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `RoleResponseSnapshot` in the file `crates/bkpr-protocol/src/wire/native.fbs:1068`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct RoleResponseSnapshot{
+    
+        /// The field `revision` in the table `RoleResponseSnapshot`
+        pub revision: u64,
+        /// The field `grants` in the table `RoleResponseSnapshot`
+        pub grants: ::planus::alloc::vec::Vec<self::RoleGrant>,
+        /// The field `approvals` in the table `RoleResponseSnapshot`
+        pub approvals: ::planus::alloc::vec::Vec<self::RoleApproval>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for RoleResponseSnapshot {
+    fn default() -> Self {
+        Self {
+        revision: 0,
+        grants: ::core::default::Default::default(),
+        approvals: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl RoleResponseSnapshot {
+    /// Creates a [RoleResponseSnapshotBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> RoleResponseSnapshotBuilder<()> {
+        RoleResponseSnapshotBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_revision: impl ::planus::WriteAsDefault<u64, u64>,
+        field_grants: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::RoleGrant>]>>,
+        field_approvals: impl ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::RoleApproval>]>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_revision = field_revision.prepare(builder, &0);let prepared_grants = field_grants.prepare(builder);let prepared_approvals = field_approvals.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<10> = ::core::default::Default::default();
+        if prepared_revision.is_some() {table_writer.write_entry::<u64>(0);}table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::RoleGrant>]>>(1);table_writer.write_entry::<::planus::Offset<[::planus::Offset<self::RoleApproval>]>>(2);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_revision) = prepared_revision {object_writer.write::<_, _, 8>(&prepared_revision);}object_writer.write::<_, _, 4>(&prepared_grants);object_writer.write::<_, _, 4>(&prepared_approvals);
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<RoleResponseSnapshot>> for RoleResponseSnapshot {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleResponseSnapshot> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<RoleResponseSnapshot>> for RoleResponseSnapshot {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleResponseSnapshot>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<RoleResponseSnapshot> for RoleResponseSnapshot {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleResponseSnapshot> {
+        RoleResponseSnapshot::create(
+            builder,
+        
+            
+            self.revision,
+            
+        
+            
+            &self.grants,
+            
+        
+            
+            &self.approvals,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [RoleResponseSnapshot] type.
+///
+/// Can be created using the [RoleResponseSnapshot::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct RoleResponseSnapshotBuilder<State>(State);
+
+impl<
+    
+> RoleResponseSnapshotBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`revision` field](RoleResponseSnapshot#structfield.revision).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn revision<T0>(self, value: T0) -> RoleResponseSnapshotBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsDefault<u64, u64>
+    {
+        RoleResponseSnapshotBuilder((
+            
+            value,
+        ))
+    }
+
+    
+    /// Sets the [`revision` field](RoleResponseSnapshot#structfield.revision) to the default value.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn revision_as_default(self) -> RoleResponseSnapshotBuilder<(
+        
+        ::planus::DefaultValue,
+    )>
+    {
+        self.revision(::planus::DefaultValue)
+    }
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+> RoleResponseSnapshotBuilder
+<
+    (
+    
+        T0,
+    
+    )
+>
+{
+    /// Setter for the [`grants` field](RoleResponseSnapshot#structfield.grants).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn grants<T1>(self, value: T1) -> RoleResponseSnapshotBuilder<(
+    
+        T0,
+    
+        T1,
+    
+    )>
+    where T1: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::RoleGrant>]>>
+    {
+        
+        let (
+            
+                v0,
+            
+        ) = self.0;RoleResponseSnapshotBuilder((
+            
+                v0,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+> RoleResponseSnapshotBuilder
+<
+    (
+    
+        T0,
+    
+        T1,
+    
+    )
+>
+{
+    /// Setter for the [`approvals` field](RoleResponseSnapshot#structfield.approvals).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn approvals<T2>(self, value: T2) -> RoleResponseSnapshotBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+    )>
+    where T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::RoleApproval>]>>
+    {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+        ) = self.0;RoleResponseSnapshotBuilder((
+            
+                v0,
+            
+                v1,
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+> RoleResponseSnapshotBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [RoleResponseSnapshot].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleResponseSnapshot>
+        where Self: ::planus::WriteAsOffset<RoleResponseSnapshot>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u64, u64>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::RoleGrant>]>>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::RoleApproval>]>>,
+    
+> ::planus::WriteAs<::planus::Offset<RoleResponseSnapshot>> for RoleResponseSnapshotBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleResponseSnapshot>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleResponseSnapshot> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u64, u64>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::RoleGrant>]>>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::RoleApproval>]>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<RoleResponseSnapshot>> for RoleResponseSnapshotBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleResponseSnapshot>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleResponseSnapshot>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsDefault<u64, u64>,
+    
+        T1: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::RoleGrant>]>>,
+    
+        T2: ::planus::WriteAs<::planus::Offset<[::planus::Offset<self::RoleApproval>]>>,
+    
+> ::planus::WriteAsOffset<RoleResponseSnapshot> for RoleResponseSnapshotBuilder<(
+    
+        T0,
+    
+        T1,
+    
+        T2,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleResponseSnapshot> {
+        
+        let (
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        ) = &self.0;RoleResponseSnapshot::create(
+            builder,
+            
+                v0,
+            
+                v1,
+            
+                v2,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [RoleResponseSnapshot].
+#[derive(Copy, Clone)]
+pub struct RoleResponseSnapshotRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> RoleResponseSnapshotRef<'a> {
+    
+        /// Getter for the [`revision` field](RoleResponseSnapshot#structfield.revision).
+        #[inline]
+        pub fn revision(&self) -> ::planus::Result<u64> {
+             ::core::result::Result::Ok( 
+            
+              
+              self.0.access(0, "RoleResponseSnapshot", "revision")
+              
+            
+            ?.unwrap_or(0))
+            
+        }
+    
+        /// Getter for the [`grants` field](RoleResponseSnapshot#structfield.grants).
+        #[inline]
+        pub fn grants(&self) -> ::planus::Result<::planus::Vector<'a, ::planus::Result<self::RoleGrantRef<'a>>>> {
+            
+            
+              
+              self.0.access_required(1, "RoleResponseSnapshot", "grants")
+              
+            
+            
+            
+        }
+    
+        /// Getter for the [`approvals` field](RoleResponseSnapshot#structfield.approvals).
+        #[inline]
+        pub fn approvals(&self) -> ::planus::Result<::planus::Vector<'a, ::planus::Result<self::RoleApprovalRef<'a>>>> {
+            
+            
+              
+              self.0.access_required(2, "RoleResponseSnapshot", "approvals")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for RoleResponseSnapshotRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("RoleResponseSnapshotRef");
+        f.field("revision", &self.revision());f.field("grants", &self.grants());f.field("approvals", &self.approvals());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<RoleResponseSnapshotRef<'a>> for RoleResponseSnapshot {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: RoleResponseSnapshotRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            revision: ::core::convert::TryInto::try_into(value.revision()?)?,grants: value.grants()?.to_vec_result()?,approvals: value.approvals()?.to_vec_result()?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for RoleResponseSnapshotRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for RoleResponseSnapshotRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleResponseSnapshotRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<RoleResponseSnapshot>> for RoleResponseSnapshot {
+    type Value = ::planus::Offset<RoleResponseSnapshot>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<RoleResponseSnapshot>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for RoleResponseSnapshotRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleResponseSnapshotRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The table `RoleResponseUpdated` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `RoleResponseUpdated` in the file `crates/bkpr-protocol/src/wire/native.fbs:1073`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct RoleResponseUpdated{
+    
+        /// The field `grant` in the table `RoleResponseUpdated`
+        pub grant: ::core::option::Option<::planus::alloc::boxed::Box<self::RoleGrant>>,}
+
+
+#[allow(clippy::derivable_impls)]
+impl ::core::default::Default for RoleResponseUpdated {
+    fn default() -> Self {
+        Self {
+        grant: ::core::default::Default::default(),
+        
+        }
+    }
+}
+
+
+impl RoleResponseUpdated {
+    /// Creates a [RoleResponseUpdatedBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> RoleResponseUpdatedBuilder<()> {
+        RoleResponseUpdatedBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_grant: impl ::planus::WriteAsOptional<::planus::Offset<self::RoleGrant>>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_grant = field_grant.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<6> = ::core::default::Default::default();
+        if prepared_grant.is_some() {table_writer.write_entry::<::planus::Offset<self::RoleGrant>>(0);}
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {if let ::core::option::Option::Some(prepared_grant) = prepared_grant {object_writer.write::<_, _, 4>(&prepared_grant);}
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<RoleResponseUpdated>> for RoleResponseUpdated {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleResponseUpdated> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<RoleResponseUpdated>> for RoleResponseUpdated {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleResponseUpdated>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<RoleResponseUpdated> for RoleResponseUpdated {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleResponseUpdated> {
+        RoleResponseUpdated::create(
+            builder,
+        
+            
+            &self.grant,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [RoleResponseUpdated] type.
+///
+/// Can be created using the [RoleResponseUpdated::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct RoleResponseUpdatedBuilder<State>(State);
+
+impl<
+    
+> RoleResponseUpdatedBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`grant` field](RoleResponseUpdated#structfield.grant).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn grant<T0>(self, value: T0) -> RoleResponseUpdatedBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsOptional<::planus::Offset<self::RoleGrant>>
+    {
+        RoleResponseUpdatedBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+    /// Sets the [`grant` field](RoleResponseUpdated#structfield.grant) to null.
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn grant_as_null(self) -> RoleResponseUpdatedBuilder<(
+        
+        (),
+    )>
+    {
+        self.grant(())
+    }
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> RoleResponseUpdatedBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [RoleResponseUpdated].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleResponseUpdated>
+        where Self: ::planus::WriteAsOffset<RoleResponseUpdated>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsOptional<::planus::Offset<self::RoleGrant>>,
+    
+> ::planus::WriteAs<::planus::Offset<RoleResponseUpdated>> for RoleResponseUpdatedBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleResponseUpdated>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleResponseUpdated> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsOptional<::planus::Offset<self::RoleGrant>>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<RoleResponseUpdated>> for RoleResponseUpdatedBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<RoleResponseUpdated>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RoleResponseUpdated>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsOptional<::planus::Offset<self::RoleGrant>>,
+    
+> ::planus::WriteAsOffset<RoleResponseUpdated> for RoleResponseUpdatedBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RoleResponseUpdated> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;RoleResponseUpdated::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [RoleResponseUpdated].
+#[derive(Copy, Clone)]
+pub struct RoleResponseUpdatedRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> RoleResponseUpdatedRef<'a> {
+    
+        /// Getter for the [`grant` field](RoleResponseUpdated#structfield.grant).
+        #[inline]
+        pub fn grant(&self) -> ::planus::Result<::core::option::Option<self::RoleGrantRef<'a>>> {
+            
+            
+              
+              self.0.access(0, "RoleResponseUpdated", "grant")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for RoleResponseUpdatedRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("RoleResponseUpdatedRef");
+        if let ::core::option::Option::Some(field_grant) = self.grant().transpose() {
+                f.field("grant", &field_grant);
+            }
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<RoleResponseUpdatedRef<'a>> for RoleResponseUpdated {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: RoleResponseUpdatedRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            grant: 
+                                if let ::core::option::Option::Some(grant) = value.grant()? {
+                                    ::core::option::Option::Some(::planus::alloc::boxed::Box::new(::core::convert::TryInto::try_into(grant)?))
+                                } else {
+                                    ::core::option::Option::None
+                                }
+                            ,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for RoleResponseUpdatedRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for RoleResponseUpdatedRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleResponseUpdatedRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<RoleResponseUpdated>> for RoleResponseUpdated {
+    type Value = ::planus::Offset<RoleResponseUpdated>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<RoleResponseUpdated>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for RoleResponseUpdatedRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[RoleResponseUpdatedRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
+/// The union `RoleResponse` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Union `RoleResponse` in the file `crates/bkpr-protocol/src/wire/native.fbs:1074`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize)]
+pub enum RoleResponse{
+    
+        /// The variant of type `RoleResponseActivity` in the union `RoleResponse`
+        RoleResponseActivity(::planus::alloc::boxed::Box<self::RoleResponseActivity>),
+    
+        /// The variant of type `RoleResponseSnapshot` in the union `RoleResponse`
+        RoleResponseSnapshot(::planus::alloc::boxed::Box<self::RoleResponseSnapshot>),
+    
+        /// The variant of type `RoleResponseUpdated` in the union `RoleResponse`
+        RoleResponseUpdated(::planus::alloc::boxed::Box<self::RoleResponseUpdated>),
+    
+}
+
+
+impl RoleResponse {
+    /// Creates a [RoleResponseBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> RoleResponseBuilder<::planus::Uninitialized> {
+        RoleResponseBuilder(::planus::Uninitialized)
+    }
+
+    #[inline]
+    pub fn create_role_response_activity(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::RoleResponseActivity>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(1, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_role_response_snapshot(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::RoleResponseSnapshot>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(2, value.prepare(builder).downcast())
+    }
+
+    #[inline]
+    pub fn create_role_response_updated(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::RoleResponseUpdated>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(3, value.prepare(builder).downcast())
+    }
+
+    
+}
+
+
+
+impl ::planus::WriteAsUnion<RoleResponse> for RoleResponse {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<Self> {
+        match self {
+            Self::RoleResponseActivity(value) => Self::create_role_response_activity(builder, value),
+            Self::RoleResponseSnapshot(value) => Self::create_role_response_snapshot(builder, value),
+            Self::RoleResponseUpdated(value) => Self::create_role_response_updated(builder, value),
+            
+        }
+    }
+}
+
+
+impl ::planus::WriteAsOptionalUnion<RoleResponse> for RoleResponse {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<Self>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+
+/// Builder for serializing an instance of the [RoleResponse] type.
+///
+/// Can be created using the [RoleResponse::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct RoleResponseBuilder<T>(T);
+
+impl RoleResponseBuilder<::planus::Uninitialized> {
+    /// Creates an instance of the [`RoleResponseActivity` variant](RoleResponse#variant.RoleResponseActivity).
+    #[inline]
+    pub fn role_response_activity<T>(
+        self,
+        value: T,
+    ) -> RoleResponseBuilder<::planus::Initialized<1, T>>
+        where T: ::planus::WriteAsOffset<self::RoleResponseActivity> {
+        RoleResponseBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`RoleResponseSnapshot` variant](RoleResponse#variant.RoleResponseSnapshot).
+    #[inline]
+    pub fn role_response_snapshot<T>(
+        self,
+        value: T,
+    ) -> RoleResponseBuilder<::planus::Initialized<2, T>>
+        where T: ::planus::WriteAsOffset<self::RoleResponseSnapshot> {
+        RoleResponseBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`RoleResponseUpdated` variant](RoleResponse#variant.RoleResponseUpdated).
+    #[inline]
+    pub fn role_response_updated<T>(
+        self,
+        value: T,
+    ) -> RoleResponseBuilder<::planus::Initialized<3, T>>
+        where T: ::planus::WriteAsOffset<self::RoleResponseUpdated> {
+        RoleResponseBuilder(::planus::Initialized(value))
+    }
+
+    
+}
+
+impl<const N: u8, T> RoleResponseBuilder<::planus::Initialized<N, T>> {
+    /// Finish writing the builder to get an [UnionOffset](::planus::UnionOffset) to a serialized [RoleResponse].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<RoleResponse>
+        where Self: ::planus::WriteAsUnion<RoleResponse>
+    {
+        ::planus::WriteAsUnion::prepare(&self, builder)
+    }
+}
+
+impl<T> ::planus::WriteAsUnion<RoleResponse> for RoleResponseBuilder<::planus::Initialized<1, T>>
+    where T: ::planus::WriteAsOffset<self::RoleResponseActivity>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<RoleResponse> {
+        ::planus::UnionOffset::new(1, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<RoleResponse> for RoleResponseBuilder<::planus::Initialized<1, T>>
+    where T: ::planus::WriteAsOffset<self::RoleResponseActivity>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<RoleResponse>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<RoleResponse> for RoleResponseBuilder<::planus::Initialized<2, T>>
+    where T: ::planus::WriteAsOffset<self::RoleResponseSnapshot>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<RoleResponse> {
+        ::planus::UnionOffset::new(2, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<RoleResponse> for RoleResponseBuilder<::planus::Initialized<2, T>>
+    where T: ::planus::WriteAsOffset<self::RoleResponseSnapshot>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<RoleResponse>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+impl<T> ::planus::WriteAsUnion<RoleResponse> for RoleResponseBuilder<::planus::Initialized<3, T>>
+    where T: ::planus::WriteAsOffset<self::RoleResponseUpdated>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<RoleResponse> {
+        ::planus::UnionOffset::new(3, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<RoleResponse> for RoleResponseBuilder<::planus::Initialized<3, T>>
+    where T: ::planus::WriteAsOffset<self::RoleResponseUpdated>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<RoleResponse>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
+
+
+/// Reference to a deserialized [RoleResponse].
+#[derive(Copy, Clone, Debug)]
+pub enum RoleResponseRef<'a>{
+    RoleResponseActivity(self::RoleResponseActivityRef<'a>),
+    RoleResponseSnapshot(self::RoleResponseSnapshotRef<'a>),
+    RoleResponseUpdated(self::RoleResponseUpdatedRef<'a>),
+    
+}
+
+
+impl<'a> ::core::convert::TryFrom<RoleResponseRef<'a>> for RoleResponse {
+    type Error = ::planus::Error;
+
+    fn try_from(value: RoleResponseRef<'a>) -> ::planus::Result<Self> {
+        ::core::result::Result::Ok(match value {
+            
+                RoleResponseRef::RoleResponseActivity(value) => Self::RoleResponseActivity(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                RoleResponseRef::RoleResponseSnapshot(value) => Self::RoleResponseSnapshot(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+                RoleResponseRef::RoleResponseUpdated(value) => Self::RoleResponseUpdated(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
+        })
+    }
+}
+
+
+
+impl<'a> ::planus::TableReadUnion<'a> for RoleResponseRef<'a> {
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        match tag {
+            1 => ::core::result::Result::Ok(Self::RoleResponseActivity(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::RoleResponseSnapshot(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::RoleResponseUpdated(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+        }
+    }
+}
+
+
+
+impl<'a> ::planus::VectorReadUnion<'a> for RoleResponseRef<'a> {
+    const VECTOR_NAME: &'static str = "[RoleResponseRef]";
+}
+
+
+    
+/// The table `RolePayload` in the namespace `native_wire`
+/// 
+/// Generated from these locations:
+/// * Table `RolePayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:1075`
+#[derive(Clone, Debug, PartialEq, PartialOrd,
+Eq, Ord, Hash,
+::serde::Serialize, ::serde::Deserialize
+)]
+pub struct RolePayload{
+    
+        /// The field `response` in the table `RolePayload`
+        pub response: self::RoleResponse,}
+
+
+
+impl RolePayload {
+    /// Creates a [RolePayloadBuilder] for serializing an instance of this table.
+    #[inline]
+    pub fn builder() -> RolePayloadBuilder<()> {
+        RolePayloadBuilder(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        builder: &mut ::planus::Builder,
+        field_response: impl ::planus::WriteAsUnion<self::RoleResponse>,
+        
+    ) -> ::planus::Offset<Self> {let prepared_response = field_response.prepare(builder);
+
+        let mut table_writer: ::planus::table_writer::TableWriter::<8> = ::core::default::Default::default();
+        table_writer.write_entry::<::planus::Offset<self::RoleResponse>>(1);table_writer.write_entry::<u8>(0);
+
+        unsafe {
+            table_writer.finish(builder, |object_writer| {object_writer.write::<_, _, 4>(&prepared_response.offset());object_writer.write::<_, _, 1>(&prepared_response.tag());
+                
+            });
+        }builder.current_offset()
+    }
+}
+
+impl ::planus::WriteAs<::planus::Offset<RolePayload>> for RolePayload {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RolePayload> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl ::planus::WriteAsOptional<::planus::Offset<RolePayload>> for RolePayload {
+    type Prepared = ::planus::Offset<Self>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RolePayload>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl ::planus::WriteAsOffset<RolePayload> for RolePayload {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RolePayload> {
+        RolePayload::create(
+            builder,
+        
+            
+            &self.response,
+            
+        
+        )
+    }
+}
+
+/// Builder for serializing an instance of the [RolePayload] type.
+///
+/// Can be created using the [RolePayload::builder] method.
+#[derive(Debug)]
+#[must_use]
+pub struct RolePayloadBuilder<State>(State);
+
+impl<
+    
+> RolePayloadBuilder
+<
+    (
+    
+    )
+>
+{
+    /// Setter for the [`response` field](RolePayload#structfield.response).
+    #[inline]
+    #[allow(clippy::type_complexity)]
+    pub fn response<T0>(self, value: T0) -> RolePayloadBuilder<(
+    
+        T0,
+    
+    )>
+    where T0: ::planus::WriteAsUnion<self::RoleResponse>
+    {
+        RolePayloadBuilder((
+            
+            value,
+        ))
+    }
+
+    
+
+    
+}
+
+
+
+impl<
+    
+        T0,
+    
+> RolePayloadBuilder<(
+    
+        T0,
+    
+)> {
+    /// Finish writing the builder to get an [Offset](::planus::Offset) to a serialized [RolePayload].
+    #[inline]
+    pub fn finish(self, builder: &mut ::planus::Builder) -> ::planus::Offset<RolePayload>
+        where Self: ::planus::WriteAsOffset<RolePayload>
+    {
+        ::planus::WriteAsOffset::prepare(&self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::RoleResponse>,
+    
+> ::planus::WriteAs<::planus::Offset<RolePayload>> for RolePayloadBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<RolePayload>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RolePayload> {
+        ::planus::WriteAsOffset::prepare(self, builder)
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::RoleResponse>,
+    
+> ::planus::WriteAsOptional<::planus::Offset<RolePayload>> for RolePayloadBuilder<(
+    
+        T0,
+    
+)> {
+    type Prepared = ::planus::Offset<RolePayload>;
+
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::Offset<RolePayload>> {
+        ::core::option::Option::Some(::planus::WriteAsOffset::prepare(self, builder))
+    }
+}
+
+impl<
+    
+        T0: ::planus::WriteAsUnion<self::RoleResponse>,
+    
+> ::planus::WriteAsOffset<RolePayload> for RolePayloadBuilder<(
+    
+        T0,
+    
+)> {
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::Offset<RolePayload> {
+        
+        let (
+            
+                v0,
+            
+        ) = &self.0;RolePayload::create(
+            builder,
+            
+                v0,
+            
+        )
+    }
+}
+
+/// Reference to a deserialized [RolePayload].
+#[derive(Copy, Clone)]
+pub struct RolePayloadRef<'a>(
+    #[allow(dead_code)]
+    ::planus::table_reader::Table<'a>
+);
+
+impl<'a> RolePayloadRef<'a> {
+    
+        /// Getter for the [`response` field](RolePayload#structfield.response).
+        #[inline]
+        pub fn response(&self) -> ::planus::Result<self::RoleResponseRef<'a>> {
+            
+            
+              
+              self.0.access_union_required(0, "RolePayload", "response")
+              
+            
+            
+            
+        }
+    
+}
+
+impl<'a> ::core::fmt::Debug for RolePayloadRef<'a> {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+        let mut f = f.debug_struct("RolePayloadRef");
+        f.field("response", &self.response());
+        f.finish()
+    }
+}
+
+impl<'a> ::core::convert::TryFrom<RolePayloadRef<'a>> for RolePayload {
+    type Error = ::planus::Error;
+
+
+    #[allow(unreachable_code)]
+    fn try_from(value: RolePayloadRef<'a>) -> ::planus::Result<Self> {
+
+        ::core::result::Result::Ok(Self {
+            response: ::core::convert::TryInto::try_into(value.response()?)?,
+        })
+    }
+}
+
+impl<'a> ::planus::TableRead<'a> for RolePayloadRef<'a> {
+    #[inline]
+    fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
+        ::core::result::Result::Ok(Self(::planus::table_reader::Table::from_buffer(buffer, offset)?))
+    }
+}
+
+impl<'a> ::planus::VectorReadInner<'a> for RolePayloadRef<'a> {
+    type Error = ::planus::Error;
+    const STRIDE: usize = 4;
+
+    unsafe fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, offset: usize) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(buffer, offset).map_err(|error_kind| error_kind.with_error_location(
+            "[RolePayloadRef]",
+            "get",
+            buffer.offset_from_start,
+        ))
+    }
+}
+
+/// # Safety
+/// The planus compiler generates implementations that initialize
+/// the bytes in `write_values`.
+unsafe impl ::planus::VectorWrite<::planus::Offset<RolePayload>> for RolePayload {
+    type Value = ::planus::Offset<RolePayload>;
+    const STRIDE: usize = 4;
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> Self::Value {
+        ::planus::WriteAs::prepare(self, builder)
+    }
+
+    #[inline]
+    unsafe fn write_values(
+        values: &[::planus::Offset<RolePayload>],
+        bytes: *mut ::core::mem::MaybeUninit<u8>,
+        buffer_position: u32,
+    ) {
+        let bytes = bytes as *mut [::core::mem::MaybeUninit<u8>; 4];
+        for (i, v) in ::core::iter::Iterator::enumerate(values.iter()) {
+            ::planus::WriteAsPrimitive::write(
+                v,
+                ::planus::Cursor::new(unsafe { &mut *bytes.add(i) }),
+                buffer_position - (Self::STRIDE * i) as u32,
+            );
+        }
+    }
+}
+
+impl<'a> ::planus::ReadAsRoot<'a> for RolePayloadRef<'a> {
+    fn read_as_root(slice: &'a [u8]) -> ::planus::Result<Self> {
+        ::planus::TableRead::from_buffer(::planus::SliceWithStartOffset {
+            buffer: slice,
+            offset_from_start: 0,
+        }, 0).map_err(|error_kind| error_kind.with_error_location(
+            "[RolePayloadRef]",
+            "read_as_root",
+            0,
+        ))
+    }
+}
+
+    
 /// The union `Payload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:1006`
+/// * Union `Payload` in the file `crates/bkpr-protocol/src/wire/native.fbs:1076`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize)]
@@ -108065,6 +118541,9 @@ pub enum Payload{
     
         /// The variant of type `ChannelPayload` in the union `Payload`
         ChannelPayload(::planus::alloc::boxed::Box<self::ChannelPayload>),
+    
+        /// The variant of type `RolePayload` in the union `Payload`
+        RolePayload(::planus::alloc::boxed::Box<self::RolePayload>),
     
 }
 
@@ -108108,6 +118587,14 @@ impl Payload {
         ::planus::UnionOffset::new(4, value.prepare(builder).downcast())
     }
 
+    #[inline]
+    pub fn create_role_payload(
+      builder: &mut ::planus::Builder,
+      value: impl ::planus::WriteAsOffset<self::RolePayload>,
+    ) -> ::planus::UnionOffset<Self> {
+        ::planus::UnionOffset::new(5, value.prepare(builder).downcast())
+    }
+
     
 }
 
@@ -108121,6 +118608,7 @@ impl ::planus::WriteAsUnion<Payload> for Payload {
             Self::PanePayload(value) => Self::create_pane_payload(builder, value),
             Self::ImageResourcePayload(value) => Self::create_image_resource_payload(builder, value),
             Self::ChannelPayload(value) => Self::create_channel_payload(builder, value),
+            Self::RolePayload(value) => Self::create_role_payload(builder, value),
             
         }
     }
@@ -108179,6 +118667,16 @@ impl PayloadBuilder<::planus::Uninitialized> {
         value: T,
     ) -> PayloadBuilder<::planus::Initialized<4, T>>
         where T: ::planus::WriteAsOffset<self::ChannelPayload> {
+        PayloadBuilder(::planus::Initialized(value))
+    }
+
+    /// Creates an instance of the [`RolePayload` variant](Payload#variant.RolePayload).
+    #[inline]
+    pub fn role_payload<T>(
+        self,
+        value: T,
+    ) -> PayloadBuilder<::planus::Initialized<5, T>>
+        where T: ::planus::WriteAsOffset<self::RolePayload> {
         PayloadBuilder(::planus::Initialized(value))
     }
 
@@ -108263,6 +118761,23 @@ impl<T> ::planus::WriteAsOptionalUnion<Payload> for PayloadBuilder<::planus::Ini
         ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
     }
 }
+impl<T> ::planus::WriteAsUnion<Payload> for PayloadBuilder<::planus::Initialized<5, T>>
+    where T: ::planus::WriteAsOffset<self::RolePayload>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::planus::UnionOffset<Payload> {
+        ::planus::UnionOffset::new(5, (self.0).0.prepare(builder).downcast())
+    }
+}
+
+impl<T> ::planus::WriteAsOptionalUnion<Payload> for PayloadBuilder<::planus::Initialized<5, T>>
+    where T: ::planus::WriteAsOffset<self::RolePayload>
+{
+    #[inline]
+    fn prepare(&self, builder: &mut ::planus::Builder) -> ::core::option::Option<::planus::UnionOffset<Payload>> {
+        ::core::option::Option::Some(::planus::WriteAsUnion::prepare(self, builder))
+    }
+}
 
 
 /// Reference to a deserialized [Payload].
@@ -108272,6 +118787,7 @@ pub enum PayloadRef<'a>{
     PanePayload(self::PanePayloadRef<'a>),
     ImageResourcePayload(self::ImageResourcePayloadRef<'a>),
     ChannelPayload(self::ChannelPayloadRef<'a>),
+    RolePayload(self::RolePayloadRef<'a>),
     
 }
 
@@ -108294,6 +118810,9 @@ impl<'a> ::core::convert::TryFrom<PayloadRef<'a>> for Payload {
                 PayloadRef::ChannelPayload(value) => Self::ChannelPayload(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
                 
             
+                PayloadRef::RolePayload(value) => Self::RolePayload(::planus::alloc::boxed::Box::new(::core::convert::TryFrom::try_from(value)?)),
+                
+            
         })
     }
 }
@@ -108303,7 +118822,7 @@ impl<'a> ::core::convert::TryFrom<PayloadRef<'a>> for Payload {
 impl<'a> ::planus::TableReadUnion<'a> for PayloadRef<'a> {
     fn from_buffer(buffer: ::planus::SliceWithStartOffset<'a>, tag: u8, field_offset: usize) -> ::core::result::Result<Self, ::planus::errors::ErrorKind> {
         match tag {
-            1 => ::core::result::Result::Ok(Self::ControlPayload(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::PanePayload(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::ImageResourcePayload(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::ChannelPayload(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
+            1 => ::core::result::Result::Ok(Self::ControlPayload(::planus::TableRead::from_buffer(buffer, field_offset)?)),2 => ::core::result::Result::Ok(Self::PanePayload(::planus::TableRead::from_buffer(buffer, field_offset)?)),3 => ::core::result::Result::Ok(Self::ImageResourcePayload(::planus::TableRead::from_buffer(buffer, field_offset)?)),4 => ::core::result::Result::Ok(Self::ChannelPayload(::planus::TableRead::from_buffer(buffer, field_offset)?)),5 => ::core::result::Result::Ok(Self::RolePayload(::planus::TableRead::from_buffer(buffer, field_offset)?)),_ => ::core::result::Result::Err(::planus::errors::ErrorKind::UnknownUnionTag { tag }),
         }
     }
 }
@@ -108319,7 +118838,7 @@ impl<'a> ::planus::VectorReadUnion<'a> for PayloadRef<'a> {
 /// The table `Request` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:1007`
+/// * Table `Request` in the file `crates/bkpr-protocol/src/wire/native.fbs:1077`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -108708,7 +119227,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for RequestRef<'a> {
 /// The table `OptionalPayload` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:1008`
+/// * Table `OptionalPayload` in the file `crates/bkpr-protocol/src/wire/native.fbs:1078`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -109003,7 +119522,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalPayloadRef<'a> {
 /// The table `OptionalFailure` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:1009`
+/// * Table `OptionalFailure` in the file `crates/bkpr-protocol/src/wire/native.fbs:1079`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -109298,7 +119817,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for OptionalFailureRef<'a> {
 /// The table `Response` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:1010`
+/// * Table `Response` in the file `crates/bkpr-protocol/src/wire/native.fbs:1080`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 
 ::serde::Serialize, ::serde::Deserialize
@@ -110094,7 +120613,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ResponseRef<'a> {
 /// The table `ChannelMentionSpan` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelMentionSpan` in the file `crates/bkpr-protocol/src/wire/native.fbs:1012`
+/// * Table `ChannelMentionSpan` in the file `crates/bkpr-protocol/src/wire/native.fbs:1082`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize
@@ -110601,7 +121120,7 @@ impl<'a> ::planus::ReadAsRoot<'a> for ChannelMentionSpanRef<'a> {
 /// The table `ChannelResolvedMentionSpan` in the namespace `native_wire`
 /// 
 /// Generated from these locations:
-/// * Table `ChannelResolvedMentionSpan` in the file `crates/bkpr-protocol/src/wire/native.fbs:1017`
+/// * Table `ChannelResolvedMentionSpan` in the file `crates/bkpr-protocol/src/wire/native.fbs:1087`
 #[derive(Clone, Debug, PartialEq, PartialOrd,
 Eq, Ord, Hash,
 ::serde::Serialize, ::serde::Deserialize

@@ -46,6 +46,7 @@ fn summary() -> ChannelSummary {
         read_through: 4,
         unread_attention: true,
         direct: false,
+        role_thread: None,
     }
 }
 
@@ -61,6 +62,7 @@ fn message() -> MessageSummary {
         attachments: vec![attachment_id()],
         mention_spans: Vec::new(),
         source: None,
+        role: None,
     }
 }
 
@@ -78,6 +80,7 @@ fn renderable_message() -> ChannelMessage {
         message: message(),
         text: "private body\nwith Unicode \u{1f9ea}".into(),
         attachments: vec![descriptor()],
+        current_delegation: None,
     }
 }
 
@@ -185,6 +188,10 @@ fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
             membership: MembershipMode::WorkspaceWide,
             members: vec![],
         },
+        ChannelRequest::InviteUser {
+            channel_id: channel(),
+            target: mention_binding(),
+        },
         ChannelRequest::Post {
             channel_id: channel(),
             post: post(),
@@ -200,6 +207,12 @@ fn every_channel_request_round_trips_through_authenticated_native_wrapper() {
             channel_id: channel(),
             post: annotated_post,
             bindings: vec![mention_binding()],
+        },
+        ChannelRequest::PostUserWithCoordinator {
+            channel_id: channel(),
+            post: post(),
+            bindings: vec![mention_binding()],
+            coordinator_grant_id: crate::roles::RoleGrantId("tenure".into()),
         },
         ChannelRequest::History {
             channel_id: channel(),
@@ -374,6 +387,28 @@ fn source_post_frames_fail_legacy_header_admission_without_breaking_ordinary_pos
             panic!("expected fenced channel post");
         };
         assert_eq!(actual, fenced);
+        let ChannelRequest::PostUser {
+            channel_id,
+            post: fenced_post,
+            bindings,
+        } = fenced
+        else {
+            unreachable!();
+        };
+        let coordinator = Operation::Channels {
+            request: ChannelRequest::PostUserWithCoordinator {
+                channel_id,
+                post: fenced_post,
+                bindings,
+                coordinator_grant_id: crate::roles::RoleGrantId("tenure".into()),
+            },
+        };
+        check_frames(
+            codec
+                .encode_client_request(&authority, &coordinator)
+                .unwrap(),
+            has_source,
+        );
 
         let agent = Request::new(Operation::Agent {
             launch_id: "launch".into(),
@@ -449,10 +484,12 @@ fn every_channel_response_round_trips_and_owned_fetch_shares_wire_storage() {
                         display_name: "Agent".into(),
                     },
                     binding: Some(mention_binding()),
+                    role: None,
                 },
                 ChannelRosterEntry {
                     participant: participant(),
                     binding: None,
+                    role: None,
                 },
             ],
             next_after: Some(participant().id),
@@ -657,6 +694,19 @@ fn channel_validation_rejects_client_authorship_and_invalid_reference_shapes() {
             channel_id: channel(),
             membership: MembershipMode::WorkspaceWide,
             members: vec![participant().id],
+        },
+        ChannelRequest::InviteUser {
+            channel_id: channel(),
+            target: ChannelMentionBinding {
+                binding_generation: 0,
+                ..mention_binding()
+            },
+        },
+        ChannelRequest::PostUserWithCoordinator {
+            channel_id: channel(),
+            post: post(),
+            bindings: vec![],
+            coordinator_grant_id: crate::roles::RoleGrantId("tenure".into()),
         },
         ChannelRequest::Post {
             channel_id: channel(),
@@ -952,6 +1002,7 @@ fn native_history_budgets_source_ids_even_for_aliased_rows() {
         },
         text: String::new(),
         attachments: vec![],
+        current_delegation: None,
     };
     message.text = "x".repeat(MAX_HISTORY_BYTES / count - message.content_bytes());
     let history = |message: &ChannelMessage| {
@@ -995,10 +1046,11 @@ fn native_history_budgets_source_ids_even_for_aliased_rows() {
         empty_ids,
         None::<Offset<[Offset<g::ChannelResolvedMentionSpan>]>>,
         Some(source),
+        None::<Offset<g::RoleAttribution>>,
     );
     let text = b.create_string(&message.text);
     let attachments = b.create_vector([] as [Offset<g::AttachmentDescriptor>; 0]);
-    let alias = g::ChannelMessage::create(&mut b, metadata, text, attachments);
+    let alias = g::ChannelMessage::create(&mut b, metadata, text, attachments, None::<Offset<str>>);
     let messages = b.create_vector(vec![alias; count].as_slice());
     let cursor = g::ChannelCursor::create(&mut b, id, count as u64);
     let response = g::ChannelResponseHistory::create(
@@ -1246,11 +1298,13 @@ fn native_summary_checks_spans_against_body_only_when_present() {
             empty_ids,
             Some(spans),
             None::<Offset<g::ChannelSource>>,
+            None::<Offset<g::RoleAttribution>>,
         );
         let response = if let Some(text) = text {
             let text = b.create_string(text);
             let attachments = b.create_vector([] as [Offset<g::AttachmentDescriptor>; 0]);
-            let message = g::ChannelMessage::create(&mut b, metadata, text, attachments);
+            let message =
+                g::ChannelMessage::create(&mut b, metadata, text, attachments, None::<Offset<str>>);
             let response = g::ChannelResponseMessage::create(&mut b, message);
             g::ChannelResponse::create_channel_response_message(&mut b, response)
         } else {

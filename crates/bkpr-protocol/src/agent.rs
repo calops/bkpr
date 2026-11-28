@@ -167,6 +167,23 @@ pub enum AgentRequest {
         /// Exact message within that channel.
         message_id: MessageId,
     },
+    /// Ask the owning session user for a role in this launch's workspace.
+    RoleRequest {
+        /// Requested role. A pending receipt is not approval.
+        role: crate::roles::WorkspaceRole,
+    },
+    /// Release an exact current tenure held by this launch.
+    RoleRelease {
+        /// Role to release.
+        role: crate::roles::WorkspaceRole,
+        /// Exact tenure; may not revoke a later grant.
+        grant_id: crate::roles::RoleGrantId,
+    },
+    /// Inspect this launch's latest request outcome and current tenure.
+    RoleStatus {
+        /// Role to inspect in the authenticated launch's workspace.
+        role: crate::roles::WorkspaceRole,
+    },
 }
 
 #[cfg(test)]

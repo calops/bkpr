@@ -52,6 +52,11 @@ pub(super) fn write_operation(
             let offset = g::OperationChannels::create(builder, request);
             g::Operation::create_operation_channels(builder, offset)
         }
+        Operation::Roles { request } => {
+            let request = super::roles::write_request(builder, request, budget, depth + 1)?;
+            let offset = g::OperationRoles::create(builder, request);
+            g::Operation::create_operation_roles(builder, offset)
+        }
         Operation::SessionInfo => {
             let offset = g::OperationSessionInfo::create(builder);
             g::Operation::create_operation_session_info(builder, offset)
@@ -606,6 +611,9 @@ pub(super) fn read_operation(
         },
         g::OperationRef::OperationChannels(value) => Operation::Channels {
             request: super::channels::read_request(value.request()?, budget, depth + 1)?,
+        },
+        g::OperationRef::OperationRoles(value) => Operation::Roles {
+            request: super::roles::read_request(value.request()?, budget, depth + 1)?,
         },
         g::OperationRef::OperationSessionInfo(_value) => Operation::SessionInfo,
         g::OperationRef::OperationClientRegister(value) => Operation::ClientRegister {

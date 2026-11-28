@@ -16,6 +16,7 @@ mod operations;
 mod pane;
 mod paths;
 mod push;
+mod roles;
 #[cfg(test)]
 mod tests;
 mod types;
@@ -174,6 +175,12 @@ impl Codec {
                         let payload = g::ChannelPayload::create(&mut self.builder, response);
                         g::Payload::create_channel_payload(&mut self.builder, payload)
                     }
+                    Payload::Roles(response) => {
+                        let response =
+                            roles::write_response(&mut self.builder, response, &mut budget)?;
+                        let payload = g::RolePayload::create(&mut self.builder, response);
+                        g::Payload::create_role_payload(&mut self.builder, payload)
+                    }
                 };
                 Ok(g::OptionalPayload::create(&mut self.builder, value))
             })
@@ -299,6 +306,9 @@ fn decode_response_inner(bytes: &[u8], owner: Option<&bytes::Bytes>) -> Result<R
                 g::PayloadRef::ChannelPayload(payload) => Payload::Channels(
                     channels::read_response(payload.response()?, &mut budget, owner)?,
                 ),
+                g::PayloadRef::RolePayload(payload) => {
+                    Payload::Roles(roles::read_response(payload.response()?, &mut budget)?)
+                }
             })
         })
         .transpose()?;

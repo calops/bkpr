@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from '@oh-my-pi/pi-coding-agent';
 import { ImageProtocol, isImageProtocolForced, setTerminalImageProtocol } from '@oh-my-pi/pi-tui';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { setTimeout as delayRetry } from 'node:timers/promises';
-import { formatChannelWake, optionalNativeCallbacks, parseInboxPointer, type InboxPointer, type Json } from '../shared/native.ts';
+import { formatInboxWake, optionalNativeCallbacks, parseInboxPointer, type InboxPointer, type Json } from '../shared/native.ts';
 
 const MAX_FRAME = 1024 * 1024;
 const RECEIVER_RETRY_MS = [250, 500, 1000, 2000, 4000] as const;
@@ -59,7 +59,7 @@ export default async function bkpr(pi: ExtensionAPI): Promise<void> {
     try {
       pi.sendMessage({
         customType: 'bkpr-message', attribution: 'agent',
-        content: formatChannelWake(pointer.channel_wake),
+        content: formatInboxWake(pointer),
         display: true, details: { id: pointer.notification_id, generation: pointer.generation },
       }, { deliverAs: 'aside', triggerTurn: true });
       // Omp's void API offers no receipt from the asynchronous native queue.
