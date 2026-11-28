@@ -1640,8 +1640,7 @@ impl Registry {
                 continue;
             }
             if Instant::now() >= deadline {
-                // Observe transport cancellation before reporting a timeout.
-                continue;
+                return Ok(json!({"notification":null}));
             }
             let (state, _) = service
                 .changed
