@@ -1007,12 +1007,12 @@ impl Registry {
             | ChannelRequest::SetMembership { members, .. } => !members.is_empty(),
             _ => false,
         };
-        let admit = |workspace_id: &str| {
+        let admit = |workspace_id: &str, roster: crate::channels::RosterScope<'_>| {
             ensure!(
                 workspace.as_deref().is_none_or(|own| own == workspace_id),
                 crate::channels::ChannelAccessLost
             );
-            self.channel_authority(workspace_id, caller, with_roster, connected)
+            self.channel_authority_projected(workspace_id, caller, with_roster, roster, connected)
         };
         let workspace_open = |id: &str| workspace_exists(&self.inner.state.lock().unwrap(), id);
         let cancelled = || !connected() || self.session_end_requested();
@@ -1043,7 +1043,11 @@ impl Registry {
                 .inner
                 .channels
                 .with_delivery_store(&cancelled, &workspace_open, |store| {
-                    store.compact_history(request, &admit, workspace.as_deref())
+                    store.compact_history(
+                        request,
+                        &|id| admit(id, crate::channels::RosterScope::Workspace),
+                        workspace.as_deref(),
+                    )
                 })
                 .map(Payload::Control);
         }

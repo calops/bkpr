@@ -145,11 +145,11 @@ impl Registry {
                         .event(&launch_id, &token, event)?;
                     return Ok(Payload::Control(json!({"accepted":true})));
                 }
-                let changes_binding = matches!(
+                let reports_binding = matches!(
                     &event,
                     CaptureEvent::Bind { .. } | CaptureEvent::Unbind { .. }
                 );
-                if matches!(event, CaptureEvent::End) {
+                let binding_changed = if matches!(event, CaptureEvent::End) {
                     launch.control.revoke();
                     self.agent_retire(std::slice::from_ref(&launch_id));
                     let ended_intent = self.automatic_end(&launch);
@@ -162,6 +162,7 @@ impl Registry {
                     self.inner.channels.reconcile_retired_work();
                     ended_intent?;
                     published?;
+                    false
                 } else {
                     self.inner.agents.check_health()?;
                     self.capture_pane(&launch.grant.pane_id)?;
@@ -186,7 +187,7 @@ impl Registry {
                             "native conversation resume is reserved"
                         );
                     }
-                    self.agent_capture_event(&launch_id, &token, event)?;
+                    let binding_changed = self.agent_capture_event(&launch_id, &token, event)?;
                     let result = (|| -> Result<()> {
                         if let Some(descriptor) = descriptor {
                             self.recovery_bind(
@@ -210,10 +211,13 @@ impl Registry {
                         let _ = self.publish_capture_change(&launch);
                         return Err(error);
                     }
-                }
-                if changes_binding {
+                    binding_changed
+                };
+                if reports_binding {
                     self.inner.channels.invalidate();
-                    self.role_launches_changed();
+                    if binding_changed {
+                        self.role_launches_changed();
+                    }
                     let captures = self.inner.captures.lock().unwrap();
                     Ok(json!({
                         "accepted":true,

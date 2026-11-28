@@ -9,14 +9,14 @@ use sha2::{Digest, Sha256};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 mod channel_wakes;
-use channel_wakes::{ChannelClaimPoll, ChannelLane};
+use channel_wakes::ChannelLane;
 mod role_wakes;
 mod roles;
 use role_wakes::{RoleLane, is_role_wake};
 pub(super) use roles::RoleService;
 
 const WAKE_BATCH_LEASE_MS: u64 = 30_000;
-const CHANNEL_CLAIM_RETRY: Duration = Duration::from_millis(100);
+const WAKE_CLAIM_RETRY: Duration = Duration::from_millis(100);
 
 struct Agent {
     pane_id: String,
@@ -34,6 +34,13 @@ struct Receiver {
     conversation_generation: u64,
     mode: AgentReceiverMode,
 }
+
+enum WakeClaimPoll {
+    Empty,
+    Deferred,
+    Ready(Value),
+}
+
 struct AgentState {
     agents: BTreeMap<String, Agent>,
     receivers: BTreeMap<String, Receiver>,
@@ -58,6 +65,7 @@ pub(super) struct Agents {
 pub(super) enum ChannelTestPause {
     EmptyClaim,
     Validate,
+    DeferredClaim,
 }
 #[derive(Clone)]
 struct DiscoveryProject {
@@ -176,6 +184,16 @@ impl Agents {
         let guard = self.writer.lock().unwrap();
         self.check_health()?;
         Ok(guard)
+    }
+
+    fn try_callback_guard(&self) -> Result<Option<std::sync::MutexGuard<'_, ()>>> {
+        let guard = match self.writer.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => return Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => bail!("agent writer poisoned"),
+        };
+        self.check_health()?;
+        Ok(Some(guard))
     }
 
     pub(super) fn new() -> Self {
@@ -598,13 +616,34 @@ impl Registry {
         with_roster: bool,
         connected: &dyn Fn() -> bool,
     ) -> Result<crate::channels::ChannelAuthority> {
-        use crate::channels::{ChannelAccessLost, ChannelAuthority, WorkspaceParticipant};
+        self.channel_authority_projected(
+            workspace,
+            caller,
+            with_roster,
+            crate::channels::RosterScope::Workspace,
+            connected,
+        )
+    }
+
+    pub(super) fn channel_authority_projected(
+        &self,
+        workspace: &str,
+        caller: Option<&Launch>,
+        with_roster: bool,
+        roster: crate::channels::RosterScope<'_>,
+        connected: &dyn Fn() -> bool,
+    ) -> Result<crate::channels::ChannelAuthority> {
+        use crate::channels::{
+            ChannelAccessLost, ChannelAuthority, RosterScope, WorkspaceParticipant,
+        };
 
         let state = self.inner.state.lock().unwrap();
         self.channel_registry_admission(&state, connected)?;
         let workspace_open = workspace_exists(&state, workspace);
         let writable = workspace_open && !state.closing_workspaces.contains(workspace);
-        if caller.is_none() && (!with_roster || !workspace_open) {
+        if caller.is_none()
+            && (!with_roster || !workspace_open || matches!(roster, RosterScope::Tenure(None)))
+        {
             return Ok(ChannelAuthority {
                 actor: self.channel_user(),
                 writable,
@@ -639,25 +678,37 @@ impl Registry {
                 });
             }
             if healthy_agents(&agents).is_ok() {
-                participants.extend(
-                    state
-                        .record
-                        .registry
-                        .panes
-                        .iter()
-                        .filter_map(|pane| {
-                            live_channel_agent(&state, pane, workspace, &agents, &captures, None)
-                                .map(|(launch, agent)| (launch, agent, pane))
-                        })
-                        .filter(|(launch, _, _)| {
-                            launch.channel_participant.as_ref() != Some(&actor.id)
-                        })
-                        .map(|(launch, agent, pane)| WorkspaceParticipant {
-                            actor: channel_agent(launch, agent, &state, pane),
-                            launch_id: Some(launch.grant.launch_id.clone()),
-                            binding_revision: launch.binding_generation,
-                        }),
-                );
+                let selection = |pane: &PaneInfo| {
+                    let (launch, agent) =
+                        live_channel_agent(&state, pane, workspace, &agents, &captures, None)?;
+                    if launch.channel_participant.as_ref() == Some(&actor.id) {
+                        return None;
+                    }
+                    if let RosterScope::Tenure(Some(holder)) = roster
+                        && launch.grant.launch_id != holder
+                    {
+                        return None;
+                    }
+                    Some(WorkspaceParticipant {
+                        actor: channel_agent(launch, agent, &state, pane),
+                        launch_id: Some(launch.grant.launch_id.clone()),
+                        binding_revision: launch.binding_generation,
+                    })
+                };
+                match roster {
+                    RosterScope::Workspace => {
+                        participants
+                            .extend(state.record.registry.panes.iter().filter_map(selection));
+                    }
+                    RosterScope::Tenure(holder) => {
+                        participants.extend(
+                            holder
+                                .and_then(|id| captures.launches.get(id))
+                                .and_then(|launch| channel_pane(&state, &launch.grant.pane_id))
+                                .and_then(selection),
+                        );
+                    }
+                }
             }
         }
         Ok(ChannelAuthority {
@@ -939,7 +990,7 @@ impl Registry {
         launch_id: &str,
         token: &str,
         event: CaptureEvent,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let service = &self.inner.agents;
         let _writer = service.callback_guard()?;
         let mut captures = self.inner.captures.lock().unwrap();
@@ -962,12 +1013,12 @@ impl Registry {
                 lane.revision = lane.revision.wrapping_add(1);
             }
             if let Some(lane) = state.role_lanes.get_mut(launch_id) {
-                lane.binding_changed();
+                lane.release_dispatch();
             }
             state.revision = state.revision.wrapping_add(1);
             service.changed.notify_all();
         }
-        Ok(())
+        Ok(before != after)
     }
     // Caller owns the registry transaction, which also serializes authenticated
     // End. Recheck both launch capability and launch retirement at admission.
@@ -1360,6 +1411,9 @@ impl Registry {
         if let Some(lane) = state.channel_lanes.get_mut(&launch.grant.launch_id) {
             lane.active = None;
         }
+        if let Some(lane) = state.role_lanes.get_mut(&launch.grant.launch_id) {
+            lane.release_dispatch();
+        }
         state
             .receivers
             .insert(launch.grant.launch_id.clone(), receiver);
@@ -1374,8 +1428,18 @@ impl Registry {
         use_receiver: impl FnOnce(&Receiver) -> T,
     ) -> Result<T> {
         let state = self.inner.agents.state.lock().unwrap();
-        healthy_agents(&state)?;
-        Agents::require_live(&state, &launch.grant.launch_id)?;
+        self.with_agent_receiver_in(&state, launch, receiver_id, use_receiver)
+    }
+
+    fn with_agent_receiver_in<T>(
+        &self,
+        state: &AgentState,
+        launch: &Launch,
+        receiver_id: &str,
+        use_receiver: impl FnOnce(&Receiver) -> T,
+    ) -> Result<T> {
+        healthy_agents(state)?;
+        Agents::require_live(state, &launch.grant.launch_id)?;
         let receiver = state
             .receivers
             .get(&launch.grant.launch_id)
@@ -1400,6 +1464,20 @@ impl Registry {
             "receiver conversation binding changed"
         );
         Ok(use_receiver(receiver))
+    }
+
+    fn wake_receiver_live(&self, launch: &Launch, receiver: &str) -> Result<()> {
+        self.with_current_agent_receiver(launch, receiver, |current| {
+            ensure!(
+                current
+                    .lifetime
+                    .as_ref()
+                    .is_some_and(|life| life.is_alive())
+                    && launch.channel_launch_alive(),
+                "native wake receiver or launch exited"
+            );
+            Ok(())
+        })?
     }
 
     fn agent_receiver(&self, launch: &Launch, receiver_id: &str) -> Result<Receiver> {
@@ -1436,13 +1514,15 @@ impl Registry {
         wait_ms: u64,
         is_connected: &dyn Fn() -> bool,
     ) -> Result<Value> {
+        let deadline = Instant::now() + Duration::from_millis(wait_ms.min(25000));
         let receiver = self.agent_receiver_peer(launch, peer, &receiver_id)?;
         let service = &self.inner.agents;
         let id = &launch.grant.launch_id;
         {
-            let _writer = service.callback_guard()?;
-            self.with_current_agent_receiver(launch, &receiver_id, |_| ())?;
+            // Waiter capacity and receiver replacement are ordered by agent state;
+            // subscribing need not wait for a callback holding the writer.
             let mut state = service.state.lock().unwrap();
+            self.with_agent_receiver_in(&state, launch, &receiver_id, |_| ())?;
             let waiters = state.waiters.entry(id.clone()).or_default();
             ensure!(
                 waiters.values().sum::<usize>() < 2,
@@ -1476,13 +1556,17 @@ impl Registry {
             id,
             receiver_id: &receiver_id,
         };
-        let deadline = Instant::now() + Duration::from_millis(wait_ms.min(25000));
+        let mut allow_immediate = wait_ms == 0;
         let mut observed_revision = None;
-        let mut channel_retry = None;
+        let mut claim_retry = None;
         loop {
             // Cancellation ticks inspect socket liveness only; recheck the
             // receiver process and channel eligibility on state changes.
             ensure!(is_connected(), "subscription transport disconnected");
+            let immediate = std::mem::take(&mut allow_immediate);
+            if !immediate && Instant::now() >= deadline {
+                return Ok(json!({"notification":null}));
+            }
             let revision = {
                 let state = service.state.lock().unwrap();
                 self.authorize_agent_guard(launch)?;
@@ -1493,11 +1577,11 @@ impl Registry {
                     RoleLane::availability(&state, launch),
                 )
             };
-            let retry_ready = channel_retry.is_some_and(|retry| retry <= Instant::now());
+            let retry_ready = claim_retry.is_some_and(|retry| retry <= Instant::now());
             if retry_ready {
-                channel_retry = None;
+                claim_retry = None;
             }
-            if observed_revision != Some(revision) || (retry_ready && Instant::now() < deadline) {
+            if observed_revision != Some(revision) || retry_ready {
                 self.agent_receiver_peer(launch, peer, &receiver_id)?;
                 let (role_wake, channel) = {
                     let state = service.state.lock().unwrap();
@@ -1514,31 +1598,33 @@ impl Registry {
                     let (pending, busy, _) = revision.1;
                     let (role_pending, role_busy, _) = revision.2;
                     (
-                        role_pending && !busy && !role_busy,
-                        pending && !busy && !role_busy && channel_retry.is_none(),
+                        role_pending && !busy && !role_busy && claim_retry.is_none(),
+                        pending && !busy && !role_busy && claim_retry.is_none(),
                     )
                 };
-                if role_wake
-                    && let Some(wake) = self.claim_role_wake(launch, &receiver, is_connected)?
-                {
-                    return Ok(wake);
+                if !immediate && Instant::now() >= deadline {
+                    return Ok(json!({"notification":null}));
                 }
-                if channel {
-                    match self.claim_channel_wake(
-                        launch,
-                        peer,
-                        &receiver,
-                        is_connected,
-                        deadline,
-                    )? {
-                        ChannelClaimPoll::Ready(wake) => return Ok(wake),
-                        ChannelClaimPoll::Empty => {
-                            #[cfg(test)]
+                let poll = if role_wake {
+                    self.claim_role_wake(launch, &receiver, is_connected)?
+                } else if channel {
+                    self.claim_channel_wake(launch, peer, &receiver, is_connected, deadline)?
+                } else {
+                    WakeClaimPoll::Empty
+                };
+                match poll {
+                    WakeClaimPoll::Ready(wake) => return Ok(wake),
+                    WakeClaimPoll::Empty =>
+                    {
+                        #[cfg(test)]
+                        if channel && !role_wake {
                             service.wait_channel_barrier(ChannelTestPause::EmptyClaim);
                         }
-                        ChannelClaimPoll::Deferred => {
-                            channel_retry = Some(Instant::now() + CHANNEL_CLAIM_RETRY);
-                        }
+                    }
+                    WakeClaimPoll::Deferred => {
+                        claim_retry = Some(Instant::now() + WAKE_CLAIM_RETRY);
+                        #[cfg(test)]
+                        service.wait_channel_barrier(ChannelTestPause::DeferredClaim);
                     }
                 }
             }
@@ -1554,14 +1640,15 @@ impl Registry {
                 continue;
             }
             if Instant::now() >= deadline {
-                return Ok(json!({"notification":null}));
+                // Observe transport cancellation before reporting a timeout.
+                continue;
             }
             let (state, _) = service
                 .changed
                 .wait_timeout(
                     state,
                     deadline
-                        .min(channel_retry.unwrap_or(deadline))
+                        .min(claim_retry.unwrap_or(deadline))
                         .saturating_duration_since(Instant::now())
                         .min(Duration::from_millis(1000)),
                 )
@@ -1588,6 +1675,24 @@ fn require_scope(scope: AgentScope, own: &ContextFact) -> Result<()> {
 
 fn wake_deadline(claimed_at: u64) -> u64 {
     claimed_at.saturating_add(WAKE_BATCH_LEASE_MS)
+}
+
+fn safe_wake_outcome<'a>(
+    launch: &Launch,
+    outcome: &'a AgentWakeOutcome,
+) -> Result<(&'static str, Option<&'a str>)> {
+    let (outcome, reason) = match outcome {
+        AgentWakeOutcome::Accepted => ("accepted", None),
+        AgentWakeOutcome::Failed { reason } => ("failed", Some(reason.as_str())),
+        AgentWakeOutcome::Unknown { reason } => ("unknown", Some(reason.as_str())),
+    };
+    ensure!(
+        reason.is_none_or(|reason| reason.len() <= 2048
+            && !reason.chars().any(char::is_control)
+            && !reason.contains(&launch.grant.token)),
+        "invalid safe wake reason"
+    );
+    Ok((outcome, reason))
 }
 
 #[cfg(all(test, target_os = "linux"))]

@@ -78,7 +78,6 @@ impl Store {
         }
         match read {
             CatalogRead::Snapshot(after) => snapshot(
-                self,
                 &tx,
                 actor_id,
                 ChannelCatalogCursor {
@@ -89,14 +88,13 @@ impl Store {
                 limit,
             ),
             CatalogRead::Changes(after) => {
-                changes(self, &tx, actor_id, store_id, after.sequence, newest, limit)
+                changes(&tx, actor_id, store_id, after.sequence, newest, limit)
             }
         }
     }
 }
 
 fn snapshot(
-    store: &Store,
     connection: &Connection,
     actor_id: &str,
     cursor: ChannelCatalogCursor,
@@ -122,7 +120,8 @@ fn snapshot(
                 COALESCE(e.old_workspace_wide,c.workspace_wide), COALESCE(e.old_settings,c.settings),
                 COALESCE(e.old_last_sequence,c.last_sequence),c.change_sequence,
                 COALESCE(e.old_last_attention,c.last_attention),d.channel_id IS NOT NULL,
-                r.channel_id IS NOT NULL,COALESCE(e.old_through,p.through,0)
+                r.channel_id IS NOT NULL,COALESCE(e.old_through,p.through,0),
+                COALESCE(r.archive_reported,0)
          FROM catalog_workspaces w CROSS JOIN channels c ON c.workspace_id=w.id
          LEFT JOIN direct_channels d ON d.channel_id=c.id
          LEFT JOIN role_threads r ON r.channel_id=c.id
@@ -136,7 +135,7 @@ fn snapshot(
     let mut channels = statement
         .query_map(
             params![actor_id, workspace, channel, cursor.sequence, limit + 1],
-            |r| summary(store, r, 0),
+            |r| summary(r, 0),
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let next_after = take_extra(&mut channels, limit).then(|| {
@@ -155,7 +154,6 @@ fn snapshot(
 }
 
 fn changes(
-    store: &Store,
     connection: &Connection,
     actor_id: &str,
     store_id: String,
@@ -170,7 +168,8 @@ fn changes(
         let mut statement = connection.prepare(
             "SELECT e.sequence,e.workspace_id,c.id,c.workspace_id,COALESCE(d.display_name,c.name),
                     c.workspace_wide,c.settings,c.last_sequence,c.change_sequence,c.last_attention,
-                    d.channel_id IS NOT NULL,r.channel_id IS NOT NULL,COALESCE(p.through,0)
+                    d.channel_id IS NOT NULL,r.channel_id IS NOT NULL,COALESCE(p.through,0),
+                    COALESCE(r.archive_reported,0)
              FROM catalog_events e
              LEFT JOIN catalog_workspaces w ON w.id=e.workspace_id
              LEFT JOIN channels c ON c.id=e.channel_id
@@ -194,7 +193,7 @@ fn changes(
                     }
                 } else {
                     ChannelCatalogChange::Upsert {
-                        channel: summary(store, row, 2)?,
+                        channel: summary(row, 2)?,
                     }
                 },
             );
@@ -226,12 +225,9 @@ pub(super) fn record_read_position(
     Ok(())
 }
 
-fn summary(store: &Store, row: &Row<'_>, start: usize) -> rusqlite::Result<ChannelSummary> {
+fn summary(row: &Row<'_>, start: usize) -> rusqlite::Result<ChannelSummary> {
     let channel = StoredChannel::read(row, start + 1)?;
     let id = ChannelId(row.get(start)?);
-    let archived = channel.role_thread
-        && store
-            .active_role_thread(&channel.workspace_id, &id)
-            .is_none();
-    Ok(channel.summary(id, row.get(start + 10)?, true, archived))
+    // Archive state is projected from the same journal snapshot as the cursor.
+    Ok(channel.summary(id, row.get(start + 10)?, true, row.get(start + 11)?))
 }

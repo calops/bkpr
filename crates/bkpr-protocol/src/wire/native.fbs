@@ -525,6 +525,7 @@ table RoleRequestDecide {
   requester:ChannelMentionBinding (required);
   expected_holder:string;
   approve:bool;
+  decision_generation:ulong;
 }
 table RoleRequestSet {
   workspace_id:string (required);
@@ -1061,6 +1062,7 @@ table RoleApproval {
   prior_holder:RoleGrant;
   expires_at_ms:ulong;
   workspace_name:string (required);
+  decision_generation:ulong;
 }
 table RoleResponseActivity {}
 table RoleResponseSnapshot {

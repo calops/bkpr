@@ -120,7 +120,7 @@ fn history(
                 after: None,
                 limit: 10,
             },
-            |owner| {
+            |owner, _| {
                 assert_eq!(owner, WORKSPACE);
                 Ok(authority(actor, kind))
             },

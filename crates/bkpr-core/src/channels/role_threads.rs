@@ -4,7 +4,6 @@ use bkpr_protocol::channels::{
     ChannelSettings, MessageSummary, Participant, ParticipantKind, WakePolicy,
 };
 use bkpr_protocol::roles::{RoleAttribution, RoleGrant, RoleGrantId};
-use rusqlite::Connection;
 
 pub(super) const NAME: &str = "#coordinator";
 
@@ -14,6 +13,9 @@ const SETTINGS: ChannelSettings = ChannelSettings {
     attention_questions: true,
     attention_reports: true,
 };
+
+const REPORT_ARCHIVE: &str =
+    "UPDATE role_threads SET archive_reported=1 WHERE channel_id=?1 AND archive_reported=0";
 
 impl Store {
     pub(crate) fn role_grant(&self, workspace: &str) -> Option<&RoleGrant> {
@@ -28,7 +30,7 @@ impl Store {
     pub(crate) fn set_role(&mut self, grant: RoleGrant) -> Result<Option<RoleGrant>> {
         let tx = self.connection.transaction()?;
         if let Some(previous) = self.roles.get(&grant.workspace_id) {
-            report_archive(&tx, &previous.channel_id)?;
+            tx.execute(REPORT_ARCHIVE, [previous.channel_id.as_ref()])?;
         }
         insert_channel(
             &tx,
@@ -48,7 +50,9 @@ impl Store {
 
     /// Revocation is immediate, even if the archive notice cannot be persisted yet.
     pub(crate) fn remove_role(&mut self, workspace: &str) -> Option<RoleGrant> {
-        self.roles.remove(workspace)
+        let former = self.roles.remove(workspace)?;
+        self.pending_role_archives.push(former.channel_id.clone());
+        Some(former)
     }
 
     pub(super) fn active_role_grant(&self, workspace: &str) -> Option<&RoleGrant> {
@@ -75,40 +79,20 @@ impl Store {
     /// Deliver deferred catalog notices and retire stale wake work. The durable
     /// flag tracks only reporting, never access; the live map is authoritative.
     pub(super) fn report_role_archives(&mut self) -> Result<()> {
-        let mut archives = Vec::new();
+        if self.pending_role_archives.is_empty() {
+            return Ok(());
+        }
+        let tx = self.connection.transaction()?;
         {
-            let mut statement = self.connection.prepare(
-                "SELECT c.workspace_id,r.channel_id FROM role_threads r JOIN channels c ON c.id=r.channel_id
-                 WHERE r.archive_reported=0",
-            )?;
-            let mut rows = statement.query([])?;
-            while let Some(row) = rows.next()? {
-                let workspace = row.get_ref(0)?.as_str()?;
-                let channel = row.get_ref(1)?.as_str()?;
-                if !self.role_grant(workspace).is_some_and(|grant| {
-                    grant.channel_id.as_ref() == channel && self.grant_is_live(grant)
-                }) {
-                    archives.push(ChannelId(channel.to_owned()));
-                }
+            let mut report = tx.prepare(REPORT_ARCHIVE)?;
+            for channel in &self.pending_role_archives {
+                report.execute([channel.as_ref()])?;
             }
         }
-        if !archives.is_empty() {
-            let tx = self.connection.transaction()?;
-            for channel in &archives {
-                report_archive(&tx, channel)?;
-            }
-            tx.commit()?;
-        }
+        tx.commit()?;
+        self.pending_role_archives.clear();
         Ok(())
     }
-}
-
-fn report_archive(connection: &Connection, channel: &ChannelId) -> Result<()> {
-    connection.execute(
-        "UPDATE role_threads SET archive_reported=1 WHERE channel_id=?1 AND archive_reported=0",
-        [channel.as_ref()],
-    )?;
-    Ok(())
 }
 
 pub(super) fn delegation<'a>(

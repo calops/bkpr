@@ -27,6 +27,7 @@ pub(super) fn write_request(
         }
         RoleRequest::Decide {
             request_id,
+            decision_generation,
             requester,
             expected_holder,
             approve,
@@ -37,7 +38,14 @@ pub(super) fn write_request(
                 .as_ref()
                 .map(|id| write_text(b, &id.0, budget))
                 .transpose()?;
-            let offset = g::RoleRequestDecide::create(b, id, requester, holder, *approve);
+            let offset = g::RoleRequestDecide::create(
+                b,
+                id,
+                requester,
+                holder,
+                *approve,
+                *decision_generation,
+            );
             g::RoleRequest::create_role_request_decide(b, offset)
         }
         RoleRequest::Set {
@@ -62,13 +70,14 @@ pub(super) fn read_request(
     depth: usize,
 ) -> Result<RoleRequest> {
     budget.node(depth)?;
-    Ok(match request {
+    let request = match request {
         g::RoleRequestRef::RoleRequestActivity(v) => RoleRequest::Activity {
             eligible: v.eligible()?,
         },
         g::RoleRequestRef::RoleRequestSnapshot(_) => RoleRequest::Snapshot {},
         g::RoleRequestRef::RoleRequestDecide(v) => RoleRequest::Decide {
             request_id: RoleRequestId(read_id(v.request_id()?, budget)?),
+            decision_generation: v.decision_generation()?,
             requester: read_mention_binding(v.requester()?, budget, depth + 1)?,
             expected_holder: v
                 .expected_holder()?
@@ -84,7 +93,9 @@ pub(super) fn read_request(
                 .map(|v| read_mention_binding(v, budget, depth + 1))
                 .transpose()?,
         },
-    })
+    };
+    request.validate()?;
+    Ok(request)
 }
 
 fn read_id(value: &str, budget: &mut Budget) -> Result<String> {
@@ -189,6 +200,7 @@ fn write_approval(
         holder,
         v.expires_at_ms,
         name,
+        v.decision_generation,
     ))
 }
 
@@ -196,6 +208,7 @@ fn read_approval(v: g::RoleApprovalRef<'_>, budget: &mut Budget) -> Result<RoleA
     budget.node(1)?;
     let approval = RoleApproval {
         id: RoleRequestId(read_id(v.id()?, budget)?),
+        decision_generation: v.decision_generation()?,
         workspace_id: read_id(v.workspace_id()?, budget)?,
         workspace_name: read_text(v.workspace_name()?, budget)?,
         role: read_role(v.role()?),
@@ -212,6 +225,10 @@ fn read_approval(v: g::RoleApprovalRef<'_>, budget: &mut Budget) -> Result<RoleA
 }
 
 fn valid_approval(v: &RoleApproval) -> Result<()> {
+    ensure!(
+        v.decision_generation != 0,
+        "missing role decision generation"
+    );
     ensure!(
         v.participant.kind == ParticipantKind::Agent
             && v.participant.id == v.requester.participant_id,
@@ -301,10 +318,10 @@ pub(super) fn read_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channels::{MAX_ID_BYTES, ParticipantId};
+    use crate::channels::{ChannelMentionBinding, MAX_ID_BYTES, ParticipantId};
     use crate::{
-        ClientAuthority, Operation, Request,
-        wire::{Codec, decode_request},
+        ClientAuthority, Operation, PROTOCOL_VERSION, Payload, Request, Response,
+        wire::{Codec, decode_request, decode_response},
     };
 
     #[test]
@@ -326,6 +343,7 @@ mod tests {
         };
         let decision = RoleRequest::Decide {
             request_id: RoleRequestId("request".into()),
+            decision_generation: 3,
             requester: requester.clone(),
             expected_holder: Some(RoleGrantId("tenure".into())),
             approve: false,
@@ -336,7 +354,9 @@ mod tests {
         let capabilities = u64::from_le_bytes(header[16..24].try_into().unwrap());
         assert_eq!(
             capabilities,
-            crate::wire::SUPPORTED_CAPABILITIES | crate::wire::CAP_WORKSPACE_ROLES
+            crate::wire::SUPPORTED_CAPABILITIES
+                | crate::wire::CAP_WORKSPACE_ROLES
+                | super::super::framing::CAP_ROLE_DECISION_GENERATION
         );
         assert!(
             crate::wire::frame_payload_len(
@@ -346,6 +366,15 @@ mod tests {
             )
             .is_ok()
         );
+        assert!(
+            super::super::framing::frame_payload_len_with_capabilities(
+                header,
+                crate::wire::Kind::Request,
+                crate::wire::MAX_REQUEST,
+                crate::wire::SUPPORTED_CAPABILITIES | crate::wire::CAP_WORKSPACE_ROLES,
+            )
+            .is_err()
+        );
         let Operation::Client { request, .. } = decode_request(frame).unwrap().operation else {
             panic!()
         };
@@ -354,6 +383,13 @@ mod tests {
         };
         assert_eq!(request, decision);
         for invalid in [
+            RoleRequest::Decide {
+                request_id: RoleRequestId("request".into()),
+                decision_generation: 0,
+                requester: requester.clone(),
+                expected_holder: None,
+                approve: true,
+            },
             RoleRequest::Set {
                 workspace_id: "x".repeat(MAX_ID_BYTES + 1),
                 role: WorkspaceRole::Coordinator,
@@ -370,5 +406,63 @@ mod tests {
         ] {
             assert!(codec.encode_request(&operation(invalid)).is_err());
         }
+    }
+
+    #[test]
+    fn replacement_snapshot_round_trips_the_displayed_approval_and_decision_fence() {
+        let workspace = "workspace".to_owned();
+        let role = WorkspaceRole::Coordinator;
+        let requester = ChannelMentionBinding {
+            participant_id: ParticipantId("candidate".into()),
+            launch_id: "candidate-launch".into(),
+            binding_generation: 8,
+        };
+        let prior_holder = RoleGrant {
+            id: RoleGrantId("current-tenure".into()),
+            workspace_id: workspace.clone(),
+            role,
+            holder: ChannelMentionBinding {
+                participant_id: ParticipantId("incumbent".into()),
+                launch_id: "incumbent-launch".into(),
+                binding_generation: 2,
+            },
+            display_name: "Incumbent".into(),
+            origin: RoleOrigin::Command,
+            granted_at_ms: 100,
+            channel_id: ChannelId("tenure-thread".into()),
+        };
+        let expected = RoleResponse::Snapshot {
+            revision: 11,
+            grants: vec![prior_holder.clone()],
+            approvals: vec![RoleApproval {
+                id: RoleRequestId("queued-request".into()),
+                decision_generation: 4,
+                workspace_id: workspace,
+                role,
+                participant: crate::channels::Participant {
+                    id: requester.participant_id.clone(),
+                    kind: ParticipantKind::Agent,
+                    display_name: "Candidate".into(),
+                },
+                requester,
+                prior_holder: Some(prior_holder),
+                expires_at_ms: 250,
+                workspace_name: "Workspace".into(),
+            }],
+        };
+        let mut codec = Codec::new();
+        let bytes = codec
+            .encode_response(&Response {
+                version: PROTOCOL_VERSION,
+                ok: true,
+                result: Some(Payload::Roles(expected.clone())),
+                error: None,
+                failure: None,
+            })
+            .unwrap();
+        let Some(Payload::Roles(decoded)) = decode_response(bytes).unwrap().result else {
+            panic!("approval snapshot lost its role payload");
+        };
+        assert_eq!(decoded, expected);
     }
 }

@@ -2236,7 +2236,8 @@ if that attachment disconnects or becomes ineligible. A request expires after
 request doesn't extend its deadline. Denial and expiry aren't native wakes.
 
 The Coordinator can relay user intent in its own workspace. It can't act as the
-user, authorize another role, bypass native consent or read a private source.
+user, authorize another role or bypass native consent. The grant and any source
+link leave ordinary source read access unchanged.
 Posts retain their backend-stamped `message.role` after revocation. Only
 `current_delegation` on a fresh authenticated read or expanded wake verifies that
 the post's exact tenure still authorizes new work. Regranting doesn't reactivate
@@ -2257,10 +2258,13 @@ or change the channel's normal wake policy.
 
 Registered role-capable clients opt into lifetime invalidations by sending
 `RoleRequest::Activity` in `Operation::Roles`. `Snapshot` exposes only that
-attachment's current prompts. `Decide` fences the exact request, requester binding,
-attachment, and prior grant shown. The structured `Set` command skips the prompt, not target or
-user authentication. The native family and SSH handshake stay unchanged; a
-pre-role daemon rejects the per-request role capability before dispatch.
+attachment's current prompts. `Decide` fences the request, prompt generation,
+requester binding, attachment and prior grant shown. The generation changes when
+the prior tenure or eligible recipient changes. The structured `Set` command
+skips the prompt, not target or user authentication. The native family and SSH
+handshake stay unchanged; old daemons reject unsupported per-request capabilities
+before dispatch. The raw remote operation console doesn't opt into approval
+events; use a role-capable attachment for approval.
 
 ## Notification records and subscriptions
 

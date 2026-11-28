@@ -1,11 +1,12 @@
 -- The marker classifies retained history. No holder, launch, grant or membership is restored.
-CREATE TABLE role_threads (
+CREATE TABLE IF NOT EXISTS role_threads (
     channel_id TEXT PRIMARY KEY REFERENCES channels(id),
     archive_reported INTEGER NOT NULL DEFAULT 0 CHECK(archive_reported IN (0,1))
 ) WITHOUT ROWID, STRICT;
-CREATE INDEX role_threads_pending_archive ON role_threads(channel_id) WHERE archive_reported=0;
+CREATE INDEX IF NOT EXISTS role_threads_pending_archive ON role_threads(channel_id) WHERE archive_reported=0;
+CREATE INDEX IF NOT EXISTS unsettled_batches_by_channel ON channel_batches(channel_id) WHERE outcome IS NULL;
 
-ALTER TABLE catalog_events ADD COLUMN role_archive INTEGER NOT NULL DEFAULT 0;
+DROP TRIGGER IF EXISTS catalog_role_thread_archived;
 CREATE TRIGGER catalog_role_thread_archived AFTER UPDATE OF archive_reported ON role_threads
 WHEN OLD.archive_reported=0 AND NEW.archive_reported=1
 BEGIN
@@ -18,5 +19,5 @@ BEGIN
     UPDATE notification_work SET pending=0
     WHERE channel_id=NEW.channel_id AND launch_id IS NOT NULL AND pending=1;
     UPDATE channel_batches SET revoked=1
-    WHERE channel_id=NEW.channel_id AND revoked=0;
+    WHERE channel_id=NEW.channel_id AND outcome IS NULL AND revoked=0;
 END;

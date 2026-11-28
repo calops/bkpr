@@ -5,6 +5,7 @@ use bkpr_protocol::roles::{
     APPROVAL_TIMEOUT_MS, RoleApproval, RoleEvent, RoleEventKind, RoleGrant, RoleGrantId,
     RoleOrigin, RoleRequest, RoleRequestId, RoleResponse, RoleWake, RoleWakeChange, WorkspaceRole,
 };
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const MAX_PENDING: usize = 64;
@@ -31,6 +32,14 @@ struct Pending {
 impl Pending {
     fn receipt(&self) -> Value {
         json!({"request_id": self.prompt.id, "state": self.state, "expires_at_ms": self.prompt.expires_at_ms})
+    }
+
+    fn advance_decision_generation(&mut self) {
+        self.prompt.decision_generation = self
+            .prompt
+            .decision_generation
+            .checked_add(1)
+            .expect("role decision generation exhausted");
     }
 }
 
@@ -66,12 +75,33 @@ impl Approvals {
             .min()
     }
 
+    fn set_recipient(&mut self, recipient: Option<String>) -> bool {
+        if self.recipient == recipient {
+            return false;
+        }
+        self.recipient = recipient;
+        let mut visible_changed = false;
+        for pending in self
+            .requests
+            .values_mut()
+            .filter(|r| r.state == RequestState::Pending)
+        {
+            pending.advance_decision_generation();
+            visible_changed |= !pending.deciding;
+        }
+        visible_changed
+    }
+
     fn prior_holder_changed(&mut self, workspace: &str, current: Option<&RoleGrant>) {
         for pending in self
             .requests
             .values_mut()
             .filter(|r| r.state == RequestState::Pending && r.prompt.workspace_id == workspace)
         {
+            if pending.prompt.prior_holder.as_ref().map(|g| &g.id) == current.map(|g| &g.id) {
+                continue;
+            }
+            pending.advance_decision_generation();
             if current
                 .is_some_and(|grant| grant.holder.launch_id == pending.prompt.requester.launch_id)
             {
@@ -90,6 +120,8 @@ pub(in crate::registry) struct RoleService {
     grants_present: AtomicBool,
     check_retired: AtomicBool,
     wake: std::sync::OnceLock<crossbeam_channel::Sender<()>>,
+    #[cfg(test)]
+    prepare_barrier: Mutex<Option<Arc<SpawnBarrier>>>,
 }
 
 impl RoleService {
@@ -127,6 +159,20 @@ impl RoleService {
             })?;
         let _ = self.wake.set(wake);
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(in crate::registry) fn pause_prepare(&self, barrier: Arc<SpawnBarrier>) {
+        *self.prepare_barrier.lock().unwrap() = Some(barrier);
+    }
+
+    #[cfg(test)]
+    fn wait_prepare_barrier(&self) {
+        let barrier = self.prepare_barrier.lock().unwrap().take();
+        if let Some(barrier) = barrier {
+            let _ = barrier.entered.send(());
+            let _ = barrier.resume.lock().unwrap().recv();
+        }
     }
 
     fn signal(&self) {
@@ -186,19 +232,21 @@ impl Registry {
         }
     }
 
-    fn select_role_recipient(&self, approvals: &mut Approvals) -> Option<String> {
-        let clients = self.inner.clients.lock().unwrap();
-        approvals.recipient = approvals
-            .activity
-            .iter()
-            .filter(|(id, _)| {
-                clients
-                    .get(id.as_str())
-                    .is_some_and(|client| client.role_connected())
-            })
-            .max_by_key(|(_, order)| *order)
-            .map(|(id, _)| id.clone());
-        approvals.recipient.clone()
+    fn select_role_recipient(&self, approvals: &mut Approvals) -> bool {
+        let recipient = {
+            let clients = self.inner.clients.lock().unwrap();
+            approvals
+                .activity
+                .iter()
+                .filter(|(id, _)| {
+                    clients
+                        .get(id.as_str())
+                        .is_some_and(|client| client.role_connected())
+                })
+                .max_by_key(|(_, order)| *order)
+                .map(|(id, _)| id.clone())
+        };
+        approvals.set_recipient(recipient)
     }
 
     pub(in crate::registry) fn role_client_detached(&self, id: &str) {
@@ -207,8 +255,8 @@ impl Registry {
         if approvals.recipient.as_deref() != Some(id) {
             return;
         }
-        let recipient = self.select_role_recipient(&mut approvals);
-        let changed = approvals.deadline().is_some();
+        let changed = self.select_role_recipient(&mut approvals);
+        let recipient = approvals.recipient.clone();
         drop(approvals);
         if changed {
             self.publish_approval_event(recipient.as_deref());
@@ -234,8 +282,8 @@ impl Registry {
                 approvals.activity.insert(client.id.clone(), order);
             }
             if !was_selected {
-                let before = approvals.recipient.replace(client.id.clone());
-                let changed = approvals.deadline().is_some();
+                let before = approvals.recipient.clone();
+                let changed = approvals.set_recipient(Some(client.id.clone()));
                 drop(approvals);
                 if changed {
                     self.publish_approval_event(before.as_deref());
@@ -245,8 +293,8 @@ impl Registry {
         } else {
             approvals.activity.remove(&client.id);
             if was_selected {
-                let after = self.select_role_recipient(&mut approvals);
-                let changed = approvals.deadline().is_some();
+                let changed = self.select_role_recipient(&mut approvals);
+                let after = approvals.recipient.clone();
                 drop(approvals);
                 if changed {
                     self.publish_approval_event(Some(&client.id));
@@ -276,6 +324,7 @@ impl Registry {
                 ensure!(connected(), "role attachment disconnected");
                 match request {
                     RoleRequest::Snapshot {} => {
+                        let revision = roles.revision.load(Ordering::Acquire);
                         let approvals = roles.approvals.lock().unwrap();
                         let selected = approvals.recipient.as_deref() == Some(&client.id);
                         let now = Instant::now();
@@ -293,13 +342,14 @@ impl Registry {
                         } else {
                             Vec::new()
                         };
+                        drop(approvals);
                         Ok(RoleResponse::Snapshot {
-                            revision: roles.revision.load(Ordering::Acquire),
-                            grants: store
-                                .role_grants()
-                                .filter(|g| self.role_holder_alive(g))
-                                .cloned()
-                                .collect(),
+                            revision,
+                            grants: self.role_grants_by_liveness(
+                                store.role_grants(),
+                                true,
+                                RoleGrant::clone,
+                            ),
                             approvals: prompts,
                         })
                     }
@@ -347,6 +397,7 @@ impl Registry {
                     }
                     RoleRequest::Decide {
                         request_id,
+                        decision_generation,
                         requester,
                         expected_holder,
                         approve,
@@ -360,8 +411,11 @@ impl Registry {
                                 .map(|r| r.prompt.workspace_id.clone())
                                 .context("role approval is no longer pending")?
                         };
-                        let _binding =
+                        let binding =
                             self.fence_user_mentions(&workspace, std::slice::from_ref(&requester))?;
+                        let prior = store
+                            .role_grant(&workspace)
+                            .filter(|g| self.role_holder_alive(g));
                         let (role, label, prior) = {
                             let mut approvals = roles.approvals.lock().unwrap();
                             ensure!(
@@ -372,14 +426,12 @@ impl Registry {
                                 .requests
                                 .get_mut(&requester.launch_id)
                                 .context("role approval is no longer pending")?;
-                            let prior = store
-                                .role_grant(&workspace)
-                                .filter(|g| self.role_holder_alive(g));
                             ensure!(
                                 pending.state == RequestState::Pending
                                     && !pending.deciding
                                     && Instant::now() < pending.deadline
                                     && pending.prompt.id == request_id
+                                    && pending.prompt.decision_generation == decision_generation
                                     && pending.prompt.requester == requester
                                     && pending.prompt.prior_holder.as_ref().map(|g| &g.id)
                                         == expected_holder.as_ref()
@@ -398,6 +450,7 @@ impl Registry {
                             )
                         };
                         if !approve {
+                            drop(binding);
                             self.publish_approval_event(Some(&client.id));
                             roles.signal();
                             return Ok(RoleResponse::Updated { grant: prior });
@@ -409,8 +462,10 @@ impl Registry {
                             label,
                             RoleOrigin::Approval,
                         );
+                        #[cfg(test)]
+                        roles.wait_prepare_barrier();
                         let prepared = store.set_role(grant.clone());
-                        {
+                        let restored_recipient = {
                             let mut approvals = roles.approvals.lock().unwrap();
                             let pending = approvals
                                 .requests
@@ -419,10 +474,20 @@ impl Registry {
                             pending.deciding = false;
                             if prepared.is_ok() {
                                 pending.state = RequestState::Approved;
+                                None
+                            } else {
+                                approvals.recipient.clone()
                             }
-                        }
-                        roles.signal();
-                        let former = prepared?;
+                        };
+                        drop(binding);
+                        let former = match prepared {
+                            Ok(former) => former,
+                            Err(error) => {
+                                self.publish_approval_event(restored_recipient.as_deref());
+                                roles.signal();
+                                return Err(error);
+                            }
+                        };
                         roles.grants_present.store(true, Ordering::Release);
                         self.role_grant_changed(&workspace, former, Some(&grant));
                         Ok(RoleResponse::Updated { grant: Some(grant) })
@@ -497,6 +562,41 @@ impl Registry {
             && self.role_launch_alive(&grant.holder.launch_id)
     }
 
+    fn role_grants_by_liveness<'a, T>(
+        &self,
+        mut grants: impl Iterator<Item = &'a RoleGrant>,
+        alive: bool,
+        project: impl FnMut(&'a RoleGrant) -> T,
+    ) -> Vec<T> {
+        let Some(first) = grants.next() else {
+            return Vec::new();
+        };
+        let state = self.inner.state.lock().unwrap();
+        let workspaces: HashSet<_> = state
+            .record
+            .registry
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.id.as_str())
+            .collect();
+        let agents = self.inner.agents.state.lock().unwrap();
+        let captures = self.inner.captures.lock().unwrap();
+        std::iter::once(first)
+            .chain(grants)
+            .filter(|grant| {
+                let id = &grant.holder.launch_id;
+                let live = workspaces.contains(grant.workspace_id.as_str())
+                    && agents.agents.contains_key(id)
+                    && captures
+                        .launches
+                        .get(id)
+                        .is_some_and(Launch::channel_launch_alive);
+                live == alive
+            })
+            .map(project)
+            .collect()
+    }
+
     fn role_launch_alive(&self, id: &str) -> bool {
         let agents = self.inner.agents.state.lock().unwrap();
         agents.agents.contains_key(id)
@@ -544,6 +644,8 @@ impl Registry {
                 );
                 let (workspace, target, participant, workspace_name) =
                     self.agent_role_target(launch)?;
+                let binding =
+                    self.fence_user_mentions(&workspace, std::slice::from_ref(&target))?;
                 let prior = store
                     .role_grant(&workspace)
                     .filter(|g| self.role_holder_alive(g));
@@ -551,8 +653,13 @@ impl Registry {
                     prior.is_none_or(|g| g.holder.launch_id != target.launch_id),
                     "launch already holds that role"
                 );
-                let clock = Instant::now();
                 let mut approvals = roles.approvals.lock().unwrap();
+                self.authorize_agent_guard(launch)?;
+                ensure!(
+                    connected() && !self.session_end_requested(),
+                    "role requester disconnected"
+                );
+                let clock = Instant::now();
                 let is_pending = |r: &Pending| {
                     r.state == RequestState::Pending && (r.deciding || clock < r.deadline)
                 };
@@ -584,9 +691,11 @@ impl Registry {
                     approvals.requests.remove(&evict);
                 }
                 let launch_id = target.launch_id.clone();
+                self.select_role_recipient(&mut approvals);
                 let pending = Pending {
                     prompt: RoleApproval {
                         id: RoleRequestId(Uuid::new_v4().to_string()),
+                        decision_generation: 1,
                         workspace_id: workspace,
                         role,
                         requester: target,
@@ -601,8 +710,9 @@ impl Registry {
                 };
                 let receipt = pending.receipt();
                 approvals.requests.insert(launch_id, pending);
-                let recipient = self.select_role_recipient(&mut approvals);
+                let recipient = approvals.recipient.clone();
                 drop(approvals);
+                drop(binding);
                 roles.signal();
                 self.publish_approval_event(recipient.as_deref());
                 Ok(receipt)
@@ -670,6 +780,7 @@ impl Registry {
     ) {
         let recipient = {
             let mut approvals = self.inner.roles.approvals.lock().unwrap();
+            approvals.expire(Instant::now());
             approvals.prior_holder_changed(workspace, active);
             approvals.recipient.clone()
         };
@@ -721,11 +832,10 @@ impl Registry {
                 self.inner
                     .channels
                     .with_role_store(&|| self.session_end_requested(), |store| {
-                        let retired: Vec<_> = store
-                            .role_grants()
-                            .filter(|g| !self.role_holder_alive(g))
-                            .map(|g| g.workspace_id.clone())
-                            .collect();
+                        let retired =
+                            self.role_grants_by_liveness(store.role_grants(), false, |g| {
+                                g.workspace_id.clone()
+                            });
                         for workspace in retired {
                             let former = store.remove_role(&workspace);
                             self.role_grant_changed(&workspace, former, None);

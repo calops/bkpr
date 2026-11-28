@@ -2026,7 +2026,7 @@ fn authenticated_channel_tools_and_native_wakes_keep_recipient_and_membership_fe
         .channels
         .request_routed(
             racing,
-            |workspace| registry.channel_authority(workspace, None, true, &|| true),
+            |workspace, _| registry.channel_authority(workspace, None, true, &|| true),
             |_| true,
             || false,
             crate::channels::ChannelRoutes {
@@ -2208,6 +2208,168 @@ fn channel_subscription_sees_empty_to_pending_and_rechecks_an_exiting_receiver()
     let next = subscribe(&registry, &launch, &replacement);
     assert_eq!(next["channel_wake"]["pending_count"], 1);
     assert!(next["generation"].as_u64().unwrap() > second["generation"].as_u64().unwrap());
+}
+
+#[test]
+fn role_wake_replacement_and_subscriber_backpressure_preserve_pending_work() {
+    use crate::registry::{SpawnBarrier, agents::ChannelTestPause};
+    use bkpr_protocol::roles::{RoleRequest, RoleResponse, WorkspaceRole};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::sync_channel,
+    };
+
+    let root = private_root();
+    let root = root.path();
+    std::os::unix::fs::symlink(std::env::current_exe().unwrap(), root.join("omp")).unwrap();
+    let (registry, _server) = open(root);
+    let spec = launch_spec(root, "receiver", NATIVE_ID);
+    send(
+        &registry,
+        Operation::WorkspaceCreate {
+            name: None,
+            initial: Some(spec.clone()),
+        },
+    );
+    let launch = live(&registry, &spec.home);
+    let workspace_id = registry.snapshot().unwrap().workspaces.remove(0).id;
+    let (client, _stream) = registry.test_role_client();
+    registry
+        .request_roles(&client, RoleRequest::Activity { eligible: true }, &|| true)
+        .unwrap();
+    let set = |target| {
+        registry
+            .request_roles(
+                &client,
+                RoleRequest::Set {
+                    workspace_id: workspace_id.clone(),
+                    role: WorkspaceRole::Coordinator,
+                    target,
+                },
+                &|| true,
+            )
+            .unwrap()
+    };
+    let receiver = self::receiver(&registry, &launch);
+    let Payload::Roles(RoleResponse::Updated { grant: Some(grant) }) =
+        set(Some(ChannelMentionBinding {
+            participant_id: launch.channel_participant.clone().unwrap(),
+            launch_id: launch.grant.launch_id.clone(),
+            binding_generation: launch.binding_generation,
+        }))
+    else {
+        panic!("expected role grant");
+    };
+    let claim = |receiver_id: &str| {
+        agent(
+            &registry,
+            &launch,
+            AgentRequest::ReceiverSubscribe {
+                receiver_id: receiver_id.into(),
+                wait_ms: 5000,
+            },
+        )["notification"]
+            .take()
+    };
+    let first = claim(&receiver);
+    assert_eq!(first["role_wake"]["grant_id"], grant.id.0);
+    assert_eq!(first["role_wake"]["change"], "granted");
+    assert_eq!(
+        validate_wake(&registry, &launch, &receiver, &first)["current"],
+        true
+    );
+    let Payload::Roles(RoleResponse::Updated { grant: None }) = set(None) else {
+        panic!("expected role revocation");
+    };
+
+    let native_pid = fs::read_to_string(spec.home.join("native-pid"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let registration = agent(
+        &registry,
+        &launch,
+        AgentRequest::ReceiverRegister {
+            session_id: NATIVE_ID.into(),
+            mode: AgentReceiverMode::ActiveTurn,
+            pid: native_pid,
+        },
+    );
+    let replacement = registration["receiver_id"].as_str().unwrap();
+    assert_ne!(receiver, replacement);
+    assert_eq!(
+        validate_wake(&registry, &launch, replacement, &first)["current"],
+        false
+    );
+
+    // The barrier proves that the subscriber reached deferred admission. In
+    // the first two cases the writer stays held until the subscription returns.
+    let wait_on_busy_writer = |wait_ms, cancel| {
+        let connected = AtomicBool::new(true);
+        thread::scope(|scope| {
+            let (entered, notice) = sync_channel(0);
+            let (resume, resume_rx) = sync_channel(0);
+            registry.inner.agents.pause_channel(
+                ChannelTestPause::DeferredClaim,
+                Arc::new(SpawnBarrier {
+                    entered,
+                    resume: Mutex::new(resume_rx),
+                }),
+            );
+            let (done, result) = sync_channel(1);
+            let writer = registry.inner.agents.callback_guard().unwrap();
+            let registry = &registry;
+            let launch = &launch;
+            let connected = &connected;
+            scope.spawn(move || {
+                let peer = Peer {
+                    pid: launch.root.pid,
+                    uid: unsafe { libc::geteuid() },
+                    birth: launch.root.identity.clone(),
+                };
+                let reply = registry
+                    .request_authenticated_cancellable(
+                        Request::new(Operation::Agent {
+                            launch_id: launch.grant.launch_id.clone(),
+                            token: launch.grant.token.clone(),
+                            guard: None,
+                            request: AgentRequest::ReceiverSubscribe {
+                                receiver_id: replacement.into(),
+                                wait_ms,
+                            },
+                        }),
+                        &peer,
+                        &|| connected.load(Ordering::Acquire),
+                    )
+                    .and_then(Payload::into_json);
+                let _ = done.send(reply);
+            });
+            notice.recv_timeout(Duration::from_secs(5)).unwrap();
+            if cancel {
+                connected.store(false, Ordering::Release);
+            }
+            let _writer = (wait_ms == 0 || cancel).then_some(writer);
+            resume.send(()).unwrap();
+            result.recv_timeout(Duration::from_secs(5)).unwrap()
+        })
+    };
+    assert_eq!(
+        wait_on_busy_writer(0, false).unwrap(),
+        json!({"notification": null})
+    );
+    assert_eq!(
+        wait_on_busy_writer(5000, true).unwrap_err().to_string(),
+        "subscription transport disconnected"
+    );
+    let next = wait_on_busy_writer(5000, false).unwrap()["notification"].take();
+    assert_eq!(next["role_wake"]["grant_id"], grant.id.0);
+    assert_eq!(next["role_wake"]["change"], "revoked");
+    assert!(next["generation"].as_u64().unwrap() > first["generation"].as_u64().unwrap());
+    assert_eq!(
+        settle_wake(&registry, &launch, replacement, &next)["recorded"],
+        true
+    );
+    assert!(subscribe(&registry, &launch, replacement).is_null());
 }
 
 #[test]

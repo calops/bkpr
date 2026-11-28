@@ -23,6 +23,7 @@
 ### Bug Fixes
 
 * **roles:** guide managed agents to check and request the workspace role when explicitly assigned, without opening a prompt for one-task leads ([#109](https://github.com/calops/bkpr/issues/109))
+* **roles:** keep withdrawn approval prompts stale and let a live Coordinator be mentioned again after switching native conversations ([#109](https://github.com/calops/bkpr/issues/109))
 * **channels:** guide agents to verify earlier user context for ambiguous `#desk` follow-ups without replaying completed work ([#75](https://github.com/calops/bkpr/issues/75))
 * **channels:** keep the user-chosen lead scoped to the current request and route one synthesized report to the original `#desk` post unless the user asks for individual reports ([#75](https://github.com/calops/bkpr/issues/75))
 * **channels:** default new `#team` channels to waking only mentioned agents when addressed and all eligible peers otherwise, without rewriting saved settings ([#75](https://github.com/calops/bkpr/issues/75))

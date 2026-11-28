@@ -296,6 +296,8 @@ impl Store {
             params![batch_id, recipient.launch, recipient.binding, recipient.participant],
             |row| Ok((ChannelId(row.get(0)?), row.get(1)?, row.get::<_, Option<String>>(2)?.map(MessageId))),
         ).optional()?.context(ChannelAccessLost)?;
+        // Role tenure loss blocks lookup even for settled batches, whose delivery
+        // records aren't rewritten by archival.
         let (channel, authority) = self.access(&channel_id, &access, caller_workspace)?;
         let mut statement = self.connection.prepare(
             "SELECT w.message_id,p.sequence,w.addressed FROM notification_work w JOIN posts p ON p.id=w.message_id

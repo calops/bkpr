@@ -34,6 +34,7 @@ fn snapshot(registry: &Registry, client: &ClientLease) -> (Vec<RoleGrant>, Vec<R
 fn approval(prompt: &RoleApproval, approve: bool) -> RoleRequest {
     RoleRequest::Decide {
         request_id: prompt.id.clone(),
+        decision_generation: prompt.decision_generation,
         requester: prompt.requester.clone(),
         expected_holder: prompt.prior_holder.as_ref().map(|g| g.id.clone()),
         approve,
@@ -55,6 +56,39 @@ fn binding(launch: &Launch) -> ChannelMentionBinding {
         launch_id: launch.grant.launch_id.clone(),
         binding_generation: launch.binding_generation,
     }
+}
+
+fn switch_conversation(registry: &Registry, launch: &Launch) -> Launch {
+    let before = launch.managed.conversation.as_ref().unwrap();
+    let conversation_id = format!("{}-switched", before.id);
+    let response = launch_request(
+        registry,
+        launch,
+        Operation::HarnessEvent {
+            launch_id: launch.grant.launch_id.clone(),
+            token: launch.grant.token.clone(),
+            event: CaptureEvent::Bind {
+                conversation_id: conversation_id.clone(),
+                source: before.source,
+                expected_revision: Some(before.generation),
+            },
+        },
+    )
+    .unwrap()
+    .into_json()
+    .unwrap();
+    assert_eq!(response["accepted"], true);
+    let after = registry.inner.captures.lock().unwrap().launches[&launch.grant.launch_id].clone();
+    assert_eq!(
+        after.managed.conversation.as_ref().unwrap().id,
+        conversation_id,
+    );
+    assert_ne!(
+        binding(&after).participant_id,
+        binding(launch).participant_id
+    );
+    assert!(after.binding_generation > launch.binding_generation);
+    after
 }
 
 fn set(workspace: &str, launch: Option<&Launch>) -> RoleRequest {
@@ -340,6 +374,29 @@ fn coordinator_alias_fences_tenure_without_changing_named_mentions_or_retries() 
         &replacement,
     );
 
+    let rebound = switch_conversation(&registry, &second);
+    let (rebound_target, rebound_id) = roster(&shared).unwrap();
+    assert_eq!(rebound_target, binding(&rebound));
+    assert_eq!(rebound_target.launch_id, replacement.launch_id);
+    assert_eq!(rebound_id, replacement_id);
+    let stale_binding = alias(
+        &shared,
+        "old conversation @coordinator",
+        &replacement,
+        &replacement_id,
+    );
+    let error = channel_request(stale_binding).unwrap_err().to_string();
+    assert!(error.contains("refresh the roster"), "{error}");
+    addressed(
+        alias(
+            &shared,
+            "switched conversation @coordinator",
+            &rebound_target,
+            &rebound_id,
+        ),
+        &rebound_target,
+    );
+
     user(&registry, &client, set(&workspace, None)).unwrap();
     assert!(roster(&shared).is_none());
     let regrant = grant(user(&registry, &client, set(&workspace, Some(&first))).unwrap());
@@ -370,6 +427,7 @@ fn coordinator_alias_fences_tenure_without_changing_named_mentions_or_retries() 
             "original @coordinator",
             "named first",
             "replacement @coordinator",
+            "switched conversation @coordinator",
             "literal @coordinator"
         ]
     );
@@ -411,10 +469,13 @@ fn workspace_role_approval_fences_and_native_wakes() {
     drop(b_stream);
     registry.detach_client(&b, "disconnected");
     assert_eq!(event(&mut a_stream), Some(RoleEventKind::Approvals));
+    let reassigned = snapshot(&registry, &a).1.pop().unwrap();
+    assert_eq!(reassigned.id, prompt.id);
     assert_eq!(
-        snapshot(&registry, &a).1.as_slice(),
-        std::slice::from_ref(&prompt)
+        reassigned.decision_generation,
+        prompt.decision_generation + 1
     );
+    assert_eq!(reassigned.expires_at_ms, prompt.expires_at_ms);
     assert!(user(&registry, &b, approval(&prompt, true)).is_err());
 
     let first_receiver = receiver(&registry, &first);
@@ -432,14 +493,44 @@ fn workspace_role_approval_fences_and_native_wakes() {
         settle_wake(&registry, &second, &second_receiver, &wake)["recorded"],
         true
     );
-    assert!(user(&registry, &a, approval(&prompt, true)).is_err());
+    assert!(user(&registry, &a, approval(&reassigned, true)).is_err());
     let prompt = snapshot(&registry, &a).1.pop().unwrap();
     assert_eq!(prompt.prior_holder.as_ref().unwrap().id, incumbent.id);
+    assert_eq!(
+        prompt.decision_generation,
+        reassigned.decision_generation + 1
+    );
 
     let database = rusqlite::Connection::open(root.path().join("state/channels.sqlite3")).unwrap();
     database.execute_batch("CREATE TRIGGER fail_role_prepare BEFORE INSERT ON role_threads BEGIN SELECT RAISE(ABORT,'durable preparation failed'); END;").unwrap();
-    assert!(user(&registry, &a, approval(&prompt, true)).is_err());
-    assert_eq!(snapshot(&registry, &a).0, vec![incumbent.clone()]);
+    let (waiting, mut waiting_stream) = registry.test_role_client();
+    std::thread::scope(|scope| {
+        let (entered, preparing) = std::sync::mpsc::sync_channel(0);
+        let (resume, release) = std::sync::mpsc::sync_channel(0);
+        registry.inner.roles.pause_prepare(Arc::new(SpawnBarrier {
+            entered,
+            resume: Mutex::new(release),
+        }));
+        let decision = scope.spawn(|| user(&registry, &a, approval(&prompt, true)));
+        preparing.recv_timeout(Duration::from_secs(5)).unwrap();
+        activity(&registry, &waiting, true);
+        activity(&registry, &a, true);
+        activity(&registry, &waiting, true);
+        resume.send(()).unwrap();
+        while event(&mut waiting_stream) != Some(RoleEventKind::Approvals) {}
+        let error = decision.join().unwrap().unwrap_err();
+        assert!(
+            error.to_string().contains("durable preparation failed"),
+            "{error}"
+        );
+    });
+    let (grants, mut prompts) = snapshot(&registry, &waiting);
+    assert_eq!(grants, vec![incumbent.clone()]);
+    let restored = prompts.pop().unwrap();
+    assert_eq!(restored.id, prompt.id);
+    assert_eq!(restored.decision_generation, prompt.decision_generation + 3);
+    assert_eq!(restored.expires_at_ms, prompt.expires_at_ms);
+    assert!(user(&registry, &waiting, approval(&prompt, false)).is_err());
     assert_eq!(status(&registry, &first)["request"]["state"], "pending");
     assert!(subscribe(&registry, &first, &first_receiver).is_null());
     database
@@ -447,8 +538,8 @@ fn workspace_role_approval_fences_and_native_wakes() {
         .unwrap();
 
     let (one, two) = std::thread::scope(|scope| {
-        let one = scope.spawn(|| user(&registry, &a, approval(&prompt, true)));
-        let two = scope.spawn(|| user(&registry, &a, approval(&prompt, true)));
+        let one = scope.spawn(|| user(&registry, &waiting, approval(&restored, true)));
+        let two = scope.spawn(|| user(&registry, &waiting, approval(&restored, true)));
         (one.join().unwrap(), two.join().unwrap())
     });
     let current = match (one, two) {
@@ -480,6 +571,80 @@ fn workspace_role_approval_fences_and_native_wakes() {
             false
         );
     }
+}
+
+#[test]
+fn workspace_role_approval_fences_holder_and_attachment_aba() {
+    let root = private_root();
+    let (registry, _server, first, second) = open_channel_pair(root.path());
+    let workspace = registry.snapshot().unwrap().workspaces.remove(0).id;
+    let (owner, _owner_stream) = registry.test_role_client();
+    let (other, _other_stream) = registry.test_role_client();
+    activity(&registry, &owner, true);
+
+    let request = AgentRequest::RoleRequest { role: ROLE };
+    let receipt = agent(&registry, &first, request.clone());
+    let original = snapshot(&registry, &owner).1.pop().unwrap();
+    assert_eq!(original.decision_generation, 1);
+    assert!(original.prior_holder.is_none());
+
+    activity(&registry, &other, true);
+    assert!(snapshot(&registry, &owner).1.is_empty());
+    let away = snapshot(&registry, &other).1.pop().unwrap();
+    assert_eq!(away.decision_generation, original.decision_generation + 1);
+    activity(&registry, &owner, true);
+    let back = snapshot(&registry, &owner).1.pop().unwrap();
+    assert_eq!(back.decision_generation, original.decision_generation + 2);
+    assert!(user(&registry, &owner, approval(&original, false)).is_err());
+
+    activity(&registry, &owner, true);
+    assert_eq!(
+        snapshot(&registry, &owner).1.as_slice(),
+        std::slice::from_ref(&back)
+    );
+    let holder = grant(user(&registry, &owner, set(&workspace, Some(&second))).unwrap());
+    let occupied = snapshot(&registry, &owner).1.pop().unwrap();
+    assert_eq!(occupied.decision_generation, back.decision_generation + 1);
+    assert_eq!(occupied.prior_holder.unwrap().id, holder.id);
+    user(&registry, &owner, set(&workspace, None)).unwrap();
+    let vacant = snapshot(&registry, &owner).1.pop().unwrap();
+    assert!(vacant.prior_holder.is_none());
+    assert_eq!(vacant.decision_generation, back.decision_generation + 2);
+    assert_eq!(vacant.id, original.id);
+    assert_eq!(vacant.expires_at_ms, original.expires_at_ms);
+    assert!(user(&registry, &owner, approval(&back, true)).is_err());
+    assert_eq!(agent(&registry, &first, request), receipt);
+    user(&registry, &owner, approval(&vacant, false)).unwrap();
+    assert_eq!(status(&registry, &first)["request"]["state"], "denied");
+}
+
+#[test]
+fn workspace_role_approval_requires_the_current_requester_binding() {
+    let root = private_root();
+    let (registry, _server, first, _second) = open_channel_pair(root.path());
+    let (client, _stream) = registry.test_role_client();
+    activity(&registry, &client, true);
+    let request = AgentRequest::RoleRequest { role: ROLE };
+    agent(&registry, &first, request.clone());
+    let old = snapshot(&registry, &client).1.pop().unwrap();
+    assert_eq!(old.requester, binding(&first));
+
+    let rebound = switch_conversation(&registry, &first);
+    let error = user(&registry, &client, approval(&old, true))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("binding changed"), "{error}");
+    agent(&registry, &rebound, request);
+    let (grants, prompts) = snapshot(&registry, &client);
+    assert!(grants.is_empty());
+    assert_eq!(prompts.len(), 1);
+    let current = &prompts[0];
+    assert_ne!(current.id, old.id);
+    assert_eq!(current.decision_generation, 1);
+    assert_eq!(current.requester, binding(&rebound));
+    let granted = grant(user(&registry, &client, approval(current, true)).unwrap());
+    assert_eq!(granted.holder, current.requester);
+    assert_eq!(status(&registry, &rebound)["request"]["state"], "approved");
 }
 
 #[test]

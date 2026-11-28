@@ -27,6 +27,7 @@ pub const SUPPORTED_CAPABILITIES: u64 = CAP_BINARY_SCENE | CAP_TYPED_FAILURE | C
 pub(super) const CAP_CHANNEL_POST_SOURCE: u64 = 8;
 /// Per-request requirement for typed workspace role operations.
 pub const CAP_WORKSPACE_ROLES: u64 = 16;
+pub(super) const CAP_ROLE_DECISION_GENERATION: u64 = 32;
 
 /// Native payload category used for header admission and size limits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -54,7 +55,10 @@ impl Kind {
 /// Reject unknown required capabilities and lengths above either `max` or the kind's limit.
 pub fn frame_payload_len(header: &[u8], expected: Kind, max: usize) -> Result<usize> {
     let capabilities = if expected == Kind::Request {
-        SUPPORTED_CAPABILITIES | CAP_CHANNEL_POST_SOURCE | CAP_WORKSPACE_ROLES
+        SUPPORTED_CAPABILITIES
+            | CAP_CHANNEL_POST_SOURCE
+            | CAP_WORKSPACE_ROLES
+            | CAP_ROLE_DECISION_GENERATION
     } else {
         SUPPORTED_CAPABILITIES
     };
@@ -146,7 +150,15 @@ fn request_capabilities(payload: &[u8]) -> planus::Result<u64> {
                 _ => return Ok(0),
             },
             g::OperationRef::OperationChannels(channels) => channels.request()?,
-            g::OperationRef::OperationRoles(_) => return Ok(CAP_WORKSPACE_ROLES),
+            g::OperationRef::OperationRoles(roles) => {
+                let decision = matches!(roles.request()?, g::RoleRequestRef::RoleRequestDecide(_));
+                return Ok(CAP_WORKSPACE_ROLES
+                    | if decision {
+                        CAP_ROLE_DECISION_GENERATION
+                    } else {
+                        0
+                    });
+            }
             _ => return Ok(0),
         };
         return Ok(source_capability(match channel {

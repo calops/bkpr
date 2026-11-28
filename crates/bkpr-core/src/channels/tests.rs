@@ -2343,7 +2343,7 @@ fn close_retires_old_and_racing_work_before_new_capacity_is_used() {
             .run(&workspace_open, |store| {
                 let (response, changed) = store.request(
                     send(&active, post("racing-close")),
-                    active_authority,
+                    |workspace, _| active_authority(workspace),
                     super::ChannelRoutes {
                         workspace: None,
                         exact_mentions: None,
@@ -2499,7 +2499,7 @@ fn visibility_index_migration_preserves_member_access_and_durable_history() {
             ))
         })
         .unwrap();
-    assert_eq!((sync, version), (3, 17));
+    assert_eq!((sync, version), (3, 18));
 }
 
 #[test]

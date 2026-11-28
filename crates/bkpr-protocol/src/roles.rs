@@ -63,7 +63,7 @@ pub struct RoleGrant {
     pub role: WorkspaceRole,
     /// Exact holder observed at grant time. Authority belongs to its launch, not its label.
     pub holder: ChannelMentionBinding,
-    /// Holder display label as observed when the grant was issued.
+    /// Holder label shown on the approved prompt, or observed at direct command admission.
     pub display_name: String,
     /// User authorization path.
     pub origin: RoleOrigin,
@@ -89,6 +89,8 @@ pub struct RoleThread {
 pub struct RoleApproval {
     /// Exact pending request identity.
     pub id: RoleRequestId,
+    /// Nonzero generation of this prompt. Holder or recipient changes invalidate older decisions.
+    pub decision_generation: u64,
     /// Owning workspace.
     pub workspace_id: String,
     /// Requested role.
@@ -120,6 +122,8 @@ pub enum RoleRequest {
     Decide {
         /// Prompt being answered.
         request_id: RoleRequestId,
+        /// Exact nonzero generation from the displayed prompt.
+        decision_generation: u64,
         /// Exact requester shown in the prompt.
         requester: ChannelMentionBinding,
         /// Prior tenure shown in the prompt, or absent if it was vacant.
@@ -145,11 +149,16 @@ impl RoleRequest {
             Self::Activity { .. } | Self::Snapshot {} => Ok(()),
             Self::Decide {
                 request_id,
+                decision_generation,
                 requester,
                 expected_holder,
                 ..
             } => {
                 valid_id(&request_id.0)?;
+                anyhow::ensure!(
+                    *decision_generation != 0,
+                    "missing role decision generation"
+                );
                 requester.validate()?;
                 if let Some(id) = expected_holder {
                     valid_id(&id.0)?;

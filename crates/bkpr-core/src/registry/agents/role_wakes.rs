@@ -39,7 +39,7 @@ impl RoleLane {
             })
     }
 
-    pub(super) fn binding_changed(&mut self) {
+    pub(super) fn release_dispatch(&mut self) {
         self.active = None;
     }
 }
@@ -96,15 +96,17 @@ impl Registry {
         launch: &Launch,
         receiver: &Receiver,
         connected: &dyn Fn() -> bool,
-    ) -> Result<Option<Value>> {
+    ) -> Result<WakeClaimPoll> {
         let service = &self.inner.agents;
-        let _writer = service.callback_guard()?;
+        let Some(_writer) = service.try_callback_guard()? else {
+            return Ok(WakeClaimPoll::Deferred);
+        };
         ensure!(connected(), "subscription transport disconnected");
-        self.role_receiver_live(launch, &receiver.id)?;
+        self.wake_receiver_live(launch, &receiver.id)?;
         let mut state = service.state.lock().unwrap();
         let (pending, active, _) = RoleLane::availability(&state, launch);
         if !pending || active || ChannelLane::availability(&state, launch).1 {
-            return Ok(None);
+            return Ok(WakeClaimPoll::Empty);
         }
         let launch_id = &launch.grant.launch_id;
         let channel = state.channel_lanes.entry(launch_id.clone()).or_default();
@@ -129,24 +131,10 @@ impl Registry {
         });
         lane.revision = lane.revision.wrapping_add(1);
         service.changed.notify_all();
-        Ok(Some(json!({"notification": {
+        Ok(WakeClaimPoll::Ready(json!({"notification": {
             "notification_id": id, "generation": generation, "session_id": receiver.session_id,
             "mode": receiver.mode, "message_count": 1, "unread_count": 1, "role_wake": wake,
         }})))
-    }
-
-    fn role_receiver_live(&self, launch: &Launch, receiver: &str) -> Result<()> {
-        self.with_current_agent_receiver(launch, receiver, |current| {
-            ensure!(
-                current
-                    .lifetime
-                    .as_ref()
-                    .is_some_and(|life| life.is_alive())
-                    && launch.channel_launch_alive(),
-                "native role receiver or launch exited"
-            );
-            Ok(())
-        })?
     }
 
     pub(super) fn role_wake_current(
@@ -160,7 +148,7 @@ impl Registry {
         self.agent_receiver_peer(launch, peer, receiver)?;
         let service = &self.inner.agents;
         let _writer = service.callback_guard()?;
-        self.role_receiver_live(launch, receiver)?;
+        self.wake_receiver_live(launch, receiver)?;
         Ok(service
             .state
             .lock()
@@ -185,29 +173,13 @@ impl Registry {
         outcome: AgentWakeOutcome,
     ) -> Result<Value> {
         self.agent_receiver_peer(launch, peer, receiver)?;
-        let reason = match &outcome {
-            AgentWakeOutcome::Accepted => None,
-            AgentWakeOutcome::Failed { reason } | AgentWakeOutcome::Unknown { reason } => {
-                Some(reason.as_str())
-            }
-        };
-        ensure!(
-            reason.is_none_or(|reason| reason.len() <= 2048
-                && !reason.chars().any(char::is_control)
-                && !reason.contains(&launch.grant.token)),
-            "invalid safe wake reason"
-        );
+        let (outcome, _) = safe_wake_outcome(launch, &outcome)?;
         let service = &self.inner.agents;
         let _writer = service.callback_guard()?;
-        self.role_receiver_live(launch, receiver)?;
+        self.wake_receiver_live(launch, receiver)?;
         let recorded = service.settle_role_wake(&launch.grant.launch_id, receiver, id, generation);
         if recorded {
-            let result = match outcome {
-                AgentWakeOutcome::Accepted => "accepted",
-                AgentWakeOutcome::Failed { .. } => "failed",
-                AgentWakeOutcome::Unknown { .. } => "unknown",
-            };
-            crate::diagnostics::record("roles.native_wake", None, result);
+            crate::diagnostics::record("roles.native_wake", None, outcome);
         }
         Ok(json!({"recorded": recorded}))
     }

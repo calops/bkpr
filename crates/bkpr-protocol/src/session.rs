@@ -92,9 +92,9 @@ impl std::fmt::Debug for ClientAuthority {
 /// Session attachment lifecycle notification on its client's event stream.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientEvent {
-    /// Event discriminator, currently `client_detached` for forced detachment.
+    /// Lifecycle or role invalidation discriminator. Use [`Self::role_event`] for role events.
     pub event: String,
-    /// Human-facing explanation of the lifecycle transition.
+    /// Detach explanation, or decimal role revision for a role invalidation.
     pub reason: String,
 }
 

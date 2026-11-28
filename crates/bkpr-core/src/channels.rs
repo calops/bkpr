@@ -112,6 +112,15 @@ pub(crate) struct ChannelRoutes<'a> {
 pub(crate) type UserMentionFence<'a> =
     dyn Fn(&str, &[ChannelMentionBinding]) -> Result<MutexGuard<'a, ()>> + 'a;
 
+/// Roster required by the exact channel resolved under the store writer.
+#[derive(Clone, Copy)]
+pub(crate) enum RosterScope<'a> {
+    /// Use the request's usual workspace roster policy.
+    Workspace,
+    /// Include the session user and only this tenure's live holder, if any.
+    Tenure(Option<&'a str>),
+}
+
 /// Channel storage and bounded subscription admission for one exclusively leased session.
 pub struct ChannelEngine {
     root: Arc<Path>,
@@ -244,7 +253,7 @@ impl ChannelEngine {
         let fence = Mutex::new(());
         self.request_routed(
             request,
-            admit,
+            |workspace, _| admit(workspace),
             workspace_open,
             cancelled,
             ChannelRoutes {
@@ -262,7 +271,7 @@ impl ChannelEngine {
     pub(crate) fn request_routed(
         &self,
         request: ChannelRequest,
-        admit: impl Fn(&str) -> Result<ChannelAuthority>,
+        admit: impl Fn(&str, RosterScope<'_>) -> Result<ChannelAuthority>,
         workspace_open: impl Fn(&str) -> bool,
         cancelled: impl Fn() -> bool,
         routes: ChannelRoutes<'_>,
@@ -284,7 +293,7 @@ impl ChannelEngine {
                         limit,
                         wait_ms,
                     },
-                    admit,
+                    |workspace| admit(workspace, RosterScope::Workspace),
                     workspace_open,
                     cancelled,
                     routes.workspace,
@@ -299,7 +308,11 @@ impl ChannelEngine {
         if let ChannelRequest::UploadAttachment { channel_id, upload } = &request {
             let mut writer = with_store(Instant::now() + STORE_WAIT)?;
             writer.run(&workspace_open, |store| {
-                store.authorize_upload(channel_id, &admit, routes.workspace)
+                store.authorize_upload(
+                    channel_id,
+                    &|workspace| admit(workspace, RosterScope::Workspace),
+                    routes.workspace,
+                )
             })?;
             drop(writer);
             validate_image(upload)?;

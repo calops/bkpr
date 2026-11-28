@@ -21,12 +21,6 @@ pub(super) struct ChannelDispatch {
     generation: u64,
 }
 
-pub(super) enum ChannelClaimPoll {
-    Empty,
-    Deferred,
-    Ready(Value),
-}
-
 impl ChannelLane {
     pub(super) fn availability(state: &AgentState, launch: &Launch) -> (bool, bool, u64) {
         state
@@ -283,21 +277,19 @@ impl Registry {
         receiver: &Receiver,
         connected: &dyn Fn() -> bool,
         wait_until: Instant,
-    ) -> Result<ChannelClaimPoll> {
+    ) -> Result<WakeClaimPoll> {
         let recipient = recipient(launch)?;
         let workspace = self.channel_caller_workspace(launch)?;
         let service = &self.inner.agents;
         let (batch_id, generation) = {
-            let _writer = match service.writer.try_lock() {
-                Ok(writer) => writer,
-                Err(std::sync::TryLockError::WouldBlock) => return Ok(ChannelClaimPoll::Deferred),
-                Err(std::sync::TryLockError::Poisoned(_)) => bail!("agent writer poisoned"),
+            let Some(_writer) = service.try_callback_guard()? else {
+                return Ok(WakeClaimPoll::Deferred);
             };
             self.with_current_agent_receiver(launch, &receiver.id, |_| ())?;
             let mut state = service.state.lock().unwrap();
             let (pending, active, _) = ChannelLane::availability(&state, launch);
             if !pending || active || RoleLane::availability(&state, launch).1 {
-                return Ok(ChannelClaimPoll::Empty);
+                return Ok(WakeClaimPoll::Empty);
             }
             let lane = state
                 .channel_lanes
@@ -361,13 +353,13 @@ impl Registry {
             service.release_channel_dispatch(recipient.launch, &batch_id, generation);
         }
         let (wake, deadline) = match claimed? {
-            None => return Ok(ChannelClaimPoll::Deferred),
-            Some(None) => return Ok(ChannelClaimPoll::Empty),
+            None => return Ok(WakeClaimPoll::Deferred),
+            Some(None) => return Ok(WakeClaimPoll::Empty),
             Some(Some(delivery)) => delivery,
         };
         if now() >= deadline
             || !connected()
-            || self.channel_receiver_live(launch, &receiver.id).is_err()
+            || self.wake_receiver_live(launch, &receiver.id).is_err()
         {
             self.channel_subscription_disconnected(
                 recipient.launch,
@@ -377,7 +369,7 @@ impl Registry {
             )?;
             bail!("channel subscriber changed before wake response");
         }
-        Ok(ChannelClaimPoll::Ready(json!({"notification": {
+        Ok(WakeClaimPoll::Ready(json!({"notification": {
             "notification_id": wake.batch_id, "generation": generation,
             "session_id": receiver.session_id, "mode": receiver.mode,
             "message_count": wake.pending_count, "unread_count": wake.pending_count,
@@ -387,21 +379,7 @@ impl Registry {
 
     fn admit_channel_receiver(&self, launch: &Launch, peer: &Peer, receiver: &str) -> Result<()> {
         self.agent_receiver_peer(launch, peer, receiver)?;
-        self.channel_receiver_live(launch, receiver)
-    }
-
-    fn channel_receiver_live(&self, launch: &Launch, receiver: &str) -> Result<()> {
-        self.with_current_agent_receiver(launch, receiver, |current| {
-            ensure!(
-                current
-                    .lifetime
-                    .as_ref()
-                    .is_some_and(|life| life.is_alive())
-                    && launch.channel_launch_alive(),
-                "native channel receiver or launch exited"
-            );
-            Ok(())
-        })?
+        self.wake_receiver_live(launch, receiver)
     }
 
     pub(super) fn channel_wake_current(
@@ -454,17 +432,7 @@ impl Registry {
         (receiver, batch, generation): (&str, &str, u64),
         outcome: AgentWakeOutcome,
     ) -> Result<Value> {
-        let (outcome, reason) = match &outcome {
-            AgentWakeOutcome::Accepted => ("accepted", None),
-            AgentWakeOutcome::Failed { reason } => ("failed", Some(reason.as_str())),
-            AgentWakeOutcome::Unknown { reason } => ("unknown", Some(reason.as_str())),
-        };
-        ensure!(
-            reason.is_none_or(|reason| reason.len() <= 2048
-                && !reason.chars().any(char::is_control)
-                && !reason.contains(&launch.grant.token)),
-            "invalid safe wake reason"
-        );
+        let (outcome, reason) = safe_wake_outcome(launch, &outcome)?;
         let recorded = self.inner.channels.with_delivery_store(
             &|| self.session_end_requested(),
             &|workspace| self.delivery_workspace_open(workspace),
@@ -477,7 +445,7 @@ impl Registry {
                     generation,
                     outcome,
                     reason,
-                    || self.channel_receiver_live(launch, receiver),
+                    || self.wake_receiver_live(launch, receiver),
                 )
             },
         )?;

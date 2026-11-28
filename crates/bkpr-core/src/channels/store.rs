@@ -39,7 +39,7 @@ mod wakes;
 
 const APPLICATION_ID: i64 = 0x424b4348;
 // Versions 1–6 predate staging. Version 7 predates wakes.
-const STORE_VERSION: i64 = 17;
+const STORE_VERSION: i64 = 18;
 const ATTENTION_ORIGIN_VERSION: i64 = 16;
 const FIRST_STAGING_VERSION: i64 = 7;
 const STORE_NAME: &str = "channels.sqlite3";
@@ -146,6 +146,7 @@ pub(crate) struct Store {
     pub(super) catalog_epoch: Option<u64>,
     pub(super) launch_active: Option<Arc<OnceLock<Box<super::LaunchActive>>>>,
     roles: BTreeMap<String, RoleGrant>,
+    pending_role_archives: Vec<ChannelId>,
 }
 
 struct StoredChannel {
@@ -207,7 +208,7 @@ impl Store {
         )?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version = store_version(&tx, empty)?;
-        if version < STORE_VERSION {
+        if version < 17 {
             if version == 0 {
                 tx.execute_batch(include_str!("schema.sql"))?;
                 tx.execute_batch(include_str!("wakes.sql"))?;
@@ -263,7 +264,9 @@ impl Store {
                 tx.execute_batch(include_str!("direct.sql"))?;
             }
             if !has_schema_object("role_threads")? {
-                tx.execute_batch(include_str!("role_threads.sql"))?;
+                tx.execute_batch(
+                    "ALTER TABLE catalog_events ADD COLUMN role_archive INTEGER NOT NULL DEFAULT 0;",
+                )?;
             }
             if version < 12 {
                 if !legacy::source_present(root) {
@@ -296,17 +299,20 @@ impl Store {
                     ON notification_work(attention_posted_ms,message_id)
                     WHERE pending=1 AND launch_id IS NULL;",
             )?;
+        }
+        if version < STORE_VERSION {
+            tx.execute_batch(include_str!("role_threads.sql"))?;
             tx.pragma_update(None, "user_version", STORE_VERSION)?;
         }
         if version != 0 {
-            // A new runtime cannot offer abandoned work; old queue rows need no order backfill.
-            tx.execute_batch(RETIRE_OLD_WAKE_WORK)?;
             // Recovery cannot restore a live grant. Report remaining archives
             // through the same catalog journal as an in-process revocation.
             tx.execute(
                 "UPDATE role_threads SET archive_reported=1 WHERE archive_reported=0",
                 [],
             )?;
+            // A new runtime cannot offer abandoned work; old queue rows need no order backfill.
+            tx.execute_batch(RETIRE_OLD_WAKE_WORK)?;
         }
         tx.commit()?;
         if version == 0 {
@@ -318,6 +324,7 @@ impl Store {
             catalog_epoch: None,
             launch_active: None,
             roles: BTreeMap::new(),
+            pending_role_archives: Vec::new(),
         })
     }
 
@@ -439,11 +446,12 @@ impl Store {
     pub(super) fn request(
         &mut self,
         request: ChannelRequest,
-        admit: impl Fn(&str) -> Result<ChannelAuthority>,
+        admit: impl Fn(&str, super::RosterScope<'_>) -> Result<ChannelAuthority>,
         routes: ChannelRoutes<'_>,
         attention_origin: Option<&str>,
         retire: impl FnOnce(&mut Self, &str) -> Result<bool>,
     ) -> Result<(ChannelResponse, bool)> {
+        let workspace_admit = |workspace: &str| admit(workspace, super::RosterScope::Workspace);
         let mut selector = None;
         let request = match request {
             ChannelRequest::List {
@@ -451,7 +459,7 @@ impl Store {
                 after,
                 limit,
             } => {
-                let authority = workspace_authority(&workspace_id, &admit)?;
+                let authority = workspace_authority(&workspace_id, &workspace_admit)?;
                 if authority.workspace_open {
                     self.provision([workspace_id.as_str()])?;
                 } else {
@@ -468,7 +476,10 @@ impl Store {
                 ));
             }
             ChannelRequest::ListArchivedWorkspaces { after, limit } => {
-                return Ok((self.archives(after.as_deref(), limit, &admit)?, false));
+                return Ok((
+                    self.archives(after.as_deref(), limit, &workspace_admit)?,
+                    false,
+                ));
             }
             ChannelRequest::UserRoster {
                 workspace_id,
@@ -478,11 +489,11 @@ impl Store {
             } => {
                 let mut grant = self.active_role_grant(&workspace_id);
                 let (authority, members) = if let Some(id) = &channel_id {
-                    let (channel, mut authority) = self.access(id, &admit, routes.workspace)?;
+                    let (channel, mut authority) =
+                        self.access_with_roster(id, &admit, routes.workspace)?;
                     ensure!(channel.workspace_id == workspace_id, ChannelAccessLost);
                     let members = if channel.role_thread {
                         grant = grant.filter(|grant| grant.channel_id == *id);
-                        role_threads::constrain_roster(&mut authority, grant);
                         None
                     } else if channel.direct {
                         let pair = self.direct_pair(id)?.context(ChannelAccessLost)?;
@@ -496,7 +507,7 @@ impl Store {
                     };
                     (authority, members)
                 } else {
-                    (workspace_authority(&workspace_id, &admit)?, None)
+                    (workspace_authority(&workspace_id, &workspace_admit)?, None)
                 };
                 require_user(&authority)?;
                 let (entries, next_after) =
@@ -528,7 +539,7 @@ impl Store {
                 members,
                 settings,
             } => {
-                let authority = workspace_authority(&workspace_id, &admit)?;
+                let authority = workspace_authority(&workspace_id, &workspace_admit)?;
                 require_write(&authority)?;
                 ensure!(
                     !role_threads::reserved_name(&name),
@@ -546,7 +557,7 @@ impl Store {
             }
             ChannelRequest::Post { channel_id, post } => {
                 let channel_id =
-                    match self.resolve_builtin(&channel_id, routes.workspace, &admit)? {
+                    match self.resolve_builtin(&channel_id, routes.workspace, &workspace_admit)? {
                         Some(id) => {
                             selector = Some(channel_id);
                             id
@@ -573,7 +584,7 @@ impl Store {
             | ChannelRequest::GetAttachment { channel_id, .. } => channel_id,
             _ => unreachable!("workspace and subscription routes are handled separately"),
         };
-        let (channel, mut authority) = self.access(channel_id, &admit, routes.workspace)?;
+        let (channel, authority) = self.access_with_roster(channel_id, &admit, routes.workspace)?;
         match &request {
             ChannelRequest::ListExplicitMembers { .. }
             | ChannelRequest::SetSettings { .. }
@@ -592,10 +603,6 @@ impl Store {
                 after,
                 limit,
             } => {
-                if channel.role_thread {
-                    let grant = self.active_role_thread(&channel.workspace_id, &channel_id);
-                    role_threads::constrain_roster(&mut authority, grant);
-                }
                 let members = self.members_if_explicit(&channel_id, &channel)?;
                 Ok((
                     list_members(authority, members.as_deref(), after.as_ref(), limit)?,
@@ -770,6 +777,15 @@ impl Store {
         admit: &impl Fn(&str) -> Result<ChannelAuthority>,
         caller_workspace: Option<&str>,
     ) -> Result<(StoredChannel, ChannelAuthority)> {
+        self.access_with_roster(id, &|workspace, _| admit(workspace), caller_workspace)
+    }
+
+    fn access_with_roster(
+        &self,
+        id: &ChannelId,
+        admit: &impl Fn(&str, super::RosterScope<'_>) -> Result<ChannelAuthority>,
+        caller_workspace: Option<&str>,
+    ) -> Result<(StoredChannel, ChannelAuthority)> {
         let channel = self
             .connection
             .query_row(
@@ -790,7 +806,16 @@ impl Store {
         } else {
             &channel.workspace_id
         };
-        let authority = workspace_authority(workspace, admit)?;
+        let grant = channel
+            .role_thread
+            .then(|| self.active_role_thread(&channel.workspace_id, id))
+            .flatten();
+        let roster = if channel.role_thread {
+            super::RosterScope::Tenure(grant.map(|grant| grant.holder.launch_id.as_str()))
+        } else {
+            super::RosterScope::Workspace
+        };
+        let mut authority = workspace_authority(workspace, &|workspace| admit(workspace, roster))?;
         if authority.actor.kind == ParticipantKind::Agent {
             if channel.direct {
                 ensure!(
@@ -806,15 +831,13 @@ impl Store {
             } else if channel.role_thread {
                 ensure!(
                     caller_workspace.is_none_or(|workspace| workspace == channel.workspace_id)
-                        && self
-                            .active_role_thread(&channel.workspace_id, id)
-                            .is_some_and(|grant| {
-                                role_threads::matches_holder(
-                                    grant,
-                                    &authority.actor,
-                                    authority.launch_id.as_deref(),
-                                )
-                            }),
+                        && grant.is_some_and(|grant| {
+                            role_threads::matches_holder(
+                                grant,
+                                &authority.actor,
+                                authority.launch_id.as_deref(),
+                            )
+                        }),
                     ChannelAccessLost
                 );
             } else if !channel.workspace_wide {
@@ -823,6 +846,9 @@ impl Store {
                     ChannelAccessLost
                 );
             }
+        }
+        if channel.role_thread {
+            role_threads::constrain_roster(&mut authority, grant);
         }
         Ok((channel, authority))
     }
@@ -1205,10 +1231,6 @@ impl Store {
             );
         }
         let mut authority = authority;
-        if channel.role_thread {
-            let grant = self.active_role_thread(&channel.workspace_id, id);
-            role_threads::constrain_roster(&mut authority, grant);
-        }
         let direct_members = if channel.direct && selected_direct.is_none() {
             let pair = self.direct_pair(id)?.context(ChannelAccessLost)?;
             let peer = pair
@@ -1351,16 +1373,17 @@ impl Store {
             .map(|bindings| (routes.fence_user_mentions)(&channel.workspace_id, bindings))
             .transpose()?;
         // All tenure changes use this store slot; the binding guard also pins
-        // the selected launch/binding until the post and its wakes commit.
+        // selected live launch/binding until the post and its wakes commit.
+        // A rebind may change the holder's participant ID without ending the tenure.
         if let Some(expected) = coordinator_grant_id {
             ensure!(
                 self.role_grant(&channel.workspace_id).is_some_and(|grant| {
                     grant.role == WorkspaceRole::Coordinator
                         && grant.id == *expected
-                        && bindings.into_iter().flatten().any(|binding| {
-                            binding.launch_id == grant.holder.launch_id
-                                && binding.participant_id == grant.holder.participant_id
-                        })
+                        && bindings
+                            .into_iter()
+                            .flatten()
+                            .any(|binding| binding.launch_id == grant.holder.launch_id)
                 }),
                 "selected @coordinator grant changed or ended; select @coordinator again; nothing was posted"
             );
@@ -1677,7 +1700,7 @@ impl Store {
     pub(crate) fn compact_members(
         &mut self,
         request: ChannelRequest,
-        admit: &impl Fn(&str) -> Result<ChannelAuthority>,
+        admit: &impl Fn(&str, super::RosterScope<'_>) -> Result<ChannelAuthority>,
         caller: (&str, u64),
         caller_workspace: Option<&str>,
     ) -> Result<serde_json::Value> {
@@ -1690,20 +1713,16 @@ impl Store {
             unreachable!("compact roster requires a members request");
         };
         let channel_id = self
-            .resolve_builtin(&channel_id, caller_workspace, admit)?
+            .resolve_builtin(&channel_id, caller_workspace, &|workspace| {
+                admit(workspace, super::RosterScope::Workspace)
+            })?
             .unwrap_or(channel_id);
-        let (channel, mut authority) = self.access(&channel_id, admit, caller_workspace)?;
+        let (channel, authority) = self.access_with_roster(&channel_id, admit, caller_workspace)?;
         channel.require_shared()?;
         let grant = channel
             .delegation_workspace(&authority, caller_workspace)
             .and_then(|workspace| self.active_role_grant(workspace));
-        let grant = if channel.role_thread {
-            let grant = grant.filter(|grant| grant.channel_id == channel_id);
-            role_threads::constrain_roster(&mut authority, grant);
-            grant
-        } else {
-            grant
-        };
+        let grant = grant.filter(|grant| !channel.role_thread || grant.channel_id == channel_id);
         let members = self.members_if_explicit(&channel_id, &channel)?;
         let (entries, next_after) =
             members_page(authority, members.as_deref(), after.as_ref(), limit)?;
@@ -2347,12 +2366,15 @@ impl StoredChannel {
     }
 
     fn summary(
-        self,
+        mut self,
         id: ChannelId,
         read_through: u64,
         user: bool,
         archived: bool,
     ) -> ChannelSummary {
+        if !self.direct && !self.role_thread && role_threads::reserved_name(&self.name) {
+            self.name.push_str(" (legacy)");
+        }
         ChannelSummary {
             id,
             workspace_id: self.workspace_id,

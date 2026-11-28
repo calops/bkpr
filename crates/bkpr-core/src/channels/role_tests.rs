@@ -3,7 +3,10 @@ use bkpr_protocol::roles::{
     RoleAttribution, RoleGrant, RoleGrantId, RoleOrigin, RoleThread, WorkspaceRole,
 };
 use serde_json::json;
-use std::sync::Arc;
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, atomic::AtomicUsize},
+};
 
 fn grant(actor: &Participant, launch: &str, tenure: &str) -> RoleGrant {
     RoleGrant {
@@ -181,8 +184,22 @@ fn each_private_tenure_follows_its_exact_launch_and_then_is_user_only() {
     let claim = f.wake_claim("private-role-wake", 1);
     assert_eq!(claim_for(&f, &f.a, &claim).unwrap().channel_id, *old);
     assert!(f.wake_lookup(&claim, Some(64)).is_ok());
+    assert!(f.settle(&claim, "accepted", None, || Ok(())).unwrap());
+    let settled = f.wake_record(claim.batch_id);
+    f.request(send_user(old, post("unsettled-wake"), Vec::new()))
+        .unwrap();
+    let unresolved = f.wake_claim("unsettled-role-wake", 2);
+    assert_eq!(claim_for(&f, &f.a, &unresolved).unwrap().channel_id, *old);
+    let queued = posted(
+        f.request(send_user(old, post("queued-wake"), Vec::new()))
+            .unwrap(),
+    );
+    assert!(f.work(&queued.id)[0].3);
 
     assert_eq!(install(&f, &b).unwrap(), Some(a.clone()));
+    assert_eq!(f.wake_record(claim.batch_id), settled);
+    assert_eq!(f.wake_record(unresolved.batch_id), (true, None, None));
+    assert!(!f.work(&queued.id)[0].3);
     assert!(
         f.wake_lookup(&claim, Some(64))
             .unwrap_err()
@@ -369,7 +386,12 @@ fn role_attribution_outlives_delegation_without_widening_wake_source_access() {
 #[test]
 fn archive_catalog_survives_recovery_and_failed_preparation_cannot_replace_a_grant() {
     let f = Fixture::new();
-    f.engine.set_launch_liveness(|_| true);
+    let live_probes = Arc::new(AtomicUsize::new(0));
+    let probes = live_probes.clone();
+    f.engine.set_launch_liveness(move |_| {
+        probes.fetch_add(1, Ordering::Relaxed);
+        true
+    });
     let a = grant(&f.a, "launch-a", "original");
     let b = grant(&f.b, "launch-b", "replacement");
     let catalog = |f: &Fixture, read| {
@@ -401,6 +423,8 @@ fn archive_catalog_survives_recovery_and_failed_preparation_cannot_replace_a_gra
         matches!(created.as_slice(), [ChannelCatalogChange::Upsert { channel }]
         if channel.id == a.channel_id && !channel.role_thread.unwrap().archived)
     );
+    catalog(&f, CatalogRead::Snapshot(None)).unwrap();
+    assert_eq!(live_probes.load(Ordering::Relaxed), 0);
 
     f.sql("CREATE TRIGGER fail_prepare BEFORE INSERT ON role_threads BEGIN SELECT RAISE(ABORT, 'broken role prep'); END;");
     assert!(
@@ -482,4 +506,210 @@ fn archive_catalog_survives_recovery_and_failed_preparation_cannot_replace_a_gra
         matches!(event.as_slice(), [ChannelCatalogChange::Upsert { channel }]
         if channel.id == b.channel_id && channel.role_thread.unwrap().archived)
     );
+}
+
+#[test]
+fn legacy_coordinator_names_project_distinctly_without_changing_channel_access() {
+    let f = Fixture::new();
+    f.engine.set_launch_liveness(|_| true);
+    let a = grant(&f.a, "launch-a", "private-role");
+    install(&f, &a).unwrap();
+
+    let legacy: Vec<_> = [
+        "#coordinator",
+        "Coordinator",
+        "\u{2003}#COORDINATOR\u{2003}",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, name)| {
+        let id = f.create(
+            &f.user,
+            WORKSPACE,
+            MembershipMode::Explicit,
+            vec![f.a.id.clone()],
+            quiet(),
+        );
+        f.engine
+            .with_store(|store| {
+                store.connection.execute(
+                    "UPDATE channels SET name=?2 WHERE id=?1",
+                    rusqlite::params![id.as_ref(), name],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let message = posted(
+            f.as_actor(&f.a, send(&id, post(&format!("legacy-{i}"))))
+                .unwrap(),
+        );
+        (id, name, message)
+    })
+    .collect();
+
+    let ChannelResponse::CatalogSnapshot { channels, .. } = f
+        .engine
+        .catalog_request(
+            CatalogRead::Snapshot(None),
+            f.user.id.as_ref(),
+            20,
+            0,
+            || Ok([WORKSPACE.to_owned()].into()),
+            || false,
+        )
+        .unwrap()
+    else {
+        panic!("catalog snapshot");
+    };
+    let listed = f.list(&f.a);
+    for view in [&channels, &listed] {
+        let role = view
+            .iter()
+            .find(|channel| channel.id == a.channel_id)
+            .unwrap();
+        assert_eq!(role.name, "#coordinator");
+        assert!(role.role_thread.is_some());
+        for (id, raw, _) in &legacy {
+            let ordinary = view.iter().find(|channel| channel.id == *id).unwrap();
+            assert_eq!(ordinary.name, format!("{raw} (legacy)"));
+            assert_eq!(ordinary.role_thread, None);
+            assert_eq!(ordinary.membership, MembershipMode::Explicit);
+        }
+    }
+    for (id, _, message) in &legacy {
+        let ChannelResponse::Message { message: read } =
+            f.as_actor(&f.a, fetch(id, message)).unwrap()
+        else {
+            panic!("legacy exact read");
+        };
+        assert_eq!(read.message, *message);
+        assert!(
+            f.as_actor(&f.b, fetch(id, message))
+                .unwrap_err()
+                .is::<ChannelAccessLost>()
+        );
+    }
+}
+
+#[test]
+fn version_seventeen_upgrade_retries_archive_recovery_without_rewriting_settled_batches() {
+    let f = Fixture::new();
+    f.engine.set_launch_liveness(|_| true);
+    let a = grant(&f.a, "launch-a", "recover-a");
+    let other = RoleGrant {
+        workspace_id: OTHER_WORKSPACE.into(),
+        ..grant(&f.b, "launch-b", "recover-b")
+    };
+    install(&f, &a).unwrap();
+    install(&f, &other).unwrap();
+    let settled = f.wake_claim("settled-before-upgrade", 1);
+    f.request(send_user(&a.channel_id, post("settled"), Vec::new()))
+        .unwrap();
+    claim_for(&f, &f.a, &settled).unwrap();
+    assert!(
+        f.settle(&settled, "failed", Some("native rejection"), || Ok(()))
+            .unwrap()
+    );
+    let durable_settlement = f.wake_record(settled.batch_id);
+
+    let unsettled = f.wake_claim("unsettled-before-upgrade", 2);
+    f.request(send_user(&a.channel_id, post("unsettled"), Vec::new()))
+        .unwrap();
+    claim_for(&f, &f.a, &unsettled).unwrap();
+    let queued = posted(
+        f.request(send_user(&a.channel_id, post("queued"), Vec::new()))
+            .unwrap(),
+    );
+    let catalog = |f: &Fixture, read| {
+        f.engine.catalog_request(
+            read,
+            f.user.id.as_ref(),
+            20,
+            0,
+            || Ok([WORKSPACE.to_owned(), OTHER_WORKSPACE.to_owned()].into()),
+            || false,
+        )
+    };
+    let ChannelResponse::CatalogSnapshot { cursor, .. } =
+        catalog(&f, CatalogRead::Snapshot(None)).unwrap()
+    else {
+        panic!("catalog snapshot");
+    };
+    f.engine
+        .with_store(|store| {
+            assert_eq!(store.remove_role(WORKSPACE), Some(a.clone()));
+            Ok(())
+        })
+        .unwrap();
+    // Restore the old trigger's broad batch update and simulate an archive
+    // storage failure during the first open. Both migration and reporting must retry.
+    f.sql(
+        "DROP INDEX unsettled_batches_by_channel;
+         DROP TRIGGER catalog_role_thread_archived;
+         CREATE TRIGGER catalog_role_thread_archived AFTER UPDATE OF archive_reported ON role_threads
+         BEGIN
+             UPDATE channel_batches SET revoked=1 WHERE channel_id=NEW.channel_id AND revoked=0;
+         END;
+         CREATE TRIGGER fail_recovery BEFORE UPDATE ON role_threads
+         BEGIN SELECT RAISE(ABORT, 'blocked archive recovery'); END;
+         CREATE TRIGGER preserve_settled BEFORE UPDATE ON channel_batches WHEN OLD.outcome IS NOT NULL
+         BEGIN SELECT RAISE(ABORT, 'settled wake rewritten'); END;
+         PRAGMA user_version=17;",
+    );
+    let f = f.reopen();
+    assert!(
+        catalog(&f, CatalogRead::Changes(&cursor))
+            .unwrap_err()
+            .to_string()
+            .contains("blocked archive recovery")
+    );
+    {
+        let connection =
+            rusqlite::Connection::open(f.root.path().join("channels.sqlite3")).unwrap();
+        let version: u64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 17);
+        connection
+            .execute_batch("DROP TRIGGER fail_recovery;")
+            .unwrap();
+    }
+    let ChannelResponse::CatalogChanges {
+        cursor,
+        changes,
+        more: false,
+    } = catalog(&f, CatalogRead::Changes(&cursor)).unwrap()
+    else {
+        panic!("catalog changes after upgrade");
+    };
+    let archives: BTreeSet<_> = changes
+        .into_iter()
+        .map(|change| match change {
+            ChannelCatalogChange::Upsert { channel } if channel.role_thread.unwrap().archived => {
+                channel.id
+            }
+            _ => panic!("recovery emitted unrelated catalog change"),
+        })
+        .collect();
+    assert_eq!(archives, BTreeSet::from([a.channel_id, other.channel_id]));
+    let upgraded_version: u64 = f
+        .engine
+        .with_store(|store| {
+            Ok(store
+                .connection
+                .pragma_query_value(None, "user_version", |row| row.get(0))?)
+        })
+        .unwrap();
+    assert_eq!(upgraded_version, 18);
+    assert_eq!(f.wake_record("settled-before-upgrade"), durable_settlement);
+    assert_eq!(
+        f.wake_record("unsettled-before-upgrade"),
+        (true, Some("unknown".into()), None)
+    );
+    assert!(!f.work(&queued.id)[0].3);
+    let f = f.reopen();
+    assert!(matches!(
+        catalog(&f, CatalogRead::Changes(&cursor)).unwrap(),
+        ChannelResponse::CatalogChanges { changes, more: false, .. } if changes.is_empty()
+    ));
 }
